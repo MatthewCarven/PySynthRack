@@ -101,8 +101,6 @@ if (Test-Path .git) { Remove-Item -Recurse -Force .git }
 
 # Initialize on the modern default branch name.
 git init -b main
-git config user.name "Matthew Carven"          # adjust as you like
-git config user.email "matthewcarven@gmail.com"
 
 # Stage everything; .gitignore already excludes .venv, __pycache__, *.wav, etc.
 git add .
