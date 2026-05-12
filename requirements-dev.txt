@@ -1,0 +1,8 @@
+-r requirements.txt
+
+# Testing
+pytest>=7.4
+pytest-cov>=4.1
+
+# Linting / formatting (optional but nice to have)
+ruff>=0.4

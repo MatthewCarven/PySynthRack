@@ -1,0 +1,12 @@
+# This file mirrors the *runtime* dependencies declared in pyproject.toml.
+# Recommended install path: `pip install -e .` from the project root,
+# which also registers the pysynthrack package itself.
+#
+# Use requirements.txt only if you can't use pyproject (e.g. some CI setups).
+# Optional extras (DearPyGui for the GUI, pyo for the preferred audio
+# backend) are NOT listed here — install them separately:
+#   pip install dearpygui       # GUI
+#   pip install pyo             # better audio backend
+
+numpy>=1.24
+sounddevice>=0.4.6

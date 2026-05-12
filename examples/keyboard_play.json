@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "next_id": 3,
+  "modules": [
+    {
+      "id": 1,
+      "type": "keyboard",
+      "name": "Keyboard",
+      "params": {
+        "octave": 4,
+        "waveform": "saw",
+        "volume": 0.4
+      }
+    },
+    {
+      "id": 2,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "in"
+    }
+  ]
+}

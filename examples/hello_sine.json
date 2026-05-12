@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "next_id": 3,
+  "modules": [
+    {
+      "id": 1,
+      "type": "oscillator",
+      "name": "Osc 1",
+      "params": {
+        "waveform": "sine",
+        "freq": 440.0,
+        "amp": 0.3
+      }
+    },
+    {
+      "id": 2,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "in"
+    }
+  ]
+}

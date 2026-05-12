@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "next_id": 4,
+  "modules": [
+    {
+      "id": 1,
+      "type": "keyboard",
+      "name": "Keyboard",
+      "params": {
+        "octave": 3,
+        "waveform": "saw",
+        "volume": 0.4
+      }
+    },
+    {
+      "id": 2,
+      "type": "filter",
+      "name": "LP Filter",
+      "params": {
+        "mode": "lowpass",
+        "cutoff": 1200.0,
+        "resonance": 3.5
+      }
+    },
+    {
+      "id": 3,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "in"
+    }
+  ]
+}
