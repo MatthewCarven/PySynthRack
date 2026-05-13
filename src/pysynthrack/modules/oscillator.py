@@ -24,5 +24,15 @@ class Oscillator(Module):
         "freq": 440.0,
         "amp": 0.5,
     }
-    INPUT_PORTS: list[Port] = []  # v0.1: no modulation inputs yet
+    INPUT_PORTS = [
+        # Frequency CV: 1 volt = 1 octave. ``freq`` becomes
+        # ``freq * 2 ** cv[n]`` evaluated per sample, so a bipolar
+        # LFO produces real vibrato and an audio-rate signal here
+        # gives FM. Unpatched = no modulation.
+        Port("freq_cv", "in", "cv"),
+        # Amplitude CV: linear multiplicative. ``amp`` becomes
+        # ``amp * cv[n]`` per sample when patched. A unipolar LFO
+        # here is ring-modulator-ish AM. Unpatched = no modulation.
+        Port("amp_cv", "in", "cv"),
+    ]
     OUTPUT_PORTS = [Port("out", "out", "audio")]

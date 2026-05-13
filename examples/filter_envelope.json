@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    {
+      "id": 1,
+      "type": "keyboard",
+      "name": "Keyboard",
+      "params": {"octave": 3, "waveform": "saw", "volume": 0.5}
+    },
+    {
+      "id": 2,
+      "type": "adsr",
+      "name": "Filter Envelope",
+      "params": {"attack": 0.005, "decay": 0.4, "sustain": 0.2, "release": 0.6}
+    },
+    {
+      "id": 3,
+      "type": "filter",
+      "name": "Filter",
+      "params": {"mode": "lowpass", "cutoff": 200.0, "resonance": 3.5}
+    },
+    {
+      "id": 4,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {"gain": 0.8}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 3, "dst_port": "in"},
+    {"src_module_id": 1, "src_port": "gate", "dst_module_id": 2, "dst_port": "gate"},
+    {"src_module_id": 2, "src_port": "cv", "dst_module_id": 3, "dst_port": "cutoff_cv"},
+    {"src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 60],
+      "2": [40, 320],
+      "3": [360, 180],
+      "4": [680, 180]
+    }
+  }
+}

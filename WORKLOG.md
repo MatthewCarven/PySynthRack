@@ -4,6 +4,86 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-05-13 (v0.3 starts) — CV-modulatable params
+
+The big sound-design unlock: LFOs and envelopes can now sweep param
+values through dedicated CV input ports on existing modules. The
+filter cutoff is the obvious one (wah, filter envelope); oscillator
+freq and amp open up vibrato/FM and AM/tremolo.
+
+**1V/octave convention.** For frequency-domain params (cutoff, freq),
+``effective = base * 2 ** cv``. A CV of +1 doubles the value, -1
+halves it. This matches the standard modular-synth ergonomics — a
+unipolar 0..1 envelope sweeps one octave up; a bipolar ±1 LFO swings
+one octave each way. Amp CV is linear instead: ``amp * cv``, because
+loudness perception is linear in this range and the multiplicative
+shape lets a unipolar LFO act as a VCA-style amp modulator.
+
+**Per-sample vs per-block.** Different modulation domains have
+different sensitivity to update rate:
+- ``oscillator.freq_cv`` and ``oscillator.amp_cv`` are evaluated per
+  sample. Per-sample frequency integration (cumsum of inst-increments)
+  is essentially free in NumPy and gives true vibrato/FM. Block-rate
+  would alias the LFO into staircases at the block boundary.
+- ``filter.cutoff_cv`` uses block-mean CV. Per-sample cutoff would
+  need fresh biquad coefficients every sample — ~9x cost in the
+  current scalar IIR loop. Block-mean is audibly fine at production
+  block sizes (512–1024 samples); the LFO cycle has to be much
+  shorter than the block for the mean to wash out, which would only
+  happen at audio-rate "modulation" (i.e. FM cutoff), which is a
+  different regime than what users want here.
+
+**Cabling.** Adding ports is backward-compatible — old patches reference
+ports that still exist (``in``, ``out``, ``gate``) and ignore the new
+CV inputs. The patch model's signal-kind check ensures audio cables
+can't accidentally land on a CV input.
+
+**Files added/changed:**
+
+- ``src/pysynthrack/modules/filter.py`` — Filter gains ``cutoff_cv``
+  input (signal_kind ``cv``).
+- ``src/pysynthrack/modules/oscillator.py`` — Oscillator gains
+  ``freq_cv`` and ``amp_cv`` inputs.
+- ``src/pysynthrack/audio/numpy_backend.py`` —
+  ``_render_oscillator`` does per-sample 2^cv frequency integration
+  via cumsum, plus per-sample linear amp multiplication. CV args on
+  ``_render_oscillator`` are optional so existing test call sites
+  (which pass just ``module, frames``) still work.
+  ``_render_filter`` applies block-mean cutoff CV before the biquad
+  coefficient pass.
+- ``examples/wah.json`` — keyboard (saw) → bandpass filter ← LFO@1.5 Hz
+  bipolar depth 1.5 on cutoff. Classic auto-wah.
+- ``examples/filter_envelope.json`` — keyboard (saw) → lowpass filter
+  ← ADSR (0.005/0.4/0.2/0.6) on cutoff. The acid bassline shape.
+- ``examples/vibrato.json`` — oscillator ← LFO@5.5 Hz bipolar depth
+  0.04 on freq. ~28 cents either side, gentle vibrato.
+- ``tests/test_cv_modulation.py`` — 11 new tests: filter no-cv path
+  is no-op, +1/-1/-5 octave shifts, end-to-end LFO sweep produces
+  RMS swing; oscillator freq_cv at +1/-1 doubles/halves cycle count,
+  phase continuity across blocks; amp_cv at 0/0.5 mutes/halves.
+- ``tests/test_filter.py`` — updated input_ports assertion to expect
+  ``["in", "cutoff_cv"]``.
+
+**Verified in sandbox:** 108 tests pass (97 prior + 11 new).
+End-to-end smoke render of the three example patches:
+- ``wah.json``: per-block RMS swings 0.18–0.38 over LFO cycles.
+- ``filter_envelope.json``: RMS 0.32→0.63 as envelope opens.
+- ``vibrato.json``: RMS stable (vibrato changes pitch not amplitude);
+  ear test on Matthew's side will confirm it's audibly modulated.
+
+**Sound-design pairings to try (Matthew):**
+- Open ``wah.json``, play a sustained note, drag the bandpass
+  resonance up for a louder wah.
+- ``filter_envelope.json`` with the keyboard set to a saw and decay
+  long — bouncy filtered notes.
+- ``vibrato.json`` — try cranking depth to 0.5 for tape-warble; rate
+  to 30 Hz for a metallic FM tone (the LFO is now operating at
+  audio-rate frequency modulation territory).
+- Chain: LFO → freq_cv on osc, and a second LFO → cutoff_cv on a
+  filter further down the chain. Two modulators at different rates.
+
+---
+
 ## 2026-05-13 (v0.2 ships) — Mixer module
 
 Closing v0.2 with the missing summing point. The mixer takes four audio

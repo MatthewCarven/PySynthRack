@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "next_id": 4,
+  "modules": [
+    {
+      "id": 1,
+      "type": "oscillator",
+      "name": "Tone",
+      "params": {"waveform": "sine", "freq": 220.0, "amp": 0.5}
+    },
+    {
+      "id": 2,
+      "type": "lfo",
+      "name": "Vibrato",
+      "params": {"waveform": "sine", "rate": 5.5, "depth": 0.04, "bipolar": true}
+    },
+    {
+      "id": 3,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {"gain": 0.7}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 2, "src_port": "cv", "dst_module_id": 1, "dst_port": "freq_cv"},
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 3, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [200, 80],
+      "2": [40, 260],
+      "3": [520, 80]
+    }
+  }
+}

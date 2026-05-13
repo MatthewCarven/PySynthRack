@@ -205,7 +205,7 @@ class NumpyBackend(AudioBackend):
 
     def _render_module(self, module, frames, buffers, patch):
         if module.TYPE == "oscillator":
-            return self._render_oscillator(module, frames)
+            return self._render_oscillator(module, frames, buffers, patch)
         if module.TYPE == "keyboard":
             return self._render_keyboard(module, frames)
         if module.TYPE == "filter":
@@ -232,17 +232,48 @@ class NumpyBackend(AudioBackend):
                 return buffers.get((cable.src_module_id, cable.src_port))
         return None
 
-    def _render_oscillator(self, module, frames: int) -> np.ndarray:
+    def _render_oscillator(self, module, frames: int, buffers=None, patch=None) -> np.ndarray:
+        """Audio-rate oscillator with optional per-sample CV modulation.
+
+        Two CV inputs (both optional):
+          - ``freq_cv`` follows 1V/octave convention: the effective
+            frequency for sample n is ``freq * 2 ** cv[n]``. Per-sample
+            evaluation makes this true FM/vibrato — phase is integrated
+            from the instantaneous frequency, not a block-rate scalar.
+          - ``amp_cv`` is linear multiplicative: ``amp * cv[n]``. A
+            unipolar LFO here gives AM; bipolar would invert phase.
+        """
         state = self._state.setdefault(module.id, {"phase": 0.0})
         freq = float(module.params.get("freq", 440.0))
         amp = float(module.params.get("amp", 0.5))
         waveform = str(module.params.get("waveform", "sine"))
         sr = self.sample_rate
 
-        phase_inc = freq / sr
+        # CV lookups are only available when the renderer is called
+        # via the topo walk (which always passes buffers + patch).
+        # Tests that drive the oscillator in isolation pass None.
+        if buffers is None or patch is None:
+            freq_cv = None
+            amp_cv = None
+        else:
+            freq_cv = self._input_buffer(patch, buffers, module.id, "freq_cv")
+            amp_cv = self._input_buffer(patch, buffers, module.id, "amp_cv")
+
         start_phase = state["phase"]
-        phases = (start_phase + np.arange(frames, dtype=np.float64) * phase_inc) % 1.0
-        state["phase"] = (start_phase + frames * phase_inc) % 1.0
+        if freq_cv is None:
+            # Fast path: constant frequency, vectorized phase ramp.
+            phase_inc = freq / sr
+            phases = (start_phase + np.arange(frames, dtype=np.float64) * phase_inc) % 1.0
+            state["phase"] = (start_phase + frames * phase_inc) % 1.0
+        else:
+            # Per-sample frequency from CV. Integrate phase one sample at
+            # a time — cheap in numpy via cumsum of per-sample increments.
+            inst_freq = freq * np.power(2.0, freq_cv.astype(np.float64))
+            inst_inc = inst_freq / sr
+            # The first sample uses start_phase; subsequent samples add
+            # the per-sample increment. ``cumsum`` gives the running total.
+            phases = (start_phase + np.cumsum(inst_inc)) % 1.0
+            state["phase"] = float(phases[-1])
 
         if waveform == "sine":
             wave = np.sin(2.0 * np.pi * phases)
@@ -255,7 +286,12 @@ class NumpyBackend(AudioBackend):
         else:
             wave = np.zeros(frames, dtype=np.float64)
 
-        return (wave * amp).astype(np.float32)
+        wave = wave * amp
+        if amp_cv is not None:
+            wave = wave * amp_cv.astype(np.float64)
+
+        return wave.astype(np.float32)
+
 
     # ----- keyboard rendering ---------------------------------------------
 
@@ -358,6 +394,14 @@ class NumpyBackend(AudioBackend):
         mode = str(module.params.get("mode", "lowpass"))
         cutoff = float(module.params.get("cutoff", 1000.0))
         q = float(module.params.get("resonance", 0.707))
+
+        # CV-modulate the cutoff. 1V/octave: ``cutoff *= 2 ** mean(cv)``.
+        # Block-mean keeps the biquad coefficient recomputation to one
+        # pass per block; audio-rate cutoff mod would need per-sample
+        # coefs (~9x cost in this tight scalar loop).
+        cutoff_cv = self._input_buffer(patch, buffers, module.id, "cutoff_cv")
+        if cutoff_cv is not None and cutoff_cv.size > 0:
+            cutoff = cutoff * float(2.0 ** float(np.mean(cutoff_cv)))
 
         sr = self.sample_rate
         # Clamp to a stable range. Above 0.45*sr the filter goes wild.

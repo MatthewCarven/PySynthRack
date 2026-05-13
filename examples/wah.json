@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    {
+      "id": 1,
+      "type": "keyboard",
+      "name": "Keyboard",
+      "params": {"octave": 3, "waveform": "saw", "volume": 0.5}
+    },
+    {
+      "id": 2,
+      "type": "lfo",
+      "name": "Wah LFO",
+      "params": {"waveform": "sine", "rate": 1.5, "depth": 1.5, "bipolar": true}
+    },
+    {
+      "id": 3,
+      "type": "filter",
+      "name": "Wah Filter",
+      "params": {"mode": "bandpass", "cutoff": 800.0, "resonance": 4.0}
+    },
+    {
+      "id": 4,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {"gain": 0.8}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 3, "dst_port": "in"},
+    {"src_module_id": 2, "src_port": "cv", "dst_module_id": 3, "dst_port": "cutoff_cv"},
+    {"src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 60],
+      "2": [40, 320],
+      "3": [360, 180],
+      "4": [680, 180]
+    }
+  }
+}

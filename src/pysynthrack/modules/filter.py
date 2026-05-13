@@ -38,5 +38,12 @@ class Filter(Module):
         "cutoff": 1000.0,
         "resonance": 0.707,
     }
-    INPUT_PORTS = [Port("in", "in", "audio")]
+    INPUT_PORTS = [
+        Port("in", "in", "audio"),
+        # Cutoff CV: 1 volt = 1 octave. ``cutoff`` becomes
+        # ``cutoff * 2 ** mean(cv_block)`` when this is patched. Mean
+        # over the block keeps coefficient recomputation cheap; for
+        # audio-rate cutoff modulation we'd need per-sample coefs.
+        Port("cutoff_cv", "in", "cv"),
+    ]
     OUTPUT_PORTS = [Port("out", "out", "audio")]

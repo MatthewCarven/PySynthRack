@@ -46,7 +46,10 @@ class TestFilterModel:
         f = patch.add_module("filter")
         assert isinstance(f, Filter)
         assert f.params == {"mode": "lowpass", "cutoff": 1000.0, "resonance": 0.707}
-        assert [p.name for p in f.input_ports] == ["in"]
+        # v0.3: filter exposes audio in + an optional cutoff CV input.
+        assert [p.name for p in f.input_ports] == ["in", "cutoff_cv"]
+        cv_port = next(p for p in f.input_ports if p.name == "cutoff_cv")
+        assert cv_port.signal_kind == "cv"
         assert [p.name for p in f.output_ports] == ["out"]
 
     def test_modes_constant_matches_defaults(self):
