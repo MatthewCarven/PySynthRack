@@ -85,3 +85,65 @@ def test_topological_sort_handles_disconnected_modules():
     # All three modules should appear in the topo order even though osc2 is
     # disconnected.
     assert len(backend._topo_order) == 3
+
+
+def test_compile_drops_state_when_module_type_changes():
+    """Regression: opening a second patch that reuses module IDs for
+    different types would leak the first patch's state into the second
+    patch's renderer (e.g. oscillator phase dict surviving into the
+    keyboard renderer, which then KeyError'd on ``state["voices"]``)."""
+    import pysynthrack.modules  # noqa: F401
+    from pysynthrack.audio.numpy_backend import NumpyBackend
+    from pysynthrack.core import Patch
+
+    backend = NumpyBackend(sample_rate=44100, block_size=64)
+
+    # Patch A: id=1 is an oscillator. Drive it so it accumulates state.
+    patch_a = Patch()
+    osc = patch_a.add_module("oscillator")
+    out_a = patch_a.add_module("speaker_output")
+    patch_a.connect(osc.id, "out", out_a.id, "in")
+    backend.compile(patch_a)
+    backend._render_oscillator(osc, 64)
+    assert "phase" in backend._state[osc.id]
+
+    # Patch B: id=1 is now a keyboard (same id, different type). Compile
+    # must drop the stale oscillator state — otherwise the keyboard
+    # renderer reads ``state["voices"]`` from {"phase": …} and crashes.
+    patch_b = Patch()
+    kb = patch_b.add_module("keyboard")
+    out_b = patch_b.add_module("speaker_output")
+    patch_b.connect(kb.id, "out", out_b.id, "in")
+    assert kb.id == osc.id, "test relies on the id collision"
+    backend.compile(patch_b)
+
+    # State for that id should either be gone or already keyboard-shaped.
+    state_after = backend._state.get(kb.id)
+    assert state_after is None or "voices" in state_after
+
+    # And rendering must not raise.
+    result = backend._render_keyboard(kb, 64)
+    assert "out" in result and "gate" in result
+
+
+def test_compile_preserves_state_when_type_stays():
+    """Compile across an unchanged module type should preserve continuity
+    (oscillator phase carries forward across cable adds, no clicks)."""
+    import pysynthrack.modules  # noqa: F401
+    from pysynthrack.audio.numpy_backend import NumpyBackend
+    from pysynthrack.core import Patch
+
+    backend = NumpyBackend(sample_rate=44100, block_size=64)
+    patch = Patch()
+    osc = patch.add_module("oscillator")
+    out = patch.add_module("speaker_output")
+    patch.connect(osc.id, "out", out.id, "in")
+
+    backend.compile(patch)
+    backend._render_oscillator(osc, 64)
+    phase_before = backend._state[osc.id]["phase"]
+    assert phase_before != 0.0  # advanced past origin
+
+    # Recompile (e.g. user added another cable) — phase must survive.
+    backend.compile(patch)
+    assert backend._state[osc.id]["phase"] == phase_before

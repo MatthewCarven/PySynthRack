@@ -45,6 +45,13 @@ class NumpyBackend(AudioBackend):
         self._patch: Patch | None = None
         self._topo_order: list[int] = []
         self._state: dict[int, dict[str, Any]] = {}
+        # Parallel map from module_id → module TYPE that owned the state.
+        # Used in compile() to discard state when a patch swap reuses the
+        # same id for a different module type (e.g. patch A id=1 is an
+        # oscillator, patch B id=1 is a keyboard). Without this guard the
+        # oscillator's phase dict would leak into the keyboard renderer
+        # and KeyError on a missing schema key.
+        self._state_types: dict[int, str] = {}
         self._stream: Any = None
         # GUI thread writes the patch reference; audio thread reads it.
         self._lock = threading.Lock()
@@ -61,8 +68,20 @@ class NumpyBackend(AudioBackend):
         with self._lock:
             self._patch = patch
             self._topo_order = self._topological_sort(patch)
-            live_ids = set(patch.modules.keys())
-            self._state = {k: v for k, v in self._state.items() if k in live_ids}
+            # Drop state for modules that no longer exist, or whose type
+            # has changed since the previous compile (the patch-swap case
+            # — two patches both numbering from id=1 with different module
+            # types in those slots).
+            live_types = {mid: m.TYPE for mid, m in patch.modules.items()}
+            for mid in list(self._state.keys()):
+                if mid not in live_types:
+                    self._state.pop(mid, None)
+                    self._state_types.pop(mid, None)
+                elif self._state_types.get(mid) != live_types[mid]:
+                    self._state.pop(mid, None)
+            # Record the current type for every live module so the next
+            # compile can compare against it.
+            self._state_types = dict(live_types)
 
     @staticmethod
     def _topological_sort(patch: Patch) -> list[int]:
