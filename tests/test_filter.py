@@ -31,8 +31,11 @@ def _render_blocks(backend: NumpyBackend, patch: Patch, blocks: int) -> np.ndarr
     osc = next(m for m in patch if m.TYPE == "oscillator")
     chunks = []
     for _ in range(blocks):
+        # Buffers are port-keyed since the multi-output Keyboard landed.
         buffers: dict = {}
-        buffers[osc.id] = backend._render_oscillator(osc, frames=backend.block_size)
+        buffers[(osc.id, "out")] = backend._render_oscillator(
+            osc, frames=backend.block_size
+        )
         chunks.append(backend._render_filter(filt, backend.block_size, buffers, patch))
     return np.concatenate(chunks)
 
@@ -165,7 +168,7 @@ class TestFilterStability:
             "sine", freq=1000.0, mode="lowpass", cutoff=500.0, q=5.0
         )
         backend.compile(patch)
-        buffers = {osc.id: np.zeros(512, dtype=np.float32)}
+        buffers = {(osc.id, "out"): np.zeros(512, dtype=np.float32)}
         out = backend._render_filter(filt, 512, buffers, patch)
         assert np.allclose(out, 0.0)
 
@@ -180,7 +183,7 @@ class TestFilterStability:
         backend.compile(patch)
         for _ in range(5):
             buffers: dict = {}
-            buffers[osc.id] = backend._render_oscillator(osc, 1024)
+            buffers[(osc.id, "out")] = backend._render_oscillator(osc, 1024)
             out = backend._render_filter(filt, 1024, buffers, patch)
         assert np.all(np.isfinite(out))
         assert np.max(np.abs(out)) < 50.0  # generous bound vs. unstable explosion

@@ -50,6 +50,11 @@ class Patch:
     modules: dict[int, Module] = field(default_factory=dict)
     cables: list[Cable] = field(default_factory=list)
     _next_id: int = 1
+    # Opaque UI metadata round-tripped through JSON. The audio model
+    # never reads this; the UI uses it for node positions, future view
+    # state, etc. Schema by convention:
+    #   {"node_positions": {"<module_id>": [x, y]}}
+    ui: dict[str, Any] = field(default_factory=dict)
 
     # ----- modules ---------------------------------------------------------
 
@@ -151,12 +156,17 @@ class Patch:
     # ----- serialization ---------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "version": 1,
             "next_id": self._next_id,
             "modules": [m.to_dict() for m in self.modules.values()],
             "cables": [c.to_dict() for c in self.cables],
         }
+        # Only emit the UI block when it has content. Keeps minimal patches
+        # tidy and makes the schema bump-free for callers that don't care.
+        if self.ui:
+            out["ui"] = dict(self.ui)
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Patch":
@@ -168,4 +178,8 @@ class Patch:
         # Preserve next_id so subsequent additions don't collide with reloaded ids.
         max_existing = max(patch.modules, default=0)
         patch._next_id = max(int(data.get("next_id", 0)), max_existing + 1)
+        # UI metadata is optional — older patches without it just work.
+        ui_data = data.get("ui")
+        if isinstance(ui_data, dict):
+            patch.ui = dict(ui_data)
         return patch

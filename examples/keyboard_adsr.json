@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "next_id": 6,
+  "modules": [
+    {
+      "id": 1,
+      "type": "keyboard",
+      "name": "Keyboard",
+      "params": {
+        "octave": 3,
+        "waveform": "saw",
+        "volume": 0.4
+      }
+    },
+    {
+      "id": 2,
+      "type": "filter",
+      "name": "LP Filter",
+      "params": {
+        "mode": "lowpass",
+        "cutoff": 1500.0,
+        "resonance": 2.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "adsr",
+      "name": "ADSR",
+      "params": {
+        "attack": 0.02,
+        "decay": 0.15,
+        "sustain": 0.5,
+        "release": 0.40
+      }
+    },
+    {
+      "id": 4,
+      "type": "vca",
+      "name": "VCA",
+      "params": {
+        "gain": 1.0
+      }
+    },
+    {
+      "id": 5,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "audio"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "gate",
+      "dst_module_id": 3,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "cv",
+      "dst_module_id": 4,
+      "dst_port": "cv"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "in"
+    }
+  ]
+}

@@ -46,7 +46,11 @@ class TestKeyboardModel:
         assert isinstance(kb, Keyboard)
         assert kb.params == {"octave": 4, "waveform": "sine", "volume": 0.5}
         assert kb.input_ports == []
-        assert [p.name for p in kb.output_ports] == ["out"]
+        # v0.2 (post-ADSR): keyboard exposes both audio out and gate out.
+        out_port_names = [p.name for p in kb.output_ports]
+        assert out_port_names == ["out", "gate"]
+        gate_port = next(p for p in kb.output_ports if p.name == "gate")
+        assert gate_port.signal_kind == "gate"
 
     def test_note_on_off_mutates_active_set(self):
         patch = Patch()
@@ -82,8 +86,10 @@ class TestKeyboardRendering:
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         backend.compile(patch)
         kb = next(m for m in patch if m.TYPE == "keyboard")
-        buf = backend._render_keyboard(kb, frames=512)
-        assert np.allclose(buf, 0.0)
+        result = backend._render_keyboard(kb, frames=512)
+        assert np.allclose(result["out"], 0.0)
+        # No notes held → gate should be low.
+        assert np.allclose(result["gate"], 0.0)
 
     def test_press_then_release_produces_then_decays_signal(self):
         """Press a key, render one block — should hear something. Release,
@@ -96,17 +102,17 @@ class TestKeyboardRendering:
         kb.note_on(69)  # A4 = 440 Hz
         # Render a few blocks so envelope reaches sustain.
         for _ in range(5):
-            buf = backend._render_keyboard(kb, frames=512)
+            buf = backend._render_keyboard(kb, frames=512)["out"]
         assert np.max(np.abs(buf)) > 0.1, "expected audible signal while held"
 
         kb.note_off(69)
         # Right after release, the envelope ramps down — still audible.
-        buf_release = backend._render_keyboard(kb, frames=512)
+        buf_release = backend._render_keyboard(kb, frames=512)["out"]
         assert np.max(np.abs(buf_release)) > 0.0
 
         # Far enough after release, voice should be reaped and silent.
         for _ in range(50):
-            buf_after = backend._render_keyboard(kb, frames=512)
+            buf_after = backend._render_keyboard(kb, frames=512)["out"]
         assert np.allclose(buf_after, 0.0), "voice should be silent after release"
 
     def test_polyphony_sums_voices(self):
@@ -118,12 +124,12 @@ class TestKeyboardRendering:
         # Warm up the envelope on one note.
         kb.note_on(60)
         for _ in range(20):
-            single = backend._render_keyboard(kb, frames=2048)
+            single = backend._render_keyboard(kb, frames=2048)["out"]
         single_rms = float(np.sqrt(np.mean(single**2)))
 
         kb.note_on(64)  # add another note — chord
         for _ in range(20):
-            both = backend._render_keyboard(kb, frames=2048)
+            both = backend._render_keyboard(kb, frames=2048)["out"]
         both_rms = float(np.sqrt(np.mean(both**2)))
 
         assert both_rms > single_rms, (
@@ -139,8 +145,30 @@ class TestKeyboardRendering:
         backend = NumpyBackend(sample_rate=44100, block_size=64)
         backend.compile(patch)
         kb.note_on(60)
-        buf = backend._render_keyboard(kb, frames=64)
+        buf = backend._render_keyboard(kb, frames=64)["out"]
         # First few samples should be small relative to peak.
         # (Attack is 5ms = 220 samples at 44.1k, so the first 64-sample
         # block should not have reached full amplitude.)
         assert abs(buf[0]) < 0.05
+
+    def test_gate_high_while_held_low_when_idle(self):
+        """Gate output reflects master-envelope semantics: high if any key
+        is held, low otherwise. Doesn't retrigger on additional keys."""
+        patch, kb = self._make_patch_with_keyboard()
+        backend = NumpyBackend(sample_rate=44100, block_size=128)
+        backend.compile(patch)
+
+        idle = backend._render_keyboard(kb, frames=128)["gate"]
+        assert np.allclose(idle, 0.0)
+
+        kb.note_on(60)
+        held = backend._render_keyboard(kb, frames=128)["gate"]
+        assert np.allclose(held, 1.0)
+
+        kb.note_on(64)  # add to held chord → gate stays high (no retrigger)
+        chord = backend._render_keyboard(kb, frames=128)["gate"]
+        assert np.allclose(chord, 1.0)
+
+        kb.all_notes_off()
+        released = backend._render_keyboard(kb, frames=128)["gate"]
+        assert np.allclose(released, 0.0)

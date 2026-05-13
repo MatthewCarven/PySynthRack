@@ -25,28 +25,19 @@ Living list of what's next. Edit freely.
 - [x] Keyboard module (computer keys → polyphonic notes, octave selector, waveform, volume) — 2026-05-12
 - [x] Filter module (RBJ biquad: LP / HP / BP, cutoff, resonance) — 2026-05-12
 - [x] Delete key removes selected cables/nodes — 2026-05-12
-- [ ] ADSR envelope module
-- [ ] LFO module
-- [ ] Mixer module (N inputs, gain per input, master out)
-- [ ] Gate/Trigger signal type so envelopes can be triggered
+- [x] Gate signal type wired through model + numpy backend — 2026-05-13
+- [x] ADSR envelope module (gate in, CV out, A/D/S/R params) — 2026-05-13
+- [x] VCA module (audio × CV multiplier so ADSR is actually audible) — 2026-05-13
+- [x] LFO module (sine / tri / square / saw / random; rate / depth / bipolar) — 2026-05-13
+- [x] Node positions persist in patch JSON (UI metadata block) — 2026-05-13
+- [x] Silent-exit on second Open fixed (orphan link cleanup in node editor) — 2026-05-13
+- [x] Mixer module (4 inputs, per-channel gain, master out) — 2026-05-13
+
+**v0.2 complete.**
 
 ## v0.3 — Routing
 
 - [ ] Splitter (one out → many)
 - [ ] Combiner (many → one, summed)
 - [ ] Linkwitz-Riley crossover (split at chosen Hz into low + high outputs)
-- [ ] Disk-writer output (write to WAV)
-
-## v0.4 — Playable
-
-- [ ] MIDI input (keyboard play)
-- [ ] Note→Voice routing
-- [ ] Polyphony (voice manager around the patch)
-
-## Maybe later
-
-- [ ] Pattern sequencer module
-- [ ] Sample player module
-- [ ] Module palette categories + search
-- [ ] Patch versioning / migration on load
-- [ ] CV (control-voltage) vs audio signal distinction in the type system
+- [ ] Disk-wr

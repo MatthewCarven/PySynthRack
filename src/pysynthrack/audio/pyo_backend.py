@@ -144,6 +144,45 @@ class PyoBackend(AudioBackend):
                 "PYSYNTHRACK_BACKEND=numpy for filtered sounds.",
             )
             return None
+        if module.TYPE == "adsr":
+            # pyo.Adsr exists but needs a trigger object derived from the
+            # keyboard gate, which the pyo path doesn't generate yet. Land
+            # this alongside keyboard support.
+            print(
+                "[PyoBackend] adsr module not yet supported in pyo "
+                "backend; the node will be silent. Run with "
+                "PYSYNTHRACK_BACKEND=numpy for envelopes.",
+            )
+            return None
+        if module.TYPE == "vca":
+            # VCA is conceptually just multiplication; once filter/keyboard
+            # land in pyo, this becomes a pyo.Sig(audio, mul=cv*gain).
+            print(
+                "[PyoBackend] vca module not yet supported in pyo "
+                "backend; the node will be silent. Run with "
+                "PYSYNTHRACK_BACKEND=numpy.",
+            )
+            return None
+        if module.TYPE == "lfo":
+            # pyo.Sine / pyo.LFO at low frequency would work but needs to
+            # output a Sig the VCA/Filter can read; lands with the rest of
+            # the CV-aware pyo build.
+            print(
+                "[PyoBackend] lfo module not yet supported in pyo "
+                "backend; the node will be silent. Run with "
+                "PYSYNTHRACK_BACKEND=numpy.",
+            )
+            return None
+        if module.TYPE == "mixer":
+            # Sum-with-trims is straightforward with pyo.Mix, but the
+            # upstream sources (keyboard, filter) aren't built in pyo
+            # yet. Lands with the rest of the audio-graph pyo work.
+            print(
+                "[PyoBackend] mixer module not yet supported in pyo "
+                "backend; the node will be silent. Run with "
+                "PYSYNTHRACK_BACKEND=numpy.",
+            )
+            return None
         return None
 
     def _build_oscillator(self, module) -> Any:

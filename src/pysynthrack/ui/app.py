@@ -25,6 +25,7 @@ from ..core.patch import Cable, Patch
 from ..io_patch import load_patch, save_patch
 from ..modules.filter import FILTER_MODES
 from ..modules.keyboard import Keyboard, midi_to_name, semitone_to_midi
+from ..modules.lfo import LFO_WAVEFORMS
 from ..modules.oscillator import WAVEFORMS
 
 
@@ -207,11 +208,12 @@ class App:
 
     # ----- node creation --------------------------------------------------
 
-    def _create_node_for_module(self, module) -> int:
-        pos = (self._next_node_pos[0], self._next_node_pos[1])
-        # Stagger downward and right for the next node.
-        self._next_node_pos[0] = (self._next_node_pos[0] + 220) % 800
-        self._next_node_pos[1] = (self._next_node_pos[1] + 60) % 500
+    def _create_node_for_module(self, module, pos=None) -> int:
+        if pos is None:
+            pos = (self._next_node_pos[0], self._next_node_pos[1])
+            # Stagger downward and right for the next node.
+            self._next_node_pos[0] = (self._next_node_pos[0] + 220) % 800
+            self._next_node_pos[1] = (self._next_node_pos[1] + 60) % 500
 
         with dpg.node(
             label=f"{module.name} (#{module.id})",
@@ -251,9 +253,14 @@ class App:
         user_data = (module.id, param_name)
 
         if param_name == "waveform":
+            # LFO has its own waveform list (includes "random"); other
+            # modules share the oscillator's list.
+            items = (
+                list(LFO_WAVEFORMS) if module.TYPE == "lfo" else list(WAVEFORMS)
+            )
             dpg.add_combo(
                 label=param_name,
-                items=list(WAVEFORMS),
+                items=items,
                 default_value=str(current),
                 width=120,
                 callback=self._on_param_changed,
@@ -318,12 +325,48 @@ class App:
                     callback=self._on_param_changed,
                     user_data=user_data,
                 )
-            elif param_name in {"amp", "gain", "volume"}:
+            elif param_name in {"attack", "decay", "release"}:
+                # Envelope time in seconds. Drag-float with a fine speed so
+                # users can dial in milliseconds; range 0..5 s covers
+                # everything from clicky to pad-style.
+                dpg.add_drag_float(
+                    label=param_name,
+                    default_value=float(current),
+                    speed=0.005,
+                    min_value=0.0,
+                    max_value=5.0,
+                    format="%.3f s",
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+            elif (
+                param_name in {"amp", "gain", "volume", "sustain", "depth", "master"}
+                or param_name.startswith("gain")
+            ):
+                # Mixer channel trims (gain1..gain4) and master live in
+                # the same 0..2 range as the lone "gain" param.
+                hot_range = param_name in {"gain", "master"} or param_name.startswith("gain")
                 dpg.add_slider_float(
                     label=param_name,
                     default_value=float(current),
                     min_value=0.0,
-                    max_value=1.0,
+                    max_value=2.0 if hot_range else 1.0,
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+            elif param_name == "rate":
+                # LFO rate. Drag-float covers tremolo (~3–8 Hz),
+                # slow filter sweeps (sub-Hz), and audio-rate FM (>20 Hz)
+                # without needing log scaling.
+                dpg.add_drag_float(
+                    label=param_name,
+                    default_value=float(current),
+                    speed=0.1,
+                    min_value=0.01,
+                    max_value=100.0,
+                    format="%.2f Hz",
                     width=140,
                     callback=self._on_param_changed,
                     user_data=user_data,
@@ -558,11 +601,31 @@ class App:
         if not path.lower().endswith(".json"):
             path += ".json"
         try:
+            self._capture_node_positions()
             save_patch(self.patch, path)
             self._set_status(f"Saved: {path}")
         except Exception as exc:
             traceback.print_exc()
             self._set_status(f"Save failed: {exc}")
+
+    def _capture_node_positions(self) -> None:
+        """Snapshot the current DPG node positions into ``patch.ui``.
+
+        Called just before save so the on-disk layout reflects whatever
+        the user dragged around. Stored as ``{"node_positions": {str(mid): [x, y]}}``
+        — module-id keys are JSON strings to keep the round-trip clean.
+        """
+        positions: dict[str, list[float]] = {}
+        for module_id, node_id in self._module_to_node.items():
+            try:
+                pos = dpg.get_item_pos(node_id)
+            except Exception:
+                continue
+            if pos is None:
+                continue
+            positions[str(module_id)] = [float(pos[0]), float(pos[1])]
+        if positions:
+            self.patch.ui["node_positions"] = positions
 
     def _load_patch_from(self, path: str) -> None:
         was_running = self.backend.is_running
@@ -573,8 +636,13 @@ class App:
         self._clear_editor()
         self.patch = load_patch(path)
 
+        saved_positions = self.patch.ui.get("node_positions", {})
         for module in self.patch:
-            self._create_node_for_module(module)
+            pos = saved_positions.get(str(module.id))
+            if pos is not None and isinstance(pos, (list, tuple)) and len(pos) == 2:
+                self._create_node_for_module(module, pos=(float(pos[0]), float(pos[1])))
+            else:
+                self._create_node_for_module(module)
 
         for cable in self.patch.cables:
             src_attr = self._port_to_attr.get((cable.src_module_id, cable.src_port, "out"))
@@ -591,14 +659,32 @@ class App:
     def _clear_editor(self) -> None:
         # Release held notes — the modules they belong to are about to vanish.
         self._all_keyboards_notes_off()
-        children = dpg.get_item_children(EDITOR_TAG, slot=1) or []
-        for child in children:
-            dpg.delete_item(child)
+        # DearPyGui's node editor keeps links in slot 0 and nodes in slot 1.
+        # Deleting only nodes leaves orphan links pointing at attribute IDs
+        # that no longer exist — and DPG hard-exits the next time it tries
+        # to render them, which is what caused the silent crash when opening
+        # a second patch on top of an existing one. ``children_only=True``
+        # blasts every slot at once, which is what we want here.
+        try:
+            dpg.delete_item(EDITOR_TAG, children_only=True)
+        except Exception:
+            # Defensive: if DPG raises (rare), fall back to the per-slot loop
+            # so a single bad child doesn't take the whole load down.
+            for slot in (0, 1):
+                children = dpg.get_item_children(EDITOR_TAG, slot=slot) or []
+                for child in children:
+                    try:
+                        dpg.delete_item(child)
+                    except Exception:
+                        pass
         self._node_to_module.clear()
         self._module_to_node.clear()
         self._attr_to_port.clear()
         self._port_to_attr.clear()
         self._link_to_cable.clear()
+        # Reset the cascade so a fresh-loaded patch (with no saved positions)
+        # starts laying out from the top-left again.
+        self._next_node_pos = [40, 40]
 
     def _recompile_if_running(self) -> None:
         if self.backend.is_running:

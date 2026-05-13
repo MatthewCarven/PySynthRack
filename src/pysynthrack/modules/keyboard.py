@@ -58,7 +58,13 @@ class Keyboard(Module):
         "volume": 0.5,
     }
     INPUT_PORTS: list[Port] = []
-    OUTPUT_PORTS = [Port("out", "out", "audio")]
+    # ``out`` carries the polyphonic audio. ``gate`` carries a single
+    # global note-on signal — high while any key is held, low otherwise —
+    # which is what an ADSR envelope listens to in master-envelope mode.
+    OUTPUT_PORTS = [
+        Port("out", "out", "audio"),
+        Port("gate", "out", "gate"),
+    ]
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)

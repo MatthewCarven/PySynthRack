@@ -52,3 +52,39 @@ def test_example_hello_sine_loads():
     # The example should be wired osc → speaker.
     types = sorted(m.TYPE for m in patch)
     assert types == ["oscillator", "speaker_output"]
+
+
+def test_ui_metadata_round_trips():
+    """Node positions in patch.ui should survive a JSON round-trip."""
+    patch = _make_patch()
+    patch.ui["node_positions"] = {"1": [120.5, 80.0], "2": [400.0, 220.5]}
+    text = patch_to_json(patch)
+    restored = patch_from_json(text)
+    assert restored.ui.get("node_positions") == {
+        "1": [120.5, 80.0],
+        "2": [400.0, 220.5],
+    }
+
+
+def test_ui_metadata_optional_for_legacy_patches():
+    """Patches without a ui block should still load (backward compat)."""
+    legacy = {
+        "version": 1,
+        "next_id": 3,
+        "modules": [
+            {"id": 1, "type": "oscillator", "name": "osc", "params": {}},
+            {"id": 2, "type": "speaker_output", "name": "out", "params": {}},
+        ],
+        "cables": [
+            {
+                "src_module_id": 1,
+                "src_port": "out",
+                "dst_module_id": 2,
+                "dst_port": "in",
+            }
+        ],
+    }
+    patch = Patch.from_dict(legacy)
+    assert patch.ui == {}
+    # And the round-trip should NOT inject an empty "ui" key.
+    assert "ui" not in patch.to_dict()

@@ -2,8 +2,14 @@
 
 Topologically walks the patch each audio callback and synthesizes samples
 into a stereo output buffer. Per-module persistent state (oscillator
-phase, keyboard voice envelopes, filter biquad memory) lives in
-``self._state``.
+phase, keyboard voice envelopes, filter biquad memory, ADSR phase) lives
+in ``self._state``.
+
+Buffer addressing is port-keyed: ``buffers[(module_id, port_name)]``.
+This lets modules emit multiple outputs (the Keyboard emits both an
+audio buffer and a gate buffer), and downstream lookups go through the
+specific cable's ``src_port`` and ``dst_port`` so a VCA can read its
+``audio`` and ``cv`` inputs by name.
 
 Anti-aliasing for saw/square/triangle is intentionally absent in v0.2 —
 PolyBLEP / wavetable upgrade planned. The naive shapes are fine for now,
@@ -122,19 +128,40 @@ class NumpyBackend(AudioBackend):
     def _audio_callback(self, outdata: np.ndarray, frames: int, time, status) -> None:
         if status:
             print(f"[NumpyBackend] stream status: {status}")
+        out = self.render_block(frames)
+        if out is None:
+            outdata.fill(0.0)
+            return
+        outdata[:] = out
+
+    def render_block(self, frames: int) -> np.ndarray | None:
+        """Pure-function rendering of one block. Used by the audio callback
+        and by offline tests (no PortAudio device needed)."""
         with self._lock:
             patch = self._patch
             order = list(self._topo_order)
         if patch is None:
-            outdata.fill(0.0)
-            return
+            return None
 
-        buffers: dict[int, np.ndarray] = {}
+        # Port-keyed buffer store. A single module may emit multiple outputs
+        # (Keyboard publishes both audio and gate).
+        buffers: dict[tuple[int, str], np.ndarray] = {}
         for module_id in order:
             module = patch.modules.get(module_id)
             if module is None:
                 continue
-            buffers[module_id] = self._render_module(module, frames, buffers, patch)
+            result = self._render_module(module, frames, buffers, patch)
+            if result is None:
+                continue
+            if isinstance(result, dict):
+                for port_name, buf in result.items():
+                    buffers[(module_id, port_name)] = buf
+            else:
+                # Legacy single-output convention. Stash under the module's
+                # first declared output port name (every existing single-out
+                # module declares exactly one).
+                if module.OUTPUT_PORTS:
+                    buffers[(module_id, module.OUTPUT_PORTS[0].name)] = result
 
         out = np.zeros((frames, 2), dtype=np.float32)
         for module in patch.modules.values():
@@ -143,7 +170,8 @@ class NumpyBackend(AudioBackend):
             incoming = patch.cables_into(module.id)
             if not incoming:
                 continue
-            src_buf = buffers.get(incoming[0].src_module_id)
+            cable = incoming[0]
+            src_buf = buffers.get((cable.src_module_id, cable.src_port))
             if src_buf is None:
                 continue
             gain = float(module.params.get("gain", 1.0))
@@ -152,20 +180,38 @@ class NumpyBackend(AudioBackend):
             out[:, 1] += mixed
 
         np.clip(out, -1.0, 1.0, out=out)
-        outdata[:] = out
+        return out
 
     # ----- per-module rendering -------------------------------------------
 
-    def _render_module(self, module, frames, buffers, patch) -> np.ndarray:
+    def _render_module(self, module, frames, buffers, patch):
         if module.TYPE == "oscillator":
             return self._render_oscillator(module, frames)
         if module.TYPE == "keyboard":
             return self._render_keyboard(module, frames)
         if module.TYPE == "filter":
             return self._render_filter(module, frames, buffers, patch)
+        if module.TYPE == "adsr":
+            return self._render_adsr(module, frames, buffers, patch)
+        if module.TYPE == "vca":
+            return self._render_vca(module, frames, buffers, patch)
+        if module.TYPE == "lfo":
+            return self._render_lfo(module, frames)
+        if module.TYPE == "mixer":
+            return self._render_mixer(module, frames, buffers, patch)
         if module.TYPE == "speaker_output":
-            return np.zeros(frames, dtype=np.float32)
-        return np.zeros(frames, dtype=np.float32)
+            return None  # sink — drained by the speaker pass
+        return None
+
+    # ----- input port helper ----------------------------------------------
+
+    @staticmethod
+    def _input_buffer(patch, buffers, dst_module_id: int, dst_port: str):
+        """Look up the buffer feeding a specific input port, or None."""
+        for cable in patch.cables_into(dst_module_id):
+            if cable.dst_port == dst_port:
+                return buffers.get((cable.src_module_id, cable.src_port))
+        return None
 
     def _render_oscillator(self, module, frames: int) -> np.ndarray:
         state = self._state.setdefault(module.id, {"phase": 0.0})
@@ -197,7 +243,15 @@ class NumpyBackend(AudioBackend):
     _KB_ATTACK_S = 0.005
     _KB_RELEASE_S = 0.020
 
-    def _render_keyboard(self, module, frames: int) -> np.ndarray:
+    def _render_keyboard(self, module, frames: int) -> dict[str, np.ndarray]:
+        """Returns both the audio buffer and a gate buffer.
+
+        Gate semantics: high while any key is held, low while idle. This is
+        the master-envelope mode — new notes pressed during a held chord do
+        not retrigger the gate. The per-voice attack/release ramps that
+        live inside this function prevent click on note-on/off; they are
+        independent of any external ADSR plugged into the gate.
+        """
         state = self._state.setdefault(module.id, {"voices": {}})
         voices: dict[int, dict] = state["voices"]
 
@@ -220,7 +274,7 @@ class NumpyBackend(AudioBackend):
         attack_samples = max(1, int(self._KB_ATTACK_S * sr))
         release_samples = max(1, int(self._KB_RELEASE_S * sr))
 
-        out = np.zeros(frames, dtype=np.float32)
+        audio = np.zeros(frames, dtype=np.float32)
 
         for note, voice in list(voices.items()):
             freq = midi_to_freq(note)
@@ -251,12 +305,17 @@ class NumpyBackend(AudioBackend):
             np.clip(env_ramp, 0.0, 1.0, out=env_ramp)
             voice["env"] = float(max(0.0, min(1.0, voice["env"] + frames * delta)))
 
-            out += (wave * env_ramp).astype(np.float32)
+            audio += (wave * env_ramp).astype(np.float32)
 
             if voice["releasing"] and voice["env"] <= 1e-5:
                 del voices[note]
 
-        return (out * volume).astype(np.float32)
+        audio *= volume
+
+        gate_value = 1.0 if active else 0.0
+        gate = np.full(frames, gate_value, dtype=np.float32)
+
+        return {"out": audio, "gate": gate}
 
     # ----- filter rendering ----------------------------------------------
 
@@ -269,10 +328,7 @@ class NumpyBackend(AudioBackend):
         we'd reach for scipy.signal.lfilter (chunk-safe via ``zi``); we
         avoid scipy as a dep until the perf actually pinches.
         """
-        incoming = patch.cables_into(module.id)
-        if not incoming:
-            return np.zeros(frames, dtype=np.float32)
-        src_buf = buffers.get(incoming[0].src_module_id)
+        src_buf = self._input_buffer(patch, buffers, module.id, "in")
         if src_buf is None:
             return np.zeros(frames, dtype=np.float32)
 
@@ -344,3 +400,194 @@ class NumpyBackend(AudioBackend):
         state["y2"] = y2
 
         return out
+
+    # ----- ADSR rendering -------------------------------------------------
+
+    # Gate is treated as "high" once it crosses this threshold; this gives
+    # us tolerance against fractional gate values (e.g. an LFO-style gate
+    # in some future patching) without false triggers on numerical noise.
+    _GATE_HIGH = 0.5
+
+    def _render_adsr(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Sample-accurate ADSR driven by a gate signal.
+
+        State machine: idle → attack → decay → sustain → release → idle.
+        - Attack ramps linearly from current level to 1.0 over ``attack``
+          seconds (so retriggering before full release picks up where the
+          envelope was, no click).
+        - Decay ramps from 1.0 to ``sustain`` over ``decay`` seconds.
+        - Sustain holds at ``sustain`` while the gate stays high.
+        - Release ramps from current level to 0.0 over ``release`` seconds.
+
+        All durations are clamped to a >= 1-sample minimum so any param
+        edits remain numerically stable.
+        """
+        gate_buf = self._input_buffer(patch, buffers, module.id, "gate")
+        sr = self.sample_rate
+
+        attack_s = max(0.0, float(module.params.get("attack", 0.01)))
+        decay_s = max(0.0, float(module.params.get("decay", 0.1)))
+        sustain = max(0.0, min(1.0, float(module.params.get("sustain", 0.7))))
+        release_s = max(0.0, float(module.params.get("release", 0.3)))
+
+        # Sample-step deltas. +inf when duration is zero would jump in one
+        # sample; clamp to a single-sample step so the state machine still
+        # advances cleanly.
+        attack_step = 1.0 / max(1.0, attack_s * sr)
+        decay_step = (1.0 - sustain) / max(1.0, decay_s * sr)
+        # Release step is recomputed at gate-fall using the level at the
+        # moment of release, so a release from mid-attack still takes the
+        # full release time.
+        state = self._state.setdefault(
+            module.id,
+            {"phase": "idle", "level": 0.0, "prev_gate": False, "release_step": 0.0},
+        )
+
+        out = np.empty(frames, dtype=np.float32)
+
+        for n in range(frames):
+            gate_high = (
+                bool(gate_buf[n] > self._GATE_HIGH) if gate_buf is not None else False
+            )
+
+            # Edge detection.
+            if gate_high and not state["prev_gate"]:
+                state["phase"] = "attack"
+            elif not gate_high and state["prev_gate"]:
+                # Gate fell — compute a release step that drops the *current*
+                # level over the release-time window. Avoids the snap that
+                # would happen if we used (sustain / time).
+                state["release_step"] = state["level"] / max(1.0, release_s * sr)
+                state["phase"] = "release"
+            state["prev_gate"] = gate_high
+
+            phase = state["phase"]
+            level = state["level"]
+
+            if phase == "attack":
+                level += attack_step
+                if level >= 1.0:
+                    level = 1.0
+                    state["phase"] = "decay"
+            elif phase == "decay":
+                level -= decay_step
+                if level <= sustain:
+                    level = sustain
+                    state["phase"] = "sustain"
+            elif phase == "sustain":
+                level = sustain
+            elif phase == "release":
+                level -= state["release_step"]
+                if level <= 0.0:
+                    level = 0.0
+                    state["phase"] = "idle"
+            # idle → level stays 0
+
+            state["level"] = level
+            out[n] = level
+
+        return out.astype(np.float32)
+
+    # ----- LFO rendering --------------------------------------------------
+
+    def _render_lfo(self, module, frames: int) -> np.ndarray:
+        """Low-frequency oscillator emitting a CV signal.
+
+        Phase state is per-module (so multiple LFOs in one patch don't
+        share state). ``random`` waveform is sample-and-hold: re-roll
+        once per cycle when the phase wraps past 1.0.
+        """
+        state = self._state.setdefault(
+            module.id, {"phase": 0.0, "random_value": 0.0}
+        )
+
+        waveform = str(module.params.get("waveform", "sine"))
+        rate = float(module.params.get("rate", 4.0))
+        depth = float(module.params.get("depth", 1.0))
+        bipolar = bool(module.params.get("bipolar", False))
+
+        sr = self.sample_rate
+        # Clamp to a safe range: 0.001 Hz floor (one cycle per ~17 min) and
+        # an effective ceiling at Nyquist/2 — beyond that an LFO is just
+        # an audio oscillator and the user should reach for ``oscillator``.
+        rate = max(0.001, min(rate, sr * 0.45))
+        depth = max(0.0, min(depth, 1.0))
+
+        phase_inc = rate / sr
+        start_phase = state["phase"]
+        phases = (start_phase + np.arange(frames, dtype=np.float64) * phase_inc) % 1.0
+        new_phase = (start_phase + frames * phase_inc) % 1.0
+
+        if waveform == "sine":
+            wave = np.sin(2.0 * np.pi * phases)
+        elif waveform == "triangle":
+            wave = 1.0 - 4.0 * np.abs(phases - 0.5)
+        elif waveform == "square":
+            wave = np.where(phases < 0.5, 1.0, -1.0)
+        elif waveform == "saw":
+            wave = 2.0 * phases - 1.0
+        elif waveform == "random":
+            # Sample-and-hold: detect each phase wrap and re-roll.
+            if frames > 0:
+                diffs = np.diff(np.concatenate([[start_phase], phases]))
+                wave = np.empty(frames, dtype=np.float64)
+                current = state["random_value"]
+                if start_phase == 0.0 and state["random_value"] == 0.0:
+                    current = float(np.random.uniform(-1.0, 1.0))
+                for i in range(frames):
+                    if diffs[i] < 0.0:
+                        current = float(np.random.uniform(-1.0, 1.0))
+                    wave[i] = current
+                state["random_value"] = current
+            else:
+                wave = np.zeros(0, dtype=np.float64)
+        else:
+            wave = np.zeros(frames, dtype=np.float64)
+
+        state["phase"] = new_phase
+
+        if not bipolar:
+            # Map [-1, 1] → [0, 1] (so a sine-LFO into a VCA gives a smooth
+            # tremolo rather than an inverted-phase audio fight).
+            wave = (wave + 1.0) * 0.5
+
+        return (wave * depth).astype(np.float32)
+
+    # ----- VCA rendering --------------------------------------------------
+
+    def _render_vca(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Voltage-controlled amplifier: out = audio * cv * gain.
+
+        Missing audio in → silence. Missing CV in → passthrough at unity
+        (so a VCA with no envelope still behaves like a gain stage).
+        """
+        audio_in = self._input_buffer(patch, buffers, module.id, "audio")
+        if audio_in is None:
+            return np.zeros(frames, dtype=np.float32)
+        cv_in = self._input_buffer(patch, buffers, module.id, "cv")
+        gain = float(module.params.get("gain", 1.0))
+        if cv_in is None:
+            return (audio_in * gain).astype(np.float32)
+        return (audio_in * cv_in * gain).astype(np.float32)
+
+    # ----- Mixer rendering ------------------------------------------------
+
+    def _render_mixer(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Sum four audio inputs with per-channel gain trims and a master.
+
+        Unconnected channels contribute silence. The signal is::
+
+            out = master * sum_i (gain_i * input_i)
+
+        Output is clipped at the speaker stage, not here — so a hot
+        mixer feeding a filter still has the headroom the filter needs.
+        """
+        master = float(module.params.get("master", 0.7))
+        out = np.zeros(frames, dtype=np.float32)
+        for idx in (1, 2, 3, 4):
+            buf = self._input_buffer(patch, buffers, module.id, f"in{idx}")
+            if buf is None:
+                continue
+            gain = float(module.params.get(f"gain{idx}", 1.0))
+            out += (buf * gain).astype(np.float32)
+        return (out * master).astype(np.float32)

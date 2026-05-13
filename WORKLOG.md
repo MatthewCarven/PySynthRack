@@ -4,6 +4,71 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-05-13 (v0.2 ships) — Mixer module
+
+Closing v0.2 with the missing summing point. The mixer takes four audio
+inputs, applies a per-channel gain trim, sums them, and applies a master
+gain before output.
+
+**Why fixed 4 channels, not N.** Flat JSON schema, predictable UI,
+covers the typical patches we'll build during v0.2 (layered oscillators,
+detuned saws, osc + sub + noise, dual-keyboard splits). The v0.3
+``Combiner`` will handle unbounded-N pure summation — different concept,
+no per-channel trims, lives in the routing-primitives bucket.
+
+**Cabling.** One cable per input jack — same rule as every other module.
+To bus more than four sources, chain mixers (mixer-of-mixers).
+
+**Param ranges.** Channel gains and master live in [0, 2], slightly hot
+so users can lift a quiet channel without leaving the slider. Speaker
+output still clips at ±1, so over-driving the mixer is a hard ceiling,
+not an explosion.
+
+**UI tweak.** The slider-float branch was extended so any param named
+``gain*`` or ``master`` lands in the 0-to-2 range. Previously only the
+bare name ``"gain"`` qualified, so mixer's ``gain1``-``gain4`` would
+have fallen into the generic drag-float.
+
+**Files added/changed:**
+
+- ``src/pysynthrack/modules/mixer.py`` (new) — Mixer class +
+  MIXER_INPUT_NAMES / MIXER_GAIN_NAMES tuples
+- ``src/pysynthrack/modules/__init__.py`` — register Mixer
+- ``src/pysynthrack/audio/numpy_backend.py`` — ``_render_mixer``
+  (port-lookup sum × master)
+- ``src/pysynthrack/audio/pyo_backend.py`` — friendly skip for mixer
+- ``src/pysynthrack/ui/app.py`` — slider widget covers any ``gain*`` /
+  ``master`` param at 0..2
+- ``examples/fat_saw.json`` — three saws detuned ±1.5 Hz around 220 Hz
+  through the mixer, then a lowpass with some resonance. Stored
+  positions show the mixer fanning into a single bus.
+- ``tests/test_mixer.py`` — 13 new tests (model, port shape, JSON
+  round-trip, signal-kind rejection, one-cable-per-jack, render
+  silence/sum/per-channel/master arithmetic, four-input contribution,
+  disconnected-channel silence, end-to-end render of fat_saw.json)
+
+**Verified in sandbox:** 95 tests pass (82 prior + 13 new).
+``examples/fat_saw.json`` loads, renders finite non-silent audio
+through the full chain, and the speaker-stage clip keeps output ≤ 1.0.
+
+**v0.2 SHIPPED.** Module library now: Oscillator, Keyboard, Filter,
+ADSR, VCA, LFO, Mixer, SpeakerOutput. Drag-cable UI, JSON save/load
+with node positions, CLI fallback, 95-test safety net. From oscillator-
+to-speaker on Friday to a playable subtractive synth one week later.
+
+**Pending from Matthew:**
+- Open ``examples/fat_saw.json``, hit Start audio, you should hear a
+  fat detuned sustained chord-ish drone. Sweep the filter cutoff
+  while it plays for the classic supersaw lead motion.
+- Try chaining mixers: 3 oscillators into mixer A, mixer A + keyboard
+  + LFO into mixer B for a polyphonic-with-pad layer.
+
+**Sandbox note:** continued to use bash heredoc + AST-parse-after-each-
+write for every file edit this pass; zero truncation incidents.
+Memory ``feedback_edit_tool_truncation.md`` covers the pattern.
+
+---
+
 ## 2026-05-12 — v0.1 scaffold
 
 **Decisions made with Matthew:**
@@ -123,30 +188,52 @@ A/W/S/E/D/F/T/G/Y/H/U/J = chromatic C through B in the selected octave; K onward
 
 ---
 
-## 2026-05-12 (v0.2 continued) — Delete key + Filter module
+## 2026-05-13 (v0.2 continued) — LFO + silent-exit bugfix + node positions
 
-**Delete key handler.** DPG's node editor doesn't ship with a default delete gesture; selection-on-click works but nothing was bound to Delete. Wired up a global key handler that finds selected cables and nodes via `get_selected_links` / `get_selected_nodes`, removes them from both the patch model and the editor, prunes the UI bookkeeping maps, and triggers a backend recompile. Backspace as a forgiving alternative. Status bar reports what was removed.
+Three changes landed together because Matthew flagged the bug and the
+missing positions while asking for the LFO; all three are small.
 
-**Filter module.** RBJ cookbook biquad — three modes (lowpass / highpass / bandpass), cutoff in Hz, resonance (Q). Numpy backend implements with a per-sample Python loop reading from upstream `buffers` (filter is a transform, unlike osc/keyboard which are sources). Performance: ~100µs per 512-sample block in pure Python, well under the 11.6ms callback budget at 44.1kHz. Filter cutoff clamps to (20 Hz, 0.45 × sr) and Q to (0.1, 20) to keep the IIR stable across live tweaks.
+**Silent-exit on second Open (the bug).** DearPyGui's node editor keeps
+its children in two slots: links in slot 0, nodes in slot 1. The
+original `_clear_editor` only iterated slot 1, so opening a second
+patch left orphan links pointing at attribute IDs from the now-deleted
+nodes. Next frame, DPG hard-exits the process with no Python traceback.
+Fix is one line: `dpg.delete_item(EDITOR_TAG, children_only=True)` —
+clears every slot, no orphans. Defensive fallback (per-slot loop) kept
+in case a future DPG release tightens the contract. While here, also
+reset `_next_node_pos = [40, 40]` on clear so a fresh-loaded patch
+without saved positions lays out from the top-left again.
 
-Why naive Python loop instead of scipy.signal.lfilter: avoiding scipy as a dep until we feel the perf pinch. Adding scipy is cheap if we ever need a deeper IIR chain.
+**Node positions persist in JSON.** Added an optional opaque `ui` dict
+to `Patch` (round-trips through `to_dict`/`from_dict`, omitted from
+output when empty so the schema bump is invisible to callers that don't
+use it). At save time `_capture_node_positions` snapshots
+`dpg.get_item_pos(node_id)` for every live node into
+`patch.ui["node_positions"]`. At load time `_load_patch_from` reads it
+back and passes it to `_create_node_for_module(module, pos=...)`. The
+staggered placement still kicks in for any module whose ID isn't in the
+map — so legacy patches and freshly-added nodes both behave sensibly.
+Positions are JSON-string-keyed (`{"1": [x, y]}`) because JSON object
+keys are strings; converted at the call site.
 
-Pyo backend logs "not yet supported" for filter — same pattern as keyboard. Will land alongside keyboard support in v0.3 once we have a user actually running pyo.
+**LFO module.** Output is CV (so it cannot be patched into audio
+inputs by mistake). Five waveforms: sine, triangle, square, saw,
+random (sample-and-hold — re-rolls on each phase wrap). Three params:
+`rate` (Hz, clamped 0.001 to 0.45·sr), `depth` (0–1), and `bipolar`
+(bool). Unipolar is the default: the wave is shaped into [0, depth]
+so an LFO → VCA chain produces tremolo without the inverted-phase
+audio fight you'd get from raw [-1, 1] modulation. Flip `bipolar` for
+pitch / cutoff sweeps once those become CV-routable.
 
-**Files added/changed:**
-
-- `src/pysynthrack/modules/filter.py` (new) — Filter class + FILTER_MODES tuple
-- `src/pysynthrack/audio/numpy_backend.py` — `_render_filter` with RBJ coefficients + per-sample IIR
-- `src/pysynthrack/audio/pyo_backend.py` — friendly skip for filter
-- `src/pysynthrack/ui/app.py` — `mode` combo, `cutoff` drag_float (20–20000), `resonance` slider (0.1–15)
-- `examples/keyboard_filtered.json` — saw keyboard → resonant LP at 1.2 kHz → speaker
-- `tests/test_filter.py` — 13 new tests: model shape, JSON round-trip, LP/HP/BP behaviour, stability with extreme Q, disconnected filter handling
-
-**Verified in sandbox:** 52 tests pass (24 v0.1 + 15 keyboard + 13 filter), UI imports cleanly, four module types registered (filter / keyboard / oscillator / speaker_output).
-
-**Pending from Matthew:** open `examples/keyboard_filtered.json`, start audio, play keys, drag the cutoff slider while playing — should hear the classic resonant filter sweep.
-
-**Open notes for next session:**
-- Naive saw/square/triangle alias above ~5 kHz in the numpy backend. Add PolyBLEP or wavetables when implementing the filter module in v0.2 — solves both problems with one design pass.
-- Pyo backend rebuilds the entire graph on every structural change (even adding one cable). Fine at this size; revisit if patches grow.
-- One-cable-per-input-port is enforced by the model. The combiner module (v0.3) is how users will sum multiple sources.
+**Architecture notes:**
+- LFO and Oscillator share the same per-block phase-accumulator
+  pattern; if we ship more waveform-driven modules a shared
+  `waveform_sample(phases, kind)` helper is worth pulling out. Held
+  off for now — three callers don't justify the indirection yet.
+- Pyo backend logs "not yet supported" for `lfo`, matching the
+  established pattern.
+- A CV mixer/multiplier would let LFO and ADSR co-modulate a VCA. It's
+  on the v0.3 list along with the rest of the routing primitives.
+- Filter has no CV input on its `cutoff` param yet, so LFO → filter
+  cutoff doesn't work in v0.2. Added "CV-modulatable params" to v0.3
+  T

@@ -7,9 +7,22 @@ exist should:
 
     import pysynthrack.modules  # noqa: F401
 """
+from .adsr import ADSR
 from .filter import Filter
 from .keyboard import Keyboard
+from .lfo import LFO
+from .mixer import Mixer
 from .oscillator import Oscillator
 from .output import SpeakerOutput
+from .vca import VCA
 
-__all__ = ["Filter", "Keyboard", "Oscillator", "SpeakerOutput"]
+__all__ = [
+    "ADSR",
+    "Filter",
+    "Keyboard",
+    "LFO",
+    "Mixer",
+    "Oscillator",
+    "SpeakerOutput",
+    "VCA",
+]
