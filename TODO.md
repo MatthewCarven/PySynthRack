@@ -35,9 +35,33 @@ Living list of what's next. Edit freely.
 
 **v0.2 complete.**
 
-## v0.3 — Routing
+## v0.3 — Routing & polish
 
-- [ ] Splitter (one out → many)
-- [ ] Combiner (many → one, summed)
-- [ ] Linkwitz-Riley crossover (split at chosen Hz into low + high outputs)
-- [ ] Disk-wr
+- [x] CV-modulatable params: `freq_cv` + `amp_cv` on Oscillator, `cutoff_cv` on Filter (1V/oct) — 2026-05-13
+- [x] Splitter — **not built (architecturally redundant)**. The Patch model already allows
+      multiple cables from a single output port; the numpy backend's port-keyed buffer cache
+      means any number of consumers reading `(src_id, src_port)` share the same array.
+      Just drag multiple cables from one output. — verified 2026-05-14
+- [x] Combiner (4 audio in → 1 audio out, plain sum, no per-channel gain) — 2026-05-14
+- [x] CVCombiner (4 CV in → 1 CV out, sum or average mode — lets LFO + ADSR both modulate the same param) — 2026-05-14
+- [x] Linkwitz-Riley crossover (LR4 = two cascaded biquads per branch; split at chosen Hz into low + high outputs) — 2026-05-14
+- [x] WAV disk-writer (records the master bus to a `.wav` while transport is running, queue-based to keep audio callback non-blocking) — 2026-05-14
+- [x] LFO.rate_cv (CV input on LFO rate — modulation matrix territory: one LFO modulates another's rate) — 2026-05-14
+
+**v0.3 complete.**
+
+## v0.4 — Performance & polyphony
+
+- [ ] MIDI input (mido + python-rtmidi)
+- [ ] Voice routing manager (multiple oscillators → polyphony per Keyboard voice)
+- [ ] PolyBLEP or wavetable anti-aliased osc shapes (replace naive saw/square)
+- [ ] CPU profile: pyo backend wired for the same modules so it's a drop-in fast path
+
+## Later / wishlist
+
+- [ ] Sample-and-hold module
+- [ ] Noise generator (white / pink)
+- [ ] Drum-friendly env (AD instead of ADSR)
+- [ ] Stereo-aware speaker module (pan / width)
+- [ ] Patch presets palette (factory + user banks)
+- [ ] Undo / redo on patch edits

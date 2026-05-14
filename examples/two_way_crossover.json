@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "next_id": 7,
+  "modules": [
+    {
+      "id": 1,
+      "type": "keyboard",
+      "name": "keyboard",
+      "params": {
+        "octave": 4,
+        "waveform": "saw",
+        "volume": 0.5
+      }
+    },
+    {
+      "id": 2,
+      "type": "crossover",
+      "name": "crossover",
+      "params": {
+        "frequency": 800.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "filter",
+      "name": "filter",
+      "params": {
+        "mode": "lowpass",
+        "cutoff": 500.0,
+        "resonance": 0.7
+      }
+    },
+    {
+      "id": 4,
+      "type": "filter",
+      "name": "filter",
+      "params": {
+        "mode": "bandpass",
+        "cutoff": 2400.0,
+        "resonance": 3.0
+      }
+    },
+    {
+      "id": 5,
+      "type": "mixer",
+      "name": "mixer",
+      "params": {
+        "gain1": 1.2,
+        "gain2": 0.7,
+        "gain3": 0.0,
+        "gain4": 0.0,
+        "master": 0.7
+      }
+    },
+    {
+      "id": 6,
+      "type": "speaker_output",
+      "name": "speaker_output",
+      "params": {
+        "gain": 1.0
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "low",
+      "dst_module_id": 3,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "high",
+      "dst_module_id": 4,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "in1"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "in2"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out",
+      "dst_module_id": 6,
+      "dst_port": "in"
+    }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [
+        40,
+        240
+      ],
+      "2": [
+        320,
+        240
+      ],
+      "3": [
+        600,
+        380
+      ],
+      "4": [
+        600,
+        100
+      ],
+      "5": [
+        880,
+        240
+      ],
+      "6": [
+        1160,
+        240
+      ]
+    }
+  }
+}

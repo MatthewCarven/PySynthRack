@@ -8,6 +8,10 @@ exist should:
     import pysynthrack.modules  # noqa: F401
 """
 from .adsr import ADSR
+from .combiner import Combiner
+from .crossover import Crossover
+from .cvcombiner import CVCombiner
+from .diskwriter import DiskWriter
 from .filter import Filter
 from .keyboard import Keyboard
 from .lfo import LFO
@@ -18,6 +22,10 @@ from .vca import VCA
 
 __all__ = [
     "ADSR",
+    "Combiner",
+    "Crossover",
+    "CVCombiner",
+    "DiskWriter",
     "Filter",
     "Keyboard",
     "LFO",

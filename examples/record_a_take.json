@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "next_id": 7,
+  "modules": [
+    {
+      "id": 1,
+      "type": "keyboard",
+      "name": "keyboard",
+      "params": {
+        "octave": 4,
+        "waveform": "saw",
+        "volume": 0.5
+      }
+    },
+    {
+      "id": 2,
+      "type": "adsr",
+      "name": "adsr",
+      "params": {
+        "attack": 0.02,
+        "decay": 0.2,
+        "sustain": 0.5,
+        "release": 0.4
+      }
+    },
+    {
+      "id": 3,
+      "type": "vca",
+      "name": "vca",
+      "params": {
+        "gain": 1.0
+      }
+    },
+    {
+      "id": 4,
+      "type": "filter",
+      "name": "filter",
+      "params": {
+        "mode": "lowpass",
+        "cutoff": 1500.0,
+        "resonance": 2.0
+      }
+    },
+    {
+      "id": 5,
+      "type": "speaker_output",
+      "name": "speaker_output",
+      "params": {
+        "gain": 0.9
+      }
+    },
+    {
+      "id": 6,
+      "type": "disk_writer",
+      "name": "disk_writer",
+      "params": {
+        "path": "take_01.wav",
+        "armed": true
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "audio"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "gate",
+      "dst_module_id": 2,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "cv",
+      "dst_module_id": 3,
+      "dst_port": "cv"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 6,
+      "dst_port": "in"
+    }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [
+        40,
+        200
+      ],
+      "2": [
+        40,
+        380
+      ],
+      "3": [
+        280,
+        200
+      ],
+      "4": [
+        520,
+        200
+      ],
+      "5": [
+        780,
+        100
+      ],
+      "6": [
+        780,
+        320
+      ]
+    }
+  }
+}

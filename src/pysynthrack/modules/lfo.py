@@ -3,7 +3,7 @@
 An LFO is shaped just like an oscillator but typically runs below the
 audible range and is used to modulate parameters or scale other signals.
 Patched into a VCA's CV input it gives tremolo; patched into a filter's
-cutoff (once filter has a CV port — a v0.3 upgrade) it gives wah.
+cutoff it gives wah.
 
 Output is signal-kind ``cv`` so it can plug into VCA.cv and future
 CV-modulatable ports, but cannot accidentally route to an audio input.
@@ -13,6 +13,12 @@ which is the natural shape for pitch / cutoff modulation. ``bipolar=
 False`` maps the same wave into the [0, depth] range — the right shape
 when feeding a VCA, since negative gain would invert the audio. Default
 is unipolar precisely so the LFO → VCA tremolo case "just works".
+
+CV inputs (v0.3):
+  * ``rate_cv``: 1V/octave on the rate. ``effective_rate = rate *
+    2 ** mean(rate_cv)`` per block. Lets a second LFO (or ADSR) drive
+    this LFO's frequency — proper modulation matrix territory:
+    accelerating wobble, envelope-swept vibrato, etc.
 """
 from __future__ import annotations
 
@@ -43,5 +49,9 @@ class LFO(Module):
         "depth": 1.0,
         "bipolar": False,
     }
-    INPUT_PORTS: list[Port] = []
+    INPUT_PORTS = [
+        # 1V/oct on the rate. Block-mean evaluation (same trade-off as
+        # filter cutoff_cv): cheap, fine for sub-audio modulators.
+        Port("rate_cv", "in", "cv"),
+    ]
     OUTPUT_PORTS = [Port("cv", "out", "cv")]

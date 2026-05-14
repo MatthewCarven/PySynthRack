@@ -25,6 +25,7 @@ from ..core.patch import Cable, Patch
 from ..io_patch import load_patch, save_patch
 from ..modules.filter import FILTER_MODES
 from ..modules.keyboard import Keyboard, midi_to_name, semitone_to_midi
+from ..modules.cvcombiner import CVCOMBINER_MODES
 from ..modules.lfo import LFO_WAVEFORMS
 from ..modules.oscillator import WAVEFORMS
 
@@ -269,9 +270,15 @@ class App:
             return
 
         if param_name == "mode":
+            # ``mode`` means different things on different modules:
+            # filter picks LP/HP/BP, cv_combiner picks sum/average.
+            if module.TYPE == "cv_combiner":
+                items = list(CVCOMBINER_MODES)
+            else:
+                items = list(FILTER_MODES)
             dpg.add_combo(
                 label=param_name,
-                items=list(FILTER_MODES),
+                items=items,
                 default_value=str(current),
                 width=120,
                 callback=self._on_param_changed,
@@ -304,7 +311,7 @@ class App:
 
         if isinstance(default, (int, float)):
             # Pick a sane range per param. Tweak as more module types arrive.
-            if param_name in {"freq", "cutoff"}:
+            if param_name in {"freq", "cutoff", "frequency"}:
                 dpg.add_drag_float(
                     label=param_name,
                     default_value=float(current),

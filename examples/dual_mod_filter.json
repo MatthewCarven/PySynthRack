@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "next_id": 7,
+  "modules": [
+    {
+      "id": 1,
+      "type": "keyboard",
+      "name": "keyboard",
+      "params": {
+        "octave": 4,
+        "waveform": "saw",
+        "volume": 0.6
+      }
+    },
+    {
+      "id": 2,
+      "type": "lfo",
+      "name": "lfo",
+      "params": {
+        "waveform": "sine",
+        "rate": 1.5,
+        "depth": 0.5,
+        "bipolar": true
+      }
+    },
+    {
+      "id": 3,
+      "type": "adsr",
+      "name": "adsr",
+      "params": {
+        "attack": 0.01,
+        "decay": 0.3,
+        "sustain": 0.3,
+        "release": 0.4
+      }
+    },
+    {
+      "id": 4,
+      "type": "cv_combiner",
+      "name": "cv_combiner",
+      "params": {
+        "mode": "sum"
+      }
+    },
+    {
+      "id": 5,
+      "type": "filter",
+      "name": "filter",
+      "params": {
+        "mode": "lowpass",
+        "cutoff": 700.0,
+        "resonance": 4.0
+      }
+    },
+    {
+      "id": 6,
+      "type": "speaker_output",
+      "name": "speaker_output",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "gate",
+      "dst_module_id": 3,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "cv",
+      "dst_module_id": 4,
+      "dst_port": "in1"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "cv",
+      "dst_module_id": 4,
+      "dst_port": "in2"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "cutoff_cv"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out",
+      "dst_module_id": 6,
+      "dst_port": "in"
+    }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [
+        40,
+        240
+      ],
+      "2": [
+        40,
+        40
+      ],
+      "3": [
+        40,
+        440
+      ],
+      "4": [
+        320,
+        240
+      ],
+      "5": [
+        600,
+        240
+      ],
+      "6": [
+        880,
+        240
+      ]
+    }
+  }
+}

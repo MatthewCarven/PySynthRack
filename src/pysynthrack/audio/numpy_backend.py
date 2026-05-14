@@ -17,7 +17,9 @@ and the filter helps mask aliasing artefacts above its cutoff.
 """
 from __future__ import annotations
 
+import queue
 import threading
+import wave
 from typing import Any
 
 import numpy as np
@@ -74,11 +76,19 @@ class NumpyBackend(AudioBackend):
             # types in those slots).
             live_types = {mid: m.TYPE for mid, m in patch.modules.items()}
             for mid in list(self._state.keys()):
-                if mid not in live_types:
+                drop = (
+                    mid not in live_types
+                    or self._state_types.get(mid) != live_types[mid]
+                )
+                if drop:
+                    # If this state belongs to a disk_writer, close
+                    # its file/thread before discarding it — otherwise
+                    # the worker would leak across recompiles.
+                    if self._state_types.get(mid) == "disk_writer":
+                        self._close_disk_writer_state(self._state[mid])
                     self._state.pop(mid, None)
-                    self._state_types.pop(mid, None)
-                elif self._state_types.get(mid) != live_types[mid]:
-                    self._state.pop(mid, None)
+                    if mid not in live_types:
+                        self._state_types.pop(mid, None)
             # Record the current type for every live module so the next
             # compile can compare against it.
             self._state_types = dict(live_types)
@@ -134,6 +144,11 @@ class NumpyBackend(AudioBackend):
         finally:
             self._stream = None
             self._running = False
+        # Close any active disk writers so their WAV headers get
+        # finalized when the user hits Stop on the transport.
+        for mid in list(self._state.keys()):
+            if self._state_types.get(mid) == "disk_writer":
+                self._close_disk_writer_state(self._state[mid])
 
     # ----- live params -----------------------------------------------------
 
@@ -215,9 +230,17 @@ class NumpyBackend(AudioBackend):
         if module.TYPE == "vca":
             return self._render_vca(module, frames, buffers, patch)
         if module.TYPE == "lfo":
-            return self._render_lfo(module, frames)
+            return self._render_lfo(module, frames, buffers, patch)
         if module.TYPE == "mixer":
             return self._render_mixer(module, frames, buffers, patch)
+        if module.TYPE == "combiner":
+            return self._render_combiner(module, frames, buffers, patch)
+        if module.TYPE == "cv_combiner":
+            return self._render_cv_combiner(module, frames, buffers, patch)
+        if module.TYPE == "crossover":
+            return self._render_crossover(module, frames, buffers, patch)
+        if module.TYPE == "disk_writer":
+            return self._render_disk_writer(module, frames, buffers, patch)
         if module.TYPE == "speaker_output":
             return None  # sink — drained by the speaker pass
         return None
@@ -553,7 +576,7 @@ class NumpyBackend(AudioBackend):
 
     # ----- LFO rendering --------------------------------------------------
 
-    def _render_lfo(self, module, frames: int) -> np.ndarray:
+    def _render_lfo(self, module, frames: int, buffers=None, patch=None) -> np.ndarray:
         """Low-frequency oscillator emitting a CV signal.
 
         Phase state is per-module (so multiple LFOs in one patch don't
@@ -573,6 +596,15 @@ class NumpyBackend(AudioBackend):
         # Clamp to a safe range: 0.001 Hz floor (one cycle per ~17 min) and
         # an effective ceiling at Nyquist/2 — beyond that an LFO is just
         # an audio oscillator and the user should reach for ``oscillator``.
+        # CV-modulate the rate: 1V/octave, block-mean.
+        # ``buffers``/``patch`` are None when called from unit tests in
+        # isolation, in which case rate_cv is unavailable — same back-
+        # compat trick we use on _render_oscillator.
+        if buffers is not None and patch is not None:
+            rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
+            if rate_cv is not None and rate_cv.size > 0:
+                rate = rate * float(2.0 ** float(np.mean(rate_cv)))
+
         rate = max(0.001, min(rate, sr * 0.45))
         depth = max(0.0, min(depth, 1.0))
 
@@ -654,3 +686,217 @@ class NumpyBackend(AudioBackend):
             gain = float(module.params.get(f"gain{idx}", 1.0))
             out += (buf * gain).astype(np.float32)
         return (out * master).astype(np.float32)
+
+    # ----- Combiner rendering ---------------------------------------------
+
+    def _render_combiner(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Sum up to four audio inputs at unit gain. Unconnected = silence."""
+        out = np.zeros(frames, dtype=np.float32)
+        for idx in (1, 2, 3, 4):
+            buf = self._input_buffer(patch, buffers, module.id, f"in{idx}")
+            if buf is None:
+                continue
+            out += buf.astype(np.float32)
+        return out
+
+    # ----- CVCombiner rendering -------------------------------------------
+
+    def _render_cv_combiner(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Combine up to four CV signals into one.
+
+        ``mode="sum"`` (default) is the analog-modular convention — stacks
+        adding linearly. ``mode="average"`` divides by the *connected*
+        input count so blending modulators doesn't double the depth.
+        """
+        mode = str(module.params.get("mode", "sum"))
+        out = np.zeros(frames, dtype=np.float32)
+        count = 0
+        for idx in (1, 2, 3, 4):
+            buf = self._input_buffer(patch, buffers, module.id, f"in{idx}")
+            if buf is None:
+                continue
+            out += buf.astype(np.float32)
+            count += 1
+        if mode == "average" and count > 0:
+            out /= float(count)
+        return out
+
+    # ----- Crossover rendering --------------------------------------------
+
+    def _render_crossover(self, module, frames: int, buffers, patch) -> dict:
+        """Linkwitz-Riley 4th-order two-way split: low + high outputs.
+
+        Two cascaded Butterworth (Q=1/√2) biquads per branch. The shared
+        ``a`` denominator and the LP/HP numerators are the standard RBJ
+        cookbook coefficients; running them in series gives the LR4
+        magnitude response (-24 dB/oct, -6 dB at corner) and the phase
+        relationship that lets low+high sum back to a flat magnitude.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in")
+        if src is None:
+            zero = np.zeros(frames, dtype=np.float32)
+            return {"low": zero, "high": zero.copy()}
+
+        state = self._state.setdefault(
+            module.id,
+            {
+                "lp1_x1": 0.0, "lp1_x2": 0.0, "lp1_y1": 0.0, "lp1_y2": 0.0,
+                "lp2_x1": 0.0, "lp2_x2": 0.0, "lp2_y1": 0.0, "lp2_y2": 0.0,
+                "hp1_x1": 0.0, "hp1_x2": 0.0, "hp1_y1": 0.0, "hp1_y2": 0.0,
+                "hp2_x1": 0.0, "hp2_x2": 0.0, "hp2_y1": 0.0, "hp2_y2": 0.0,
+            },
+        )
+
+        sr = self.sample_rate
+        freq = float(module.params.get("frequency", 1000.0))
+        freq = max(20.0, min(freq, sr * 0.45))
+        q = 1.0 / (2.0 ** 0.5)  # Butterworth -> Q ≈ 0.7071
+
+        w0 = 2.0 * np.pi * freq / sr
+        cos_w0 = float(np.cos(w0))
+        sin_w0 = float(np.sin(w0))
+        alpha = sin_w0 / (2.0 * q)
+        a0 = 1.0 + alpha
+        a1n = (-2.0 * cos_w0) / a0
+        a2n = (1.0 - alpha) / a0
+
+        lp_b0 = ((1.0 - cos_w0) / 2.0) / a0
+        lp_b1 = (1.0 - cos_w0) / a0
+        lp_b2 = ((1.0 - cos_w0) / 2.0) / a0
+        hp_b0 = ((1.0 + cos_w0) / 2.0) / a0
+        hp_b1 = (-(1.0 + cos_w0)) / a0
+        hp_b2 = ((1.0 + cos_w0) / 2.0) / a0
+
+        low = np.empty(frames, dtype=np.float32)
+        high = np.empty(frames, dtype=np.float32)
+
+        lp1_x1 = state["lp1_x1"]; lp1_x2 = state["lp1_x2"]
+        lp1_y1 = state["lp1_y1"]; lp1_y2 = state["lp1_y2"]
+        lp2_x1 = state["lp2_x1"]; lp2_x2 = state["lp2_x2"]
+        lp2_y1 = state["lp2_y1"]; lp2_y2 = state["lp2_y2"]
+        hp1_x1 = state["hp1_x1"]; hp1_x2 = state["hp1_x2"]
+        hp1_y1 = state["hp1_y1"]; hp1_y2 = state["hp1_y2"]
+        hp2_x1 = state["hp2_x1"]; hp2_x2 = state["hp2_x2"]
+        hp2_y1 = state["hp2_y1"]; hp2_y2 = state["hp2_y2"]
+
+        for n in range(frames):
+            x = float(src[n])
+            # LP stage 1
+            y = lp_b0 * x + lp_b1 * lp1_x1 + lp_b2 * lp1_x2 - a1n * lp1_y1 - a2n * lp1_y2
+            lp1_x2 = lp1_x1; lp1_x1 = x
+            lp1_y2 = lp1_y1; lp1_y1 = y
+            # LP stage 2
+            z = lp_b0 * y + lp_b1 * lp2_x1 + lp_b2 * lp2_x2 - a1n * lp2_y1 - a2n * lp2_y2
+            lp2_x2 = lp2_x1; lp2_x1 = y
+            lp2_y2 = lp2_y1; lp2_y1 = z
+            low[n] = z
+            # HP stage 1
+            u = hp_b0 * x + hp_b1 * hp1_x1 + hp_b2 * hp1_x2 - a1n * hp1_y1 - a2n * hp1_y2
+            hp1_x2 = hp1_x1; hp1_x1 = x
+            hp1_y2 = hp1_y1; hp1_y1 = u
+            # HP stage 2
+            v = hp_b0 * u + hp_b1 * hp2_x1 + hp_b2 * hp2_x2 - a1n * hp2_y1 - a2n * hp2_y2
+            hp2_x2 = hp2_x1; hp2_x1 = u
+            hp2_y2 = hp2_y1; hp2_y1 = v
+            high[n] = v
+
+        state["lp1_x1"] = lp1_x1; state["lp1_x2"] = lp1_x2
+        state["lp1_y1"] = lp1_y1; state["lp1_y2"] = lp1_y2
+        state["lp2_x1"] = lp2_x1; state["lp2_x2"] = lp2_x2
+        state["lp2_y1"] = lp2_y1; state["lp2_y2"] = lp2_y2
+        state["hp1_x1"] = hp1_x1; state["hp1_x2"] = hp1_x2
+        state["hp1_y1"] = hp1_y1; state["hp1_y2"] = hp1_y2
+        state["hp2_x1"] = hp2_x1; state["hp2_x2"] = hp2_x2
+        state["hp2_y1"] = hp2_y1; state["hp2_y2"] = hp2_y2
+
+        return {"low": low, "high": high}
+
+    # ----- DiskWriter rendering -------------------------------------------
+
+    def _render_disk_writer(self, module, frames: int, buffers, patch):
+        """Enqueue blocks of audio for the worker thread to write to disk."""
+        state = self._state.setdefault(
+            module.id,
+            {
+                "queue": None,
+                "thread": None,
+                "stop_event": None,
+                "path": None,
+                "dropped_blocks": 0,
+            },
+        )
+
+        armed = bool(module.params.get("armed", True))
+        if not armed:
+            # Tear down so re-arming starts a fresh take with a fresh file.
+            self._close_disk_writer_state(state)
+            return None
+
+        src = self._input_buffer(patch, buffers, module.id, "in")
+        if src is None:
+            return None
+
+        path = str(module.params.get("path", "recording.wav"))
+        if state["queue"] is None or state["path"] != path:
+            # First arrival, or path changed — (re)start the writer.
+            self._close_disk_writer_state(state)
+            state["path"] = path
+            state["queue"] = queue.Queue(maxsize=64)
+            state["stop_event"] = threading.Event()
+            t = threading.Thread(
+                target=self._disk_writer_worker,
+                args=(state["queue"], state["stop_event"], path, self.sample_rate),
+                daemon=True,
+                name=f"DiskWriter-{module.id}",
+            )
+            state["thread"] = t
+            t.start()
+
+        # Non-blocking enqueue. Drop on backlog rather than glitch the
+        # audio thread; bumped counter is visible in tests / debug.
+        try:
+            state["queue"].put_nowait(src.astype(np.float32).copy())
+        except queue.Full:
+            state["dropped_blocks"] += 1
+
+        return None  # sink
+
+    def _close_disk_writer_state(self, state) -> None:
+        """Signal the writer thread to drain and join. Idempotent."""
+        ev = state.get("stop_event")
+        if ev is not None:
+            ev.set()
+        t = state.get("thread")
+        if t is not None:
+            t.join(timeout=2.0)
+        state["queue"] = None
+        state["thread"] = None
+        state["stop_event"] = None
+        state["path"] = None
+
+    @staticmethod
+    def _disk_writer_worker(q, stop_event, path, sample_rate) -> None:
+        """Write queued blocks to a mono 16-bit WAV until stop is set.
+
+        On stop we drain anything still in the queue before closing so
+        the final block of a take always lands.
+        """
+        try:
+            wf = wave.open(path, "wb")
+        except Exception as exc:  # pragma: no cover - filesystem-specific
+            print(f"[DiskWriter] cannot open {path}: {exc}")
+            return
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(int(sample_rate))
+        try:
+            while not stop_event.is_set() or not q.empty():
+                try:
+                    block = q.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                clipped = np.clip(block, -1.0, 1.0)
+                ints = (clipped * 32767.0).astype(np.int16)
+                wf.writeframes(ints.tobytes())
+        finally:
+            wf.close()

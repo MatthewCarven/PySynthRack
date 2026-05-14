@@ -1,0 +1,138 @@
+{
+  "version": 1,
+  "next_id": 7,
+  "modules": [
+    {
+      "id": 1,
+      "type": "keyboard",
+      "name": "keyboard",
+      "params": {
+        "octave": 4,
+        "waveform": "saw",
+        "volume": 0.4
+      }
+    },
+    {
+      "id": 2,
+      "type": "filter",
+      "name": "filter",
+      "params": {
+        "mode": "lowpass",
+        "cutoff": 800.0,
+        "resonance": 2.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "filter",
+      "name": "filter",
+      "params": {
+        "mode": "bandpass",
+        "cutoff": 2000.0,
+        "resonance": 4.0
+      }
+    },
+    {
+      "id": 4,
+      "type": "filter",
+      "name": "filter",
+      "params": {
+        "mode": "highpass",
+        "cutoff": 3000.0,
+        "resonance": 0.7
+      }
+    },
+    {
+      "id": 5,
+      "type": "mixer",
+      "name": "mixer",
+      "params": {
+        "gain1": 1.0,
+        "gain2": 0.7,
+        "gain3": 0.4,
+        "gain4": 0.0,
+        "master": 0.6
+      }
+    },
+    {
+      "id": 6,
+      "type": "speaker_output",
+      "name": "speaker_output",
+      "params": {
+        "gain": 0.9
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "in1"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "in2"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "in3"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out",
+      "dst_module_id": 6,
+      "dst_port": "in"
+    }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [
+        40,
+        240
+      ],
+      "2": [
+        320,
+        80
+      ],
+      "3": [
+        320,
+        240
+      ],
+      "4": [
+        320,
+        400
+      ],
+      "5": [
+        600,
+        240
+      ],
+      "6": [
+        880,
+        240
+      ]
+    }
+  }
+}

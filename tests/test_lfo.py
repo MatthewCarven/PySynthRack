@@ -20,7 +20,9 @@ class TestLFOModel:
             "depth": 1.0,
             "bipolar": False,
         }
-        assert lfo.input_ports == []
+        # v0.3 adds rate_cv input for modulation-matrix patches.
+        assert [p.name for p in lfo.input_ports] == ["rate_cv"]
+        assert lfo.input_ports[0].signal_kind == "cv"
         assert [p.name for p in lfo.output_ports] == ["cv"]
         assert lfo.output_ports[0].signal_kind == "cv"
 
@@ -192,3 +194,115 @@ class TestLFOIntegration:
             for i in range(n_windows)
         ]
         assert (max(rms_vals) - min(rms_vals)) > 0.05
+
+
+class TestLFORateCV:
+    """v0.3: LFO accepts a CV input on its rate (1V/octave, block-mean)."""
+
+    def _walk_topo(self, backend, patch, frames=1024):
+        """Render one block via the topo walk and return the buffer dict."""
+        bufs = {}
+        for mid in backend._topo_order:
+            mod = patch.modules[mid]
+            res = backend._render_module(mod, frames, bufs, patch)
+            if isinstance(res, dict):
+                for pn, b in res.items():
+                    bufs[(mid, pn)] = b
+            elif res is not None and mod.OUTPUT_PORTS:
+                bufs[(mid, mod.OUTPUT_PORTS[0].name)] = res
+        return bufs
+
+    def _count_zero_crossings(self, wave: np.ndarray, threshold: float = 0.5) -> int:
+        """Count crossings of `threshold` on the rising edge."""
+        above = wave > threshold
+        return int(np.sum(np.diff(above.astype(np.int8)) > 0))
+
+    def test_no_cv_leaves_rate_alone(self):
+        """No rate_cv patched → rate behaves exactly as before."""
+        sr = 44100
+        patch = Patch()
+        lfo = patch.add_module(
+            "lfo",
+            params={"waveform": "sine", "rate": 10.0, "depth": 1.0, "bipolar": True},
+        )
+        backend = NumpyBackend(sample_rate=sr, block_size=sr)
+        backend.compile(patch)
+        bufs = self._walk_topo(backend, patch, frames=sr)
+        wave = bufs[(lfo.id, "cv")]
+        # 10 Hz over 1 second = 10 cycles → 10 rising zero-crossings of 0.
+        crossings = self._count_zero_crossings(wave, threshold=0.0)
+        assert 9 <= crossings <= 11, crossings
+
+    def test_positive_cv_doubles_rate(self):
+        """rate_cv = +1.0 (constant) should double the LFO frequency."""
+        sr = 44100
+        patch = Patch()
+        # Source LFO held at +1.0 with bipolar=True, depth=1, very slow rate
+        # so the constant looks like DC across our measurement window.
+        src = patch.add_module(
+            "lfo",
+            params={"waveform": "square", "rate": 0.001, "depth": 1.0, "bipolar": True},
+        )
+        # Target LFO whose rate we'll modulate.
+        target = patch.add_module(
+            "lfo",
+            params={"waveform": "sine", "rate": 5.0, "depth": 1.0, "bipolar": True},
+        )
+        patch.connect(src.id, "cv", target.id, "rate_cv")
+        backend = NumpyBackend(sample_rate=sr, block_size=sr)
+        backend.compile(patch)
+        bufs = self._walk_topo(backend, patch, frames=sr)
+        wave = bufs[(target.id, "cv")]
+        # rate becomes 5 * 2^mean(cv). cv is ~+1 (held square, first half).
+        # Expected rate ≈ 10 Hz → ~10 crossings over 1 sec.
+        crossings = self._count_zero_crossings(wave, threshold=0.0)
+        assert 8 <= crossings <= 12, f"expected ~10 crossings, got {crossings}"
+
+    def test_negative_cv_halves_rate(self):
+        sr = 44100
+        patch = Patch()
+        # Source LFO held at -1.0: bipolar=True square in its low half.
+        # Phase=0 at compile, so we sit at +1 first. Use saw at 0.5 Hz
+        # so over 1 sec the mean is ~0.0 — not what we want.
+        # Easier: construct a constant CV via a unipolar=False square at
+        # very low rate (0.001 Hz → ~0.5 cycle in 1 sec, so we get +1
+        # throughout). To get -1, we'd need bipolar square inverted.
+        #
+        # Simplest path: use a saw at very low rate from phase=0 ramping
+        # +1 → -1, and pick a window where saw is mostly negative. But
+        # the cleanest test is a constant negative CV — we'll inject it
+        # via the renderer directly using a stub buffer.
+        target = patch.add_module(
+            "lfo",
+            params={"waveform": "sine", "rate": 20.0, "depth": 1.0, "bipolar": True},
+        )
+        backend = NumpyBackend(sample_rate=sr, block_size=sr)
+        backend.compile(patch)
+        # Inject a -1.0 constant CV into the renderer by faking a buffer.
+        # The renderer reads via _input_buffer(patch, buffers, id, "rate_cv").
+        # We need a cable in the patch so the lookup finds something, but
+        # we can pre-populate the buffer slot ourselves.
+        cv_buf = np.full(sr, -1.0, dtype=np.float32)
+        # Stand up a fake source module to satisfy patch.connect, then
+        # overwrite its buffer in our manual walk.
+        fake = patch.add_module(
+            "lfo",
+            params={"waveform": "sine", "rate": 0.001, "depth": 1.0, "bipolar": False},
+        )
+        patch.connect(fake.id, "cv", target.id, "rate_cv")
+        backend.compile(patch)
+        # Manual topo walk, but override fake's output with cv_buf.
+        bufs = {(fake.id, "cv"): cv_buf}
+        order = [m for m in backend._topo_order if m != fake.id]
+        for mid in order:
+            mod = patch.modules[mid]
+            res = backend._render_module(mod, sr, bufs, patch)
+            if isinstance(res, dict):
+                for pn, b in res.items():
+                    bufs[(mid, pn)] = b
+            elif res is not None and mod.OUTPUT_PORTS:
+                bufs[(mid, mod.OUTPUT_PORTS[0].name)] = res
+        wave = bufs[(target.id, "cv")]
+        # rate becomes 20 * 2^-1 = 10 Hz → ~10 crossings.
+        crossings = self._count_zero_crossings(wave, threshold=0.0)
+        assert 8 <= crossings <= 12, f"expected ~10 crossings, got {crossings}"

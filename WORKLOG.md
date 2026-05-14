@@ -316,4 +316,138 @@ pitch / cutoff sweeps once those become CV-routable.
   on the v0.3 list along with the rest of the routing primitives.
 - Filter has no CV input on its `cutoff` param yet, so LFO → filter
   cutoff doesn't work in v0.2. Added "CV-modulatable params" to v0.3
-  T
+  TODO.
+
+---
+
+## 2026-05-14 — v0.3 Routing pass: Combiner, CVCombiner, Crossover, DiskWriter, LFO.rate_cv
+
+**Result.** v0.3 closes out the way it set out to: every routing item on
+the roadmap is built or consciously ruled out, the modulation matrix
+got its bonus rate_cv, and the synth can now record itself to disk. 140
+tests passing (110 prior + 30 new), and every example patch — old and
+new — still loads and plays.
+
+**Splitter: built nothing, on purpose.** The audit said it best: the
+Patch model already permits multiple cables from a single output port
+(only inputs are mono — see `Patch.connect`'s "destination not already
+occupied" check). The numpy backend keys its buffer cache by
+`(src_module_id, src_port)`, so any number of downstream consumers
+reading the same source key receive the same array — fanout is free.
+DPG's node editor allows multiple links per output by default. So a
+Splitter module would only add an empty box with one in and four
+identical outs — overhead with no new capability. The TODO entry is
+ticked with a "architecturally redundant" annotation so future-me
+doesn't try to build it again. The new `examples/fan_out.json` patches
+one keyboard into three different filter chains via three cables from
+the same output, demonstrating the fanout explicitly.
+
+**Combiner (audio).** The lighter sibling of Mixer. Four audio inputs,
+plain unit-gain sum, one audio output, no per-channel widgets in the
+way. Useful when you want a structural sum (parallel filter paths
+re-joining, crossover low+high stitched back together) rather than a
+level-balance task. Mixer's docstring already pre-declared the
+contract before this module existed; I just honoured it.
+
+**CVCombiner.** The new module that fills the real architectural gap.
+Each input jack accepts one cable (mono input convention), but
+modular CV is *additive* — wanting LFO + ADSR co-modulating filter
+cutoff has been a thing since 1965. CVCombiner takes four CV inputs
+and emits their sum (default) or their average over the connected
+inputs. Sum is the analog-modular convention; average is the right
+choice when you want shared control without the depth doubling. Two
+unipolar LFO squares of depth=1.0 sum to 2.0 in sum mode; the same
+two average to 1.0. Tests verify both modes and the unconnected-
+inputs-don't-affect-divisor invariant on average mode.
+
+**Crossover — Linkwitz-Riley 4th order.** Two cascaded RBJ biquads
+per branch at Q=1/√2 (Butterworth), at the same corner frequency.
+Each branch is 4th order so phase rotates a clean 360° per side,
+which is why low + high recombines flat in magnitude through a
+Combiner. Tests cover (a) low-freq tones land in the low branch and
+silence the high; (b) high-freq tones, vice versa; (c) at the corner
+both branches sit at -6 dB (LR's signature); (d) summing low + high
+through a Combiner reconstructs the source RMS within ±15%; (e)
+extreme frequency values clamp without NaN. The new
+`two_way_crossover.json` shows the canonical use: split a saw at
+800 Hz, LP the low band, BP the high band, recombine — instant
+multi-band shaping.
+
+**DiskWriter.** A sink module. Audio in, nothing out, written to disk
+as a 16-bit mono WAV at the backend's sample rate. Threading model
+explained in the docstring: the audio callback hands blocks to a
+bounded `queue.Queue`, a daemon worker thread pops and writes via the
+stdlib `wave` module. The callback never blocks on filesystem I/O —
+if the queue fills (very unlikely, 64 blocks ≈ 750 ms of latency), the
+incoming block is dropped and a counter is bumped rather than the
+audio thread stalling. Lifecycle hooks: the writer opens the file
+lazily on first audio arrival; `armed=False` skips and tears down any
+active worker; the path being edited mid-take closes the old file and
+starts a new one (a manual punch-in); `backend.stop()` and
+`backend.compile()` both close any active writer state so the WAV
+header gets finalised and no thread leaks. Tests verify all of these:
+disarmed creates no file, armed-but-unpatched creates no file, normal
+recording writes the right number of frames and RMS matches the
+source, mid-take path swap produces both files, disarm closes the
+file, and a recompile swap that drops the disk_writer state closes
+it cleanly.
+
+**LFO.rate_cv — modulation matrix territory.** A second LFO (or ADSR)
+can now modulate this LFO's rate. 1V/oct, block-mean evaluation,
+same trade-off as filter cutoff_cv. Together with the existing
+freq_cv / amp_cv / cutoff_cv ports this means CV can route to nearly
+every continuous parameter that matters. The new
+`examples/mod_matrix.json` shows the classic "breathing vibrato" —
+a 0.3 Hz LFO modulating a 5 Hz vibrato LFO's rate, which itself
+modulates oscillator freq.
+
+**Backend wiring.** `_render_module` dispatches to four new
+renderers. `_render_lfo` now accepts optional buffers/patch so it can
+look up rate_cv when called from the topo walk (same back-compat
+trick as `_render_oscillator`). `compile()` no longer just drops
+state — when a disk_writer entry is being discarded (module removed,
+or recompiled type changed) it calls `_close_disk_writer_state` first
+so the file handle and thread don't leak across recompiles.
+`stop()` walks the state map and closes any active writers so the
+WAV header is finalised when the user hits Stop on the transport.
+
+**UI wiring.** The Add Module menu pulls from `all_module_types()`
+so the four new modules appeared in the palette for free. Three
+small param-widget tweaks: the `mode` combo dispatches on module
+type (cv_combiner → sum/average, filter → LP/HP/BP), `frequency` is
+treated like `freq`/`cutoff` (drag float in Hz), and `path` falls
+through to the existing input_text fallback. Boolean `armed` already
+got a checkbox via the existing bool branch.
+
+**Edit-tool truncation, again.** Hit the same file truncation issue
+three times on this pass — numpy_backend.py, test_lfo.py, and
+WORKLOG.md all got chopped mid-line by Edit. Switched all non-trivial
+rewrites to Python scripts via `mcp__workspace__bash` (read whole
+file → in-memory transform → write whole file → AST parse). The
+memory entry on this is already current.
+
+**File hygiene.** The disk_writer smoke test left a `take_01.wav` in
+the project root (2 seconds, 88,064 samples, mono 16-bit at 44.1k —
+exactly the smoke-test render length). The sandbox can't delete files
+on the Windows mount, so it's still there waiting to be removed
+manually.
+
+**Architecture notes:**
+- LR4 crossover is a clean candidate for "extract a biquad helper"
+  if a 4th module ever reaches for one. Today we have: Filter
+  (single biquad), Crossover (four biquads), and that's the threshold
+  where DRY starts to win. Holding off until that 4th caller arrives.
+- DiskWriter is the first module that owns process resources (a
+  thread + a file handle) rather than pure numerical state. The
+  cleanup hooks live in `_close_disk_writer_state` so the pattern
+  is reusable if (say) a future MIDI input module needs its own
+  worker thread.
+- CV summing happens to be cheap because every CV buffer is
+  float32 same-length — `out += buf` is one numpy fused-multiply.
+- Fanout was a deliberate v0.1 design choice (port-keyed buffers)
+  paying dividends in v0.3 with zero new code. Worth keeping in
+  mind when the v0.4 polyphony refactor lands.
+
+**Counts.** Modules: 8 → 12. Examples: 9 → 14. Tests: 110 → 140.
+LOC of numpy_backend.py: ~656 → ~902. v0.3 is shipped — next stop
+v0.4 (MIDI, real polyphony, anti-aliased osc shapes).
