@@ -27,6 +27,7 @@ from ..modules.filter import FILTER_MODES
 from ..modules.keyboard import Keyboard, midi_to_name, semitone_to_midi
 from ..modules.cvcombiner import CVCOMBINER_MODES
 from ..modules.lfo import LFO_WAVEFORMS
+from ..modules.midiinput import AUTO_DEVICE, available_devices as midi_available_devices
 from ..modules.oscillator import WAVEFORMS
 
 
@@ -294,6 +295,54 @@ class App:
                 default_value=int(current),
                 min_value=0,
                 max_value=8,
+                width=140,
+                callback=self._on_param_changed,
+                user_data=user_data,
+            )
+            return
+
+        # MIDIInput device selector. Snapshot the available devices once
+        # at widget creation; the user can recompile (delete + re-add the
+        # module, or reopen the patch) to refresh after hot-plugging. An
+        # empty string at the top is the "auto-pick first available" path,
+        # so saved patches that don't pin a device still load and run.
+        if param_name == "device" and module.TYPE == "midi_input":
+            devices = midi_available_devices()
+            items = [AUTO_DEVICE] + devices
+            current_str = str(current)
+            if current_str not in items:
+                items = items + [current_str]
+            dpg.add_combo(
+                label=param_name,
+                items=items,
+                default_value=current_str,
+                width=200,
+                callback=self._on_param_changed,
+                user_data=user_data,
+            )
+            return
+
+        if param_name == "octave_shift":
+            # MIDIInput transpose, integer ± octaves around 0.
+            dpg.add_slider_int(
+                label=param_name,
+                default_value=int(current),
+                min_value=-4,
+                max_value=4,
+                width=140,
+                callback=self._on_param_changed,
+                user_data=user_data,
+            )
+            return
+
+        if param_name == "channel":
+            # MIDI channel: 0 means "all channels" (omni); 1-16 is the
+            # standard hardware numbering.
+            dpg.add_slider_int(
+                label=param_name,
+                default_value=int(current),
+                min_value=0,
+                max_value=16,
                 width=140,
                 callback=self._on_param_changed,
                 user_data=user_data,

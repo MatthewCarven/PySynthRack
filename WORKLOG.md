@@ -451,3 +451,125 @@ manually.
 **Counts.** Modules: 8 → 12. Examples: 9 → 14. Tests: 110 → 140.
 LOC of numpy_backend.py: ~656 → ~902. v0.3 is shipped — next stop
 v0.4 (MIDI, real polyphony, anti-aliased osc shapes).
+
+---
+
+## 2026-05-14 — v0.4 starts: MIDI Input module
+
+**Result.** MIDI keyboards play any existing patch — install the `[midi]`
+extra, drop a MIDIInput node in place of a Keyboard node, and you have a
+playable instrument. 172 tests passing (140 prior + 32 new). 13 modules,
+16 example patches. v0.4 voice routing manager is a deliberate separate
+slice; design pending.
+
+**Sequencing choice.** The roadmap bundled "MIDI input" with "voice
+routing manager" as one item, but they're very different jobs. MIDI
+input as a self-polyphonic mirror of Keyboard is a single-module change
+with no model-level impact. Voice routing — making each note into its
+own signal path — is a model-level rewrite (either voice-aware signal
+carriers, or explicit voice fanout). Splitting them lets MIDI ship now;
+voice routing gets a proper design pass before it lands.
+
+**MIDIInput module — what it is.** Same shape as Keyboard: no input
+ports, two outputs (`out` audio, `gate` gate), self-polyphonic voice
+tracking inside the module. The only structural difference is that
+`active_notes` is a `dict[int, float]` instead of a `set[int]` — the
+value is normalised note-on velocity. Renderer mirrors `_render_keyboard`
+exactly with one extra line of velocity scaling per voice.
+
+**Threading model.** mido owns its own IO thread. `start_midi()` opens
+the port and registers `self._on_message` as the callback; mido invokes
+the callback on its IO thread for every incoming message. The callback
+mutates `active_notes` under `self._lock`. The audio thread takes a
+snapshot copy each block via `snapshot_active_notes()` so it never
+iterates a dict the MIDI thread might be writing. Exactly the lock
+pattern Keyboard already uses for computer-key events; nothing novel,
+which is the point.
+
+**Message handling, what's in scope.** `note_on` with velocity > 0 adds
+the note. `note_on` with velocity == 0 is treated as `note_off` (the
+running-status optimization most controllers use — saves a status byte).
+`note_off` removes the note. CC 123 (All Notes Off) clears everything.
+Channel filter applies: param `channel=0` is omni; 1–16 filters on the
+matching mido 0-indexed channel. Out of scope for this slice: pitch
+bend, sustain pedal (CC 64), mod wheel (CC 1), aftertouch. Each of
+those is a natural fit for new CV output ports (`pitch_cv`, `mod_cv`,
+`pressure_cv`) and lands in a v0.4 follow-up.
+
+**Octave shift.** Applied at note ingest time, not at render time. A
+`note_on(60)` with `octave_shift=1` stores 72 in `active_notes`. A
+subsequent `note_off(60)` resolves to the same shifted note and clears
+it. Notes shifted outside the MIDI range (0..127) are dropped silently
+rather than wrapping or clipping — voicing C-1 with `octave_shift=-1`
+gets you nothing, not a wrong note.
+
+**Velocity sensitivity.** Two-state param: `True` (default) scales each
+voice by its normalised velocity; `False` plays every voice at unity.
+Useful for organ-style patches where dynamic expression doesn't belong,
+or for controllers with bad velocity curves. The velocity is always
+stored in voice state — the param decides whether to apply it, so the
+toggle takes effect immediately without disrupting active voices.
+
+**Lifecycle wiring.** Tracked on the backend via `self._midi_inputs:
+dict[int, MIDIInput]`. On `compile()`: new patch's MIDIInput modules
+get their ports opened (idempotent if already open with the right
+device); old ones that left the patch get their ports closed. On
+`stop()`: every tracked MIDIInput's port is closed so the next start()
+reopens cleanly. The module instances live on the patch, so closing the
+port is the right teardown — we don't drop the module, just its OS
+resource. Same lifecycle pattern as DiskWriter (own process resource,
+explicit teardown hooks), generalised to a tracked-instances dict.
+
+**Optional dependency handling.** `mido` and `python-rtmidi` are an
+opt-in `[midi]` extra because `python-rtmidi` is a C extension and can
+fail to build on locked-down systems. The module *imports cleanly*
+without them (import-guarded with a `_MIDO_AVAILABLE` flag), so the
+registry still sees MIDIInput, the UI palette still shows it, the JSON
+loader can still create instances. The missing-dep error is reported
+only when `start_midi()` is actually called — log warning, return,
+render silence. This means a patch saved with a MIDIInput node loads
+fine on a machine without mido; you just won't get notes.
+
+**UI wiring.** Four new param widget branches in `_add_param_widget`:
+`device` (combo populated by `available_devices()`, with `""` at the
+top for auto-pick), `octave_shift` (int slider ±4), `channel` (int
+slider 0..16), and `velocity_sensitive` falls through to the existing
+bool checkbox branch. The device combo snapshots devices at widget
+creation; user can recompile (delete + re-add the node, or reopen the
+patch) to refresh after hot-plugging. Could add a refresh button later
+if hot-plug refresh becomes annoying.
+
+**Tests — 32 new, all pass headless.** Metadata sanity (5), direct
+note_on/off ingest including thread-safety stress (11),
+`mido.Message`-driven callback handling (6), channel filter (2),
+rendering through the numpy backend (6), optional-dep guardrails (2).
+The mido-message tests skip if mido isn't installed in the test env;
+the rest don't require it. No real MIDI hardware is needed for any
+test — we pass `mido.Message` objects directly into the callback.
+
+**Example patches — 2 new.**
+
+* `midi_simple.json` — MIDIInput → SpeakerOutput. The hello-world. One
+  cable, plays the configured waveform whenever a note is held.
+* `midi_lead.json` — MIDIInput → LP filter (cutoff modulated by ADSR
+  off the MIDI gate) → VCA (gain modulated by a second ADSR off the
+  same gate) → SpeakerOutput. The "proper" played-by-MIDI lead patch
+  with a filter envelope and amp envelope, both triggered by the global
+  gate. Tuned volume=0.35 because resonance=4 + a saw was clipping at
+  the speaker; that headroom is the cost of the resonant peak.
+
+**Bugs hit & fixed.**
+
+* **VCA's audio input is named `audio`, not `in`.** First draft of
+  `midi_lead.json` connected the filter to `vca.in` and got silence.
+  Surfaced because the renderer returns silence when its declared input
+  port has no cable. Fix: use `vca.audio`.
+* **Edit-tool truncation, again.** The first save of midi_lead.json
+  had its final `}` chopped by the Edit tool — same Windows-mount bug
+  that bit us on numpy_backend.py and WORKLOG.md during v0.3. Rebuilt
+  the file via bash heredoc. The memory note on this is still current.
+
+**Counts.** Modules: 12 → 13. Examples: 14 → 16. Tests: 140 → 172.
+v0.4 first slice shipped — next stop voice routing manager (design
+pending), then anti-aliased oscillators, then porting the rest of the
+graph into pyo.

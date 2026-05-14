@@ -193,6 +193,17 @@ class PyoBackend(AudioBackend):
                 "PYSYNTHRACK_BACKEND=numpy.",
             )
             return None
+        if module.TYPE == "midi_input":
+            # v0.4 MIDI Input. The numpy backend is the real implementation
+            # (it owns the mido callback and voice tracking). When the pyo
+            # backend graduates from stubs it will use pyo.Notein for the
+            # MIDI source — for now: silent stub.
+            print(
+                "[PyoBackend] midi_input module not yet supported in pyo "
+                "backend; the node will be silent. Run with "
+                "PYSYNTHRACK_BACKEND=numpy.",
+            )
+            return None
         return None
 
     def _build_oscillator(self, module) -> Any:

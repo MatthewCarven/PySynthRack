@@ -15,6 +15,7 @@ from .diskwriter import DiskWriter
 from .filter import Filter
 from .keyboard import Keyboard
 from .lfo import LFO
+from .midiinput import MIDIInput
 from .mixer import Mixer
 from .oscillator import Oscillator
 from .output import SpeakerOutput
@@ -29,6 +30,7 @@ __all__ = [
     "Filter",
     "Keyboard",
     "LFO",
+    "MIDIInput",
     "Mixer",
     "Oscillator",
     "SpeakerOutput",

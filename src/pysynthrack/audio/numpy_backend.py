@@ -54,6 +54,11 @@ class NumpyBackend(AudioBackend):
         # oscillator's phase dict would leak into the keyboard renderer
         # and KeyError on a missing schema key.
         self._state_types: dict[int, str] = {}
+        # MIDIInput modules currently owned by this backend (module_id →
+        # instance). Tracked separately from ``_state`` because the MIDI
+        # port lives on the module instance and needs explicit teardown
+        # when the module leaves the patch or the backend stops.
+        self._midi_inputs: dict[int, Any] = {}
         self._stream: Any = None
         # GUI thread writes the patch reference; audio thread reads it.
         self._lock = threading.Lock()
@@ -92,6 +97,41 @@ class NumpyBackend(AudioBackend):
             # Record the current type for every live module so the next
             # compile can compare against it.
             self._state_types = dict(live_types)
+
+            # MIDIInput lifecycle: ensure every midi_input module in the new
+            # patch has its mido port open, and close ports for any
+            # midi_input modules that left the patch since last compile.
+            new_midi_ids = {
+                mid for mid, m in patch.modules.items() if m.TYPE == "midi_input"
+            }
+            for mid in list(self._midi_inputs.keys()):
+                if mid not in new_midi_ids:
+                    try:
+                        self._midi_inputs[mid].stop_midi()
+                    except Exception:
+                        pass
+                    del self._midi_inputs[mid]
+            for mid in new_midi_ids:
+                module = patch.modules[mid]
+                prev = self._midi_inputs.get(mid)
+                # If the id maps to a different instance now (patch swap),
+                # close the previous one before tracking the new one.
+                if prev is not None and prev is not module:
+                    try:
+                        prev.stop_midi()
+                    except Exception:
+                        pass
+                self._midi_inputs[mid] = module
+                # ``start_midi`` is idempotent and re-opens on device change.
+                try:
+                    module.start_midi()
+                except Exception as e:
+                    # Don't let a flaky MIDI stack break compile() — the
+                    # module logs internally and renders silence.
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "MIDIInput %s start failed: %s", mid, e
+                    )
 
     @staticmethod
     def _topological_sort(patch: Patch) -> list[int]:
@@ -149,6 +189,14 @@ class NumpyBackend(AudioBackend):
         for mid in list(self._state.keys()):
             if self._state_types.get(mid) == "disk_writer":
                 self._close_disk_writer_state(self._state[mid])
+        # Close any open MIDI ports so the next start() reopens cleanly.
+        # The module instances stay alive (they're owned by the patch),
+        # so the next compile() will reopen the port via start_midi().
+        for mid, module in list(self._midi_inputs.items()):
+            try:
+                module.stop_midi()
+            except Exception:
+                pass
 
     # ----- live params -----------------------------------------------------
 
@@ -223,6 +271,8 @@ class NumpyBackend(AudioBackend):
             return self._render_oscillator(module, frames, buffers, patch)
         if module.TYPE == "keyboard":
             return self._render_keyboard(module, frames)
+        if module.TYPE == "midi_input":
+            return self._render_midi_input(module, frames)
         if module.TYPE == "filter":
             return self._render_filter(module, frames, buffers, patch)
         if module.TYPE == "adsr":
@@ -384,6 +434,105 @@ class NumpyBackend(AudioBackend):
             voice["env"] = float(max(0.0, min(1.0, voice["env"] + frames * delta)))
 
             audio += (wave * env_ramp).astype(np.float32)
+
+            if voice["releasing"] and voice["env"] <= 1e-5:
+                del voices[note]
+
+        audio *= volume
+
+        gate_value = 1.0 if active else 0.0
+        gate = np.full(frames, gate_value, dtype=np.float32)
+
+        return {"out": audio, "gate": gate}
+
+    # ----- MIDI input rendering ------------------------------------------
+
+    def _render_midi_input(self, module, frames: int) -> dict[str, np.ndarray]:
+        """MIDI-driven self-polyphonic voice renderer.
+
+        Mirrors ``_render_keyboard`` exactly in structure — same per-voice
+        phase tracking, same short attack/release ramps to kill clicks,
+        same global gate semantics. The only differences are:
+
+          * ``snapshot_active_notes()`` returns ``{note: velocity}`` not a
+            set, so we can scale each voice by its note-on velocity.
+          * When ``velocity_sensitive`` is False, velocities are ignored
+            and every voice plays at gain 1.0 — useful when a controller
+            has a poor velocity curve, or for organ-style untouched-
+            dynamics patches.
+
+        Voice routing into per-voice downstream chains (the v0.4 voice
+        manager) is deliberately not the job of this renderer; chord
+        summing happens here and the rest of the patch sees one mono
+        stream.
+        """
+        state = self._state.setdefault(module.id, {"voices": {}})
+        voices: dict[int, dict] = state["voices"]
+
+        sr = self.sample_rate
+        waveform = str(module.params.get("waveform", "sine"))
+        volume = float(module.params.get("volume", 0.5))
+        velocity_sensitive = bool(module.params.get("velocity_sensitive", True))
+
+        active = module.snapshot_active_notes()  # dict[int, float]
+
+        for note, vel in active.items():
+            voice = voices.get(note)
+            if voice is None:
+                voices[note] = {
+                    "phase": 0.0,
+                    "env": 0.0,
+                    "releasing": False,
+                    "velocity": vel,
+                }
+            else:
+                voice["releasing"] = False
+                # Update velocity on retrigger so the next attack uses the
+                # newer note-on dynamics. The release tail will keep the
+                # old velocity, which is correct musically.
+                voice["velocity"] = vel
+        for note in list(voices):
+            if note not in active:
+                voices[note]["releasing"] = True
+
+        attack_samples = max(1, int(self._KB_ATTACK_S * sr))
+        release_samples = max(1, int(self._KB_RELEASE_S * sr))
+
+        audio = np.zeros(frames, dtype=np.float32)
+
+        for note, voice in list(voices.items()):
+            freq = midi_to_freq(note)
+            phase_inc = freq / sr
+            phases = (
+                voice["phase"] + np.arange(frames, dtype=np.float64) * phase_inc
+            ) % 1.0
+            voice["phase"] = (voice["phase"] + frames * phase_inc) % 1.0
+
+            if waveform == "sine":
+                wave = np.sin(2.0 * np.pi * phases)
+            elif waveform == "saw":
+                wave = 2.0 * phases - 1.0
+            elif waveform == "square":
+                wave = np.where(phases < 0.5, 1.0, -1.0)
+            elif waveform == "triangle":
+                wave = 1.0 - 4.0 * np.abs(phases - 0.5)
+            else:
+                wave = np.zeros(frames, dtype=np.float64)
+
+            if voice["releasing"]:
+                delta = -1.0 / release_samples
+            elif voice["env"] < 1.0:
+                delta = 1.0 / attack_samples
+            else:
+                delta = 0.0
+            env_ramp = voice["env"] + np.arange(frames, dtype=np.float64) * delta
+            np.clip(env_ramp, 0.0, 1.0, out=env_ramp)
+            voice["env"] = float(max(0.0, min(1.0, voice["env"] + frames * delta)))
+
+            # Velocity scales the voice gain. Always set in voice state;
+            # the param decides whether it's actually applied.
+            gain = float(voice["velocity"]) if velocity_sensitive else 1.0
+            audio += (wave * env_ramp * gain).astype(np.float32)
 
             if voice["releasing"] and voice["env"] <= 1e-5:
                 del voices[note]

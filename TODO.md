@@ -52,8 +52,9 @@ Living list of what's next. Edit freely.
 
 ## v0.4 — Performance & polyphony
 
-- [ ] MIDI input (mido + python-rtmidi)
-- [ ] Voice routing manager (multiple oscillators → polyphony per Keyboard voice)
+- [x] MIDI input (mido + python-rtmidi) — self-polyphonic mirror of Keyboard, mono `out` + global `gate`. Plugs into any existing patch. — 2026-05-14
+- [ ] Voice routing manager (multiple oscillators → polyphony per Keyboard voice) — design pending: voice-aware signals vs. explicit voice fanout. Either way, this is a model-level change, not just a new module.
+- [ ] MIDI follow-ups: pitch bend → freq_cv output port, sustain pedal (CC 64), mod wheel (CC 1) → mod_cv output, channel-aftertouch → pressure_cv.
 - [ ] PolyBLEP or wavetable anti-aliased osc shapes (replace naive saw/square)
 - [ ] CPU profile: pyo backend wired for the same modules so it's a drop-in fast path
 

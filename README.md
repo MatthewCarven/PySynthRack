@@ -77,7 +77,17 @@ pip install -e ".[gui]"
 pip install -e ".[all]"
 ```
 
-The `[gui]`, `[pyo]`, `[all]`, and `[dev]` extras are defined in `pyproject.toml`. The trailing dot in `pip install -e .` means "install the project in this directory in editable mode" — without it you'll get `No module named pysynthrack` when you try to run.
+### MIDI input
+
+To play patches from a real MIDI controller, install the optional `[midi]` extra. It pulls in `mido` (the pure-Python message layer) and `python-rtmidi` (the C-extension that talks to the OS MIDI stack).
+
+```powershell
+pip install -e ".[midi]"
+```
+
+If `python-rtmidi` fails to build on Windows, the wheels usually solve it: `pip install --upgrade pip` first, then retry. On Linux you may need `apt install libasound2-dev libjack-dev` before the build succeeds. The MIDIInput module gracefully reports "no devices found" if the install is missing — the rest of the app still works.
+
+The `[gui]`, `[pyo]`, `[midi]`, `[all]`, and `[dev]` extras are defined in `pyproject.toml`. The trailing dot in `pip install -e .` means "install the project in this directory in editable mode" — without it you'll get `No module named pysynthrack` when you try to run.
 
 ### Verifying you installed into the right venv
 
