@@ -498,10 +498,34 @@ class NumpyBackend(AudioBackend):
         attack_samples = max(1, int(self._KB_ATTACK_S * sr))
         release_samples = max(1, int(self._KB_RELEASE_S * sr))
 
+        # Pitch wheel: 1V/oct CV value applied identically to every
+        # internal voice, and emitted on the pitch_cv output port for
+        # downstream consumers. Block-constant - the wheel moves much
+        # more slowly than the audio block rate (~12 ms at 512 samples /
+        # 44.1 kHz), so per-sample smoothing isn't audibly useful here.
+        pitch_bend = float(module.snapshot_pitch_bend())
+        bend_range = float(module.params.get("bend_range", 2.0))
+        pitch_cv_value = pitch_bend * bend_range / 12.0
+        freq_multiplier = float(2.0 ** pitch_cv_value)
+
+        # Mod wheel: unipolar [0, 1] times mod_scale. Linear emission -
+        # consumers like cutoff_cv apply their own 2**cv shaping, amp_cv
+        # is linear, etc. We don't bake any shaping in here.
+        mod_wheel = float(module.snapshot_mod_wheel())
+        mod_scale = float(module.params.get("mod_scale", 1.0))
+        mod_cv_value = mod_wheel * mod_scale
+
+        # Channel aftertouch: same emission shape as mod wheel. Unipolar
+        # [0, 1] times pressure_scale. Channel-pressure only -- one
+        # value per channel, applied identically to all held voices.
+        aftertouch = float(module.snapshot_aftertouch())
+        pressure_scale = float(module.params.get("pressure_scale", 1.0))
+        pressure_cv_value = aftertouch * pressure_scale
+
         audio = np.zeros(frames, dtype=np.float32)
 
         for note, voice in list(voices.items()):
-            freq = midi_to_freq(note)
+            freq = midi_to_freq(note) * freq_multiplier
             phase_inc = freq / sr
             phases = (
                 voice["phase"] + np.arange(frames, dtype=np.float64) * phase_inc
@@ -541,8 +565,17 @@ class NumpyBackend(AudioBackend):
 
         gate_value = 1.0 if active else 0.0
         gate = np.full(frames, gate_value, dtype=np.float32)
+        pitch_cv = np.full(frames, pitch_cv_value, dtype=np.float32)
+        mod_cv = np.full(frames, mod_cv_value, dtype=np.float32)
+        pressure_cv = np.full(frames, pressure_cv_value, dtype=np.float32)
 
-        return {"out": audio, "gate": gate}
+        return {
+            "out": audio,
+            "gate": gate,
+            "pitch_cv": pitch_cv,
+            "mod_cv": mod_cv,
+            "pressure_cv": pressure_cv,
+        }
 
     # ----- filter rendering ----------------------------------------------
 

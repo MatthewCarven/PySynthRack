@@ -53,16 +53,23 @@ Living list of what's next. Edit freely.
 ## v0.4 — Performance & polyphony
 
 - [x] MIDI input (mido + python-rtmidi) — self-polyphonic mirror of Keyboard, mono `out` + global `gate`. Plugs into any existing patch. — 2026-05-14
-- [ ] Voice routing manager (multiple oscillators → polyphony per Keyboard voice) — design pending: voice-aware signals vs. explicit voice fanout. Either way, this is a model-level change, not just a new module.
-- [ ] MIDI follow-ups: pitch bend → freq_cv output port, sustain pedal (CC 64), mod wheel (CC 1) → mod_cv output, channel-aftertouch → pressure_cv.
+- [ ] Voice routing manager — **Option A: voice-aware signals** committed 2026-05-15 (max 16 voices, 2D `(voices, frames)` buffers, per-voice state on stateful modules, implicit sum at mono sinks). Lands after the remaining scalar MIDI CV ports (mod wheel, aftertouch).
+- [x] MIDI follow-up: pitch bend → `pitch_cv` output port + internal voice bend, GM-standard `bend_range=2.0` (shipped 2026-05-15)
+- [x] MIDI follow-up: mod wheel (CC 1) → `mod_cv` output port + `mod_scale` param (shipped 2026-05-15)
+- [x] MIDI follow-up: channel aftertouch → `pressure_cv` output port + `pressure_scale` param (shipped 2026-05-15)
+- [ ] MIDI follow-up: sustain pedal (CC 64) — per-voice sustain flag inside MIDIInput; ships with the voice routing slice since it's per-voice state
 - [ ] PolyBLEP or wavetable anti-aliased osc shapes (replace naive saw/square)
 - [ ] CPU profile: pyo backend wired for the same modules so it's a drop-in fast path
 
 ## Later / wishlist
 
+- [ ] Signal-kind bridge modules: `AudioToCV` envelope follower (RMS the audio into a CV value, e.g. for self-modulating filter cutoff), `CVToAudio` (let you hear an LFO / envelope through the speaker for debugging slow modulators), `Schmitt` (CV threshold crossing emits a gate edge for chaining envelopes off a CV signal). Orthogonal to backend choice; cheap to add whenever DSP exploration sounds fun.
+- [ ] CV utility modules: `Constant` (params: value; outputs a fixed CV — useful as a CVCombiner input to bias another modulator), `CVScale` (cv in × gain param → cv out), `CVOffset` (cv in + offset param → cv out). The MIDIInput's `bend_range` / `mod_scale` patterns hint at the need; these utilities let any source feed any destination with arbitrary scale/offset without baking the knob into the source module.
 - [ ] Sample-and-hold module
 - [ ] Noise generator (white / pink)
 - [ ] Drum-friendly env (AD instead of ADSR)
 - [ ] Stereo-aware speaker module (pan / width)
 - [ ] Patch presets palette (factory + user banks)
 - [ ] Undo / redo on patch edits
+- [ ] Per-key velocity calibration on MIDIInput — `velocity_curve: dict[int, float]` mapping MIDI note → velocity multiplier, applied after the 0-127 normalisation. Niche but exactly the kind of fix that's only possible because the synth lives in code: budget keybeds drift key-by-key due to manufacturing variance, and a "play every key at the same intended force, capture the offsets" calibration flow papers over it perfectly. Could ship as a small "Calibrate keys" dialog on the MIDIInput node.
+- [ ] Refresh-devices button on the MIDIInput node — today the device combo snapshots `available_devices()` at widget creation; installing `[midi]` after the app is open leaves the dropdown stale until the patch is reopened.

@@ -573,3 +573,280 @@ test — we pass `mido.Message` objects directly into the callback.
 v0.4 first slice shipped — next stop voice routing manager (design
 pending), then anti-aliased oscillators, then porting the rest of the
 graph into pyo.
+
+---
+
+## 2026-05-15 — MIDI Input confirmed end-to-end on real hardware
+
+First played note through a real MIDI controller — Matthew's USB
+keyboard plugged into Windows, `[midi]` extra installed, GUI launched,
+`midi_lead.json` loaded, device picked from the populated dropdown,
+keys pressed, audio out. Closes the loop on the v0.4 first slice; no
+code changes needed from the headless tests.
+
+**Install-day friction we should remember for future docs.**
+
+* The `[midi]` extra is genuinely opt-in — on a fresh pull from the
+  v0.4 commit, the device dropdown is empty until `uv pip install -e
+  ".[midi]"` runs. The graceful-fallback design means it doesn't
+  *break*, but a first-time user can mistake the empty list for "no
+  devices" rather than "no library". The README install section calls
+  out the extra explicitly; we should keep that prominent.
+
+* The GUI's device combo snapshots `available_devices()` at widget
+  creation. If a user installs `[midi]` while the app is already
+  running, the dropdown won't repopulate until the patch is reopened
+  (or the MIDIInput node deleted + re-added). A "refresh devices"
+  button on the MIDIInput node would close this hole; small follow-up
+  for the next UI sweep, but not urgent.
+
+* Once a device is selected and the transport is started, silence
+  before the first key-press is the correct idle state — `midi_lead`
+  is gated through ADSRs off the MIDI gate, so the audio path is
+  zero-amplitude until something plays. Worth keeping in mind for
+  troubleshooting walk-throughs: "no sound at idle" is the design,
+  not a bug.
+
+---
+
+## 2026-05-15 (continued) — Pitch bend on MIDIInput
+
+First of the v0.4 MIDI follow-up slices. The wheel now does two things:
+
+* **Internal:** each held voice's frequency is multiplied by
+  ``2 ** (bend_normalized * bend_range / 12)`` at render time. With the
+  default ``bend_range=2.0`` semitones (GM standard), a fully deflected
+  wheel takes a note +-200 cents. Custom ``bend_range`` lets a patch
+  widen this for dive-bomb leads (12.0 = +-octave) or narrow it for
+  subtle expressive vibrato (0.5).
+* **External:** a new ``pitch_cv`` output port emits the same
+  ``bend_normalized * bend_range / 12`` value as a block-constant CV
+  signal. Wire it to a filter's ``cutoff_cv`` for the classic "wheel
+  opens the timbre" trick, or sum it through a CVCombiner with another
+  modulator.
+
+**Normalization.** mido's ``msg.pitch`` is signed 14-bit in
+``[-8192, 8191]``; we divide by 8192.0 and clamp to ``[-1, 1]``. The
+``+8191`` case gives ``0.99988``, which is the standard MIDI-spec
+asymmetry. Wheel at rest = 0.
+
+**State location.** ``self._pitch_bend`` lives on the MIDIInput module
+under the same ``self._lock`` that guards ``active_notes``. Same
+callback-thread / audio-thread split as note state -- mido callback
+writes, audio thread snapshots once per block. ``stop_midi()`` resets
+it to 0 so a recompile starts from neutral; ``all_notes_off()``
+(CC 123 panic) deliberately does NOT touch it, because the physical
+wheel position is independent of held-note state.
+
+**Block-rate, not per-sample.** The ``pitch_cv`` buffer is constant
+within a block. At 512 samples / 44.1 kHz that's an update every
+~11.6 ms -- well below the threshold of audibility for any natural
+wheel motion. Per-sample smoothing would be nice for staircase-free
+vibrato via the wheel and is worth revisiting if anyone reports
+stepping artefacts; for now block-rate matches the rest of our CV
+consumers.
+
+**Files added/changed:**
+
+- ``src/pysynthrack/modules/midiinput.py`` -- ``pitch_cv`` output port,
+  ``bend_range`` param (default 2.0), pitch-bend state +
+  lock-protected ``set_pitch_bend`` / ``snapshot_pitch_bend``,
+  ``pitchwheel`` message handling, wheel reset on ``stop_midi()``.
+- ``src/pysynthrack/audio/numpy_backend.py`` -- ``_render_midi_input``
+  applies the bend to internal voice frequencies (one float multiply
+  per voice per block) and emits the ``pitch_cv`` buffer in the
+  returned dict.
+- ``examples/pitch_bend.json`` -- MIDIInput (saw) -> LP filter ->
+  speaker, with ``pitch_cv`` -> ``cutoff_cv`` so the wheel bends the
+  notes AND sweeps the filter cutoff in lockstep. Default
+  bend_range=2.0; tweak the MIDIInput's ``bend_range`` param for wider
+  sweeps.
+- ``tests/test_midi_input.py`` -- replaced ``test_pitchwheel_is_ignored``
+  with real handler tests; added a ``TestPitchBend`` class for direct
+  API (no-mido) tests; added rendering tests for ``pitch_cv`` emission,
+  ``bend_range`` scaling, and verified the internal frequency actually
+  shifts via zero-crossing count.
+
+**Verified in sandbox:** 174 tests pass headless + 9 mido-skipped
+(mido absent in CI). End-to-end smoke render of ``pitch_bend.json``
+confirms: load round-trips, idle silent, note-on audible, ``pitch_cv``
+value tracks ``bend_normalized * bend_range / 12`` to within numeric
+precision.
+
+**Mount write postmortem.** Hit a new truncation flavour today -- the
+``Write`` tool itself silently capped ``midiinput.py`` at exactly the
+original byte size (10613) when the new content was longer. The file
+on disk ended mid-comment despite the tool reporting success.
+Fall-through to the proven pattern (Python ``open('w').write(content)``
+via bash heredoc) worked first try. The newly-saved mount-write
+protocol memory already covers this class of failure; the lesson
+reinforced is: trust nothing through the Windows mount until
+``stat -c %s`` confirms the byte count.
+
+**Counts.** Modules: 13 (unchanged). Examples: 16 -> 17. Tests:
+172 -> 183 (174 passing + 9 skipped).
+
+**Up next:** mod wheel (CC 1 -> ``mod_cv``), then channel aftertouch
+(``pressure_cv``), then the backend-affine submenu refactor before the
+voice-routing slice lands.
+
+---
+
+## 2026-05-15 (later) — Mod wheel on MIDIInput
+
+Second of the v0.4 MIDI follow-up slices, lands hot off the heels of
+pitch bend. Same shape, same threading, same demo-and-test pattern.
+
+**Feature.** MIDIInput now emits a ``mod_cv`` output port carrying CC 1
+(mod wheel) as a normalized ``[0, 1]`` CV signal scaled by a new
+``mod_scale`` param (default 1.0). Unlike pitch bend, the mod wheel
+does NOT bend the internal voices -- it just emits the CV. The
+convention is "mod wheel is a depth knob for downstream effects": the
+source publishes a clean normalized signal, the downstream consumer
+(filter, LFO, amp) decides what to do with it.
+
+**Asymmetry vs. pitch_cv.** ``pitch_cv`` emits in 1V/oct units
+(semitones / 12) because its destinations all use 2**cv shaping
+(oscillator freq, filter cutoff). ``mod_cv`` is raw normalized x scale
+because its destinations are heterogeneous (cutoff_cv uses 2**cv,
+amp_cv is linear, future depth_cv inputs would be anything). The
+``mod_scale`` param lets a patch pre-scale the wheel range without
+needing a generic CV-scaler module yet -- though one is on the
+wishlist (`CVScale` in the new "CV utility modules" entry).
+
+**CC 1 handler.** New ``elif msg.type == "control_change" and msg.control == 1``
+branch in ``_on_message``, parallel to the existing CC 123 handler.
+``msg.value / 127.0`` lands in ``[0, 1]`` directly. The CC 123 comment
+now mentions mod wheel alongside pitch wheel as state that's NOT
+cleared by panic (consistent with hardware semantics -- a panic message
+doesn't move the physical controls).
+
+**State.** ``self._mod_wheel: float = 0.0`` joins ``self._pitch_bend``
+under ``self._lock``. Reset to 0 on ``stop_midi()`` for the same reason
+-- a stale wheel value from a previous session shouldn't leak into the
+next compile. The CC 123 panic still leaves it alone.
+
+**Files added/changed:**
+
+- ``src/pysynthrack/modules/midiinput.py`` -- ``mod_cv`` output port,
+  ``mod_scale`` param (default 1.0), mod-wheel state +
+  ``set_mod_wheel`` / ``snapshot_mod_wheel`` lock-protected accessors,
+  CC 1 message handling, wheel reset on ``stop_midi()``. Docstrings
+  and message-semantics list updated to reflect the new port and
+  message handling.
+- ``src/pysynthrack/audio/numpy_backend.py`` -- ``_render_midi_input``
+  reads ``mod_wheel`` + ``mod_scale`` and emits the ``mod_cv``
+  block-constant buffer; return dict now has four keys (``out``,
+  ``gate``, ``pitch_cv``, ``mod_cv``).
+- ``examples/mod_wheel_filter.json`` -- MIDIInput (saw, ``mod_scale=2.0``)
+  -> LP filter (cutoff 200 Hz, resonance 2.0) -> speaker, with
+  ``mod_cv`` -> ``cutoff_cv``. Wheel from 0 -> 1 sweeps the cutoff
+  200 -> 800 Hz (4x under 2**cv), a satisfying two-octave brightness
+  open.
+- ``tests/test_midi_input.py`` -- port-list assertion expanded;
+  ``TestModWheel`` class (default zero, round-trips, clamps unipolar);
+  CC 1 message tests under the mido-skipif guard; render tests
+  verifying ``mod_cv`` buffer shape, ``mod_scale`` scaling, default
+  passthrough behaviour, and that mod wheel does NOT modulate the
+  internal audio (only emits cv).
+
+**Verified in sandbox:** 183 tests pass + 11 mido-skipped. Smoke
+render of ``mod_wheel_filter.json``: filter output zero-crossing rate
+doubles from closed wheel (6 per block) to open wheel (12 per block),
+confirming the cutoff actually opens audibly.
+
+**Counts.** Modules: 13 (unchanged). Examples: 17 -> 18. Tests:
+183 -> 194 (183 passing + 11 skipped).
+
+**Up next:** channel aftertouch (``pressure_cv``) -- exactly the same
+shape with ``msg.type == "aftertouch"`` and ``msg.value / 127.0``,
+plus a new ``pressure_scale`` param mirroring ``mod_scale``. Then
+voice routing.
+
+---
+
+## 2026-05-15 (even later) — Channel aftertouch on MIDIInput
+
+Third of the v0.4 MIDI follow-up slices. Genuinely was "mod wheel one
+more time" -- copy-paste of the same lock/state/CV-emission pattern
+with the message-type and param-name swapped. Worth flagging so future
+abstractions can pick this up: pitch_cv, mod_cv, pressure_cv all share
+the same "MIDI-source-publishes-normalized-scaled-CV" shape and could
+collapse into a single helper if a fourth lookalike ever ships.
+
+**Feature.** ``pressure_cv`` output port carrying channel aftertouch
+(mido ``msg.type == "aftertouch"``) as ``aftertouch_normalized x
+pressure_scale``. Default scale is 1.0; the demo uses 2.0 so a fully
+pressed key takes a downstream ``cutoff_cv`` consumer two octaves up
+under standard 2**cv shaping. Unipolar, [0, 1], same shape as mod
+wheel.
+
+**Channel vs. polyphonic aftertouch.** ``aftertouch`` in mido is
+*channel* aftertouch -- one value per channel, applied identically to
+every held voice. ``polytouch`` is polyphonic aftertouch -- one value
+per note, the controller emits which-note + pressure separately. We
+ship channel aftertouch in this slice (scalar, fits the existing CV
+emission shape exactly) and defer polytouch to the voice-routing
+slice (it needs per-voice CV signals to express faithfully -- this
+is the smoking gun for voice-aware signals, and having
+``pressure_cv`` as a scalar already in place makes it obvious where
+the per-voice version slots in).
+
+**CC 123 panic.** Now mentions aftertouch alongside pitch wheel and
+mod wheel as state that's NOT cleared by the all-notes-off panic --
+all three are physical-controller positions that don't reset when
+notes are released. ``stop_midi()`` does reset them, since the next
+compile is logically a fresh session.
+
+**Files added/changed:**
+
+- ``src/pysynthrack/modules/midiinput.py`` -- ``pressure_cv`` output
+  port, ``pressure_scale`` param (default 1.0), aftertouch state +
+  ``set_aftertouch`` / ``snapshot_aftertouch`` lock-protected
+  accessors, ``aftertouch`` message handling, reset on ``stop_midi()``.
+  Docstring extended; trailing "other messages ignored" comment
+  updated to flag that sustain pedal (CC 64) and polyphonic
+  aftertouch (``polytouch``) are now the only remaining MIDI input
+  features, both blocked on voice routing.
+- ``src/pysynthrack/audio/numpy_backend.py`` -- ``_render_midi_input``
+  reads aftertouch + pressure_scale and emits ``pressure_cv``
+  block-constant buffer. Return dict has five keys now (``out``,
+  ``gate``, ``pitch_cv``, ``mod_cv``, ``pressure_cv``).
+- ``examples/aftertouch_filter.json`` -- MIDIInput (square,
+  ``pressure_scale=2.0``) -> LP filter (cutoff 250 Hz, resonance 3.0)
+  -> speaker, with ``pressure_cv`` -> ``cutoff_cv``. Higher Q than
+  the mod wheel demo so the resonance peak walks across the square
+  wave's odd harmonics one by one as pressure increases -- distinctly
+  more "vocal" character than the mod wheel sweep. Pressing a held
+  key opens the filter.
+- ``tests/test_midi_input.py`` -- outputs port-list assertion expanded
+  to five entries; ``TestAftertouch`` class for direct-API tests;
+  aftertouch message tests under the mido skipif; render tests for
+  ``pressure_cv`` emission, scale handling, and that aftertouch only
+  emits CV (does not modulate internal audio).
+
+**Verified in sandbox:** 192 tests pass + 13 mido-skipped. Smoke
+render of ``aftertouch_filter.json``: ``pressure_cv`` reads 2.0 at
+full pressure with ``pressure_scale=2.0``; return dict carries all
+five keys; cutoff_cv consumer gets the right value (250 Hz ->
+1000 Hz cutoff at full pressure under 2**cv).
+
+**Pattern note for refactor candidate.** Pitch_cv, mod_cv, and
+pressure_cv now share three identical shape elements: (a) a
+normalized state float under ``self._lock``, (b) a ``set_X`` /
+``snapshot_X`` accessor pair with clamp, (c) a renderer line
+``X_value = X_normalized * X_scale`` emitting a block-constant
+buffer. If a fourth CV source ever lands (poly-pressure, ribbon,
+breath controller), pulling out a ``_CVSource`` helper becomes
+worth it. For three, it's not -- the duplication is visible and
+honest, and the differences (bend_range divides by 12, pitch
+applies internally) would muddy a premature abstraction.
+
+**Counts.** Modules: 13 (unchanged). Examples: 18 -> 19. Tests:
+194 -> 205 (192 passing + 13 skipped).
+
+**Up next:** voice routing. All three scalar MIDI CV ports are in
+place; the only MIDI features still pending are sustain pedal
+(per-voice state, lands during voice routing) and polyphonic
+aftertouch (per-voice CV signal, the textbook motivation for
+voice-aware signals). Time to write the short voice routing RFC.

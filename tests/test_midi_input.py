@@ -56,10 +56,28 @@ class TestMIDIInputMetadata:
         m = MIDIInput(module_id=1)
         assert m.INPUT_PORTS == []
 
-    def test_outputs_audio_and_gate(self):
+    def test_outputs_audio_gate_and_all_cvs(self):
         m = MIDIInput(module_id=1)
         ports = [(p.name, p.signal_kind) for p in m.OUTPUT_PORTS]
-        assert ports == [("out", "audio"), ("gate", "gate")]
+        assert ports == [
+            ("out", "audio"),
+            ("gate", "gate"),
+            ("pitch_cv", "cv"),
+            ("mod_cv", "cv"),
+            ("pressure_cv", "cv"),
+        ]
+
+    def test_default_bend_range(self):
+        m = MIDIInput(module_id=1)
+        assert m.params["bend_range"] == 2.0
+
+    def test_default_mod_scale(self):
+        m = MIDIInput(module_id=1)
+        assert m.params["mod_scale"] == 1.0
+
+    def test_default_pressure_scale(self):
+        m = MIDIInput(module_id=1)
+        assert m.params["pressure_scale"] == 1.0
 
     def test_starts_with_no_active_notes(self):
         m = MIDIInput(module_id=1)
@@ -159,6 +177,109 @@ class TestNoteIngest:
 
 
 # ---------------------------------------------------------------------------
+# Pitch bend (direct API - no mido required)
+# ---------------------------------------------------------------------------
+
+
+class TestPitchBend:
+    def test_default_pitch_bend_is_zero(self):
+        m = MIDIInput(module_id=1)
+        assert m.snapshot_pitch_bend() == 0.0
+
+    def test_set_pitch_bend_round_trips(self):
+        m = MIDIInput(module_id=1)
+        m.set_pitch_bend(0.5)
+        assert m.snapshot_pitch_bend() == 0.5
+        m.set_pitch_bend(-0.25)
+        assert m.snapshot_pitch_bend() == -0.25
+
+    def test_set_pitch_bend_clamps_above_one(self):
+        m = MIDIInput(module_id=1)
+        m.set_pitch_bend(2.0)
+        assert m.snapshot_pitch_bend() == 1.0
+
+    def test_set_pitch_bend_clamps_below_minus_one(self):
+        m = MIDIInput(module_id=1)
+        m.set_pitch_bend(-3.5)
+        assert m.snapshot_pitch_bend() == -1.0
+
+    def test_concurrent_pitch_bend_safe(self):
+        # 8 threads each ramping the wheel; we just want no exception
+        # and the final value to be in [-1, 1].
+        m = MIDIInput(module_id=1)
+
+        def worker():
+            for i in range(200):
+                m.set_pitch_bend((i - 100) / 100.0)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        final = m.snapshot_pitch_bend()
+        assert -1.0 <= final <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# Mod wheel (direct API - no mido required)
+# ---------------------------------------------------------------------------
+
+
+class TestModWheel:
+    def test_default_mod_wheel_is_zero(self):
+        m = MIDIInput(module_id=1)
+        assert m.snapshot_mod_wheel() == 0.0
+
+    def test_set_mod_wheel_round_trips(self):
+        m = MIDIInput(module_id=1)
+        m.set_mod_wheel(0.5)
+        assert m.snapshot_mod_wheel() == 0.5
+        m.set_mod_wheel(1.0)
+        assert m.snapshot_mod_wheel() == 1.0
+
+    def test_set_mod_wheel_clamps_above_one(self):
+        m = MIDIInput(module_id=1)
+        m.set_mod_wheel(3.5)
+        assert m.snapshot_mod_wheel() == 1.0
+
+    def test_set_mod_wheel_clamps_below_zero(self):
+        # Unipolar - negative values are clamped to 0, not allowed through.
+        m = MIDIInput(module_id=1)
+        m.set_mod_wheel(-0.5)
+        assert m.snapshot_mod_wheel() == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Channel aftertouch (direct API - no mido required)
+# ---------------------------------------------------------------------------
+
+
+class TestAftertouch:
+    def test_default_aftertouch_is_zero(self):
+        m = MIDIInput(module_id=1)
+        assert m.snapshot_aftertouch() == 0.0
+
+    def test_set_aftertouch_round_trips(self):
+        m = MIDIInput(module_id=1)
+        m.set_aftertouch(0.6)
+        assert m.snapshot_aftertouch() == 0.6
+        m.set_aftertouch(1.0)
+        assert m.snapshot_aftertouch() == 1.0
+
+    def test_set_aftertouch_clamps_above_one(self):
+        m = MIDIInput(module_id=1)
+        m.set_aftertouch(2.5)
+        assert m.snapshot_aftertouch() == 1.0
+
+    def test_set_aftertouch_clamps_below_zero(self):
+        # Unipolar - aftertouch can't go below 0.
+        m = MIDIInput(module_id=1)
+        m.set_aftertouch(-0.3)
+        assert m.snapshot_aftertouch() == 0.0
+
+
+# ---------------------------------------------------------------------------
 # MIDI message handling via the callback path
 # ---------------------------------------------------------------------------
 
@@ -204,12 +325,62 @@ class TestOnMessage:
         )
         assert m.snapshot_active_notes() == {60: 1.0}
 
-    def test_pitchwheel_is_ignored(self):
-        # Pitch bend isn't wired yet — landing it would need a freq_cv
-        # output. For now it should be silently dropped.
+    def test_cc1_updates_mod_wheel(self):
         m = MIDIInput(module_id=1)
-        m._on_message(mido.Message("pitchwheel", pitch=8000, channel=0))
-        assert m.snapshot_active_notes() == {}
+        # Full mod wheel: value=127 -> 127/127 = 1.0
+        m._on_message(mido.Message("control_change", control=1, value=127, channel=0))
+        assert m.snapshot_mod_wheel() == 1.0
+        # Mid mod wheel: value=64 -> 64/127 ~= 0.504
+        m._on_message(mido.Message("control_change", control=1, value=64, channel=0))
+        assert abs(m.snapshot_mod_wheel() - 64 / 127) < 1e-6
+        # Wheel at rest
+        m._on_message(mido.Message("control_change", control=1, value=0, channel=0))
+        assert m.snapshot_mod_wheel() == 0.0
+
+    def test_cc1_does_not_clear_notes(self):
+        # Wheel motion is independent of held-note state.
+        m = MIDIInput(module_id=1)
+        m.note_on(60, 1.0)
+        m._on_message(mido.Message("control_change", control=1, value=100, channel=0))
+        assert m.snapshot_active_notes() == {60: 1.0}
+
+    def test_aftertouch_updates_pressure(self):
+        m = MIDIInput(module_id=1)
+        # Full pressure: value=127 -> 1.0
+        m._on_message(mido.Message("aftertouch", value=127, channel=0))
+        assert m.snapshot_aftertouch() == 1.0
+        # Half pressure
+        m._on_message(mido.Message("aftertouch", value=64, channel=0))
+        assert abs(m.snapshot_aftertouch() - 64 / 127) < 1e-6
+        # Release
+        m._on_message(mido.Message("aftertouch", value=0, channel=0))
+        assert m.snapshot_aftertouch() == 0.0
+
+    def test_aftertouch_does_not_clear_notes(self):
+        m = MIDIInput(module_id=1)
+        m.note_on(60, 1.0)
+        m._on_message(mido.Message("aftertouch", value=100, channel=0))
+        assert m.snapshot_active_notes() == {60: 1.0}
+
+    def test_pitchwheel_updates_pitch_bend(self):
+        m = MIDIInput(module_id=1)
+        # Full positive deflection: pitch=8191 -> 8191/8192 ~= 0.99988
+        m._on_message(mido.Message("pitchwheel", pitch=8191, channel=0))
+        assert abs(m.snapshot_pitch_bend() - 8191 / 8192) < 1e-6
+        # Full negative deflection: pitch=-8192 -> -1.0 exactly
+        m._on_message(mido.Message("pitchwheel", pitch=-8192, channel=0))
+        assert m.snapshot_pitch_bend() == -1.0
+        # Wheel at rest
+        m._on_message(mido.Message("pitchwheel", pitch=0, channel=0))
+        assert m.snapshot_pitch_bend() == 0.0
+
+    def test_pitchwheel_does_not_clear_notes(self):
+        # The wheel position is independent of held-note state - a bend
+        # while a note is held must not silence the note.
+        m = MIDIInput(module_id=1)
+        m.note_on(60, 1.0)
+        m._on_message(mido.Message("pitchwheel", pitch=4096, channel=0))
+        assert m.snapshot_active_notes() == {60: 1.0}
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +494,159 @@ class TestRendering:
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         result = backend._render_midi_input(midi, 512)
         assert float(np.max(result["gate"])) == pytest.approx(0.0)
+
+
+    def test_pitch_cv_emitted_when_centered(self):
+        # Wheel at rest -> pitch_cv buffer is all zeros, same length as frames.
+        _, midi = _build_simple_patch()
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        result = backend._render_midi_input(midi, 512)
+        assert "pitch_cv" in result
+        assert result["pitch_cv"].shape == (512,)
+        assert float(np.max(np.abs(result["pitch_cv"]))) == 0.0
+
+    def test_pitch_cv_value_matches_bend_range(self):
+        # bend=+1.0, range=2 semitones -> cv = 2/12 = 0.16666...
+        _, midi = _build_simple_patch()
+        midi.params["bend_range"] = 2.0
+        midi.set_pitch_bend(1.0)
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        result = backend._render_midi_input(midi, 512)
+        expected = 2.0 / 12.0
+        assert abs(float(result["pitch_cv"][0]) - expected) < 1e-6
+        # Block-constant - check the last sample too.
+        assert abs(float(result["pitch_cv"][-1]) - expected) < 1e-6
+
+    def test_pitch_cv_scales_with_bend_range(self):
+        # Larger bend_range -> larger cv at full deflection.
+        _, midi = _build_simple_patch()
+        midi.params["bend_range"] = 12.0  # one octave each way
+        midi.set_pitch_bend(1.0)
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        result = backend._render_midi_input(midi, 512)
+        # 12 semitones / 12 = 1.0 (one octave in 1V/oct units)
+        assert abs(float(result["pitch_cv"][0]) - 1.0) < 1e-6
+
+    def test_bend_shifts_internal_pitch(self):
+        # A note rendered with the wheel up should have audibly higher
+        # frequency than the same note with the wheel at rest. Detect
+        # via zero-crossing rate: higher freq -> more zero crossings.
+        patch, midi = _build_simple_patch()
+        midi.params["waveform"] = "sine"
+        midi.params["volume"] = 0.7
+        midi.params["bend_range"] = 12.0  # exaggerate so the test is robust
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        backend.compile(patch)
+        midi.note_on(60, 1.0)
+        _ = _run_blocks(backend, n=20)  # let envelope settle
+
+        midi.set_pitch_bend(0.0)
+        flat = _run_blocks(backend, n=2)[:, 0]
+        midi.set_pitch_bend(1.0)
+        bent = _run_blocks(backend, n=2)[:, 0]
+
+        def zero_crossings(x):
+            return int(np.sum(np.diff(np.signbit(x)) != 0))
+
+        flat_zc = zero_crossings(flat)
+        bent_zc = zero_crossings(bent)
+        # Up an octave should roughly double the zero-crossing count.
+        # Allow generous slack since the block straddles the bend change.
+        assert bent_zc > flat_zc * 1.4, (
+            f"pitch bend did not shift internal frequency: flat={flat_zc} bent={bent_zc}"
+        )
+
+
+    def test_mod_cv_zero_when_idle(self):
+        # Wheel at rest -> mod_cv buffer is all zeros, same length as frames.
+        _, midi = _build_simple_patch()
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        result = backend._render_midi_input(midi, 512)
+        assert "mod_cv" in result
+        assert result["mod_cv"].shape == (512,)
+        assert float(np.max(np.abs(result["mod_cv"]))) == 0.0
+
+    def test_mod_cv_matches_mod_scale(self):
+        # wheel=1.0, mod_scale=2.0 -> mod_cv buffer is filled with 2.0.
+        _, midi = _build_simple_patch()
+        midi.params["mod_scale"] = 2.0
+        midi.set_mod_wheel(1.0)
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        result = backend._render_midi_input(midi, 512)
+        assert abs(float(result["mod_cv"][0]) - 2.0) < 1e-6
+        # Block-constant - check the last sample too.
+        assert abs(float(result["mod_cv"][-1]) - 2.0) < 1e-6
+
+    def test_mod_cv_default_scale_is_passthrough(self):
+        # Default mod_scale=1.0, so cv tracks the wheel value verbatim.
+        _, midi = _build_simple_patch()
+        midi.set_mod_wheel(0.4)
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        result = backend._render_midi_input(midi, 512)
+        assert abs(float(result["mod_cv"][0]) - 0.4) < 1e-6
+
+    def test_mod_wheel_does_not_affect_internal_audio(self):
+        # Unlike pitch bend, mod wheel only emits cv - it does not modify
+        # the internal voice frequencies. Set the wheel and confirm the
+        # audio peak doesn't change beyond rendering noise.
+        patch, midi = _build_simple_patch()
+        midi.params["waveform"] = "sine"
+        midi.params["volume"] = 0.7
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        backend.compile(patch)
+        midi.note_on(60, 1.0)
+        _ = _run_blocks(backend, n=20)
+
+        midi.set_mod_wheel(0.0)
+        peak_idle = float(np.max(np.abs(_run_blocks(backend, n=2))))
+        midi.set_mod_wheel(1.0)
+        peak_full = float(np.max(np.abs(_run_blocks(backend, n=2))))
+
+        assert abs(peak_full - peak_idle) < 0.02, (
+            f"mod wheel should not affect audio: idle={peak_idle:.4f} full={peak_full:.4f}"
+        )
+
+
+    def test_pressure_cv_zero_when_idle(self):
+        _, midi = _build_simple_patch()
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        result = backend._render_midi_input(midi, 512)
+        assert "pressure_cv" in result
+        assert result["pressure_cv"].shape == (512,)
+        assert float(np.max(np.abs(result["pressure_cv"]))) == 0.0
+
+    def test_pressure_cv_matches_pressure_scale(self):
+        _, midi = _build_simple_patch()
+        midi.params["pressure_scale"] = 2.5
+        midi.set_aftertouch(1.0)
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        result = backend._render_midi_input(midi, 512)
+        assert abs(float(result["pressure_cv"][0]) - 2.5) < 1e-6
+        assert abs(float(result["pressure_cv"][-1]) - 2.5) < 1e-6
+
+    def test_pressure_cv_default_scale_is_passthrough(self):
+        _, midi = _build_simple_patch()
+        midi.set_aftertouch(0.7)
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        result = backend._render_midi_input(midi, 512)
+        assert abs(float(result["pressure_cv"][0]) - 0.7) < 1e-6
+
+    def test_aftertouch_does_not_affect_internal_audio(self):
+        # Like mod wheel, aftertouch only emits cv - it does not modify
+        # the internal voice frequencies or volumes.
+        patch, midi = _build_simple_patch()
+        midi.params["waveform"] = "sine"
+        midi.params["volume"] = 0.7
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        backend.compile(patch)
+        midi.note_on(60, 1.0)
+        _ = _run_blocks(backend, n=20)
+
+        midi.set_aftertouch(0.0)
+        peak_idle = float(np.max(np.abs(_run_blocks(backend, n=2))))
+        midi.set_aftertouch(1.0)
+        peak_full = float(np.max(np.abs(_run_blocks(backend, n=2))))
+        assert abs(peak_full - peak_idle) < 0.02
 
 
 # ---------------------------------------------------------------------------

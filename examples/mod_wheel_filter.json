@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "next_id": 4,
+  "modules": [
+    {
+      "id": 1,
+      "type": "midi_input",
+      "name": "MIDI Keys",
+      "params": {
+        "device": "",
+        "channel": 0,
+        "octave_shift": 0,
+        "velocity_sensitive": true,
+        "waveform": "saw",
+        "volume": 0.4,
+        "bend_range": 2.0,
+        "mod_scale": 2.0
+      }
+    },
+    {
+      "id": 2,
+      "type": "filter",
+      "name": "LPF (wheel opens cutoff)",
+      "params": {
+        "mode": "lowpass",
+        "cutoff": 200.0,
+        "resonance": 2.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "mod_cv",
+      "dst_module_id": 2,
+      "dst_port": "cutoff_cv"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "in"
+    }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [
+        60,
+        180
+      ],
+      "2": [
+        420,
+        220
+      ],
+      "3": [
+        780,
+        220
+      ]
+    }
+  }
+}
