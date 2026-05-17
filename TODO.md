@@ -57,6 +57,7 @@ Living list of what's next. Edit freely.
 - [x] MIDI follow-up: pitch bend → `pitch_cv` output port + internal voice bend, GM-standard `bend_range=2.0` (shipped 2026-05-15)
 - [x] MIDI follow-up: mod wheel (CC 1) → `mod_cv` output port + `mod_scale` param (shipped 2026-05-15)
 - [x] MIDI follow-up: channel aftertouch → `pressure_cv` output port + `pressure_scale` param (shipped 2026-05-15)
+- [x] Error handler integrated at GUI outermost catch + audio callback panic path; crashes written to `~/.pysynthrack/crashes/` (shipped 2026-05-15)
 - [ ] MIDI follow-up: sustain pedal (CC 64) — per-voice sustain flag inside MIDIInput; ships with the voice routing slice since it's per-voice state
 - [ ] PolyBLEP or wavetable anti-aliased osc shapes (replace naive saw/square)
 - [ ] CPU profile: pyo backend wired for the same modules so it's a drop-in fast path

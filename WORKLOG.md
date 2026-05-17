@@ -850,3 +850,97 @@ place; the only MIDI features still pending are sustain pedal
 (per-voice state, lands during voice routing) and polyphonic
 aftertouch (per-voice CV signal, the textbook motivation for
 voice-aware signals). Time to write the short voice routing RFC.
+
+---
+
+## 2026-05-15 (evening) — Error handler integrated at GUI + audio panic paths
+
+Matthew dropped in his ``error_handler.py`` plus the QUICKSTART/GUIDE
+docs. After a code review pass (it is genuinely well-built -- the
+never-raises contract is real, partial-failure tracking is the killer
+feature, ContextVar-scoped redactors handle thread/asyncio safety
+correctly, duck-typed ExceptionGroup support works pre-3.11), wired it
+into the two catch points where rich crash context actually earns its
+keep.
+
+**Integration points.**
+
+* ``ui/app.py:main()`` -- the GUI's outermost entry. Wrapped the
+  ``App().run()`` call in a ``try / except BaseException``. On any
+  uncaught exception, ``describe_error(e, include_locals=True)`` runs,
+  ``write_crash_report(report, source="gui")`` writes the heavy
+  ``for_claude()`` output to ``~/.pysynthrack/crashes/``, the path is
+  printed to stderr so the user can find the file, then the original
+  exception re-raises so the normal "non-zero exit, traceback in
+  terminal" behaviour is preserved. The crash file is additive, not a
+  replacement.
+* ``audio/numpy_backend.py:_audio_callback`` -- the realtime thread.
+  Two new sticky flags on ``NumpyBackend``: ``_render_disabled`` and
+  ``_crash_reported``, both reset on ``compile()``. The callback wraps
+  the ``render_block`` call: on first uncaught exception it calls
+  ``_handle_audio_crash`` (capture, write file, disable rendering),
+  then every block after that short-circuits at the
+  ``_render_disabled`` check and returns silence without re-attempting
+  the broken render. Avoids the "1000 crash files per second" failure
+  mode that's the obvious risk when you put rich error reporting in an
+  audio callback.
+
+**File placement.** Moved ``error_handler.py`` from the project root
+to ``src/pysynthrack/error_handler.py`` so it ships with
+``pip install -e .`` and is importable as
+``from pysynthrack.error_handler import describe_error``. Updated the
+QUICKSTART/GUIDE imports to match.
+
+**Crash file path.** ``~/.pysynthrack/crashes/crash_<timestamp>_<source>.txt``
+on every platform (``Path.home()`` resolves to ``USERPROFILE`` on
+Windows, ``$HOME`` elsewhere). Filename source is sanitised to safe
+chars so platform filename rules can't bite. The writer never raises
+-- mkdir failure, write failure, ``for_claude()`` failure all return
+``None`` and the caller continues.
+
+**Files added/changed:**
+
+- ``src/pysynthrack/error_handler.py`` -- MOVED from project root.
+- ``src/pysynthrack/_crash.py`` (new) -- ``write_crash_report`` and
+  ``crash_dir`` helpers. Leading underscore = internal-but-stable.
+- ``src/pysynthrack/ui/app.py`` -- ``main()`` wrapped with crash
+  reporter; on failure writes ``crash_<ts>_gui.txt`` and re-raises.
+- ``src/pysynthrack/audio/numpy_backend.py`` -- ``__init__`` adds two
+  sticky flags; ``compile()`` resets them; ``_audio_callback`` wraps
+  the render call; new ``_handle_audio_crash`` helper.
+- ``tests/test_crash.py`` (new) -- 11 tests covering filename shape,
+  path round-trip, directory creation, source sanitisation,
+  for_claude/str/placeholder fallback chain, unwritable-home survival,
+  and an integration test that runs describe_error through the writer
+  and confirms the resulting file contains the exception type.
+- ``tests/test_backend_crash.py`` (new) -- 8 tests covering: callback
+  returns silence on first crash, exactly one crash file per session,
+  subsequent blocks short-circuit, compile resets flags, init
+  defaults, crash helper survives writer failure, normal operation
+  unaffected by the wrapper.
+- ``error_handler_QUICKSTART.md`` / ``error_handler_GUIDE.md`` --
+  import paths updated from bare ``error_handler`` to
+  ``pysynthrack.error_handler`` to match the new location.
+
+**Verified in sandbox:** 211 tests pass + 13 mido-skipped (was
+192 passing). All 19 new tests green.
+
+**Counts.** Modules: 13 (unchanged). Examples: 19 (unchanged).
+Tests: 205 -> 224 (211 passing + 13 skipped).
+
+**What this changes for users.** When the GUI hard-exits (the DPG
+node-editor orphan-link bug class), the user now has a crash file
+they can paste into a chat instead of squinting at a dead terminal.
+When the audio thread blows up mid-DSP-experiment (NaN, shape
+mismatch, port-name typo), they get a clear "audio render crashed,
+silenced for the rest of this stream, report: <path>" message and a
+file with full traceback + locals + caller context, instead of an
+opaque PortAudio error pointing at the C extension boundary.
+
+**What this does NOT change.** Existing ad-hoc ``try/except`` calls
+in App.py (per-callback error logging, the ``_set_status`` fallback,
+etc.) stay exactly as they were -- the outermost catch is the safety
+net of last resort, not a replacement for inline handling. Same with
+``set_param`` validation, file-dialog error reporting, recompile
+guards. The error handler is opt-in heavy machinery for the catch
+sites that earn it.

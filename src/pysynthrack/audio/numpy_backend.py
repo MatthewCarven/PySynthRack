@@ -62,6 +62,15 @@ class NumpyBackend(AudioBackend):
         self._stream: Any = None
         # GUI thread writes the patch reference; audio thread reads it.
         self._lock = threading.Lock()
+        # Audio-callback crash protection. After the first uncaught
+        # exception in render_block, _render_disabled goes True and the
+        # callback returns silence forever after rather than re-raising
+        # into sounddevice's audio thread (which usually kills the
+        # stream with a less useful traceback). The crash is captured
+        # exactly once via _crash_reported - both flags reset on
+        # compile() so a recompile gets a fresh chance.
+        self._render_disabled: bool = False
+        self._crash_reported: bool = False
 
     # ----- availability ----------------------------------------------------
 
@@ -75,6 +84,10 @@ class NumpyBackend(AudioBackend):
         with self._lock:
             self._patch = patch
             self._topo_order = self._topological_sort(patch)
+            # Recompile = a fresh chance. Clear any sticky crash state
+            # from the previous patch so audio resumes on the new graph.
+            self._render_disabled = False
+            self._crash_reported = False
             # Drop state for modules that no longer exist, or whose type
             # has changed since the previous compile (the patch-swap case
             # — two patches both numbering from id=1 with different module
@@ -210,11 +223,72 @@ class NumpyBackend(AudioBackend):
     def _audio_callback(self, outdata: np.ndarray, frames: int, time, status) -> None:
         if status:
             print(f"[NumpyBackend] stream status: {status}")
-        out = self.render_block(frames)
+        if self._render_disabled:
+            outdata.fill(0.0)
+            return
+        try:
+            out = self.render_block(frames)
+        except BaseException as e:
+            # First uncaught exception in render_block: capture a heavy
+            # report, write it out, and disable rendering for the rest
+            # of this stream. Calling describe_error from inside the
+            # audio thread is fine - it never raises, and the cost is
+            # paid once (subsequent blocks short-circuit at the
+            # _render_disabled check above).
+            self._handle_audio_crash(e)
+            outdata.fill(0.0)
+            return
         if out is None:
             outdata.fill(0.0)
             return
         outdata[:] = out
+
+    def _handle_audio_crash(self, exc: BaseException) -> None:
+        """Called from the audio callback on the first render_block
+        failure. Captures a crash report, writes it to the user's
+        profile crash directory, and sets the sticky disable flag so
+        subsequent blocks return silence without re-attempting the
+        broken render. Idempotent - the first call does the work,
+        subsequent calls are no-ops (the flag check below)."""
+        self._render_disabled = True
+        if self._crash_reported:
+            return
+        self._crash_reported = True
+        try:
+            import sys as _sys
+            from ..error_handler import describe_error
+            from .._crash import write_crash_report
+            report = describe_error(exc, include_locals=True)
+            path = write_crash_report(report, source="audio_callback")
+            if path:
+                print(
+                    f"[NumpyBackend] audio render crashed: "
+                    f"{type(exc).__name__}: {exc}\n"
+                    f"  Silenced for the rest of this stream. "
+                    f"Report: {path}",
+                    file=_sys.stderr,
+                )
+            else:
+                print(
+                    f"[NumpyBackend] audio render crashed "
+                    f"({type(exc).__name__}: {exc}); "
+                    f"crash report could not be written.",
+                    file=_sys.stderr,
+                )
+        except BaseException:
+            # Crash reporter itself failed. Last-ditch: print whatever
+            # we can about the original exception so the audio thread
+            # at least leaves a breadcrumb in stderr before silencing.
+            import sys as _sys
+            try:
+                print(
+                    f"[NumpyBackend] audio render crashed AND crash "
+                    f"reporter failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=_sys.stderr,
+                )
+            except BaseException:
+                pass
 
     def render_block(self, frames: int) -> np.ndarray | None:
         """Pure-function rendering of one block. Used by the audio callback

@@ -758,7 +758,46 @@ class App:
 
 
 def main() -> None:
-    App().run()
+    """GUI entry point with crash protection.
+
+    Wraps ``App().run()`` in a try/except so any uncaught exception (DPG
+    hard-exit territory, viewport setup failures, callback explosions,
+    anything that escapes the per-callback try/except'es scattered
+    through App) gets written out as a heavy crash report to
+    ~/.pysynthrack/crashes/ before the process dies. The user gets a
+    pointer to the file on stderr so they can paste it into a chat for
+    diagnosis.
+
+    The crash reporter itself is wrapped in another try/except so a
+    failure inside describe_error or write_crash_report falls back to a
+    plain traceback rather than swallowing the original exception. The
+    final ``raise`` preserves the normal "non-zero exit, traceback in
+    terminal" behaviour - the crash file is additive, not a
+    replacement.
+    """
+    try:
+        App().run()
+    except BaseException as e:
+        try:
+            from ..error_handler import describe_error
+            from .._crash import write_crash_report
+            report = describe_error(e, include_locals=True)
+            path = write_crash_report(report, source="gui")
+            print(
+                f"[pysynthrack] Fatal GUI error: {type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
+            if path:
+                print(
+                    f"[pysynthrack] Crash report written to:\n  {path}\n"
+                    "  Share this file when reporting the bug.",
+                    file=sys.stderr,
+                )
+        except BaseException:
+            # Crash reporter itself failed - fall back to a normal
+            # traceback so the user at least sees the original error.
+            traceback.print_exc()
+        raise
 
 
 if __name__ == "__main__":  # pragma: no cover - GUI entry
