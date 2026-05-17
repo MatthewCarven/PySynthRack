@@ -31,6 +31,9 @@ The model layer is intentionally backend-agnostic. The UI edits the model. The b
 
 See `docs/architecture.md` for the longer write-up.
 
+## Windows Binary
+https://drive.google.com/file/d/1rM69rwT8YW5tqquJZ126CUD4lJsgooyq/view?usp=sharing
+
 ## Installation (Windows)
 
 PySynthRack splits its dependencies so the audio engine can be installed on any Python version, while the GUI (DearPyGui) is optional — DPG sometimes lags on bleeding-edge Python releases.
