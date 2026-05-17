@@ -24,13 +24,14 @@ from typing import Optional
 # Ensure module types register themselves.
 import pysynthrack.modules  # noqa: F401
 
+from ._resources import examples_dir
 from .audio import pick_backend
 from .io_patch import load_patch
 
 
-DEFAULT_PATCH = (
-    Path(__file__).resolve().parent.parent.parent / "examples" / "hello_sine.json"
-)
+def _default_patch() -> Path:
+    """Resolve the default patch lazily so frozen builds pick it up correctly."""
+    return examples_dir() / "hello_sine.json"
 
 
 def run_cli(
@@ -39,7 +40,7 @@ def run_cli(
     backend_name: Optional[str] = None,
 ) -> int:
     """Run a patch headlessly. Returns a process exit code."""
-    target = Path(patch_path) if patch_path else DEFAULT_PATCH
+    target = Path(patch_path) if patch_path else _default_patch()
     if not target.is_file():
         print(f"error: patch file not found: {target}", file=sys.stderr)
         return 2

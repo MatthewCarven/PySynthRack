@@ -944,3 +944,324 @@ net of last resort, not a replacement for inline handling. Same with
 ``set_param`` validation, file-dialog error reporting, recompile
 guards. The error handler is opt-in heavy machinery for the catch
 sites that earn it.
+
+
+## 2026-05-17 -- Packaging: single-file Windows .exe + bundled examples
+
+**Goal.** Hand someone a single ``.exe`` they can double-click without
+needing Python, uv, or the source tree.  Examples should travel with it
+read-only so the bundled patches always exist alongside whatever the user
+saves locally.
+
+**Approach.**
+
+1.  ``src/pysynthrack/_resources.py`` -- tiny dependency-free helper with
+    ``is_frozen()``, ``resource_root()`` and ``examples_dir()``.  Resolves
+    bundled-data paths via ``sys._MEIPASS`` when frozen and via the source
+    tree otherwise.  Both ``cli.py`` and ``ui/app.py`` now go through it
+    so the same code works in source mode and in the packaged build.
+
+2.  ``packaging/entry.py`` -- the PyInstaller script entry point.  Lives
+    outside the package so PyInstaller sees it as a top-level script;
+    delegates straight to ``pysynthrack.__main__.main`` so the GUI/CLI
+    dispatch, crash handler and DPG fallback all stay in one place.
+    Source-mode runs still work via a sys.path injection guarded by the
+    ``frozen`` check.
+
+3.  Two spec files at the project root:
+
+    -  ``pysynthrack.spec`` -- ``console=False``, name ``PySynthRack``.
+       This is the distribution build.
+    -  ``pysynthrack-cli.spec`` -- ``console=True``, name
+       ``PySynthRack-cli``.  Use it when debugging the packaged build;
+       stderr/print are visible.
+
+    Both bundle the ``examples/`` directory and pull in
+    ``mido.backends.rtmidi`` as a hidden import (mido picks backends by
+    string so PyInstaller's static analyser misses it).  ``pyo`` is
+    excluded explicitly to keep the binary small; drop the exclude in
+    the spec if you want it bundled.
+
+4.  ``build.ps1`` / ``build_cli.ps1`` -- PowerShell wrappers that activate
+    ``.venv``, install pyinstaller via ``uv pip install`` if missing,
+    clean ``build\`` + ``dist\``, run pyinstaller, and print the output
+    path + size.
+
+**Files added/changed:**
+
+-  ``src/pysynthrack/_resources.py`` (new, 1875 bytes)
+-  ``src/pysynthrack/cli.py`` -- ``DEFAULT_PATCH`` replaced by
+   ``_default_patch()`` that resolves through ``examples_dir()``.
+-  ``src/pysynthrack/ui/app.py`` -- ``DEFAULT_PATCH_PATH`` switched
+   to ``str(examples_dir() / "hello_sine.json")``.
+-  ``packaging/entry.py`` (new)
+-  ``pysynthrack.spec`` (new, windowed)
+-  ``pysynthrack-cli.spec`` (new, console)
+-  ``build.ps1`` (new)
+-  ``build_cli.ps1`` (new)
+
+**Verified.** ``PYTHONPATH=src python -m pytest`` still 211 passed +
+13 mido-skipped after the refactor.  ``_resources.examples_dir()``
+resolves to the project root in source mode; ``_default_patch()`` and
+``DEFAULT_PATCH_PATH`` both point at the real ``hello_sine.json``;
+``packaging/entry.py --help`` prints the expected arg parser.
+
+**What to run on a Windows box:**
+
+::
+
+    cd "<project root>"
+    .\build.ps1           # produces dist\PySynthRack.exe
+    .\dist\PySynthRack.exe
+
+**Known caveat.** First-time pyinstaller runs on Windows can be a few
+minutes -- numpy/DPG/sounddevice are bulky.  Subsequent builds are
+faster.  If startup feels slow on the user's machine it is the
+one-file extract-to-tempdir step; the trade-off was conscious (single
+file > fast cold start for hobby distribution).
+
+**Not bundled.** The ``error_handler_QUICKSTART.md`` /
+``error_handler_GUIDE.md`` developer docs.  They're for someone hacking
+on the source, not for an end user double-clicking the exe.
+
+
+## 2026-05-17 -- Packaging hotfix: silent-exit diagnosis
+
+**Symptom.** First windowed build (`dist/PySynthRack.exe`) silently
+exits on launch.  No crash log in `~/.pysynthrack/crashes/`.
+
+**Why the existing safety net missed it.**
+
+-   The GUI catch lives *inside* `ui/app.py:main()`.  If anything blows
+    up before that try-block opens -- an `ImportError` of dearpygui, a
+    missing native DLL during import, a `print(file=sys.stderr)` call
+    when `sys.stderr is None` in windowed mode -- the exception escapes
+    and the bootloader just exits.
+-   PyInstaller windowed builds (`console=False`) set both
+    `sys.stdout` and `sys.stderr` to `None`.  Any
+    `print(..., file=sys.stderr)` in the existing
+    `__main__.py`/`cli.py` fallback paths then raises
+    `AttributeError`, which since it sits OUTSIDE the catch is just
+    "process dies, no output, no file."
+
+**Fix.** Hardened `packaging/entry.py` so it survives all three:
+
+1.  Null-stream guard runs first.  `sys.stdout`/`sys.stderr` get
+    replaced by `os.devnull` writers if they're `None`, so existing
+    package code that does `print(file=sys.stderr)` becomes a no-op
+    instead of fatal.
+2.  Startup ping.  Before importing the package we drop
+    `~/.pysynthrack/crashes/_last_startup.txt` with python version,
+    `_MEIPASS`, argv, etc.  If the user sees a silent exit AND this
+    file isn't there, the failure is below the Python layer (bootloader,
+    antivirus, missing portaudio DLL preventing module import).
+3.  Two-tier outer catch.  Pure-stdlib `_emergency_dump` writes a
+    `crash_<ts>_<source>_emergency.txt` even if the package fails to
+    import or `describe_error` itself errors.  We try the heavy
+    `describe_error` + `write_crash_report` combo first, fall back to
+    `_emergency_dump` only if that explodes.
+
+**Spec hardening too.** `pysynthrack.spec` (and the CLI variant) now
+`collect_all` from `sounddevice`, `dearpygui`, and (best-effort)
+`rtmidi` instead of using the lighter `collect_dynamic_libs` +
+`collect_data_files` combo.  Heavier on disk but much less likely to
+miss a native `.pyd` or DLL.  This was the most likely silent-exit
+cause for a first-time build.
+
+**Diagnostic flow for next attempt:**
+
+1.  `Remove-Item -Recurse -Force build, dist` (always do a clean
+    rebuild after spec changes -- PyInstaller's incremental cache lies).
+2.  `.uild.ps1` and `.\dist\PySynthRack.exe`.
+3.  Check `%USERPROFILE%\.pysynthrack\crashes\` -- you should now see
+    `_last_startup.txt` at minimum.
+    -   If `_last_startup.txt` exists and a `crash_*.txt` file appeared:
+        open the crash file; the traceback names the offender.
+    -   If `_last_startup.txt` exists but NO crash file: the process
+        deadlocked or was killed externally; try the CLI build.
+    -   If `_last_startup.txt` is still missing: the failure is below
+        Python.  Run `.uild_cli.ps1` then
+        `.\dist\PySynthRack-cli.exe` in a terminal; the bootloader will
+        print its complaint to stderr.
+
+**Status.** Tests still 211 passed + 13 mido-skipped after the
+hardening.  Source mode unchanged; only frozen builds benefit from
+the new entry-level catches.
+
+
+## 2026-05-17 -- Packaging hotfix #2: the uv pitfall struck again
+
+**Diagnosis.** Hardened entry.py's checkpoint log showed:
+
+::
+
+    about to import sounddevice
+    import sounddevice FAILED: ModuleNotFoundError: No module named 'sounddevice'
+    about to import mido
+    import mido FAILED: ModuleNotFoundError: No module named 'mido'
+    about to import rtmidi
+    import rtmidi FAILED: ModuleNotFoundError: No module named 'rtmidi'
+    about to import dearpygui
+    import dearpygui FAILED: ModuleNotFoundError: No module named 'dearpygui'
+    pysynthrack.main() returned 3
+
+So PyInstaller bundled the exe with NONE of the optional/extra deps
+inside.  The exe ran, fell through GUI -> CLI (no DPG), then CLI tried
+``pick_backend()`` (no sounddevice) and returned exit code 3 from
+``cli.py``.
+
+**Why.** The deps live under pyproject extras (``[gui]``, ``[midi]``).
+PyInstaller only bundles what's installed in the python it's run from.
+A plain ``pip install -e .[all]`` inside a uv venv on Windows often
+silently hits SYSTEM python instead -- the deps end up there, not in
+``.venv``.  This is the documented uv pitfall already in memory; the
+build script wasn't yet defending against it.
+
+**Fix.**  ``build.ps1`` and ``build_cli.ps1`` now do a pre-flight:
+
+1.  Call ``.venv\Scripts\python.exe`` directly (not via PATH lookup)
+    and print which interpreter is being used.  Confirms it's the
+    venv, not a stray system one.
+2.  Try ``import X`` for each required module
+    (``numpy``, ``sounddevice``, ``dearpygui.dearpygui``, ``mido``,
+    ``rtmidi``) under that interpreter.
+3.  If any are missing: abort the build, print the missing packages
+    in red, and print the exact ``uv pip install`` command to fix it.
+4.  Invoke pyinstaller as ``$venvPython -m PyInstaller`` rather than a
+    bare ``pyinstaller`` shellout, so the build provably runs under
+    the venv even if ``pyinstaller.exe`` shim resolution is funky.
+
+The checkpoint log additions to ``entry.py`` stay -- they're what made
+this debuggable, and they cost nothing on each launch (one file with a
+dozen lines).
+
+**For Matthew on next build.**
+
+::
+
+    uv pip install -e ".[all]"     # one-time, gets gui+midi+pyo extras
+
+    Remove-Item -Recurse -Force .\build, .\dist
+    .\build.ps1                    # pre-flight will catch any remaining gap
+
+
+## 2026-05-17 -- Packaging hotfix #3: pyo dragged the install down
+
+**What happened.** Matthew ran ``uv pip install -e ".[all]"``, which
+tried to install pyo, mido, python-rtmidi and dearpygui together.
+Pyo has no Python 3.14 wheel and its source build needs an external
+C toolchain that isn't on the box:
+
+::
+
+    × Failed to build `pyo==1.0.5`
+    error: [WinError 2] The system cannot find the file specified
+    help: `pyo` (v1.0.5) was included because `pysynthrack[all]` (v0.1.0) depends on `pyo`
+
+uv installs atomically -- when pyo failed, ``dearpygui``, ``mido``
+and ``rtmidi`` got rolled back too.  That left the venv with zero
+runtime deps, and the next build silently fell back to system Python
+which didn't have them either (build output showed
+``Python environment: C:\Program Files\Python314``).
+
+**Fix.** ``pyproject.toml``: dropped pyo from the ``[all]`` extra.
+
+Before:
+
+::
+
+    all = ["dearpygui>=1.10", "pyo>=1.0.5", "mido>=1.3", "python-rtmidi>=1.5"]
+
+After:
+
+::
+
+    all = ["dearpygui>=1.10", "mido>=1.3", "python-rtmidi>=1.5"]
+
+Pyo stays available under its own ``[pyo]`` extra for users on
+supported Pythons -- it's still the alternate audio backend the
+project supports, just not part of the "install everything for a
+normal user" path.  The numpy backend is the canonical default
+anyway.
+
+**Also.** Build output revealed the system-Python fallback path was
+real -- ``pygame-ce 2.5.7`` showed up in PyInstaller's banner (we
+don't depend on pygame), and the module search path included
+``C:\Program Files\Python314\Lib\site-packages``.  The new
+``build.ps1`` pre-flight will refuse to build in that situation
+because the missing imports will trip the ``[MISSING]`` red-text
+output and abort.
+
+**Next steps for Matthew:**
+
+::
+
+    # 1. Confirm build.ps1 is the 4521-byte version with pre-flight
+    Get-Item .\build.ps1 | Select-Object Length
+
+    # 2. Re-create or refresh the venv if uv left it in a partial state
+    uv venv .venv --python 3.14
+    uv pip install -e ".[all]"          # now succeeds without pyo
+
+    # 3. Clean rebuild
+    Remove-Item -Recurse -Force .\build, .\dist -ErrorAction SilentlyContinue
+    .\build.ps1
+
+The pre-flight should now print:
+
+::
+
+    Building with: ...\.venv\Scripts\python.exe
+      [ok]      numpy
+      [ok]      sounddevice
+      [ok]      dearpygui.dearpygui
+      [ok]      mido
+      [ok]      rtmidi
+    pyinstaller 6.20.0
+
+If any line says ``[MISSING]``, the build aborts -- look at which one
+and ``uv pip install`` it explicitly.
+
+
+## 2026-05-17 -- Packaging hotfix #4: Python 3.13 build venv
+
+**Second hard stop, same shape:** ``python-rtmidi==1.5.8`` has no
+Python 3.14 wheel either; uv fell back to source build, which needs
+MSVC.  No MSVC on the box, so the install failed and uv rolled the
+whole transaction back -- venv empty again.
+
+**Decision.** Pin the build venv to **Python 3.13**.  Source tree
+still targets ``>=3.9`` per pyproject; this is purely about which
+interpreter the ``.venv`` uses for packaging.
+
+3.13 has prebuilt wheels for everything in ``[all]`` (dearpygui,
+mido, python-rtmidi, sounddevice).  Pyo also has 3.13 wheels if we
+ever want it back, but it stays under its own ``[pyo]`` extra.
+
+**Saved as project memory** (``project_build_venv_python_313.md``)
+so future Claude sessions don't recommend ``--python 3.14`` again.
+
+**Also fixed:** ``build.ps1`` had a PowerShell bug -- the per-module
+import check was sending Python's missing-module traceback to stderr,
+and with ``$ErrorActionPreference = "Stop"`` PowerShell 7.4+ treats
+native command stderr as a terminating error.  Rewrote the pre-flight
+to use a SINGLE python invocation that catches imports internally and
+writes structured ``OK\tmod\tpkg`` / ``MISSING\tmod\tpkg\treason``
+lines to stdout.  PowerShell parses the stdout instead of being
+ambushed by the stderr.  Also added
+``$PSNativeCommandUseErrorActionPreference = $false`` at the top of
+the script as a belt for the suspenders.
+
+**For Matthew on next attempt:**
+
+::
+
+    # Nuke the 3.14 venv, replace with 3.13
+    Remove-Item -Recurse -Force .\.venv
+    uv venv .venv --python 3.13
+    .\.venv\Scripts\Activate.ps1
+    uv pip install -e ".[all]" pyinstaller
+
+    # Clean rebuild
+    Remove-Item -Recurse -Force .\build, .\dist -ErrorAction SilentlyContinue
+    .\build.ps1

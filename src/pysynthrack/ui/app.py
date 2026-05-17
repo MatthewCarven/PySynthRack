@@ -63,11 +63,9 @@ AUDIO_BTN_TAG = "audio_btn"
 STATUS_TEXT_TAG = "status_text"
 MAIN_WINDOW_TAG = "main_window"
 
-DEFAULT_PATCH_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
-    "examples",
-    "hello_sine.json",
-)
+from .._resources import examples_dir
+
+DEFAULT_PATCH_PATH = str(examples_dir() / "hello_sine.json")
 
 
 class App:
