@@ -280,6 +280,161 @@ class TestAftertouch:
 
 
 # ---------------------------------------------------------------------------
+# Sustain pedal (direct API and CC 64)
+# ---------------------------------------------------------------------------
+
+
+class TestSustainPedalDirect:
+    """Sustain pedal state mutation via the direct set_sustain API.
+
+    These tests bypass the mido callback so they run even without the
+    [midi] extra installed. Behavior under MIDI messages is covered in
+    TestSustainPedalViaCC further down.
+    """
+
+    def test_default_pedal_off(self):
+        m = MIDIInput(module_id=1)
+        assert m.snapshot_sustain_pedal() is False
+
+    def test_set_sustain_round_trips(self):
+        m = MIDIInput(module_id=1)
+        m.set_sustain(True)
+        assert m.snapshot_sustain_pedal() is True
+        m.set_sustain(False)
+        assert m.snapshot_sustain_pedal() is False
+
+    def test_note_off_with_pedal_down_keeps_voice_gating(self):
+        # Press a note, depress pedal, release the key — the slot
+        # should still be gating (gate stays high). snapshot_active_notes
+        # is the held-keys view, so it drops the note; snapshot_voice_slots
+        # is what the renderer will use, and there the gating flag stays
+        # true.
+        m = MIDIInput(module_id=1)
+        m.note_on(60, 1.0)
+        m.set_sustain(True)
+        m.note_off(60)
+        # Key is up — held-keys view is now empty.
+        assert m.snapshot_active_notes() == {}
+        # But the slot is still sustained.
+        slots = m.snapshot_voice_slots()
+        gating = [s for s in slots if s["gating"]]
+        assert len(gating) == 1
+        assert gating[0]["note"] == 60
+        assert gating[0]["sustained"] is True
+
+    def test_pedal_up_drops_sustained_voices(self):
+        m = MIDIInput(module_id=1)
+        m.note_on(60, 1.0)
+        m.set_sustain(True)
+        m.note_off(60)
+        # Slot sustained — still gating.
+        assert any(s["gating"] for s in m.snapshot_voice_slots())
+        # Lift the pedal.
+        m.set_sustain(False)
+        # Nothing should be gating now.
+        assert not any(s["gating"] for s in m.snapshot_voice_slots())
+
+    def test_pedal_does_not_affect_held_keys(self):
+        # Pedal while keys are still down must leave them held.
+        m = MIDIInput(module_id=1)
+        m.note_on(60, 1.0)
+        m.set_sustain(True)
+        m.set_sustain(False)
+        # Note 60 was never released — should still be held.
+        assert m.snapshot_active_notes() == {60: 1.0}
+
+
+class TestVoiceSlotsSnapshot:
+    """The new snapshot_voice_slots() API used by the polyphonic renderer."""
+
+    def test_initial_snapshot_is_all_empty(self):
+        m = MIDIInput(module_id=1)
+        slots = m.snapshot_voice_slots()
+        assert len(slots) == 16
+        assert all(s["note"] == -1 for s in slots)
+        assert all(not s["gating"] for s in slots)
+
+    def test_three_notes_populate_three_slots(self):
+        m = MIDIInput(module_id=1)
+        for n in (60, 64, 67):
+            m.note_on(n, 1.0)
+        slots = m.snapshot_voice_slots()
+        gating = [s for s in slots if s["gating"]]
+        assert len(gating) == 3
+        assert {s["note"] for s in gating} == {60, 64, 67}
+
+    def test_octave_shift_is_applied_to_slot_note(self):
+        m = MIDIInput(module_id=1)
+        m.params["octave_shift"] = 1
+        m.note_on(60, 1.0)
+        slots = m.snapshot_voice_slots()
+        gating = [s for s in slots if s["gating"]]
+        assert len(gating) == 1
+        assert gating[0]["note"] == 72
+
+
+# ---------------------------------------------------------------------------
+# Sustain pedal via MIDI CC 64
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _MIDO_AVAILABLE, reason="mido not installed")
+class TestSustainPedalViaCC:
+    def test_cc64_value_127_engages_pedal(self):
+        m = MIDIInput(module_id=1)
+        m._on_message(
+            mido.Message("control_change", control=64, value=127, channel=0)
+        )
+        assert m.snapshot_sustain_pedal() is True
+
+    def test_cc64_value_64_engages_pedal(self):
+        # MIDI spec: 64 is the on/off boundary; >= 64 = on.
+        m = MIDIInput(module_id=1)
+        m._on_message(
+            mido.Message("control_change", control=64, value=64, channel=0)
+        )
+        assert m.snapshot_sustain_pedal() is True
+
+    def test_cc64_value_63_releases_pedal(self):
+        m = MIDIInput(module_id=1)
+        # First engage.
+        m._on_message(
+            mido.Message("control_change", control=64, value=127, channel=0)
+        )
+        # Then send 63 — should be treated as off.
+        m._on_message(
+            mido.Message("control_change", control=64, value=63, channel=0)
+        )
+        assert m.snapshot_sustain_pedal() is False
+
+    def test_cc64_value_0_releases_pedal(self):
+        m = MIDIInput(module_id=1)
+        m._on_message(
+            mido.Message("control_change", control=64, value=127, channel=0)
+        )
+        m._on_message(
+            mido.Message("control_change", control=64, value=0, channel=0)
+        )
+        assert m.snapshot_sustain_pedal() is False
+
+    def test_full_pedal_workflow_via_messages(self):
+        # Note on, pedal down, note off (sustained), pedal up.
+        m = MIDIInput(module_id=1)
+        m._on_message(mido.Message("note_on", note=60, velocity=100, channel=0))
+        m._on_message(
+            mido.Message("control_change", control=64, value=127, channel=0)
+        )
+        m._on_message(mido.Message("note_off", note=60, velocity=64, channel=0))
+        # Sustained — still gating.
+        assert any(s["gating"] for s in m.snapshot_voice_slots())
+        # Pedal up.
+        m._on_message(
+            mido.Message("control_change", control=64, value=0, channel=0)
+        )
+        assert not any(s["gating"] for s in m.snapshot_voice_slots())
+
+
+# ---------------------------------------------------------------------------
 # MIDI message handling via the callback path
 # ---------------------------------------------------------------------------
 
@@ -318,10 +473,10 @@ class TestOnMessage:
     def test_other_cc_is_ignored(self):
         m = MIDIInput(module_id=1)
         m.note_on(60, 1.0)
-        # CC 64 (sustain) is intentionally not handled in this slice;
-        # it must not clear active notes.
+        # CC 5 (portamento time) is genuinely unhandled — must not
+        # disturb note state or any controller-state mirror.
         m._on_message(
-            mido.Message("control_change", control=64, value=127, channel=0)
+            mido.Message("control_change", control=5, value=127, channel=0)
         )
         assert m.snapshot_active_notes() == {60: 1.0}
 

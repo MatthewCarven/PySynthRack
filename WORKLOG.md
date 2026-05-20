@@ -1265,3 +1265,106 @@ the script as a belt for the suspenders.
     # Clean rebuild
     Remove-Item -Recurse -Force .\build, .\dist -ErrorAction SilentlyContinue
     .\build.ps1
+
+
+## 2026-05-20 -- Voice routing slice 1: VoiceSlots allocator + sustain pedal
+
+**What.** First slice of the v0.4 voice-routing work landed.  This one
+is **model-layer only** — no renderer changes, no buffer-shape changes.
+The audio path still goes through ``snapshot_active_notes()`` and
+produces mono buffers exactly as before.  What changes is what's behind
+``active_notes``: a proper 16-slot polyphonic voice allocator with
+stable slot indices, voice steal, and sustain pedal support.
+
+Also Matthew confirmed the two open design questions before the slice
+started: **fixed 16 slots, zero-pad silent ones** (not variable-V) and
+**keep the mono fast path** in every stateful module once they're
+migrated (not "broadcast everything to (16, frames)").
+
+**New file: ``src/pysynthrack/core/voicing.py``** (236 lines)
+
+The ``VoiceSlots`` class.  Each slot is in one of four states:
+
+* **Empty** — ``note == -1``, never been used (or cleared by panic).
+* **Held** — key currently down.
+* **Sustained** — key released, sustain pedal down, slot stays gating.
+* **Released** — key released, pedal not engaged.  ``note != -1`` so
+  the renderer's per-slot state (oscillator phase, ADSR tail, biquad
+  memory) keeps emitting until the slot is reused.
+
+Voice steal evicts in order: oldest released → oldest sustained →
+oldest held.  "Oldest" = lowest age counter, where age increments on
+every allocation.  A retrigger of an already-held note reuses its slot
+(updates velocity, doesn't burn a fresh voice).  Replaying a note while
+its previous instance is still releasing allocates a FRESH slot — the
+dying voice keeps its tail.
+
+``snapshot()`` returns a length-16 list of ``VoiceSnapshot`` dicts;
+empty slots are present with ``note=-1`` and ``gating=False`` so the
+renderer can iterate as a fixed loop of 16 without any "which slots
+are alive" bookkeeping.  ``held_notes()`` returns
+``{note: velocity}`` for slots whose key is physically down — that's
+what backs the preserved ``snapshot_active_notes()`` semantics on
+``MIDIInput``.
+
+No lock — the owner (MIDIInput) holds its own lock around every
+mutation.  Keeps lock ownership single-sourced.
+
+**Updated: ``src/pysynthrack/modules/midiinput.py``** (466 lines)
+
+* ``self.active_notes: dict`` replaced with ``self.voices: VoiceSlots``.
+* ``note_on``, ``note_off``, ``all_notes_off`` delegate to the
+  allocator under ``self._lock``.
+* ``snapshot_active_notes()`` proxies to ``voices.held_notes()``.
+  Stable across the migration — the audio renderer doesn't notice
+  anything has changed, and every existing test still passes.
+* ``snapshot_voice_slots()`` is the new path the voice-aware renderer
+  will use in slice 2.
+* CC 64 (sustain pedal) is now handled in ``_on_message`` with the
+  standard MIDI threshold (>= 64 = on).
+* ``set_sustain(on)`` and ``snapshot_sustain_pedal()`` on the module
+  delegate to the allocator.
+* ``stop_midi()`` resets pedal state alongside the existing
+  pitch/mod/aftertouch reset, so a stuck pedal can't leak across
+  sessions.
+
+**New file: ``tests/test_voicing.py``** (304 lines, 25 tests, all pass)
+
+Allocator semantics — initial-empty / consecutive-slot assignment /
+retrigger reuse / fresh-slot on replay-after-release.  Release —
+unheld-no-op / multi-slot disambiguation.  Sustain pedal — default off /
+release-with-pedal-down marks sustained / pedal-up drops sustained /
+held-keys unaffected by pedal / classic "puddle of pedal" workflow.
+Voice steal — released-first / released-over-sustained / falls-through-
+to-held-when-all-keys-down.  Panic — clears every slot / clears
+sustained / does NOT reset pedal state (per CC 123 spec).  Held-notes
+view — only-held / sustained-not-held.  Snapshot — always 16 long /
+mutating returned copy is safe / gating collapses held+sustained.
+
+**Updated: ``tests/test_midi_input.py``** (824 lines, 78 tests, all pass)
+
+Added ``TestSustainPedalDirect`` (5 tests), ``TestVoiceSlotsSnapshot``
+(3 tests), ``TestSustainPedalViaCC`` (5 tests, mido-gated).  Retargeted
+the now-stale "CC 64 is intentionally not handled" test to use CC 5
+(portamento time) which IS still genuinely unhandled.  Every existing
+rendering test continues to pass — that's the proof the renderer
+contract didn't drift.
+
+**Sandbox + verify protocol followed** per the mount memory.  Staged
+all four files in ``/tmp/staging``, AST-parsed each, ran pytest in a
+copy-of-tree (78 + 25 = 103 tests pass), then copied to the mount with
+``cp`` (per the "heredoc, not Edit" pattern) and re-AST-parsed on the
+mount to confirm no truncation.  MD5 sums match between sandbox and
+mount for every file.
+
+**What slice 2 looks like** (next session):
+
+* Polyphonic ``_render_midi_input``: read ``snapshot_voice_slots()``,
+  emit ``out``/``gate``/``pitch_cv`` as ``(16, frames)``.  ``mod_cv``
+  and ``pressure_cv`` stay ``(frames,)`` — channel-wide by MIDI spec.
+  Per-slot phase + env state.  Silent slots zero-fill.
+* Speaker + DiskWriter: one-line voice-axis sum at the sink boundary
+  (``if buf.ndim == 2: buf = buf.sum(axis=0)``).
+* That's enough to play a chord through MIDIInput → Speaker and have
+  it actually sound polyphonic.  Downstream stateful modules
+  (Oscillator/ADSR/Filter/LFO/Crossover) come in slice 3.

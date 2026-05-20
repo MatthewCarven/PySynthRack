@@ -53,13 +53,14 @@ Living list of what's next. Edit freely.
 ## v0.4 — Performance & polyphony
 
 - [x] MIDI input (mido + python-rtmidi) — self-polyphonic mirror of Keyboard, mono `out` + global `gate`. Plugs into any existing patch. — 2026-05-14
-- [ ] Voice routing manager — **Option A: voice-aware signals** committed 2026-05-15 (max 16 voices, 2D `(voices, frames)` buffers, per-voice state on stateful modules, implicit sum at mono sinks). Lands after the remaining scalar MIDI CV ports (mod wheel, aftertouch).
+- [ ] Voice routing manager — **Option A: voice-aware signals** committed 2026-05-15, design questions resolved 2026-05-20 (fixed 16 slots zero-padded, mono fast path preserved).
+      Slice 1 shipped 2026-05-20: `VoiceSlots` allocator in `core/voicing.py`, MIDIInput backed by it, sustain pedal (CC 64), `snapshot_voice_slots()` API ready for the renderer. Slice 2 (next): polyphonic `_render_midi_input` emitting `(16, frames)` for out/gate/pitch_cv + mono sinks summing the voice axis. Slice 3: Oscillator/ADSR/Filter/LFO/Crossover go shape-polymorphic.
 - [x] MIDI follow-up: pitch bend → `pitch_cv` output port + internal voice bend, GM-standard `bend_range=2.0` (shipped 2026-05-15)
 - [x] MIDI follow-up: mod wheel (CC 1) → `mod_cv` output port + `mod_scale` param (shipped 2026-05-15)
 - [x] MIDI follow-up: channel aftertouch → `pressure_cv` output port + `pressure_scale` param (shipped 2026-05-15)
 - [x] Error handler integrated at GUI outermost catch + audio callback panic path; crashes written to `~/.pysynthrack/crashes/` (shipped 2026-05-15)
 - [x] Single-file Windows `.exe` build (PyInstaller) -- `build.ps1` + `pysynthrack.spec`, examples bundled read-only, console variant `build_cli.ps1` for debugging (shipped 2026-05-17)
-- [ ] MIDI follow-up: sustain pedal (CC 64) — per-voice sustain flag inside MIDIInput; ships with the voice routing slice since it's per-voice state
+- [x] MIDI follow-up: sustain pedal (CC 64) — shipped 2026-05-20 with voice routing slice 1. Per-slot `sustained` flag on `VoiceSlots`; pedal-down causes note_off to mark the slot sustained instead of releasing; pedal-up drops every sustained voice in one pass.
 - [ ] PolyBLEP or wavetable anti-aliased osc shapes (replace naive saw/square)
 - [ ] CPU profile: pyo backend wired for the same modules so it's a drop-in fast path
 

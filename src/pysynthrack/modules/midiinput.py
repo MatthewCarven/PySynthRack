@@ -3,23 +3,25 @@
 Architecturally this is a sibling of :class:`Keyboard` — same shape, same
 output ports (plus pitch_cv since v0.4 mid-cycle), same "voices live
 inside the module" polyphony model. The only difference is the input
-side: instead of DearPyGui key events mutating ``active_notes``, a
+side: instead of DearPyGui key events mutating the held-note state, a
 `mido` callback running on its own IO thread does the mutating.
 
 That makes this a *self-polyphonic* module: chords are summed internally
-and the rest of the patch sees one mono ``out``, one global ``gate``,
-one block-constant ``pitch_cv``, one block-constant ``mod_cv``, and
-one block-constant ``pressure_cv``. True per-voice routing (each
-note → its own osc/filter/envelope) is the job of the voice routing
-manager in a later v0.4+ pass. Polyphonic (per-note) aftertouch is the
-one MIDI feature that requires voice-aware signals to do faithfully;
-it lands when voice routing does.
+and (until the voice-routing renderer lands) the rest of the patch sees
+one mono ``out``, one global ``gate``, one block-constant ``pitch_cv``,
+one block-constant ``mod_cv``, and one block-constant ``pressure_cv``.
+The 16-slot :class:`VoiceSlots` allocator now backs the held-note
+state — this is the model-layer prerequisite for true per-voice routing
+in a follow-up slice. The renderer still calls
+:meth:`snapshot_active_notes` and gets the same ``{note: velocity}``
+dict it always did; it'll switch to :meth:`snapshot_voice_slots` when
+the polyphonic renderer slice lands.
 
 Threading model. The mido port runs its own daemon thread; the audio
-backend reads ``active_notes``, ``_pitch_bend``, ``_mod_wheel`` and
-``_aftertouch`` from the audio callback. All four touch shared state
-under ``self._lock`` — exactly the same pattern as ``Keyboard``. The
-audio thread takes a snapshot copy each block so it never iterates
+backend reads from this module on the audio callback. ``self._lock``
+guards every piece of MIDI-state mutation: the voice slots, the pitch
+wheel, the mod wheel, the channel aftertouch, and the sustain pedal.
+The audio thread takes a snapshot copy each block so it never iterates
 state the MIDI thread might be mutating.
 
 mido optionality. ``mido`` and ``python-rtmidi`` are an opt-in extra
@@ -30,22 +32,32 @@ is where the missing-import is reported, with a log line that explains
 what to install.
 
 Message semantics:
-  * ``note_on`` with velocity > 0  -> add note with normalized velocity
+  * ``note_on`` with velocity > 0  -> allocate a voice slot with the
+                                     normalized velocity
   * ``note_on`` with velocity == 0 -> treat as ``note_off`` (the
-    running-status optimization most controllers use)
-  * ``note_off``                   -> remove note
+                                     running-status optimization most
+                                     controllers use)
+  * ``note_off``                   -> release the matching slot (or
+                                     mark it sustained if the pedal
+                                     is currently down)
   * ``pitchwheel``                 -> update pitch bend state
                                      (msg.pitch / 8192.0, clamped to +-1)
   * CC 1 (mod wheel)               -> update mod wheel state
                                      (msg.value / 127.0, clamped [0, 1])
+  * CC 64 (sustain pedal)          -> >= 64 means pedal down, < 64 means
+                                     pedal up. Pedal-down causes the
+                                     next note_off events to leave their
+                                     slots sustained (gate stays high)
+                                     until the pedal is released.
   * ``aftertouch`` (channel)       -> update channel-pressure state
                                      (msg.value / 127.0, clamped [0, 1])
-  * CC 123 (All Notes Off)         -> clear all notes (pitch wheel, mod
-                                     wheel, and aftertouch positions
-                                     are all independent — not reset)
-  * Everything else                -> ignored at this slice (sustain
-                                     pedal CC 64 is next; polyphonic
-                                     aftertouch lands with voice routing)
+  * CC 123 (All Notes Off)         -> clear all notes via VoiceSlots
+                                     (pitch wheel, mod wheel, aftertouch,
+                                     and pedal state are independent —
+                                     not reset)
+  * Everything else                -> ignored at this slice
+                                     (polyphonic aftertouch lands with
+                                     the voice-aware renderer)
 """
 from __future__ import annotations
 
@@ -55,6 +67,7 @@ from typing import Any
 
 from ..core.module import Module, register_module_type
 from ..core.port import Port
+from ..core.voicing import VoiceSlots, VoiceSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +86,10 @@ except ImportError:  # pragma: no cover - exercised when mido absent
 
 # Sentinel device name for the "auto-pick the first available device" path.
 AUTO_DEVICE = ""
+
+# MIDI CC 64 (sustain pedal) on/off threshold. The MIDI spec defines
+# values 0-63 as "off" and 64-127 as "on" for a switch-style CC.
+_SUSTAIN_ON_THRESHOLD = 64
 
 
 def available_devices() -> list[str]:
@@ -129,7 +146,9 @@ class MIDIInput(Module):
             already held.
 
     Runtime state (not serialized):
-        active_notes: ``{midi_note: velocity_normalized_0_1}``.
+        voices: :class:`VoiceSlots` allocator backing the held-note
+            state. Held notes, sustained notes, and released-but-not-
+            yet-stolen voices all live here.
         _pitch_bend: float in [-1, 1], wheel deflection normalized.
         _mod_wheel: float in [0, 1], mod-wheel value normalized.
         _aftertouch: float in [0, 1], channel-pressure value normalized.
@@ -163,22 +182,24 @@ class MIDIInput(Module):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        # active_notes maps MIDI note number -> normalized velocity [0, 1].
-        # Storing velocity (not just presence) is what makes
-        # velocity_sensitive rendering possible without a parallel dict.
-        self.active_notes: dict[int, float] = {}
+        # 16-slot voice allocator. Replaces the flat ``active_notes`` dict
+        # that earlier versions used — the slot index is what the voice-
+        # aware renderer (next slice) will key its per-voice state off.
+        # ``snapshot_active_notes()`` is preserved as a thin proxy over
+        # ``voices.held_notes()`` so existing callers and tests don't
+        # notice the change.
+        self.voices: VoiceSlots = VoiceSlots()
         # Pitch wheel deflection in [-1, 1]. 0 = wheel at rest. Lives
-        # under the same lock as active_notes so the audio thread can
-        # take a consistent snapshot of all MIDI state.
+        # under the same lock as the voice allocator so the audio thread
+        # can take a consistent snapshot of all MIDI state.
         self._pitch_bend: float = 0.0
         # Mod wheel value in [0, 1]. Unipolar (CC 1 only goes 0..127).
-        # Also lives under self._lock alongside the rest of MIDI state.
         self._mod_wheel: float = 0.0
         # Channel aftertouch (pressure) value in [0, 1]. Unipolar -
         # MIDI aftertouch goes 0..127, never negative. Note that this
         # is *channel* aftertouch, applied identically to every voice;
         # polyphonic aftertouch (per-note pressure) needs voice-aware
-        # signals and lands with the voice routing slice.
+        # signals and lands with the voice routing renderer slice.
         self._aftertouch: float = 0.0
         self._lock = threading.Lock()
         self._midi_port: Any = None
@@ -229,8 +250,8 @@ class MIDIInput(Module):
         try:
             # ``callback=`` makes mido invoke our handler on its own IO
             # thread for each incoming message — no manual thread juggling
-            # on our side. The lock around active_notes is what keeps it
-            # safe for the audio thread to read concurrently.
+            # on our side. The lock around mutation is what keeps it safe
+            # for the audio thread to read concurrently.
             self._midi_port = mido.open_input(device_name, callback=self._on_message)
             self._opened_device = device_name
             logger.info("MIDIInput: opened %r", device_name)
@@ -249,10 +270,15 @@ class MIDIInput(Module):
             except Exception as e:  # pragma: no cover - host MIDI stack
                 logger.debug("MIDIInput close raised: %s", e)
         # Flush any hung notes so the next compile starts silent. Reset
-        # the pitch wheel too — a stale wheel value from a previous
-        # session shouldn't leak into the next compile.
-        self.all_notes_off()
+        # all physical-control state too — a stale wheel value or stuck
+        # pedal from a previous session shouldn't leak into the next
+        # compile.
         with self._lock:
+            self.voices.all_notes_off()
+            # set_sustain(False) also clears any sustained slots, but
+            # since all_notes_off has just cleared every slot to empty
+            # this is purely a pedal-state reset.
+            self.voices.set_sustain(False)
             self._pitch_bend = 0.0
             self._mod_wheel = 0.0
             self._aftertouch = 0.0
@@ -263,8 +289,7 @@ class MIDIInput(Module):
         """Mido callback. Runs on the mido IO thread, not the audio thread.
 
         Kept narrow on purpose: parse the message, route to a public method,
-        return. All the lock juggling is in note_on / note_off /
-        all_notes_off / set_pitch_bend.
+        return. All the lock juggling is in the public mutator methods.
         """
         # Channel filter. mido reports 0-indexed channels (0-15); our
         # human-facing param is 1-indexed (1-16) with 0 meaning omni.
@@ -285,18 +310,23 @@ class MIDIInput(Module):
             self.note_off(msg.note)
         elif msg.type == "control_change" and msg.control == 123:
             # CC 123 — All Notes Off. Standard panic message. Does NOT
-            # reset pitch wheel or mod wheel — their physical positions
-            # are independent of held-note state.
+            # reset pitch wheel, mod wheel, aftertouch, or the sustain
+            # pedal — their physical positions are independent of
+            # held-note state.
             self.all_notes_off()
         elif msg.type == "control_change" and msg.control == 1:
             # CC 1 — mod wheel. Normalized to [0, 1] (unipolar; the
             # wheel only goes up from rest, never below 0).
             self.set_mod_wheel(msg.value / 127.0)
+        elif msg.type == "control_change" and msg.control == 64:
+            # CC 64 — sustain pedal. Switch-style CC: 0-63 is "off",
+            # 64-127 is "on". On pedal-up, every currently-sustained
+            # voice transitions to released in one shot (handled
+            # inside VoiceSlots.set_sustain).
+            self.set_sustain(msg.value >= _SUSTAIN_ON_THRESHOLD)
         elif msg.type == "aftertouch":
             # Channel aftertouch — one pressure value per channel,
             # applied to all held notes equally. Normalized to [0, 1].
-            # mido attribute is msg.value (unlike CC where it's also
-            # msg.value, this is just the channel-pressure byte).
             self.set_aftertouch(msg.value / 127.0)
         elif msg.type == "pitchwheel":
             # mido reports msg.pitch as a signed integer in [-8192, 8191].
@@ -304,16 +334,15 @@ class MIDIInput(Module):
             # gives 0.99988 which is fine; the asymmetry is in the MIDI
             # spec, not our problem.
             self.set_pitch_bend(msg.pitch / 8192.0)
-        # Other message types (sustain pedal CC 64, polyphonic
-        # aftertouch ``polytouch``) are intentionally ignored for now.
-        # Sustain pedal lands with the voice-routing slice (it's
-        # per-voice state). Polyphonic aftertouch needs voice-aware
-        # CV signals to do faithfully, also voice-routing territory.
+        # Other message types (polyphonic aftertouch ``polytouch``) are
+        # intentionally ignored for now — that needs voice-aware CV
+        # signals to do faithfully, which lands with the voice-routing
+        # renderer slice.
 
     # ----- public note ingest ---------------------------------------------
 
     def note_on(self, midi_note: int, velocity: float = 1.0) -> None:
-        """Apply octave shift and record the note with its velocity.
+        """Apply octave shift and allocate a voice slot for the note.
 
         ``velocity`` is expected in [0, 1]. The MIDI callback normalises
         from the raw 0-127 range; tests calling this method directly can
@@ -327,21 +356,57 @@ class MIDIInput(Module):
             return  # Drop transposes that escape the MIDI range.
         v = max(0.0, min(1.0, float(velocity)))
         with self._lock:
-            self.active_notes[shifted] = v
+            self.voices.allocate(shifted, v)
 
     def note_off(self, midi_note: int) -> None:
         shifted = int(midi_note) + 12 * int(self.params.get("octave_shift", 0))
         with self._lock:
-            self.active_notes.pop(shifted, None)
+            self.voices.release(shifted)
 
     def all_notes_off(self) -> None:
         with self._lock:
-            self.active_notes.clear()
+            self.voices.all_notes_off()
 
     def snapshot_active_notes(self) -> dict[int, float]:
-        """Return a thread-safe copy of {note: velocity}."""
+        """Return ``{note: velocity}`` for currently-held keys.
+
+        Stable across the voice-routing migration: only physically-held
+        keys appear here. A note that's only being kept alive by the
+        sustain pedal does NOT appear in this dict (its finger is up).
+        The audio thread can use this for the pre-voice-routing render
+        path; the voice-aware renderer will switch to
+        :meth:`snapshot_voice_slots` when it lands.
+        """
         with self._lock:
-            return dict(self.active_notes)
+            return self.voices.held_notes()
+
+    def snapshot_voice_slots(self) -> list[VoiceSnapshot]:
+        """Return a 16-element per-slot snapshot for the voice-aware renderer.
+
+        Slot index is the addressable voice id. Every entry is present;
+        unused slots have ``note=-1`` and ``gating=False``. See
+        :class:`pysynthrack.core.voicing.VoiceSlots` for slot semantics.
+        """
+        with self._lock:
+            return self.voices.snapshot()
+
+    # ----- sustain pedal --------------------------------------------------
+
+    def set_sustain(self, on: bool) -> None:
+        """Set the sustain pedal state.
+
+        Pedal-down: subsequent note_off events leave the slot
+        ``sustained`` (gate stays high) until the pedal is released.
+        Pedal-up: every currently-sustained slot transitions to
+        released in one pass; their gates fall on the next block.
+        """
+        with self._lock:
+            self.voices.set_sustain(bool(on))
+
+    def snapshot_sustain_pedal(self) -> bool:
+        """Return the current sustain pedal state. Mostly for tests."""
+        with self._lock:
+            return self.voices.sustain_pedal
 
     # ----- pitch bend -----------------------------------------------------
 
