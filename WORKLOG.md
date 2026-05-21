@@ -1368,3 +1368,230 @@ mount for every file.
 * That's enough to play a chord through MIDIInput → Speaker and have
   it actually sound polyphonic.  Downstream stateful modules
   (Oscillator/ADSR/Filter/LFO/Crossover) come in slice 3.
+
+
+## 2026-05-20 (later) -- Voice routing slice 2: polyphonic renderer + sink summing
+
+**What.** Slice 2 of the voice-routing work lands the renderer side.
+After this slice, ``MIDIInput`` emits voice-aware buffers, the speaker
+sums them at the sink, and a chord played through ``MIDIInput`` ->
+``SpeakerOutput`` is **audibly polyphonic** for the first time --
+without touching a single downstream stateful module.  The trick that
+lets this hold is an auto-collapse rule on the buffer-fetch helper.
+
+**The auto-collapse rule** (the one architectural decision in this slice).
+
+``_input_buffer(patch, buffers, dst_module_id, dst_port, collapse=True)``
+gained an optional ``collapse`` argument that defaults to True.  When
+True (every existing caller), a fetched ``(V, frames)`` buffer is
+summed along axis 0 before being returned, so the caller receives the
+mono mix exactly as it would have from the old self-summing
+MIDIInput.  When False (voice-aware modules in slice 3+), the buffer
+comes through unchanged so the consumer can grow its own per-slot
+state.
+
+This is what keeps slice 2 a contained change.  Filter, ADSR, VCA,
+Mixer, Combiner, CVCombiner, Crossover, DiskWriter -- every existing
+stateful module continues to work exactly as before.  A patch like
+"MIDIInput -> Filter -> Speaker" still plays a single-note filter
+sweep with mono-summed-on-fetch input to the filter, and a chord
+through that same patch gives the same filter sound but with the
+voice mix as the input.
+
+**Changes to ``src/pysynthrack/audio/numpy_backend.py``** (1158 -> 1239 lines)
+
+1. ``_input_buffer`` gains the ``collapse=True`` auto-collapse path
+   described above.  Every existing call site uses the default
+   collapse=True so behavior is unchanged for un-migrated modules.
+
+2. SpeakerOutput's drain pass in ``render_block`` checks
+   ``src_buf.ndim == 2`` and does ``src_buf = src_buf.sum(axis=0)``
+   before mixing.  Speaker doesn't use ``_input_buffer`` (it has its
+   own direct dict lookup), so the rule is duplicated here
+   explicitly.  Same effect, just visible at the sink boundary
+   instead of buried inside a helper.
+
+3. ``_render_midi_input`` rewritten as a voice-aware renderer.
+
+   Per-slot state now lives as four numpy arrays of length 16:
+
+   * ``phase``     -- oscillator phase for each slot, [0, 1).
+   * ``env``       -- attack/release envelope level for each slot.
+   * ``last_note`` -- the MIDI note this slot rendered on the previous
+                     block.  Used to detect "slot reassigned to a new
+                     note" so phase + env reset cleanly on the
+                     boundary.  Without this a voice steal would
+                     have the new voice picking up the previous
+                     voice's phase mid-cycle.
+   * ``releasing`` -- bool per slot.  Latched on gate-fall edge,
+                     cleared on gate-rise (retrigger before tail
+                     finished).
+
+   Output shapes:
+
+   * ``out``         -- ``(16, frames)`` audio per slot.
+   * ``gate``        -- ``(16, frames)`` block-constant per slot (1.0
+                        for gating slots, 0.0 for the rest).
+   * ``pitch_cv``    -- ``(16, frames)``.  Channel-wide today (every
+                        slot row carries the same wheel value); shape
+                        is per-slot so future polyphonic pitch bend
+                        is just an edit to the row values, not a
+                        shape change.
+   * ``mod_cv``      -- ``(frames,)`` channel-wide per MIDI spec.
+   * ``pressure_cv`` -- ``(frames,)`` channel-wide per MIDI spec.
+
+   Slots with ``note == -1`` write zeros and explicitly reset their
+   per-slot state so the next allocation starts clean.
+
+**Changes to ``tests/test_midi_input.py``** (824 -> 992 lines)
+
+* Four existing rendering tests that asserted 1D shapes on
+  ``gate`` / ``pitch_cv`` updated to assert ``(16, frames)`` with
+  appropriate per-slot indexing.  Net behaviour change:
+  ``test_gate_high_when_notes_held`` now checks slot 0 is fully
+  gating AND slots 1..15 are silent, instead of asserting "every
+  sample of the global gate is 1.0".
+* New ``TestPolyphonicRendering`` class with 6 tests:
+  ``test_out_shape_is_voice_aware``,
+  ``test_three_notes_populate_three_rows``,
+  ``test_chord_is_audibly_summed_through_speaker``,
+  ``test_slot_phase_persists_across_blocks``,
+  ``test_slot_reassignment_resets_phase``,
+  ``test_sustained_voice_keeps_emitting_through_speaker``.
+  The chord-through-speaker test is the canonical "this slice
+  actually works" check -- a triad's peak amplitude clearly exceeds
+  a single note's, proving the voice axis summed correctly at the
+  speaker boundary.
+
+**Verification.**  Full project suite: **268 tests pass, 0 fail** off
+the mount.  That's every test in ``tests/`` -- core, modules, io,
+crossover, ADSR, filter, LFO, VCA, mixer, combiner, disk_writer,
+keyboard, backend_crash, plus the voicing + MIDI input suites.  The
+sandbox + mount-write protocol from the slice-1 entry stayed in
+force: staged in ``/tmp/staging``, AST-parsed in sandbox, ran the
+suite against a copy of the tree, copied to mount with ``cp``, AST-
+parsed on the mount, ran the suite directly off the mount.  MD5 sums
+match between sandbox and mount.
+
+**What slice 3 looks like.**  Downstream stateful modules go shape-
+polymorphic: Oscillator, ADSR, Filter, LFO, Crossover each grow
+per-slot state arrays and switch to ``_input_buffer(..., collapse=
+False)``.  At that point a patch like
+"MIDIInput -> Filter -> ADSR -> VCA -> Speaker" preserves
+per-voice identity all the way through, and the speaker still sums
+at the very end.  VCA / Mixer / Combiner / CVCombiner stay
+stateless and just broadcast: numpy broadcasting between a
+``(16, frames)`` audio and a ``(frames,)`` mono CV does the right
+thing already.
+
+After slice 3, the Keyboard module mirrors the MIDIInput migration
+(slice 4), and the whole voice-routing piece in v0.4 is done.
+
+
+## 2026-05-20 (later still) -- Voice routing slice 3a: voice-aware ADSR + VCA
+
+**What.** First half of the downstream-module migration.  ADSR and
+VCA now respect the voice axis, which means the canonical synth
+voice chain
+
+::
+
+    MIDIInput -> VCA(audio)
+    MIDIInput.gate -> ADSR -> VCA(cv)
+    VCA -> Speaker
+
+produces **per-voice envelopes** for the first time.  Release one
+note in a held chord and only that voice's envelope decays; the
+other voices stay at sustain.  Pre-slice-3 the same patch would
+collapse the gate to mono and trigger one global state machine for
+the whole chord, so releasing a note didn't change the envelope at
+all.
+
+Filter, LFO, Crossover, Oscillator still go through the auto-
+collapse fast path (slice 3b will migrate them next).  Patches that
+use those modules continue to work -- they just see the voice-
+summed signal at the module input, exactly like pre-slice-2.
+
+**Changes to ``src/pysynthrack/audio/numpy_backend.py`` (1239 -> 1394 lines)**
+
+VCA migration is six lines: both ``_input_buffer`` calls opt into
+``collapse=False``.  No state to carry, no per-slot branch -- numpy
+broadcasting handles every shape combination correctly out of the
+box:
+
+* ``(V, F) audio  *  (V, F) cv`` -> ``(V, F)``, element-wise.
+* ``(V, F) audio  *  (F,)  cv``  -> ``(V, F)``, mono CV broadcasts
+  across every voice (channel-wide modulation).
+* ``(F,)  audio   *  (V, F) cv`` -> ``(V, F)``, mono audio sliced
+  into voices by per-voice CV (niche but valid).
+* ``(F,)  audio   *  (F,)  cv``  -> ``(F,)`` mono fast path.
+
+ADSR migration is the substantive piece.  ``_render_adsr`` now
+branches on the incoming gate's ndim:
+
+* ``ndim == 1`` (or no gate connected) -> ``_render_adsr_mono``.
+  This is the pre-slice-3 scalar state machine, lifted unchanged
+  into its own method.  Phase is still encoded as a string
+  ("idle" / "attack" / etc.); level/prev_gate/release_step are
+  still scalars.  Output is ``(F,)``.  Every existing ADSR test
+  exercises this path and passes bit-for-bit identically.
+
+* ``ndim == 2`` -> ``_render_adsr_voice``.  V independent state
+  machines in lockstep.  The per-sample loop is still serial (the
+  state machine is per-sample-causal), but inside each sample the
+  per-voice updates are vectorized across V via numpy boolean
+  masks.  Phase is encoded as int codes (``_ADSR_IDLE = 0``,
+  ``_ADSR_ATTACK = 1``, etc.) so ``phase == _ADSR_ATTACK`` gives a
+  clean ``(V,)`` mask for ``level[mask] += attack_step``.  Output
+  is ``(V, F)``.
+
+The two branches store their state under different dict keys
+(``phase``/``level``/... for mono, ``phase_arr``/``level_arr``/...
+for voice-aware) so a recompile that switches an instance between
+shapes won't see stale state of the wrong type.  The first call in
+each direction clears and reinitialises if it finds the wrong
+keys.
+
+**New file: ``tests/test_voice_aware.py``** (302 lines, 10 tests)
+
+Three test classes:
+
+* ``TestADSRVoiceAware`` -- direct ``_render_adsr`` calls with
+  synthetic ``(V, F)`` gates.  Slot 3 gating in isolation; per-
+  voice state independence (release slot 5 while slot 0 holds
+  sustain); mono backward compat.
+
+* ``TestVCAVoiceAware`` -- broadcast cases.  Voice audio x voice
+  CV, voice audio x mono CV (broadcast), all-mono, voice audio
+  with no CV.
+
+* ``TestPolyphonicChain`` -- end-to-end MIDIInput -> ADSR -> VCA
+  -> Speaker.  The headline test
+  ``test_released_voice_decays_while_held_voice_sustains`` plays
+  a two-note chord, releases one note, and asserts the peak
+  drops while the held voice stays audible -- the audible proof
+  of per-voice envelopes.
+
+Test fixtures dodge the patch model's connect() validation by
+creating ``Cable`` objects directly with fabricated source ids,
+then injecting buffers under those keys.  Lets the tests drive
+``_render_adsr`` and ``_render_vca`` with arbitrary input shapes
+without standing up a whole upstream MIDIInput.
+
+**Verification.**  Full project suite off the mount: **278 tests
+pass, 0 fail.**  Same sandbox + verify protocol as slices 1 and
+2: staged in ``/tmp/staging``, AST-parsed, ran the suite against a
+copy of the tree, copied to mount with ``cp``, AST-parsed on the
+mount, ran the suite directly off the mount.  MD5 sums match
+between sandbox and mount for both files.
+
+**What slice 3b leaves to do.**  Filter, LFO, Crossover, and
+Oscillator are the remaining stateful modules.  Filter and
+Crossover need per-slot biquad memory arrays; LFO needs per-slot
+phase + random_value (only when its rate_cv is voice-aware); the
+Oscillator module needs per-slot phase when freq_cv or amp_cv is
+voice-aware.  Same pattern as ADSR: detect input ndim, branch
+into mono fast path or voice-aware path with vectorized per-
+sample updates.  After slice 3b lands, every stateful module is
+voice-aware and the only remaining piece is the Keyboard
+migration (slice 4) to mirror MIDIInput.

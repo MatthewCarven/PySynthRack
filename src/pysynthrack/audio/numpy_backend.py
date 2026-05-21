@@ -330,6 +330,12 @@ class NumpyBackend(AudioBackend):
             src_buf = buffers.get((cable.src_module_id, cable.src_port))
             if src_buf is None:
                 continue
+            # Voice-aware source feeding the speaker: sum the voice axis
+            # to mono before mixing. This is the "implicit sum at mono
+            # sinks" rule from the voice-routing design -- the speaker
+            # is the canonical end-of-graph mono boundary.
+            if src_buf.ndim == 2:
+                src_buf = src_buf.sum(axis=0)
             gain = float(module.params.get("gain", 1.0))
             mixed = (src_buf * gain).astype(np.float32)
             out[:, 0] += mixed
@@ -372,11 +378,31 @@ class NumpyBackend(AudioBackend):
     # ----- input port helper ----------------------------------------------
 
     @staticmethod
-    def _input_buffer(patch, buffers, dst_module_id: int, dst_port: str):
-        """Look up the buffer feeding a specific input port, or None."""
+    def _input_buffer(
+        patch, buffers, dst_module_id: int, dst_port: str, collapse: bool = True
+    ):
+        """Look up the buffer feeding a specific input port, or None.
+
+        Voice-aware sources publish ``(MAX_VOICES, frames)`` buffers
+        (slice 2 onwards: MIDIInput's ``out``, ``gate`` and ``pitch_cv``
+        already do). By default this helper collapses such buffers to
+        1D via ``sum(axis=0)`` so existing mono modules continue to
+        work unchanged -- a polyphonic source feeding an un-migrated
+        Filter or ADSR just sees the summed mix, exactly as if the
+        source were the old self-summing MIDIInput.
+
+        Voice-aware modules (slice 3+) pass ``collapse=False`` to
+        receive the per-slot data and grow per-slot state of their
+        own. Mono sinks (SpeakerOutput) do their own ndim check in
+        the drain pass rather than going through this helper, so the
+        collapse rule there is explicit and visible.
+        """
         for cable in patch.cables_into(dst_module_id):
             if cable.dst_port == dst_port:
-                return buffers.get((cable.src_module_id, cable.src_port))
+                buf = buffers.get((cable.src_module_id, cable.src_port))
+                if buf is not None and collapse and buf.ndim == 2:
+                    return buf.sum(axis=0)
+                return buf
         return None
 
     def _render_oscillator(self, module, frames: int, buffers=None, patch=None) -> np.ndarray:
@@ -521,91 +547,138 @@ class NumpyBackend(AudioBackend):
 
     # ----- MIDI input rendering ------------------------------------------
 
+    # Polyphonic voice count: matches VoiceSlots.MAX_VOICES. Kept local
+    # as a module constant rather than imported to keep the backend
+    # free of circular imports with the modules layer.
+    _MAX_VOICES = 16
+
     def _render_midi_input(self, module, frames: int) -> dict[str, np.ndarray]:
-        """MIDI-driven self-polyphonic voice renderer.
+        """Voice-aware MIDI renderer.
 
-        Mirrors ``_render_keyboard`` exactly in structure — same per-voice
-        phase tracking, same short attack/release ramps to kill clicks,
-        same global gate semantics. The only differences are:
+        Emits per-slot audio, gate, and pitch_cv buffers of shape
+        ``(_MAX_VOICES, frames)``. Mod-wheel and channel-aftertouch CV
+        stay 1D ``(frames,)`` -- they're channel-wide by MIDI spec
+        (one value per channel, applied identically to every voice),
+        so they don't need a voice axis.
 
-          * ``snapshot_active_notes()`` returns ``{note: velocity}`` not a
-            set, so we can scale each voice by its note-on velocity.
-          * When ``velocity_sensitive`` is False, velocities are ignored
-            and every voice plays at gain 1.0 — useful when a controller
-            has a poor velocity curve, or for organ-style untouched-
-            dynamics patches.
+        Per-slot state lives in ``self._state[module.id]`` as numpy
+        arrays indexed by slot:
 
-        Voice routing into per-voice downstream chains (the v0.4 voice
-        manager) is deliberately not the job of this renderer; chord
-        summing happens here and the rest of the patch sees one mono
-        stream.
+          * ``phase``    -- oscillator phase, [0, 1).
+          * ``env``      -- envelope ramp level, [0, 1].
+          * ``last_note`` -- the MIDI note this slot was rendering on
+                            the previous block; used to detect "slot
+                            reassigned to a new note" and reset phase
+                            + env on the boundary so the new voice
+                            starts from zero rather than picking up
+                            mid-cycle.
+          * ``releasing`` -- bool: True while the slot is ramping its
+                            envelope down. Latched on the gate-fall
+                            edge, cleared on gate-rise (retrigger
+                            before the tail finished).
+
+        Silent slots (``note == -1``) write zeros and reset their state
+        so the next allocation starts clean.
+
+        Downstream consumers of these buffers fall into two camps. A
+        mono consumer (any un-migrated stateful module, or the speaker
+        sink) goes through ``_input_buffer`` with the default
+        ``collapse=True``, which sums the voice axis on fetch -- net
+        effect is identical to the pre-slice-1 self-summing MIDIInput.
+        A voice-aware consumer (slice 3+) passes ``collapse=False`` and
+        grows its own per-slot state.
         """
-        state = self._state.setdefault(module.id, {"voices": {}})
-        voices: dict[int, dict] = state["voices"]
+        state = self._state.setdefault(
+            module.id,
+            {
+                "phase": np.zeros(self._MAX_VOICES, dtype=np.float64),
+                "env": np.zeros(self._MAX_VOICES, dtype=np.float64),
+                "last_note": np.full(self._MAX_VOICES, -1, dtype=np.int32),
+                "releasing": np.zeros(self._MAX_VOICES, dtype=bool),
+            },
+        )
 
         sr = self.sample_rate
         waveform = str(module.params.get("waveform", "sine"))
         volume = float(module.params.get("volume", 0.5))
         velocity_sensitive = bool(module.params.get("velocity_sensitive", True))
 
-        active = module.snapshot_active_notes()  # dict[int, float]
+        slots = module.snapshot_voice_slots()  # length _MAX_VOICES
 
-        for note, vel in active.items():
-            voice = voices.get(note)
-            if voice is None:
-                voices[note] = {
-                    "phase": 0.0,
-                    "env": 0.0,
-                    "releasing": False,
-                    "velocity": vel,
-                }
-            else:
-                voice["releasing"] = False
-                # Update velocity on retrigger so the next attack uses the
-                # newer note-on dynamics. The release tail will keep the
-                # old velocity, which is correct musically.
-                voice["velocity"] = vel
-        for note in list(voices):
-            if note not in active:
-                voices[note]["releasing"] = True
-
-        attack_samples = max(1, int(self._KB_ATTACK_S * sr))
-        release_samples = max(1, int(self._KB_RELEASE_S * sr))
-
-        # Pitch wheel: 1V/oct CV value applied identically to every
-        # internal voice, and emitted on the pitch_cv output port for
-        # downstream consumers. Block-constant - the wheel moves much
-        # more slowly than the audio block rate (~12 ms at 512 samples /
-        # 44.1 kHz), so per-sample smoothing isn't audibly useful here.
+        # Channel-wide (mono) modulation values. Pitch bend is applied
+        # to every voice identically here; when polyphonic pitch bend
+        # lands later, this becomes a per-slot value but the buffer
+        # shape doesn't need to change because pitch_cv is ALREADY
+        # (V, frames) -- only the values per row change.
         pitch_bend = float(module.snapshot_pitch_bend())
         bend_range = float(module.params.get("bend_range", 2.0))
         pitch_cv_value = pitch_bend * bend_range / 12.0
         freq_multiplier = float(2.0 ** pitch_cv_value)
 
-        # Mod wheel: unipolar [0, 1] times mod_scale. Linear emission -
-        # consumers like cutoff_cv apply their own 2**cv shaping, amp_cv
-        # is linear, etc. We don't bake any shaping in here.
         mod_wheel = float(module.snapshot_mod_wheel())
         mod_scale = float(module.params.get("mod_scale", 1.0))
         mod_cv_value = mod_wheel * mod_scale
 
-        # Channel aftertouch: same emission shape as mod wheel. Unipolar
-        # [0, 1] times pressure_scale. Channel-pressure only -- one
-        # value per channel, applied identically to all held voices.
         aftertouch = float(module.snapshot_aftertouch())
         pressure_scale = float(module.params.get("pressure_scale", 1.0))
         pressure_cv_value = aftertouch * pressure_scale
 
-        audio = np.zeros(frames, dtype=np.float32)
+        attack_samples = max(1, int(self._KB_ATTACK_S * sr))
+        release_samples = max(1, int(self._KB_RELEASE_S * sr))
 
-        for note, voice in list(voices.items()):
+        # Output buffers. Audio + gate are per-slot; pitch_cv is
+        # per-slot for shape-stability with future polyphonic bend.
+        audio = np.zeros((self._MAX_VOICES, frames), dtype=np.float32)
+        gate = np.zeros((self._MAX_VOICES, frames), dtype=np.float32)
+        pitch_cv = np.full(
+            (self._MAX_VOICES, frames), pitch_cv_value, dtype=np.float32
+        )
+
+        for i, slot in enumerate(slots):
+            note = int(slot["note"])
+            if note == -1:
+                # Slot empty -- reset state so the next allocation gets
+                # a clean phase/env, and emit silence for this voice.
+                state["phase"][i] = 0.0
+                state["env"][i] = 0.0
+                state["last_note"][i] = -1
+                state["releasing"][i] = False
+                # gate[i] and audio[i] are already zero from np.zeros.
+                continue
+
+            # Detect slot reassignment: a new note was allocated into
+            # this slot since the last block. Reset phase/env so the
+            # new voice starts cleanly rather than picking up the
+            # previous voice's phase mid-cycle.
+            if int(state["last_note"][i]) != note:
+                state["phase"][i] = 0.0
+                state["env"][i] = 0.0
+                state["releasing"][i] = False
+                state["last_note"][i] = note
+
+            gating = bool(slot["gating"])
+
+            # Edge transitions on the gate.
+            if not gating and not bool(state["releasing"][i]):
+                # Falling edge: start the release ramp.
+                state["releasing"][i] = True
+            elif gating and bool(state["releasing"][i]):
+                # Rising edge (retrigger before tail finished): cancel
+                # the release and resume attacking from the current
+                # env level. The env-step branch below picks attack
+                # automatically because env < 1.
+                state["releasing"][i] = False
+
+            # Phase ramp for this voice.
             freq = midi_to_freq(note) * freq_multiplier
             phase_inc = freq / sr
+            start_phase = float(state["phase"][i])
             phases = (
-                voice["phase"] + np.arange(frames, dtype=np.float64) * phase_inc
+                start_phase + np.arange(frames, dtype=np.float64) * phase_inc
             ) % 1.0
-            voice["phase"] = (voice["phase"] + frames * phase_inc) % 1.0
+            state["phase"][i] = (start_phase + frames * phase_inc) % 1.0
 
+            # Waveform.
             if waveform == "sine":
                 wave = np.sin(2.0 * np.pi * phases)
             elif waveform == "saw":
@@ -617,29 +690,37 @@ class NumpyBackend(AudioBackend):
             else:
                 wave = np.zeros(frames, dtype=np.float64)
 
-            if voice["releasing"]:
+            # Envelope ramp -- same short attack/release as the old
+            # mono renderer, just per-slot now.
+            env_start = float(state["env"][i])
+            if bool(state["releasing"][i]):
                 delta = -1.0 / release_samples
-            elif voice["env"] < 1.0:
+            elif env_start < 1.0:
                 delta = 1.0 / attack_samples
             else:
                 delta = 0.0
-            env_ramp = voice["env"] + np.arange(frames, dtype=np.float64) * delta
+            env_ramp = env_start + np.arange(frames, dtype=np.float64) * delta
             np.clip(env_ramp, 0.0, 1.0, out=env_ramp)
-            voice["env"] = float(max(0.0, min(1.0, voice["env"] + frames * delta)))
+            state["env"][i] = float(
+                max(0.0, min(1.0, env_start + frames * delta))
+            )
 
-            # Velocity scales the voice gain. Always set in voice state;
-            # the param decides whether it's actually applied.
-            gain = float(voice["velocity"]) if velocity_sensitive else 1.0
-            audio += (wave * env_ramp * gain).astype(np.float32)
+            # Velocity gain. Always present in slot state; the
+            # velocity_sensitive param decides whether to apply it.
+            gain = float(slot["velocity"]) if velocity_sensitive else 1.0
 
-            if voice["releasing"] and voice["env"] <= 1e-5:
-                del voices[note]
+            audio[i] = (wave * env_ramp * gain).astype(np.float32)
+
+            # Gate: block-constant per slot. A within-block falling
+            # edge produces a one-block delay before the gate drops,
+            # which is the same behavior the pre-slice mono renderer
+            # had (the global gate was also block-constant).
+            gate[i] = 1.0 if gating else 0.0
 
         audio *= volume
 
-        gate_value = 1.0 if active else 0.0
-        gate = np.full(frames, gate_value, dtype=np.float32)
-        pitch_cv = np.full(frames, pitch_cv_value, dtype=np.float32)
+        # Channel-wide CV: stay 1D since they apply identically to
+        # every voice.
         mod_cv = np.full(frames, mod_cv_value, dtype=np.float32)
         pressure_cv = np.full(frames, pressure_cv_value, dtype=np.float32)
 
@@ -750,6 +831,16 @@ class NumpyBackend(AudioBackend):
     # in some future patching) without false triggers on numerical noise.
     _GATE_HIGH = 0.5
 
+    # Integer phase codes for the vectorized state machine. The mono
+    # fast path below still uses strings — we keep them separate so an
+    # existing test that introspected the state (none do today, but they
+    # could) sees unchanged behaviour.
+    _ADSR_IDLE = 0
+    _ADSR_ATTACK = 1
+    _ADSR_DECAY = 2
+    _ADSR_SUSTAIN = 3
+    _ADSR_RELEASE = 4
+
     def _render_adsr(self, module, frames: int, buffers, patch) -> np.ndarray:
         """Sample-accurate ADSR driven by a gate signal.
 
@@ -761,10 +852,20 @@ class NumpyBackend(AudioBackend):
         - Sustain holds at ``sustain`` while the gate stays high.
         - Release ramps from current level to 0.0 over ``release`` seconds.
 
+        Shape-polymorphic. A 1D ``(F,)`` gate input drives the existing
+        scalar state machine and emits ``(F,)``. A 2D ``(V, F)`` gate
+        input (from voice-aware MIDIInput / Keyboard) maintains ``V``
+        independent state machines and emits ``(V, F)`` — the per-voice
+        envelopes that are the whole point of the polyphonic v0.4 work.
+
         All durations are clamped to a >= 1-sample minimum so any param
         edits remain numerically stable.
         """
-        gate_buf = self._input_buffer(patch, buffers, module.id, "gate")
+        # collapse=False so a (V, F) gate buffer reaches us with its
+        # voice axis intact. Mono sources still arrive as (F,).
+        gate_buf = self._input_buffer(
+            patch, buffers, module.id, "gate", collapse=False
+        )
         sr = self.sample_rate
 
         attack_s = max(0.0, float(module.params.get("attack", 0.01)))
@@ -772,18 +873,45 @@ class NumpyBackend(AudioBackend):
         sustain = max(0.0, min(1.0, float(module.params.get("sustain", 0.7))))
         release_s = max(0.0, float(module.params.get("release", 0.3)))
 
-        # Sample-step deltas. +inf when duration is zero would jump in one
-        # sample; clamp to a single-sample step so the state machine still
-        # advances cleanly.
         attack_step = 1.0 / max(1.0, attack_s * sr)
         decay_step = (1.0 - sustain) / max(1.0, decay_s * sr)
-        # Release step is recomputed at gate-fall using the level at the
-        # moment of release, so a release from mid-attack still takes the
-        # full release time.
+        # Release time used to compute per-voice release_step at the
+        # gate-fall edge (so a release from mid-attack still takes the
+        # full release window).
+        release_samples = max(1.0, release_s * sr)
+
+        # Branch by gate shape. Voice-aware when gate has a leading axis.
+        if gate_buf is not None and gate_buf.ndim == 2:
+            return self._render_adsr_voice(
+                module, frames, gate_buf,
+                attack_step, decay_step, sustain, release_samples,
+            )
+        return self._render_adsr_mono(
+            module, frames, gate_buf,
+            attack_step, decay_step, sustain, release_samples,
+        )
+
+    def _render_adsr_mono(
+        self, module, frames, gate_buf,
+        attack_step, decay_step, sustain, release_samples,
+    ):
+        """Mono fast path — scalar state machine, output ``(F,)``.
+
+        Unchanged from the pre-slice-3 implementation. Kept as the fast
+        path so existing patches and the entire existing ADSR test
+        suite continue to work bit-for-bit identically.
+        """
         state = self._state.setdefault(
             module.id,
             {"phase": "idle", "level": 0.0, "prev_gate": False, "release_step": 0.0},
         )
+        # If this slot of state belongs to the voice-aware path from a
+        # previous call (different gate shape), discard and reinit.
+        if "phase_arr" in state:
+            state.clear()
+            state.update(
+                {"phase": "idle", "level": 0.0, "prev_gate": False, "release_step": 0.0}
+            )
 
         out = np.empty(frames, dtype=np.float32)
 
@@ -792,14 +920,10 @@ class NumpyBackend(AudioBackend):
                 bool(gate_buf[n] > self._GATE_HIGH) if gate_buf is not None else False
             )
 
-            # Edge detection.
             if gate_high and not state["prev_gate"]:
                 state["phase"] = "attack"
             elif not gate_high and state["prev_gate"]:
-                # Gate fell — compute a release step that drops the *current*
-                # level over the release-time window. Avoids the snap that
-                # would happen if we used (sustain / time).
-                state["release_step"] = state["level"] / max(1.0, release_s * sr)
+                state["release_step"] = state["level"] / release_samples
                 state["phase"] = "release"
             state["prev_gate"] = gate_high
 
@@ -823,10 +947,102 @@ class NumpyBackend(AudioBackend):
                 if level <= 0.0:
                     level = 0.0
                     state["phase"] = "idle"
-            # idle → level stays 0
 
             state["level"] = level
             out[n] = level
+
+        return out.astype(np.float32)
+
+    def _render_adsr_voice(
+        self, module, frames, gate_buf,
+        attack_step, decay_step, sustain, release_samples,
+    ):
+        """Voice-aware path — V independent state machines in lockstep.
+
+        Per-sample loop is still serial (the state machine is per-
+        sample-causal), but the per-voice updates inside each sample
+        are vectorized across V via numpy boolean masks. For V=16 that
+        means the per-sample overhead is ~constant regardless of how
+        many voices are active.
+
+        Phase is encoded as an int code (see ``_ADSR_*`` constants) so
+        the per-sample masks (``phase == _ADSR_ATTACK``) vectorize
+        cleanly with numpy comparison ops.
+        """
+        V = gate_buf.shape[0]
+        state = self._state.setdefault(module.id, {})
+
+        # If state belongs to the mono branch (different keys), or the
+        # voice count changed, reinitialise. The latter shouldn't happen
+        # in practice (V is always MAX_VOICES = 16 today), but the
+        # check costs nothing and protects against future shape drift.
+        needs_reinit = (
+            "phase_arr" not in state
+            or state["phase_arr"].shape[0] != V
+        )
+        if needs_reinit:
+            state.clear()
+            state["phase_arr"] = np.full(V, self._ADSR_IDLE, dtype=np.int32)
+            state["level_arr"] = np.zeros(V, dtype=np.float64)
+            state["prev_gate_arr"] = np.zeros(V, dtype=bool)
+            state["release_step_arr"] = np.zeros(V, dtype=np.float64)
+
+        phase = state["phase_arr"]
+        level = state["level_arr"]
+        prev_gate = state["prev_gate_arr"]
+        release_step = state["release_step_arr"]
+
+        out = np.empty((V, frames), dtype=np.float32)
+
+        for n in range(frames):
+            gate_high = gate_buf[:, n] > self._GATE_HIGH  # (V,) bool
+            rising = gate_high & ~prev_gate
+            falling = ~gate_high & prev_gate
+
+            # Rising edges -> ATTACK.
+            phase[rising] = self._ADSR_ATTACK
+            # Falling edges -> RELEASE, with release_step set from the
+            # current level so the tail takes the full release window
+            # regardless of where in the envelope we were.
+            release_step[falling] = level[falling] / release_samples
+            phase[falling] = self._ADSR_RELEASE
+
+            prev_gate = gate_high.copy()
+
+            # Advance level per phase. Each mask is a vectorized "which
+            # voices are in this state right now"; the updates apply to
+            # exactly those voices.
+            attack_mask = phase == self._ADSR_ATTACK
+            level[attack_mask] += attack_step
+            # Attack done -> DECAY.
+            done_attack = attack_mask & (level >= 1.0)
+            level[done_attack] = 1.0
+            phase[done_attack] = self._ADSR_DECAY
+
+            decay_mask = phase == self._ADSR_DECAY
+            level[decay_mask] -= decay_step
+            # Decay done -> SUSTAIN.
+            done_decay = decay_mask & (level <= sustain)
+            level[done_decay] = sustain
+            phase[done_decay] = self._ADSR_SUSTAIN
+
+            sustain_mask = phase == self._ADSR_SUSTAIN
+            level[sustain_mask] = sustain
+
+            release_mask = phase == self._ADSR_RELEASE
+            level[release_mask] -= release_step[release_mask]
+            # Release done -> IDLE.
+            done_release = release_mask & (level <= 0.0)
+            level[done_release] = 0.0
+            phase[done_release] = self._ADSR_IDLE
+
+            out[:, n] = level
+
+        # Persist state for next block.
+        state["phase_arr"] = phase
+        state["level_arr"] = level
+        state["prev_gate_arr"] = prev_gate
+        state["release_step_arr"] = release_step
 
         return out.astype(np.float32)
 
@@ -911,11 +1127,31 @@ class NumpyBackend(AudioBackend):
 
         Missing audio in → silence. Missing CV in → passthrough at unity
         (so a VCA with no envelope still behaves like a gain stage).
+
+        Voice-aware: opts into ``collapse=False`` on both inputs so a
+        polyphonic ADSR -> VCA -> Speaker chain preserves per-voice
+        envelope identity. Numpy broadcasting handles every shape
+        combination correctly:
+
+          * (V, F) audio  × (V, F) cv → (V, F) element-wise.
+          * (V, F) audio  × (F,)  cv → (V, F) — mono CV broadcasts
+                                       across every voice (e.g. a
+                                       channel-wide aftertouch VCA).
+          * (F,)  audio   × (V, F) cv → (V, F) — mono audio sliced
+                                       into voices by per-voice CV.
+          * (F,)  audio   × (F,)  cv → (F,) mono fast path.
+
+        VCA is stateless, so there's no per-voice state to track —
+        broadcasting is the entire migration.
         """
-        audio_in = self._input_buffer(patch, buffers, module.id, "audio")
+        audio_in = self._input_buffer(
+            patch, buffers, module.id, "audio", collapse=False
+        )
         if audio_in is None:
             return np.zeros(frames, dtype=np.float32)
-        cv_in = self._input_buffer(patch, buffers, module.id, "cv")
+        cv_in = self._input_buffer(
+            patch, buffers, module.id, "cv", collapse=False
+        )
         gain = float(module.params.get("gain", 1.0))
         if cv_in is None:
             return (audio_in * gain).astype(np.float32)

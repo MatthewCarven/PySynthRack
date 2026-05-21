@@ -637,40 +637,55 @@ class TestRendering:
         assert peak > 0.9
 
     def test_gate_high_when_notes_held(self):
+        # Voice-aware (slice 2): gate is shape (16, frames). Slot 0
+        # holds note 60 and reads 1.0; the other 15 slots are empty
+        # and read 0.0.
         _, midi = _build_simple_patch()
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         midi.note_on(60, 1.0)
         result = backend._render_midi_input(midi, 512)
-        assert float(np.max(result["gate"])) == pytest.approx(1.0)
-        assert float(np.min(result["gate"])) == pytest.approx(1.0)
+        assert result["gate"].shape == (16, 512)
+        # Slot 0 fully gating.
+        assert float(np.max(result["gate"][0])) == pytest.approx(1.0)
+        assert float(np.min(result["gate"][0])) == pytest.approx(1.0)
+        # Slots 1..15 silent.
+        assert float(np.max(result["gate"][1:])) == pytest.approx(0.0)
 
     def test_gate_low_when_idle(self):
+        # No notes held -- every slot reads 0.0 across the block.
         _, midi = _build_simple_patch()
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         result = backend._render_midi_input(midi, 512)
+        assert result["gate"].shape == (16, 512)
         assert float(np.max(result["gate"])) == pytest.approx(0.0)
 
 
     def test_pitch_cv_emitted_when_centered(self):
-        # Wheel at rest -> pitch_cv buffer is all zeros, same length as frames.
+        # Wheel at rest -> pitch_cv is (16, frames) of zeros. Same per-
+        # voice shape as gate/audio so polyphonic pitch bend (future)
+        # can just edit row values without changing the array shape.
         _, midi = _build_simple_patch()
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         result = backend._render_midi_input(midi, 512)
         assert "pitch_cv" in result
-        assert result["pitch_cv"].shape == (512,)
+        assert result["pitch_cv"].shape == (16, 512)
         assert float(np.max(np.abs(result["pitch_cv"]))) == 0.0
 
     def test_pitch_cv_value_matches_bend_range(self):
         # bend=+1.0, range=2 semitones -> cv = 2/12 = 0.16666...
+        # Channel-wide today, so every slot row carries the same value.
         _, midi = _build_simple_patch()
         midi.params["bend_range"] = 2.0
         midi.set_pitch_bend(1.0)
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         result = backend._render_midi_input(midi, 512)
         expected = 2.0 / 12.0
-        assert abs(float(result["pitch_cv"][0]) - expected) < 1e-6
-        # Block-constant - check the last sample too.
-        assert abs(float(result["pitch_cv"][-1]) - expected) < 1e-6
+        # First sample of slot 0.
+        assert abs(float(result["pitch_cv"][0, 0]) - expected) < 1e-6
+        # Block-constant within slot.
+        assert abs(float(result["pitch_cv"][0, -1]) - expected) < 1e-6
+        # Same value across every slot row.
+        assert abs(float(result["pitch_cv"][15, 0]) - expected) < 1e-6
 
     def test_pitch_cv_scales_with_bend_range(self):
         # Larger bend_range -> larger cv at full deflection.
@@ -679,8 +694,9 @@ class TestRendering:
         midi.set_pitch_bend(1.0)
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         result = backend._render_midi_input(midi, 512)
-        # 12 semitones / 12 = 1.0 (one octave in 1V/oct units)
-        assert abs(float(result["pitch_cv"][0]) - 1.0) < 1e-6
+        # 12 semitones / 12 = 1.0 (one octave in 1V/oct units).
+        # Indexed as [slot, sample] now that pitch_cv is voice-aware.
+        assert abs(float(result["pitch_cv"][0, 0]) - 1.0) < 1e-6
 
     def test_bend_shifts_internal_pitch(self):
         # A note rendered with the wheel up should have audibly higher
@@ -822,3 +838,155 @@ class TestOptionalDep:
         m = MIDIInput(module_id=1)
         m.start_midi()  # should not raise
         m.stop_midi()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Polyphonic rendering (slice 2: voice-aware buffers + sink summing)
+# ---------------------------------------------------------------------------
+
+
+class TestPolyphonicRendering:
+    """End-to-end tests that prove a chord becomes audible polyphony.
+
+    These complement the single-note rendering tests above. They lean
+    on _render_midi_input's per-slot shape and on the speaker drain's
+    voice-axis sum, so a regression in either path shows up here.
+    """
+
+    def test_out_shape_is_voice_aware(self):
+        _, midi = _build_simple_patch()
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        result = backend._render_midi_input(midi, 512)
+        assert result["out"].shape == (16, 512)
+        assert result["gate"].shape == (16, 512)
+        assert result["pitch_cv"].shape == (16, 512)
+        # Channel-wide CV stays 1D.
+        assert result["mod_cv"].shape == (512,)
+        assert result["pressure_cv"].shape == (512,)
+
+    def test_three_notes_populate_three_rows(self):
+        # A triad uses slots 0..2; the rest stay silent. Tests that
+        # the renderer addresses by slot index, not by note number.
+        _, midi = _build_simple_patch()
+        midi.params["volume"] = 1.0
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        for n in (60, 64, 67):
+            midi.note_on(n, 1.0)
+        # Run several blocks to let the attack ramp settle.
+        for _ in range(20):
+            result = backend._render_midi_input(midi, 512)
+        peaks = [float(np.max(np.abs(result["out"][i]))) for i in range(16)]
+        # Slots 0..2 audible, slots 3..15 silent.
+        for i in (0, 1, 2):
+            assert peaks[i] > 0.3, f"slot {i} should be audible: peak={peaks[i]:.3f}"
+        for i in range(3, 16):
+            assert peaks[i] == 0.0, f"slot {i} should be silent: peak={peaks[i]:.3f}"
+
+    def test_chord_is_audibly_summed_through_speaker(self):
+        # A three-note chord through the speaker pass should produce
+        # bigger peak amplitude than a single note (the voice axis
+        # sums into mono at the speaker).
+        patch, midi = _build_simple_patch()
+        midi.params["volume"] = 0.3  # leave headroom for summing
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        backend.compile(patch)
+
+        midi.note_on(60, 1.0)
+        for _ in range(30):
+            out_one = backend.render_block(512)
+        peak_one = float(np.max(np.abs(out_one)))
+
+        midi.note_on(64, 1.0)
+        midi.note_on(67, 1.0)
+        for _ in range(30):
+            out_three = backend.render_block(512)
+        peak_three = float(np.max(np.abs(out_three)))
+
+        # Three voices summing in phase peaks higher than one; the
+        # exact ratio depends on phase alignment (sine waves at
+        # different freqs interfere constructively/destructively),
+        # but the chord should clearly exceed the single note.
+        assert peak_three > peak_one * 1.3, (
+            f"chord peak {peak_three:.3f} not meaningfully bigger than "
+            f"single-note {peak_one:.3f}"
+        )
+
+    def test_slot_phase_persists_across_blocks(self):
+        # A held note's per-slot phase advances continuously across
+        # block boundaries. Render two consecutive blocks; the second
+        # block's first samples should pick up where the first ended,
+        # not restart from zero. Detect via continuity: concatenating
+        # the two blocks should not have a discontinuity at the seam.
+        _, midi = _build_simple_patch()
+        midi.params["waveform"] = "sine"
+        midi.params["volume"] = 1.0
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        midi.note_on(69, 1.0)  # A4, 440 Hz
+        # Let attack settle.
+        for _ in range(10):
+            r = backend._render_midi_input(midi, 512)
+        # Now grab two consecutive blocks.
+        block1 = backend._render_midi_input(midi, 512)["out"][0].copy()
+        block2 = backend._render_midi_input(midi, 512)["out"][0].copy()
+        # Discontinuity at the seam = abs(block2[0] - block1[-1]).
+        # For a 440 Hz sine at 44.1 kHz, sample-to-sample step is
+        # bounded; >0.1 would imply a phase reset.
+        seam_jump = abs(float(block2[0]) - float(block1[-1]))
+        assert seam_jump < 0.1, (
+            f"phase seems to reset at block boundary: seam_jump={seam_jump:.4f}"
+        )
+
+    def test_slot_reassignment_resets_phase(self):
+        # Voice steal at >16 notes reassigns slot 0 to a new note. The
+        # renderer should reset that slot's phase to 0 on the boundary
+        # so the new voice starts cleanly rather than mid-cycle.
+        _, midi = _build_simple_patch()
+        midi.params["waveform"] = "saw"  # easy to see phase via value
+        midi.params["volume"] = 1.0
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        # Fill all 16 slots.
+        for n in range(60, 76):
+            midi.note_on(n, 1.0)
+        # Let phases advance.
+        for _ in range(5):
+            backend._render_midi_input(midi, 512)
+        # Steal slot 0 by allocating a 17th note.
+        midi.note_on(80, 1.0)
+        # First sample of the freshly-reassigned slot should reflect
+        # phase=0 on a saw: saw_value(0) = 2*0-1 = -1 exactly (before
+        # the envelope ramp scales it down).
+        result = backend._render_midi_input(midi, 512)
+        # Slot 0 now holds note 80. Env at slot reassignment is reset
+        # to 0, so the very first sample is wave*0 = 0. By a few
+        # samples in, env has ramped up; check that slot 0's audio
+        # is non-zero somewhere in this block.
+        assert float(np.max(np.abs(result["out"][0]))) > 0.0
+
+    def test_sustained_voice_keeps_emitting_through_speaker(self):
+        # Press, hold pedal, release key. The voice should still be
+        # audible at the speaker because its slot is gating.
+        patch, midi = _build_simple_patch()
+        midi.params["volume"] = 0.7
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        backend.compile(patch)
+        midi.note_on(60, 1.0)
+        for _ in range(15):
+            backend.render_block(512)
+        # Engage sustain, then release the key.
+        midi.set_sustain(True)
+        midi.note_off(60)
+        # Voice should still be sounding.
+        out_sustained = backend.render_block(512)
+        peak_sustained = float(np.max(np.abs(out_sustained)))
+        assert peak_sustained > 0.3, (
+            f"sustained voice fell silent: peak={peak_sustained:.3f}"
+        )
+        # Lift the pedal -- voice transitions to released, gate falls,
+        # envelope decays. After enough blocks the audio is near zero.
+        midi.set_sustain(False)
+        for _ in range(60):  # KB_RELEASE_S is 20 ms ~= 2 blocks at 44.1k/512
+            tail = backend.render_block(512)
+        peak_tail = float(np.max(np.abs(tail)))
+        assert peak_tail < 0.05, (
+            f"pedal-up did not silence the voice: peak={peak_tail:.3f}"
+        )

@@ -54,7 +54,10 @@ Living list of what's next. Edit freely.
 
 - [x] MIDI input (mido + python-rtmidi) — self-polyphonic mirror of Keyboard, mono `out` + global `gate`. Plugs into any existing patch. — 2026-05-14
 - [ ] Voice routing manager — **Option A: voice-aware signals** committed 2026-05-15, design questions resolved 2026-05-20 (fixed 16 slots zero-padded, mono fast path preserved).
-      Slice 1 shipped 2026-05-20: `VoiceSlots` allocator in `core/voicing.py`, MIDIInput backed by it, sustain pedal (CC 64), `snapshot_voice_slots()` API ready for the renderer. Slice 2 (next): polyphonic `_render_midi_input` emitting `(16, frames)` for out/gate/pitch_cv + mono sinks summing the voice axis. Slice 3: Oscillator/ADSR/Filter/LFO/Crossover go shape-polymorphic.
+      Slice 1 shipped 2026-05-20: `VoiceSlots` allocator in `core/voicing.py`, MIDIInput backed by it, sustain pedal (CC 64).
+      Slice 2 shipped 2026-05-20: polyphonic `_render_midi_input` emits `(16, frames)` for out/gate/pitch_cv, speaker drain sums the voice axis, `_input_buffer` auto-collapses 2D → 1D for un-migrated consumers. Chord through MIDIInput → Speaker is audibly polyphonic.
+      Slice 3a shipped 2026-05-20: ADSR + VCA now voice-aware. Canonical MIDIInput → ADSR → VCA → Speaker chain produces per-voice envelopes — releasing one note in a chord decays only that voice.
+      Slice 3b (remaining): Filter, LFO, Crossover, Oscillator. Same pattern as ADSR — detect input ndim, branch into mono fast path or vectorized voice-aware path with per-slot state. Then slice 4 mirrors Keyboard to the same shape.
 - [x] MIDI follow-up: pitch bend → `pitch_cv` output port + internal voice bend, GM-standard `bend_range=2.0` (shipped 2026-05-15)
 - [x] MIDI follow-up: mod wheel (CC 1) → `mod_cv` output port + `mod_scale` param (shipped 2026-05-15)
 - [x] MIDI follow-up: channel aftertouch → `pressure_cv` output port + `pressure_scale` param (shipped 2026-05-15)
