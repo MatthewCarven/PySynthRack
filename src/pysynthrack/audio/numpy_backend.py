@@ -408,30 +408,96 @@ class NumpyBackend(AudioBackend):
     def _render_oscillator(self, module, frames: int, buffers=None, patch=None) -> np.ndarray:
         """Audio-rate oscillator with optional per-sample CV modulation.
 
+        Shape-polymorphic. The branch is decided by ``freq_cv``'s shape,
+        because phase state is what changes with frequency:
+
+          * ``freq_cv`` 2D ``(V, F)`` -> voice-aware path. V independent
+            phase accumulators, one per voice slot. Output ``(V, F)``.
+            ``amp_cv`` (any shape) and the static ``amp`` param are
+            applied via numpy broadcasting at the end.
+          * ``freq_cv`` 1D ``(F,)`` or None -> mono path with a single
+            phase accumulator. Output ``(F,)``. If ``amp_cv`` happens to
+            be 2D ``(V, F)`` (e.g. a polyphonic ADSR feeding a single
+            shared oscillator), the final ``wave * amp_cv`` broadcasts
+            the mono waveform across every voice -- producing a ``(V, F)``
+            result. That broadcast-by-amp case is the moral equivalent
+            of the VCA broadcast rules from slice 3a, and it's exactly
+            what you want when one carrier should be amplitude-shaped
+            independently per voice.
+
         Two CV inputs (both optional):
-          - ``freq_cv`` follows 1V/octave convention: the effective
-            frequency for sample n is ``freq * 2 ** cv[n]``. Per-sample
-            evaluation makes this true FM/vibrato — phase is integrated
-            from the instantaneous frequency, not a block-rate scalar.
+          - ``freq_cv`` follows 1V/octave: instantaneous frequency for
+            sample n is ``freq * 2 ** cv[n]``. Per-sample evaluation
+            makes this true FM/vibrato -- phase is integrated from the
+            instantaneous frequency, not a block-rate scalar.
           - ``amp_cv`` is linear multiplicative: ``amp * cv[n]``. A
             unipolar LFO here gives AM; bipolar would invert phase.
         """
-        state = self._state.setdefault(module.id, {"phase": 0.0})
         freq = float(module.params.get("freq", 440.0))
         amp = float(module.params.get("amp", 0.5))
         waveform = str(module.params.get("waveform", "sine"))
-        sr = self.sample_rate
 
-        # CV lookups are only available when the renderer is called
-        # via the topo walk (which always passes buffers + patch).
-        # Tests that drive the oscillator in isolation pass None.
+        # CV lookups only when called via the topo walk (which always
+        # passes buffers + patch). Tests that drive the oscillator in
+        # isolation pass None.
         if buffers is None or patch is None:
             freq_cv = None
             amp_cv = None
         else:
-            freq_cv = self._input_buffer(patch, buffers, module.id, "freq_cv")
-            amp_cv = self._input_buffer(patch, buffers, module.id, "amp_cv")
+            # collapse=False so a voice-aware (V, F) freq_cv or amp_cv
+            # reaches us with the voice axis intact. The mono branch
+            # handles a 2D amp_cv via final broadcast.
+            freq_cv = self._input_buffer(
+                patch, buffers, module.id, "freq_cv", collapse=False
+            )
+            amp_cv = self._input_buffer(
+                patch, buffers, module.id, "amp_cv", collapse=False
+            )
 
+        if freq_cv is not None and freq_cv.ndim == 2:
+            return self._render_oscillator_voice(
+                module, frames, freq, amp, waveform, freq_cv, amp_cv
+            )
+        return self._render_oscillator_mono(
+            module, frames, freq, amp, waveform, freq_cv, amp_cv
+        )
+
+    def _osc_waveshape(self, phases, waveform):
+        """Apply the waveform shaping function to a phase array.
+
+        ``phases`` can be any shape (1D for mono, 2D for voice) -- all
+        ops are elementwise so the same code handles both. Returns an
+        array of the same shape with values in roughly [-1, 1].
+        """
+        if waveform == "sine":
+            return np.sin(2.0 * np.pi * phases)
+        if waveform == "saw":
+            return 2.0 * phases - 1.0
+        if waveform == "square":
+            return np.where(phases < 0.5, 1.0, -1.0)
+        if waveform == "triangle":
+            return 1.0 - 4.0 * np.abs(phases - 0.5)
+        return np.zeros_like(phases)
+
+    def _render_oscillator_mono(
+        self, module, frames, freq, amp, waveform, freq_cv, amp_cv
+    ):
+        """Mono fast path -- scalar phase, vectorized phase ramp.
+
+        Logic is unchanged from the pre-slice-3 implementation: scalar
+        phase state, vectorized phase ramp via arange (no freq_cv) or
+        cumsum (with mono freq_cv). The amp_cv multiplication at the
+        end can broadcast a (F,) mono wave against a (V, F) voice
+        amp_cv, producing (V, F) output -- the broadcast-by-amp case.
+        """
+        state = self._state.setdefault(module.id, {"phase": 0.0})
+        # If state belongs to the voice branch (different keys),
+        # discard and reinit to mono shape.
+        if "phase_arr" in state:
+            state.clear()
+            state["phase"] = 0.0
+
+        sr = self.sample_rate
         start_phase = state["phase"]
         if freq_cv is None:
             # Fast path: constant frequency, vectorized phase ramp.
@@ -439,28 +505,76 @@ class NumpyBackend(AudioBackend):
             phases = (start_phase + np.arange(frames, dtype=np.float64) * phase_inc) % 1.0
             state["phase"] = (start_phase + frames * phase_inc) % 1.0
         else:
-            # Per-sample frequency from CV. Integrate phase one sample at
-            # a time — cheap in numpy via cumsum of per-sample increments.
+            # Per-sample frequency from CV. Integrate phase one sample
+            # at a time -- cheap in numpy via cumsum of per-sample
+            # increments.
             inst_freq = freq * np.power(2.0, freq_cv.astype(np.float64))
             inst_inc = inst_freq / sr
-            # The first sample uses start_phase; subsequent samples add
-            # the per-sample increment. ``cumsum`` gives the running total.
             phases = (start_phase + np.cumsum(inst_inc)) % 1.0
             state["phase"] = float(phases[-1])
 
-        if waveform == "sine":
-            wave = np.sin(2.0 * np.pi * phases)
-        elif waveform == "saw":
-            wave = 2.0 * phases - 1.0
-        elif waveform == "square":
-            wave = np.where(phases < 0.5, 1.0, -1.0)
-        elif waveform == "triangle":
-            wave = 1.0 - 4.0 * np.abs(phases - 0.5)
-        else:
-            wave = np.zeros(frames, dtype=np.float64)
-
+        wave = self._osc_waveshape(phases, waveform)
         wave = wave * amp
         if amp_cv is not None:
+            # amp_cv may be (F,) (same shape, elementwise) or (V, F)
+            # (broadcasts the mono wave across V voices, yielding a
+            # (V, F) result). Both are valid.
+            wave = wave * amp_cv.astype(np.float64)
+
+        return wave.astype(np.float32)
+
+    def _render_oscillator_voice(
+        self, module, frames, freq, amp, waveform, freq_cv, amp_cv
+    ):
+        """Voice-aware path -- V independent phase accumulators.
+
+        ``freq_cv`` is ``(V, F)``. Each voice integrates its own phase
+        via per-row cumsum, and per-voice phase state persists across
+        blocks. Output is ``(V, F)``. ``amp_cv`` (any shape) is applied
+        via numpy broadcasting at the end:
+
+          * (V, F) amp_cv -> elementwise per-voice AM.
+          * (F,)  amp_cv -> mono amplitude broadcast across every voice.
+          * None  amp_cv -> just the static ``amp`` param.
+
+        Phases are kept per-voice so a slot that was silent in a prior
+        block (freq_cv = 0 -> phase advances at the base ``freq``)
+        still carries a sensible phase when it next becomes audible,
+        instead of restarting from 0.0 every retrigger. MIDIInput
+        zero-pads unused slots, so silent slots advance at the param's
+        base frequency -- harmless because the per-voice ADSR/VCA
+        downstream silences those slots.
+        """
+        V = freq_cv.shape[0]
+        state = self._state.setdefault(module.id, {})
+
+        # Reinit if state belongs to the mono branch or the voice
+        # count changed.
+        needs_reinit = (
+            "phase_arr" not in state
+            or state["phase_arr"].shape[0] != V
+        )
+        if needs_reinit:
+            state.clear()
+            state["phase_arr"] = np.zeros(V, dtype=np.float64)
+
+        sr = self.sample_rate
+        start_phase = state["phase_arr"]  # (V,)
+
+        # Per-sample per-voice instantaneous frequency from CV.
+        inst_freq = freq * np.power(2.0, freq_cv.astype(np.float64))  # (V, F)
+        inst_inc = inst_freq / sr  # (V, F)
+        # cumsum along the time axis, add the start phase per voice.
+        # start_phase[:, None] broadcasts the (V,) starts to (V, 1).
+        phases = (start_phase[:, None] + np.cumsum(inst_inc, axis=1)) % 1.0  # (V, F)
+        state["phase_arr"] = phases[:, -1].copy()
+
+        wave = self._osc_waveshape(phases, waveform)  # (V, F)
+        wave = wave * amp
+        if amp_cv is not None:
+            # amp_cv (V, F) -> elementwise; amp_cv (F,) -> broadcasts
+            # across the voice axis (same mono amp applied to every
+            # voice). Both correct under numpy broadcasting rules.
             wave = wave * amp_cv.astype(np.float64)
 
         return wave.astype(np.float32)
@@ -737,34 +851,57 @@ class NumpyBackend(AudioBackend):
     def _render_filter(self, module, frames: int, buffers, patch) -> np.ndarray:
         """Apply a Robert Bristow-Johnson biquad to the upstream signal.
 
-        Per-sample loop in Python — slow per sample but constant-cost per
-        block; a 512-sample block costs ~100µs which is a tiny fraction of
-        the ~11.6ms callback budget at 44.1 kHz. For multi-filter chains
-        we'd reach for scipy.signal.lfilter (chunk-safe via ``zi``); we
-        avoid scipy as a dep until the perf actually pinches.
+        Shape-polymorphic. A 1D ``(F,)`` audio input drives a single
+        biquad and emits ``(F,)`` -- the pre-slice-3 fast path. A 2D
+        ``(V, F)`` audio input runs V parallel biquads (one per voice
+        slot) and emits ``(V, F)``; each voice keeps its own filter
+        memory so a per-voice ADSR can shape its own filter sweep
+        without bleed.
+
+        cutoff_cv handling within the voice branch:
+          * ``(V, F)`` cutoff_cv -> per-voice block-mean -> V different
+            cutoff frequencies, V coefficient sets, V biquad states.
+          * ``(F,)`` cutoff_cv -> single block-mean -> one coefficient
+            set broadcast across every voice (the "macro" filter sweep
+            use case: one LFO modulates every voice's filter equally).
+          * No cutoff_cv -> static cutoff from the param.
+
+        Per-sample loop in Python -- slow per sample but constant-cost
+        per block; a 512-sample block costs ~100us in the mono path.
+        The voice path adds a (V,)-wide broadcast inside the same loop,
+        which numpy makes essentially free (~1.5x the mono cost for
+        V=16), still well under the ~11.6ms callback budget at 44.1 kHz.
+        For multi-filter chains we'd reach for scipy.signal.lfilter
+        (chunk-safe via ``zi``); we avoid scipy as a dep until the perf
+        actually pinches.
         """
-        src_buf = self._input_buffer(patch, buffers, module.id, "in")
+        # collapse=False so a voice-aware (V, F) audio input reaches us
+        # with the voice axis intact. cutoff_cv is also fetched with
+        # collapse=False so the voice branch can do per-voice block-
+        # means (the mono branch ignores the voice axis via mean()).
+        src_buf = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
         if src_buf is None:
             return np.zeros(frames, dtype=np.float32)
 
-        state = self._state.setdefault(
-            module.id, {"x1": 0.0, "x2": 0.0, "y1": 0.0, "y2": 0.0}
+        cutoff_cv = self._input_buffer(
+            patch, buffers, module.id, "cutoff_cv", collapse=False
         )
 
-        mode = str(module.params.get("mode", "lowpass"))
-        cutoff = float(module.params.get("cutoff", 1000.0))
-        q = float(module.params.get("resonance", 0.707))
+        if src_buf.ndim == 2:
+            return self._render_filter_voice(module, frames, src_buf, cutoff_cv)
+        return self._render_filter_mono(module, frames, src_buf, cutoff_cv)
 
-        # CV-modulate the cutoff. 1V/octave: ``cutoff *= 2 ** mean(cv)``.
-        # Block-mean keeps the biquad coefficient recomputation to one
-        # pass per block; audio-rate cutoff mod would need per-sample
-        # coefs (~9x cost in this tight scalar loop).
-        cutoff_cv = self._input_buffer(patch, buffers, module.id, "cutoff_cv")
-        if cutoff_cv is not None and cutoff_cv.size > 0:
-            cutoff = cutoff * float(2.0 ** float(np.mean(cutoff_cv)))
+    def _filter_coeffs(self, mode, cutoff, q):
+        """Compute RBJ biquad coefficients for one cutoff/Q pair.
 
+        Returns ``(b0, b1, b2, a1n, a2n)`` already normalized by a0,
+        or ``None`` if the mode is unknown (caller treats as passthrough).
+        cutoff is clamped to (20 Hz, 0.45*sr) and q to (0.1, 20) here so
+        callers don't need to.
+        """
         sr = self.sample_rate
-        # Clamp to a stable range. Above 0.45*sr the filter goes wild.
         cutoff = max(20.0, min(cutoff, sr * 0.45))
         q = max(0.1, min(q, 20.0))
 
@@ -773,7 +910,6 @@ class NumpyBackend(AudioBackend):
         sin_w0 = float(np.sin(w0))
         alpha = sin_w0 / (2.0 * q)
 
-        # RBJ audio EQ cookbook coefficients.
         if mode == "lowpass":
             b0 = (1.0 - cos_w0) / 2.0
             b1 = 1.0 - cos_w0
@@ -787,18 +923,52 @@ class NumpyBackend(AudioBackend):
             b1 = 0.0
             b2 = -sin_w0 / 2.0
         else:
-            return src_buf.astype(np.float32)  # unknown → passthrough
+            return None
 
         a0 = 1.0 + alpha
         a1 = -2.0 * cos_w0
         a2 = 1.0 - alpha
 
-        # Normalize.
         b0 /= a0
         b1 /= a0
         b2 /= a0
         a1n = a1 / a0
         a2n = a2 / a0
+        return b0, b1, b2, a1n, a2n
+
+    def _render_filter_mono(self, module, frames, src_buf, cutoff_cv):
+        """Mono fast path -- single biquad, scalar state, output ``(F,)``.
+
+        Functionally unchanged from the pre-slice-3 implementation; the
+        scalar inner loop is exactly the same so every existing Filter
+        test passes bit-for-bit identically.
+        """
+        state = self._state.setdefault(
+            module.id, {"x1": 0.0, "x2": 0.0, "y1": 0.0, "y2": 0.0}
+        )
+        # If state belongs to the voice branch from a previous call
+        # (different audio shape), discard and reinit to mono shape.
+        if "x1_arr" in state:
+            state.clear()
+            state.update({"x1": 0.0, "x2": 0.0, "y1": 0.0, "y2": 0.0})
+
+        mode = str(module.params.get("mode", "lowpass"))
+        cutoff = float(module.params.get("cutoff", 1000.0))
+        q = float(module.params.get("resonance", 0.707))
+
+        # CV-modulate the cutoff. 1V/octave: ``cutoff *= 2 ** mean(cv)``.
+        # Block-mean keeps the biquad coefficient recomputation to one
+        # pass per block; audio-rate cutoff mod would need per-sample
+        # coefs (~9x cost in this tight scalar loop). If cutoff_cv is
+        # 2D (a voice-aware source feeding a mono filter), mean over
+        # both axes -- same effect as the old collapse=True path.
+        if cutoff_cv is not None and cutoff_cv.size > 0:
+            cutoff = cutoff * float(2.0 ** float(np.mean(cutoff_cv)))
+
+        coeffs = self._filter_coeffs(mode, cutoff, q)
+        if coeffs is None:
+            return src_buf.astype(np.float32)  # unknown mode -> passthrough
+        b0, b1, b2, a1n, a2n = coeffs
 
         x1 = state["x1"]
         x2 = state["x2"]
@@ -806,8 +976,9 @@ class NumpyBackend(AudioBackend):
         y2 = state["y2"]
 
         out = np.empty(frames, dtype=np.float32)
-        # Tight scalar loop. NumPy can't vectorize IIR (each sample depends
-        # on the previous output). Python's still fast enough at this size.
+        # Tight scalar loop. NumPy can't vectorize IIR (each sample
+        # depends on the previous output). Python's still fast enough
+        # at this size.
         for n in range(frames):
             x0 = float(src_buf[n])
             y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1n * y1 - a2n * y2
@@ -821,6 +992,120 @@ class NumpyBackend(AudioBackend):
         state["x2"] = x2
         state["y1"] = y1
         state["y2"] = y2
+
+        return out
+
+    def _render_filter_voice(self, module, frames, src_buf, cutoff_cv):
+        """Voice-aware path -- V parallel biquads, output ``(V, F)``.
+
+        Per-sample loop is still serial (the biquad recurrence is
+        causal in time), but the per-voice updates inside each sample
+        are vectorized across V via numpy broadcasting. The inner
+        recurrence ``y0 = b0*x0 + b1*x1 + b2*x2 - a1n*y1 - a2n*y2`` is
+        identical to the mono path -- the only difference is that
+        ``x0..y2`` are ``(V,)`` arrays and ``b0..a2n`` are either
+        scalars (one cutoff for all voices) or ``(V,)`` arrays (per-
+        voice cutoffs). Broadcasting handles both.
+        """
+        V = src_buf.shape[0]
+        state = self._state.setdefault(module.id, {})
+
+        # Reinit if state belongs to the mono branch or the voice
+        # count changed (latter is paranoia -- V is always
+        # _MAX_VOICES today).
+        needs_reinit = (
+            "x1_arr" not in state
+            or state["x1_arr"].shape[0] != V
+        )
+        if needs_reinit:
+            state.clear()
+            state["x1_arr"] = np.zeros(V, dtype=np.float64)
+            state["x2_arr"] = np.zeros(V, dtype=np.float64)
+            state["y1_arr"] = np.zeros(V, dtype=np.float64)
+            state["y2_arr"] = np.zeros(V, dtype=np.float64)
+
+        mode = str(module.params.get("mode", "lowpass"))
+        base_cutoff = float(module.params.get("cutoff", 1000.0))
+        q = float(module.params.get("resonance", 0.707))
+
+        # Per-voice cutoff when cutoff_cv is (V, F): each voice gets
+        # its own block-mean. Otherwise single shared cutoff.
+        per_voice_cutoff = (
+            cutoff_cv is not None
+            and cutoff_cv.ndim == 2
+            and cutoff_cv.shape[0] == V
+            and cutoff_cv.size > 0
+        )
+
+        if per_voice_cutoff:
+            cv_block_mean = cutoff_cv.mean(axis=1)  # (V,)
+            cutoff_per_voice = base_cutoff * np.power(2.0, cv_block_mean)
+            sr = self.sample_rate
+            cutoff_per_voice = np.clip(cutoff_per_voice, 20.0, sr * 0.45)
+            q_clamped = max(0.1, min(q, 20.0))
+
+            w0 = 2.0 * np.pi * cutoff_per_voice / sr  # (V,)
+            cos_w0 = np.cos(w0)
+            sin_w0 = np.sin(w0)
+            alpha = sin_w0 / (2.0 * q_clamped)
+
+            if mode == "lowpass":
+                b0 = (1.0 - cos_w0) / 2.0
+                b1 = 1.0 - cos_w0
+                b2 = (1.0 - cos_w0) / 2.0
+            elif mode == "highpass":
+                b0 = (1.0 + cos_w0) / 2.0
+                b1 = -(1.0 + cos_w0)
+                b2 = (1.0 + cos_w0) / 2.0
+            elif mode == "bandpass":
+                b0 = sin_w0 / 2.0
+                b1 = np.zeros(V, dtype=np.float64)
+                b2 = -sin_w0 / 2.0
+            else:
+                return src_buf.astype(np.float32)  # unknown -> passthrough
+
+            a0 = 1.0 + alpha
+            a1 = -2.0 * cos_w0
+            a2 = 1.0 - alpha
+            b0 = b0 / a0
+            b1 = b1 / a0
+            b2 = b2 / a0
+            a1n = a1 / a0
+            a2n = a2 / a0
+        else:
+            cutoff = base_cutoff
+            if cutoff_cv is not None and cutoff_cv.size > 0:
+                # mean() over whatever shape: 1D collapses to scalar,
+                # 2D shouldn't reach here but be safe.
+                cutoff = cutoff * float(2.0 ** float(np.mean(cutoff_cv)))
+            coeffs = self._filter_coeffs(mode, cutoff, q)
+            if coeffs is None:
+                return src_buf.astype(np.float32)
+            b0, b1, b2, a1n, a2n = coeffs  # scalars
+
+        x1 = state["x1_arr"]
+        x2 = state["x2_arr"]
+        y1 = state["y1_arr"]
+        y2 = state["y2_arr"]
+
+        out = np.empty((V, frames), dtype=np.float32)
+        # Serial in time, vectorized across voices. Each iteration
+        # does a (V,)-wide multiply-add; with V=16 and frames=512
+        # numpy makes the per-iteration cost basically identical to
+        # one scalar iteration.
+        for n in range(frames):
+            x0 = src_buf[:, n].astype(np.float64)  # (V,)
+            y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1n * y1 - a2n * y2
+            out[:, n] = y0
+            x2 = x1
+            x1 = x0
+            y2 = y1
+            y1 = y0
+
+        state["x1_arr"] = x1
+        state["x2_arr"] = x2
+        state["y1_arr"] = y1
+        state["y2_arr"] = y2
 
         return out
 

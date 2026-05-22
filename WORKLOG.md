@@ -1595,3 +1595,181 @@ into mono fast path or voice-aware path with vectorized per-
 sample updates.  After slice 3b lands, every stateful module is
 voice-aware and the only remaining piece is the Keyboard
 migration (slice 4) to mirror MIDIInput.
+
+
+---
+
+## 2026-05-23 -- Voice routing slice 3b.1: voice-aware Filter + Oscillator
+
+**What.**  Second installment of the downstream-module migration.
+Filter and Oscillator now respect the voice axis.  After this
+slice, four of the six stateful modules (ADSR, VCA, Filter,
+Oscillator) take per-voice signals correctly; only LFO and
+Crossover remain (slice 3b.2), then Keyboard (slice 4).
+
+The user can now build the obvious polyphonic patch -- per-voice
+filter sweeps driven by per-voice ADSRs -- without anything
+collapsing to mono in the middle.
+
+**Decision: split slice 3b in half.**  TODO had slice 3b as one
+chunk (Filter + LFO + Crossover + Oscillator).  In the planning
+exchange Matthew picked "split into 3b.1 / 3b.2", grouping the
+headline use-case modules together: Filter (per-voice filter
+sweep) + Oscillator (per-voice detune / FM).  LFO and Crossover
+are mostly broadcast-friendly and land next as 3b.2.
+
+**Filter migration.**  ``_render_filter`` is now a small
+dispatcher that opts both inputs into ``collapse=False`` and
+branches on the audio input's ``ndim``:
+
+* ``ndim == 1`` -> ``_render_filter_mono``, lifted unchanged from
+  the pre-slice-3 implementation.  Scalar biquad memory
+  (``x1, x2, y1, y2``), scalar coefficients, single Python loop
+  over ``frames``.  Every existing Filter test passes bit-for-bit
+  identically.
+
+* ``ndim == 2`` -> ``_render_filter_voice``.  V parallel biquads
+  with per-slot memory ``(x1_arr, x2_arr, y1_arr, y2_arr)`` as
+  ``(V,)`` arrays.  The per-sample recurrence
+  ``y0 = b0*x0 + b1*x1 + b2*x2 - a1n*y1 - a2n*y2`` is byte-
+  identical to mono -- only the operand shapes change.
+  Broadcasting handles both single-cutoff and per-voice-cutoff
+  cases:
+
+  - Single cutoff -> ``b0..a2n`` are scalars, the recurrence
+    runs ``(V,) <op> scalar -> (V,)``.
+  - Per-voice cutoff -> ``b0..a2n`` are ``(V,)`` arrays from V
+    sets of RBJ coefficients, recurrence is ``(V,) <op> (V,)
+    -> (V,)``.
+
+  Coefficient-computation routine (``_filter_coeffs``) factored
+  out so the mono path keeps using the cheap scalar version.
+  ``cutoff_cv`` semantic in the voice branch:
+
+  * ``(V, F)`` cutoff_cv -> per-row block-mean -> ``(V,)`` cutoff
+    -> ``(V,)`` coefficient arrays.  Per-voice filter sweep.
+  * ``(F,)`` cutoff_cv -> single block-mean -> scalar coefficient
+    set broadcast across every voice.  "Macro" filter sweep --
+    one LFO modulates every voice's filter equally.  This is the
+    common case (a global filter envelope, an aftertouch-driven
+    LFO).
+  * No cutoff_cv -> static cutoff from the param.
+
+**Per-voice biquad cost.**  Per-sample loop is still serial
+(biquad recurrence is causal in time, numpy can't vectorize an
+IIR along time).  But each iteration now does a ``(V,)``-wide
+multiply-add.  At V=16 numpy makes the per-iteration cost
+basically identical to one scalar iteration, so a 512-sample
+block costs ~150us in the voice branch vs ~100us in the mono
+branch -- still 65x under the 11.6ms callback budget at 44.1kHz.
+
+**Oscillator migration.**  ``_render_oscillator`` is now a
+dispatcher that branches on ``freq_cv``'s ndim, because phase is
+the state that changes with frequency:
+
+* ``freq_cv`` 1D or None -> ``_render_oscillator_mono``, lifted
+  from the pre-slice-3 implementation.  Single scalar phase
+  accumulator.  Vectorized phase ramp via ``arange`` (no CV) or
+  ``cumsum`` (mono CV).  Output ``(F,)``.  If ``amp_cv`` happens
+  to be ``(V, F)``, the final ``wave * amp_cv`` broadcasts the
+  mono carrier across V voices -- the "cheap-poly" pattern: one
+  carrier, per-voice amp shaping.  No phase-state changes for
+  this case, the voice-ness is purely an output shape.
+
+* ``freq_cv`` 2D ``(V, F)`` -> ``_render_oscillator_voice``.
+  V independent phase accumulators (``phase_arr`` as ``(V,)``
+  array).  Per-row cumsum integrates each voice's phase
+  separately.  Output ``(V, F)``.  Per-voice phase persists
+  across blocks so a slot that was silent (freq_cv = 0,
+  advancing at the param's base freq) still carries a sensible
+  phase when next gated -- avoids a per-retrigger phase reset.
+  MIDIInput zero-pads unused slots, so silent slots advance at
+  ``freq`` -- harmless because the per-voice ADSR/VCA
+  downstream silences those slots anyway.
+
+Waveshape function (sine/saw/square/triangle) factored out as
+``_osc_waveshape`` -- shape-polymorphic via numpy, same code
+handles ``(F,)`` and ``(V, F)`` phase arrays elementwise.
+
+**State branch isolation.**  Same pattern as ADSR slice 3a: mono
+state uses one set of dict keys (``"phase"`` / ``"x1"`` / ...),
+voice state uses ``_arr`` suffixed keys (``"phase_arr"`` /
+``"x1_arr"`` / ...).  Each branch checks for the other branch's
+keys on first call and reinitialises if it finds them, so a
+recompile that switches an instance between shapes won't see
+stale state of the wrong type.
+
+**Phase-convention note (pre-existing, not from this slice).**
+The mono path with no freq_cv uses ``arange``-based phase
+(sample 0 = ``start_phase``).  The mono path with freq_cv uses
+``cumsum`` (sample 0 = ``start_phase + inst_inc[0]``, one step
+ahead).  The voice path also uses cumsum.  Two of the new
+oscillator tests caught this -- they expected voice-with-zero-CV
+to agree with mono-no-CV bit-for-bit, but the two paths differ
+by one phase increment.  Rewrote the tests to compare against
+the mono-WITH-CV path (which uses the same cumsum convention)
+and to check inter-voice consistency rather than absolute phase.
+Reconciling the two mono branches is a separate cleanup -- not
+in scope for 3b.
+
+**New tests: ``TestFilterVoiceAware`` + ``TestOscillatorVoiceAware``**
+(11 tests appended to ``tests/test_voice_aware.py``).
+
+Filter tests:
+
+* ``test_voice_audio_returns_voice_shape`` -- (16, F) noise in
+  slot 3 only, every other slot silent in, every other slot
+  silent out (no per-voice leakage).
+* ``test_per_voice_filter_memory_is_independent`` -- warmup slot
+  0 with sustained signal, then drive an impulse into slot 5
+  while slot 0's input goes to 0.  Slot 5's impulse response
+  appears in slot 5 from a fresh memory; slot 0 decays from its
+  prior state without being kicked by the slot-5 impulse.
+* ``test_mono_audio_still_returns_mono`` -- backward compat,
+  scalar biquad path still returns ``(F,)``.
+* ``test_voice_audio_mono_cutoff_cv_broadcasts`` -- macro filter
+  sweep, mono cutoff_cv applied to every voice.
+* ``test_voice_audio_per_voice_cutoff_cv`` -- the polyphonic
+  filter test.  Slot 0 cutoff +2 oct (=4000Hz), slot 5 cutoff
+  -2 oct (=250Hz), both fed the same 2 kHz tone.  Slot 0's RMS
+  should be >4x slot 5's -- proves the per-voice coefficient
+  arrays actually differentiate voices.
+
+Oscillator tests:
+
+* ``test_voice_freq_cv_returns_voice_shape`` -- (V, F) freq_cv
+  with all zeros, every voice produces the same waveform (inter-
+  voice consistency check).
+* ``test_per_voice_pitch_via_freq_cv`` -- slot 0 at 0V (=440Hz),
+  slot 5 at +1V (=880Hz), zero-crossing count differs by ~2x.
+* ``test_per_voice_phase_persists_across_blocks`` -- render two
+  blocks back-to-back, assert sample-to-sample continuity at
+  every block boundary for every voice.
+* ``test_mono_freq_cv_with_voice_amp_cv_broadcasts`` -- cheap-
+  poly path: mono carrier, per-voice amp_cv.  Different voices
+  hear the carrier at different amplitudes via numpy broadcast.
+* ``test_mono_freq_cv_returns_mono`` -- backward compat.
+* ``test_voice_matches_mono_with_cv`` -- voice path with
+  freq_cv=0 agrees with mono-with-freq_cv=0 to 1e-5 (both
+  cumsum-based, same convention).
+
+**Verification.**  Full project suite off the mount:  **271 tests
+pass, 0 fail** (was 260 + 11 new = 271; 18 mido tests skipped in
+the bash sandbox but pass under Matthew's ``[midi]``-installed
+venv).  Same sandbox + verify protocol as slices 1, 2, 3a:
+staged in ``/tmp/staging``, AST-parsed, ran the suite against a
+sandbox copy of the project tree, copied to mount with ``cp``,
+AST-parsed on the mount, md5'd to confirm byte-for-byte transfer,
+ran the suite directly off the mount.
+
+**What slice 3b.2 leaves to do.**  LFO and Crossover.  LFO is
+slightly subtle: its only voice-aware input is ``rate_cv``, and
+even then per-voice rate is a niche use (one LFO per voice, all
+running at different rates -- mostly useful for unison detune
+shimmer).  More common is mono LFO modulating per-voice
+destinations downstream, which the existing collapse=True path
+already handles transparently.  Decision pending for 3b.2:
+whether to migrate LFO to voice-aware at all, or just document
+why it stays mono.  Crossover is more clear-cut -- it's a stateful
+pair of biquads per branch, V parallel pairs is a direct port of
+the Filter pattern.

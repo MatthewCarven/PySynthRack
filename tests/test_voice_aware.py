@@ -300,3 +300,342 @@ class TestPolyphonicChain:
         backend.compile(patch)
         out = self._run(backend, blocks=5)
         assert float(np.max(np.abs(out))) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Filter voice-aware path (slice 3b)
+# ---------------------------------------------------------------------------
+
+
+class TestFilterVoiceAware:
+    """Filter slice-3b tests.
+
+    The Filter renderer branches on its audio input's ndim. 1D -> the
+    pre-slice-3 scalar biquad. 2D -> V parallel biquads, each with its
+    own (x1, x2, y1, y2) memory. cutoff_cv can be 1D (shared cutoff
+    across voices) or 2D (per-voice cutoff via per-row block-mean).
+    """
+
+    def _build_filter_patch(self, **filter_params):
+        patch = Patch()
+        flt = patch.add_module("filter", params=filter_params)
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        backend.compile(patch)
+        return backend, flt, patch
+
+    def _render(self, backend, flt, patch, audio, cutoff_cv=None, frames=512):
+        from pysynthrack.core.patch import Cable
+        AUDIO_SRC = 9101
+        CV_SRC = 9102
+        patch.cables[:] = [
+            c for c in patch.cables
+            if c.src_module_id not in (AUDIO_SRC, CV_SRC)
+        ]
+        patch.cables.append(Cable(
+            src_module_id=AUDIO_SRC, src_port="out",
+            dst_module_id=flt.id, dst_port="in",
+        ))
+        if cutoff_cv is not None:
+            patch.cables.append(Cable(
+                src_module_id=CV_SRC, src_port="out",
+                dst_module_id=flt.id, dst_port="cutoff_cv",
+            ))
+        buffers = {(AUDIO_SRC, "out"): audio}
+        if cutoff_cv is not None:
+            buffers[(CV_SRC, "out")] = cutoff_cv
+        return backend._render_filter(flt, frames, buffers, patch)
+
+    def test_voice_audio_returns_voice_shape(self):
+        # (16, F) audio in -> (16, F) audio out. Per-voice biquads
+        # produce their own outputs; an unused (zero) voice produces
+        # zero out.
+        backend, flt, patch = self._build_filter_patch(
+            mode="lowpass", cutoff=2000.0, resonance=0.707
+        )
+        audio = np.zeros((16, 512), dtype=np.float32)
+        # White-ish noise in slot 3 only.
+        rng = np.random.default_rng(0)
+        audio[3, :] = rng.standard_normal(512).astype(np.float32) * 0.2
+        # Run a few blocks so biquad memory settles.
+        for _ in range(3):
+            out = self._render(backend, flt, patch, audio)
+        assert out.shape == (16, 512)
+        # Slot 3 carries signal.
+        assert float(np.max(np.abs(out[3]))) > 1e-3
+        # Every other slot stayed at 0.
+        for i in range(16):
+            if i == 3:
+                continue
+            assert float(np.max(np.abs(out[i]))) == 0.0, (
+                f"slot {i} should be silent, got max={float(np.max(np.abs(out[i])))}"
+            )
+
+    def test_per_voice_filter_memory_is_independent(self):
+        # Two voices with the same input but at different start times:
+        # voice 0 has been ringing for several blocks (filter memory
+        # populated), voice 5 has a fresh impulse. Voice 0's output
+        # should reflect prior filter state (decayed amplitude or
+        # carryover), while voice 5's should look like a fresh impulse
+        # response. The key proof: setting state via slot 0 must not
+        # influence slot 5 -- per-voice memory means slot 5 starts
+        # from x1=x2=y1=y2=0.
+        backend, flt, patch = self._build_filter_patch(
+            mode="lowpass", cutoff=1000.0, resonance=2.0  # resonant
+        )
+        # Warm up slot 0 with sustained signal for several blocks.
+        warmup = np.zeros((16, 512), dtype=np.float32)
+        warmup[0, :] = 1.0
+        for _ in range(5):
+            self._render(backend, flt, patch, warmup)
+
+        # Now drive slot 5 with an impulse; slot 0 input goes to 0.
+        impulse = np.zeros((16, 512), dtype=np.float32)
+        impulse[5, 0] = 1.0
+        out = self._render(backend, flt, patch, impulse)
+        # Slot 5's impulse response should ring on its own from a
+        # fresh state: nonzero output, peaks in the first ~50 samples.
+        assert float(np.max(np.abs(out[5, :100]))) > 0.01
+        # Slot 0 has zero input now but biquad memory from the
+        # warmup -- it will decay on its own, but is independent of
+        # slot 5's impulse. Specifically, the slot-5 impulse should
+        # not appear in slot 0 (memory independence).
+        # Since slot 0's memory decays naturally toward zero, by
+        # frame 500 it should be much smaller than slot 5's peak.
+        # The strict claim: slot 5's nonzero samples don't appear in
+        # slot 0 (no cross-talk). We approximate by checking slot 0
+        # is decaying monotonically-ish, not getting "kicked" by
+        # slot 5's impulse.
+        slot0_first_half = float(np.mean(np.abs(out[0, :256])))
+        slot0_second_half = float(np.mean(np.abs(out[0, 256:])))
+        # Decaying signal: second half average smaller than first.
+        # The mere absence of slot-5 cross-talk is what this asserts;
+        # if cross-talk leaked in, slot 0 would show a spike near
+        # frame 0 mirroring the impulse.
+        assert slot0_second_half <= slot0_first_half + 1e-6
+
+    def test_mono_audio_still_returns_mono(self):
+        # Backward compat: 1D in -> 1D out, scalar biquad path.
+        backend, flt, patch = self._build_filter_patch(
+            mode="lowpass", cutoff=1000.0
+        )
+        audio = np.ones(512, dtype=np.float32) * 0.5
+        for _ in range(3):
+            out = self._render(backend, flt, patch, audio)
+        assert out.shape == (512,)
+        assert out.ndim == 1
+        # Lowpass on DC -> output settles to DC level (~0.5).
+        assert float(out[-1]) == pytest.approx(0.5, abs=0.05)
+
+    def test_voice_audio_mono_cutoff_cv_broadcasts(self):
+        # Macro filter sweep: one LFO modulates every voice's filter
+        # equally. cutoff_cv is (F,), audio is (V, F). Output (V, F).
+        backend, flt, patch = self._build_filter_patch(
+            mode="lowpass", cutoff=1000.0
+        )
+        audio = np.zeros((16, 512), dtype=np.float32)
+        audio[1, :] = 0.5
+        audio[7, :] = 0.5
+        # +1 octave on cutoff CV (1V/oct).
+        cv = np.full(512, 1.0, dtype=np.float32)
+        out = self._render(backend, flt, patch, audio, cutoff_cv=cv)
+        assert out.shape == (16, 512)
+        # Both signaled slots should produce nonzero output; silent
+        # slots should still be silent (per-voice memory).
+        assert float(np.max(np.abs(out[1]))) > 1e-3
+        assert float(np.max(np.abs(out[7]))) > 1e-3
+        assert float(np.max(np.abs(out[2]))) == 0.0
+
+    def test_voice_audio_per_voice_cutoff_cv(self):
+        # Per-voice cutoff: cutoff_cv is (V, F). Different voices get
+        # different cutoff frequencies. Slot 0 with cutoff +2 octaves
+        # (=4000 Hz) should pass a 2 kHz tone more freely than slot 5
+        # at cutoff -2 octaves (=250 Hz), which heavily attenuates it.
+        backend, flt, patch = self._build_filter_patch(
+            mode="lowpass", cutoff=1000.0, resonance=0.707
+        )
+        sr = 44100
+        t = np.arange(512) / sr
+        tone = (np.sin(2 * np.pi * 2000 * t) * 0.5).astype(np.float32)
+        audio = np.zeros((16, 512), dtype=np.float32)
+        audio[0, :] = tone
+        audio[5, :] = tone
+
+        cv = np.zeros((16, 512), dtype=np.float32)
+        cv[0, :] = 2.0    # slot 0 cutoff -> 4000 Hz
+        cv[5, :] = -2.0   # slot 5 cutoff -> 250 Hz
+
+        # Run several blocks so the biquad reaches steady-state.
+        for _ in range(6):
+            out = self._render(backend, flt, patch, audio, cutoff_cv=cv)
+
+        slot0_rms = float(np.sqrt(np.mean(out[0] ** 2)))
+        slot5_rms = float(np.sqrt(np.mean(out[5] ** 2)))
+        # Per-voice cutoff means slot 0 passes the tone much louder
+        # than slot 5. Ratio should be substantial (>4x).
+        assert slot0_rms > slot5_rms * 4.0, (
+            f"per-voice cutoff did not differentiate voices: "
+            f"slot0_rms={slot0_rms:.4f}, slot5_rms={slot5_rms:.4f}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Oscillator voice-aware path (slice 3b)
+# ---------------------------------------------------------------------------
+
+
+class TestOscillatorVoiceAware:
+    """Oscillator slice-3b tests.
+
+    The Oscillator renderer branches on freq_cv's ndim. 1D or None ->
+    the existing mono path with a single phase accumulator. 2D ->
+    V independent phase accumulators emit (V, F). amp_cv broadcasts
+    in either branch (so a mono carrier can be amp-shaped per voice).
+    """
+
+    def _build_osc_patch(self, **osc_params):
+        patch = Patch()
+        osc = patch.add_module("oscillator", params=osc_params)
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        backend.compile(patch)
+        return backend, osc, patch
+
+    def _render(
+        self, backend, osc, patch,
+        freq_cv=None, amp_cv=None, frames=512,
+    ):
+        from pysynthrack.core.patch import Cable
+        FREQ_SRC = 9201
+        AMP_SRC = 9202
+        patch.cables[:] = [
+            c for c in patch.cables
+            if c.src_module_id not in (FREQ_SRC, AMP_SRC)
+        ]
+        buffers = {}
+        if freq_cv is not None:
+            patch.cables.append(Cable(
+                src_module_id=FREQ_SRC, src_port="out",
+                dst_module_id=osc.id, dst_port="freq_cv",
+            ))
+            buffers[(FREQ_SRC, "out")] = freq_cv
+        if amp_cv is not None:
+            patch.cables.append(Cable(
+                src_module_id=AMP_SRC, src_port="out",
+                dst_module_id=osc.id, dst_port="amp_cv",
+            ))
+            buffers[(AMP_SRC, "out")] = amp_cv
+        return backend._render_oscillator(osc, frames, buffers, patch)
+
+    def test_voice_freq_cv_returns_voice_shape(self):
+        # (V, F) freq_cv -> (V, F) output. Each voice runs its own
+        # phase accumulator. With freq_cv = 0 in every slot, all
+        # voices should produce identical waveforms (same base freq,
+        # same starting phase, same cumsum increments).
+        backend, osc, patch = self._build_osc_patch(
+            waveform="sine", freq=440.0, amp=0.5
+        )
+        freq_cv = np.zeros((16, 512), dtype=np.float32)
+        out = self._render(backend, osc, patch, freq_cv=freq_cv)
+        assert out.shape == (16, 512)
+        # Every voice must produce the same waveform (per-voice
+        # independence with identical inputs == identical outputs).
+        for v in range(1, 16):
+            np.testing.assert_allclose(out[v], out[0], atol=1e-6)
+
+    def test_per_voice_pitch_via_freq_cv(self):
+        # Distinct cv per voice -> distinct pitches. Voice 0 at 0V
+        # (=440 Hz, base freq); voice 5 at +1V (=880 Hz, one octave
+        # up). Count zero crossings to verify the pitch difference.
+        backend, osc, patch = self._build_osc_patch(
+            waveform="sine", freq=440.0, amp=0.5
+        )
+        freq_cv = np.zeros((16, 512), dtype=np.float32)
+        freq_cv[0, :] = 0.0   # 440 Hz
+        freq_cv[5, :] = 1.0   # 880 Hz
+        # Run a few blocks; pitch is set every block, but voice
+        # phases evolve so we just need one block worth.
+        out = self._render(backend, osc, patch, freq_cv=freq_cv)
+        # Zero crossings ~ frequency * duration. For a 512-sample
+        # block at 44.1 kHz that's ~11.6 ms.
+        # 440 Hz -> ~5.1 cycles -> ~10 zero crossings.
+        # 880 Hz -> ~10.2 cycles -> ~20 zero crossings.
+        def zc(buf):
+            return int(np.sum(np.diff(np.sign(buf)) != 0))
+        zc_v0 = zc(out[0])
+        zc_v5 = zc(out[5])
+        assert zc_v5 > zc_v0 * 1.5, (
+            f"per-voice freq_cv did not produce different pitches: "
+            f"v0 zc={zc_v0}, v5 zc={zc_v5}"
+        )
+
+    def test_per_voice_phase_persists_across_blocks(self):
+        # Phase must accumulate across blocks per voice. Render two
+        # blocks and verify the second block continues smoothly from
+        # the first (no phase reset between blocks).
+        backend, osc, patch = self._build_osc_patch(
+            waveform="sine", freq=100.0, amp=1.0
+        )
+        freq_cv = np.zeros((16, 512), dtype=np.float32)
+        b1 = self._render(backend, osc, patch, freq_cv=freq_cv)
+        b2 = self._render(backend, osc, patch, freq_cv=freq_cv)
+        # Continuity: the last sample of b1 and the first of b2 are
+        # one phase increment apart, so they should be very close
+        # (delta < what 100 Hz advances in one sample).
+        for v in range(16):
+            jump = abs(float(b2[v, 0]) - float(b1[v, -1]))
+            # 100 Hz at 44.1 kHz -> dphi = 100/44100 ~ 0.00227.
+            # |d sin(2pi*phi)| at that step is ~0.014 -- give some
+            # margin for accumulated cumsum drift.
+            assert jump < 0.05, (
+                f"voice {v}: phase discontinuous between blocks "
+                f"(jump={jump:.4f})"
+            )
+
+    def test_mono_freq_cv_with_voice_amp_cv_broadcasts(self):
+        # Mono carrier amp-shaped per voice. freq_cv None -> single
+        # phase, (F,) wave. amp_cv (V, F) -> wave * amp_cv broadcasts
+        # to (V, F): each voice hears the same carrier at its own
+        # amplitude. This is the cheap-poly trick.
+        backend, osc, patch = self._build_osc_patch(
+            waveform="sine", freq=440.0, amp=1.0
+        )
+        amp_cv = np.zeros((16, 512), dtype=np.float32)
+        amp_cv[2, :] = 1.0
+        amp_cv[9, :] = 0.5
+        out = self._render(backend, osc, patch, freq_cv=None, amp_cv=amp_cv)
+        assert out.shape == (16, 512)
+        # Slot 2 at full amp, slot 9 at half, every other silent.
+        assert float(np.max(np.abs(out[2]))) == pytest.approx(1.0, abs=0.05)
+        assert float(np.max(np.abs(out[9]))) == pytest.approx(0.5, abs=0.05)
+        for i in (0, 1, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15):
+            assert float(np.max(np.abs(out[i]))) == 0.0
+
+    def test_mono_freq_cv_returns_mono(self):
+        # Backward compat: no freq_cv and no amp_cv -> the old (F,)
+        # output shape, scalar phase accumulator.
+        backend, osc, patch = self._build_osc_patch(
+            waveform="sine", freq=440.0, amp=0.5
+        )
+        out = self._render(backend, osc, patch)
+        assert out.shape == (512,)
+        assert out.ndim == 1
+
+    def test_voice_matches_mono_with_cv(self):
+        # The voice path and the mono-with-freq_cv path both use
+        # cumsum-based phase integration, so they should agree to
+        # floating-point tolerance when fed the same effective CV.
+        # (The mono no-CV path uses arange, off by one phase
+        # increment -- pre-existing convention difference outside
+        # the scope of slice 3b.)
+        backend1, osc1, patch1 = self._build_osc_patch(
+            waveform="saw", freq=440.0, amp=0.5
+        )
+        mono_cv = np.zeros(512, dtype=np.float32)
+        mono = self._render(backend1, osc1, patch1, freq_cv=mono_cv)
+
+        backend2, osc2, patch2 = self._build_osc_patch(
+            waveform="saw", freq=440.0, amp=0.5
+        )
+        voice_cv = np.zeros((16, 512), dtype=np.float32)
+        voice = self._render(backend2, osc2, patch2, freq_cv=voice_cv)
+        # Voice 0 should match the mono-with-CV path bit-near.
+        np.testing.assert_allclose(voice[0], mono, atol=1e-5)

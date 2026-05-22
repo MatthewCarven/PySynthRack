@@ -57,7 +57,8 @@ Living list of what's next. Edit freely.
       Slice 1 shipped 2026-05-20: `VoiceSlots` allocator in `core/voicing.py`, MIDIInput backed by it, sustain pedal (CC 64).
       Slice 2 shipped 2026-05-20: polyphonic `_render_midi_input` emits `(16, frames)` for out/gate/pitch_cv, speaker drain sums the voice axis, `_input_buffer` auto-collapses 2D → 1D for un-migrated consumers. Chord through MIDIInput → Speaker is audibly polyphonic.
       Slice 3a shipped 2026-05-20: ADSR + VCA now voice-aware. Canonical MIDIInput → ADSR → VCA → Speaker chain produces per-voice envelopes — releasing one note in a chord decays only that voice.
-      Slice 3b (remaining): Filter, LFO, Crossover, Oscillator. Same pattern as ADSR — detect input ndim, branch into mono fast path or vectorized voice-aware path with per-slot state. Then slice 4 mirrors Keyboard to the same shape.
+      Slice 3b.1 shipped 2026-05-23: Filter + Oscillator voice-aware. Filter runs V parallel biquads with per-slot (x1,x2,y1,y2) memory; cutoff_cv accepts (V,F) for per-voice cutoffs or (F,) for macro sweep. Oscillator runs V independent phase accumulators when freq_cv is (V,F); a mono freq_cv with a (V,F) amp_cv produces a cheap-poly per-voice-amp-shaped carrier via broadcasting. 11 new tests in TestFilterVoiceAware + TestOscillatorVoiceAware; 271 tests pass.
+      Slice 3b.2 (remaining): LFO + Crossover. Same pattern. Then slice 4 mirrors Keyboard to the same shape.
 - [x] MIDI follow-up: pitch bend → `pitch_cv` output port + internal voice bend, GM-standard `bend_range=2.0` (shipped 2026-05-15)
 - [x] MIDI follow-up: mod wheel (CC 1) → `mod_cv` output port + `mod_scale` param (shipped 2026-05-15)
 - [x] MIDI follow-up: channel aftertouch → `pressure_cv` output port + `pressure_scale` param (shipped 2026-05-15)
