@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "next_id": 6,
+  "modules": [
+    {
+      "id": 1,
+      "type": "lfo",
+      "name": "S&H Pitch Clock",
+      "params": {
+        "waveform": "random",
+        "rate": 4.0,
+        "depth": 1.0,
+        "bipolar": false
+      }
+    },
+    {
+      "id": 2,
+      "type": "lfo",
+      "name": "Tick Envelope",
+      "params": {
+        "waveform": "sine",
+        "rate": 4.0,
+        "depth": 1.0,
+        "bipolar": false
+      }
+    },
+    {
+      "id": 3,
+      "type": "cv_to_frequency",
+      "name": "Random Pitch",
+      "params": {
+        "waveform": "triangle",
+        "f0": 110.0,
+        "fm": 330.0,
+        "f1": 1000.0,
+        "freq": 440.0,
+        "mode": "log"
+      }
+    },
+    {
+      "id": 4,
+      "type": "vca",
+      "name": "Amp Pump",
+      "params": {"gain": 1.0}
+    },
+    {
+      "id": 5,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {"gain": 0.5}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "cv",  "dst_module_id": 3, "dst_port": "cv"},
+    {"src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "audio"},
+    {"src_module_id": 2, "src_port": "cv",  "dst_module_id": 4, "dst_port": "cv"},
+    {"src_module_id": 4, "src_port": "out", "dst_module_id": 5, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 60],
+      "2": [40, 280],
+      "3": [420, 60],
+      "4": [800, 120],
+      "5": [1180, 120]
+    }
+  }
+}

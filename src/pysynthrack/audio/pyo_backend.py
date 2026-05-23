@@ -183,10 +183,19 @@ class PyoBackend(AudioBackend):
                 "PYSYNTHRACK_BACKEND=numpy.",
             )
             return None
-        if module.TYPE in ("combiner", "cv_combiner", "crossover", "disk_writer"):
-            # v0.3 routing modules — the numpy backend is the real
-            # implementation. Until the pyo backend learns the rest of
-            # the v0.2/v0.3 graph these stay as silent stubs.
+        if module.TYPE in (
+            "combiner",
+            "cv_combiner",
+            "crossover",
+            "disk_writer",
+            "audio_to_cv",
+            "cv_to_audio",
+            "cv_to_frequency",
+        ):
+            # v0.3+ routing / bridge / CV-oscillator modules. The numpy
+            # backend is the real implementation; pyo support arrives
+            # when the rest of the v0.2/v0.3/v0.4 graph does. Silent
+            # stub until then.
             print(
                 f"[PyoBackend] {module.TYPE} module not yet supported in pyo "
                 "backend; the node will be silent. Run with "

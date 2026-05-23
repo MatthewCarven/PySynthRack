@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "next_id": 6,
+  "modules": [
+    {
+      "id": 1,
+      "type": "keyboard",
+      "name": "Trigger",
+      "params": {"waveform": "sine", "volume": 0.0}
+    },
+    {
+      "id": 2,
+      "type": "adsr",
+      "name": "Pitch Env",
+      "params": {"attack": 0.002, "decay": 0.18, "sustain": 0.0, "release": 0.05}
+    },
+    {
+      "id": 3,
+      "type": "cv_to_frequency",
+      "name": "Kick Body",
+      "params": {
+        "waveform": "sine",
+        "f0": 50.0,
+        "fm": 120.0,
+        "f1": 400.0,
+        "freq": 60.0,
+        "mode": "log"
+      }
+    },
+    {
+      "id": 4,
+      "type": "vca",
+      "name": "Amp",
+      "params": {"gain": 1.0}
+    },
+    {
+      "id": 5,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {"gain": 0.6}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "gate", "dst_module_id": 2, "dst_port": "gate"},
+    {"src_module_id": 2, "src_port": "cv",   "dst_module_id": 3, "dst_port": "cv"},
+    {"src_module_id": 3, "src_port": "out",  "dst_module_id": 4, "dst_port": "audio"},
+    {"src_module_id": 2, "src_port": "cv",   "dst_module_id": 4, "dst_port": "cv"},
+    {"src_module_id": 4, "src_port": "out",  "dst_module_id": 5, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 60],
+      "2": [320, 60],
+      "3": [600, 60],
+      "4": [880, 60],
+      "5": [1160, 60]
+    }
+  }
+}

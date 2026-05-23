@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "next_id": 4,
+  "modules": [
+    {
+      "id": 1,
+      "type": "lfo",
+      "name": "Siren Sweep",
+      "params": {
+        "waveform": "triangle",
+        "rate": 1.2,
+        "depth": 1.0,
+        "bipolar": false
+      }
+    },
+    {
+      "id": 2,
+      "type": "cv_to_frequency",
+      "name": "Wail (linear mode)",
+      "params": {
+        "waveform": "sine",
+        "f0": 600.0,
+        "fm": 900.0,
+        "f1": 1200.0,
+        "freq": 900.0,
+        "mode": "linear"
+      }
+    },
+    {
+      "id": 3,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {"gain": 0.4}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "cv",  "dst_module_id": 2, "dst_port": "cv"},
+    {"src_module_id": 2, "src_port": "out", "dst_module_id": 3, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 120],
+      "2": [420, 120],
+      "3": [800, 120]
+    }
+  }
+}

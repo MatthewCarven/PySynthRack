@@ -13,6 +13,7 @@ from .combiner import Combiner
 from .crossover import Crossover
 from .cvcombiner import CVCombiner
 from .cvtoaudio import CVToAudio
+from .cvtofrequency import CVToFrequency
 from .diskwriter import DiskWriter
 from .filter import Filter
 from .keyboard import Keyboard
@@ -30,6 +31,7 @@ __all__ = [
     "Crossover",
     "CVCombiner",
     "CVToAudio",
+    "CVToFrequency",
     "DiskWriter",
     "Filter",
     "Keyboard",

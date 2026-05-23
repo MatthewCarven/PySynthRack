@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "next_id": 4,
+  "modules": [
+    {
+      "id": 1,
+      "type": "midi_input",
+      "name": "MIDI Keys",
+      "params": {
+        "device": "",
+        "channel": 0,
+        "octave_shift": 0,
+        "velocity_sensitive": true,
+        "waveform": "sine",
+        "volume": 0.0,
+        "bend_range": 2.0,
+        "mod_scale": 1.0,
+        "pressure_scale": 1.0
+      }
+    },
+    {
+      "id": 2,
+      "type": "cv_to_frequency",
+      "name": "Wheel Pitch",
+      "params": {
+        "waveform": "sine",
+        "f0": 110.0,
+        "fm": 330.0,
+        "f1": 880.0,
+        "freq": 220.0,
+        "mode": "log"
+      }
+    },
+    {
+      "id": 3,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {"gain": 0.5}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "mod_cv", "dst_module_id": 2, "dst_port": "cv"},
+    {"src_module_id": 2, "src_port": "out",    "dst_module_id": 3, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 120],
+      "2": [420, 120],
+      "3": [800, 120]
+    }
+  }
+}

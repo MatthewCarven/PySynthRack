@@ -4,6 +4,177 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-05-23 (CVToFrequency examples pass) -- four new patches
+
+Follow-up to phase 1: a sampling of patches exercising the module
+in genuinely different ways. None require any new code -- they all
+just plug existing modules into CVToFrequency to surface what the
+three-point map + mode switch unlock.
+
+**``examples/mod_wheel_pitch_drone.json``.** MIDIInput.mod_cv ->
+CVToFrequency.cv -> Speaker. The hum is continuous (CVToFrequency
+always produces sound -- no gate, no envelope, the static ``freq``
+fallback at 220 Hz plays the moment the patch compiles); moving
+the mod wheel scrubs pitch through f0=110 / fm=330 / f1=880 in log
+mode for octave-feeling sweep. Set ``volume=0.0`` on the MIDIInput
+so the keys themselves are silent -- only the wheel matters here.
+Probably the cleanest single-cable demo of "CV from hardware
+controls a sound source's pitch directly."
+
+**``examples/poor_mans_theremin.json``.** Matthew's framing.
+Two-axis MIDI expression: mod_cv -> CVToFrequency.cv (pitch),
+pressure_cv -> VCA.cv (volume), CVToFrequency -> VCA.audio ->
+Speaker. Hold any key to enable the chain (channel aftertouch
+only fires while a note is held); the wheel scrubs pitch
+110..1760 Hz in log mode, key pressure swells volume 0..1. The
+key choice is incidental -- it just gates the VCA via pressure
+rather than via gate. With ``velocity_sensitive=False`` and
+``volume=0.0`` the key's own note is silent, so the wheel and
+pressure are the only audible controls. Closest the modular can
+get to a theremin's continuous-pitch / continuous-volume
+interaction without a real ribbon controller.
+
+**``examples/police_siren.json``.** Triangle LFO 1.2 Hz unipolar
+(depth=1) -> CVToFrequency *linear* (f0=600 / fm=900 / f1=1200) ->
+Speaker. The whole point of this example is the ``mode=linear``
+switch -- run the same LFO into a log-mode CVToFrequency and the
+wail bunches up around f0 and races past fm; linear mode gives
+the equal-Hz-per-time ramp that actual sirens use. Triangle
+unipolar swings CV 0 -> 1 -> 0 linearly, which the linear map
+turns into a 600 -> 1200 -> 600 Hz pitch ramp. Cycles at the
+LFO rate. The audible-difference proof for the log/linear
+toggle.
+
+**``examples/random_arp.json``.** Two LFOs at the same rate
+(4 Hz) -- one ``random`` (sample-and-hold, re-rolls per cycle)
+into CVToFrequency.cv (log, 110 / 330 / 1000 Hz wide range), one
+``sine`` unipolar into VCA.cv for a per-step amplitude pump --
+CVToFrequency -> VCA.audio -> Speaker. Each tick the S&H LFO
+holds a new random value in [0, 1], which log-maps to a random
+pitch in the musical range; meanwhile the sine LFO pumps the
+amplitude in time with the ticks (peaks at quarter-second
+intervals, naturally percussive). The unique CVToFrequency
+flavour here: pure random-pitch-stepping that stays in a
+listenable Hz range thanks to log interpolation, which a regular
+Oscillator + 1V/oct random LFO wouldn't give as cleanly without
+the user doing the Hz->oct math.
+
+**Verification.** Each patch round-trips through
+:meth:`Patch.from_dict` and renders three blocks of audio without
+NaN/Inf via the numpy backend. The two MIDI-driven patches show
+zero RMS in the sandbox (no hardware, mod wheel and pressure both
+at 0) -- expected: the drone idles at f0 with zero output until
+the wheel moves on a real device; the theremin sits silent until
+a key is held. Police siren and random arp produce sound the
+moment they compile (no MIDI dependency).
+
+---
+
+## 2026-05-23 (CVToFrequency phase 1) -- self-contained CV oscillator
+
+First half of the planned CVToFrequency module ships. Where the
+existing Oscillator's ``freq_cv`` follows the modular 1V/oct
+convention against a base ``freq`` (so a 0..1 LFO sweeps about an
+octave above the base), CVToFrequency is opinionated: the user
+dials in three concrete Hz anchor points (``f0`` at CV=0, ``fm``
+at CV=0.5, ``f1`` at CV=1.0) and the module interpolates between
+them. The oscillator and the mapping live in one node.
+
+**Mapping math.** Two segments around the midpoint. Lower segment
+(CV in [0, 0.5]): blend ``f0`` -> ``fm`` with ``t = cv*2``. Upper
+segment (CV in [0.5, 1.0]): blend ``fm`` -> ``f1`` with ``t =
+(cv-0.5)*2``. The ``mode`` param picks the flavour: ``"log"``
+(default) interpolates in log2-Hz, producing equal-octave splits
+across CV (musical default); ``"linear"`` interpolates literal Hz
+for deliberately-bent, non-musical sweeps. The two are
+distinguishable by ear and by FFT -- with f0=100, fm=400, log
+mode at cv=0.25 produces 200 Hz (geometric mean), linear mode
+produces 250 Hz (arithmetic mean). One of the tests
+(test_log_and_linear_modes_differ) is an explicit A/B guarding
+against accidental mode passthrough.
+
+**Bipolar CV in phase 1.** Clamped to [0, 1] before mapping --
+documented explicitly in the module docstring. Phase 2 adds a
+mirror three-point mapping for the negative side with its own
+independent ``mode_neg``, letting the user mix log on one side
+with linear on the other (the "cheat" Matthew acknowledged in
+the design conversation; opt-in via ``negative_enabled`` so the
+phase-1 surface stays unchanged).
+
+**Unpatched CV falls back to the ``freq`` param.** Matches
+Oscillator's pattern -- CVToFrequency is a *sound source*, so it
+always produces sound. Different from CVToAudio, which is silent
+without an input because it's a passthrough.
+
+**Voice-awareness.** Shape-polymorphic on the CV input, same
+convention as every other v0.4 voice-aware module. ``cv.ndim == 1``
+runs the mono fast path with a single phase accumulator and a
+vectorized constant-freq ramp (when CV is None) or cumsum
+phase integration (when CV is patched). ``cv.ndim == 2`` runs the
+voice path: V independent phase accumulators integrated via
+per-row cumsum, output ``(V, F)``. Per-voice phase state persists
+across blocks, exactly like the Oscillator's voice path -- so a
+slot that briefly idles at CV=0 doesn't lose its place when it
+becomes audible again.
+
+**DSP shape.** The CV->Hz function is implemented as a single
+``_cv_to_hz`` helper that's shape-preserving (np.clip + np.where
+piecewise) and serves both branches. Phase integration is cumsum.
+Both choices are deliberate: a vectorized lookup is the right
+shape for numpy, and it keeps the mono and voice paths
+algorithmically identical -- only the axis differs.
+
+**Tests (22, all passing).** Model tests cover registration,
+defaults, port signal kinds (cv in / audio out), JSON round-trip,
+unknown-param rejection, the cv->cv cable acceptance, the
+audio->cv rejection (the type wall), and the audio out feeding a
+Speaker. Mono behaviour tests pin CV=0/0.5/1.0 to f0/fm/f1 via
+one-second zero-crossing counts (sub-percent resolution against
+the targets); log/linear at cv=0.25 are pinned to the geometric
+and arithmetic means respectively; both clamping edges (cv=-0.5
+-> f0, cv=1.5 -> f1) are checked; unpatched falls back to
+``freq``; phase continuity across blocks; output finiteness and
+non-trivial RMS. Voice-aware tests cover the (V, F) shape with
+per-row FFT-peak assertions at f0/fm/f1, mono fast-path
+preservation when CV is 1D, and per-voice phase state
+independence across blocks. Integration test wires a unipolar
+LFO -> CVToFrequency -> Speaker and verifies finite bounded
+audible output. Full suite: 339 passed (was 317 pre-CVToFrequency,
++22 new), 18 skipped (mido), 1 pre-existing failure
+(``test_adsr.py::test_no_nan_with_zero_durations``, drive-by
+``sr`` undefined -- listed in TODO).
+
+**Example patch (``examples/cvtofreq_blip.json``).** Keyboard
+gate -> ADSR (2ms attack, 180ms decay, sustain=0) -> shared into
+both CVToFrequency.cv (f0=50 Hz, fm=120 Hz, f1=400 Hz log) and a
+VCA.cv -> Speaker. Each note triggers a pitch-falling sine blip
+that doubles as both the kick body and its amplitude envelope --
+the canonical synthesized-kick recipe, with the CVToFrequency
+doing the pitch envelope work in a single node instead of an
+LFO + 1V/oct calculation. The exponential ADSR shape pairs
+naturally with log mode so the pitch sweep sounds smooth and
+musical rather than warbled in the upper register.
+
+**Implementation notes.** The pyo backend gets a stub entry in
+the v0.3+ silent-stub tuple alongside ``audio_to_cv`` /
+``cv_to_audio`` -- numpy remains the real implementation. The
+stub strings were already growing per-module; folding them into
+the existing tuple keeps the noise contained. No model layer
+changes were needed (the existing Patch / Port / cable machinery
+handles the new module without modification).
+
+**What phase 2 needs.** The plan calls for ``negative_enabled``
+(default False, preserves phase-1 clamp behaviour exactly),
+``f0_neg`` / ``fm_neg`` / ``f1_neg`` (default to the positive
+values for zero-crossing continuity), and ``mode_neg`` (independent
+of ``mode``). The ``_cv_to_hz`` helper would split into a positive
+and negative arm dispatched by sign with the same shape-preserving
+np.where structure. Phase 1 doesn't constrain phase 2 -- the
+existing public surface stays bit-for-bit compatible because the
+new param defaults restore phase 1 semantics.
+
+---
+
 ## 2026-05-23 (even later) -- CVToAudio signal-kind bridge
 
 Second of the bridge modules, mirror partner of AudioToCV. Where

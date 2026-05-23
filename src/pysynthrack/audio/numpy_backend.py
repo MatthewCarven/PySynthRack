@@ -363,6 +363,8 @@ class NumpyBackend(AudioBackend):
             return self._render_audio_to_cv(module, frames, buffers, patch)
         if module.TYPE == "cv_to_audio":
             return self._render_cv_to_audio(module, frames, buffers, patch)
+        if module.TYPE == "cv_to_frequency":
+            return self._render_cv_to_frequency(module, frames, buffers, patch)
         if module.TYPE == "lfo":
             return self._render_lfo(module, frames, buffers, patch)
         if module.TYPE == "mixer":
@@ -1805,6 +1807,167 @@ class NumpyBackend(AudioBackend):
             return np.zeros(frames, dtype=np.float32)
         gain = float(module.params.get("gain", 1.0))
         return (cv_in * gain).astype(np.float32)
+
+    # ----- CVToFrequency rendering ----------------------------------------
+
+    def _render_cv_to_frequency(
+        self, module, frames: int, buffers, patch
+    ) -> np.ndarray:
+        """Self-contained CV-controlled oscillator with three-point Hz map.
+
+        Maps the incoming CV (clamped to [0, 1] in phase 1) to a per-
+        sample instantaneous frequency via a piecewise interpolation
+        between three anchor points: ``f0`` at CV=0, ``fm`` at CV=0.5,
+        ``f1`` at CV=1.0. The ``mode`` param picks log-Hz interpolation
+        (equal-octave splits, musical default) or linear-Hz (equal-Hz
+        splits, deliberately bent). Phase is integrated from that
+        instantaneous frequency via cumsum -- the same trick the
+        Oscillator's freq_cv path uses, just applied to a different
+        CV→Hz function.
+
+        Shape-polymorphic on the CV input:
+          * No CV cable or 1D ``(F,)`` CV -> mono path, single phase
+            accumulator, output ``(F,)``. Unpatched CV falls back to
+            the ``freq`` param (Oscillator-style behaviour — the
+            module is a sound source, so it always produces sound).
+          * 2D ``(V, F)`` CV -> voice-aware path, V independent phase
+            accumulators (one per voice slot), output ``(V, F)``.
+
+        Bipolar sources (e.g. an LFO with ``bipolar=True``) get their
+        negative half clamped to f0 in phase 1; the planned phase 2
+        adds a separate negative-side mapping with its own mode.
+        """
+        # collapse=False so a voice-aware (V, F) CV reaches us with the
+        # voice axis intact.
+        cv_in = self._input_buffer(
+            patch, buffers, module.id, "cv", collapse=False
+        )
+
+        f0 = float(module.params.get("f0", 110.0))
+        fm = float(module.params.get("fm", 440.0))
+        f1 = float(module.params.get("f1", 1760.0))
+        freq_fallback = float(module.params.get("freq", 440.0))
+        waveform = str(module.params.get("waveform", "sine"))
+        mode = str(module.params.get("mode", "log"))
+
+        if cv_in is not None and cv_in.ndim == 2:
+            return self._render_cv_to_frequency_voice(
+                module, frames, cv_in, f0, fm, f1, waveform, mode
+            )
+        return self._render_cv_to_frequency_mono(
+            module, frames, cv_in, f0, fm, f1, freq_fallback, waveform, mode
+        )
+
+    @staticmethod
+    def _cv_to_hz(cv, f0, fm, f1, mode):
+        """Piecewise interpolation of CV in [0, 1] to Hz via (f0, fm, f1).
+
+        Shape-preserving: ``cv`` of any shape comes back as Hz of the
+        same shape. Clamps the input to [0, 1] internally so callers
+        don't need to.
+
+        Lower segment (cv in [0, 0.5]): t = cv*2, blend f0->fm.
+        Upper segment (cv in [0.5, 1.0]): t = (cv-0.5)*2, blend fm->f1.
+
+        Log mode interpolates in log2-Hz so equal CV steps -> equal
+        octave steps. Linear mode interpolates literal Hz.
+        """
+        cv = np.clip(cv.astype(np.float64), 0.0, 1.0)
+        lower = cv < 0.5
+        t = np.where(lower, cv * 2.0, (cv - 0.5) * 2.0)
+        if mode == "log":
+            # Guard log2 against zero/negative anchor values from the
+            # user; clamp to 1e-6 Hz minimum (well below audible).
+            lf0 = np.log2(max(f0, 1e-6))
+            lfm = np.log2(max(fm, 1e-6))
+            lf1 = np.log2(max(f1, 1e-6))
+            log_hz = np.where(
+                lower,
+                lf0 + t * (lfm - lf0),
+                lfm + t * (lf1 - lfm),
+            )
+            return np.power(2.0, log_hz)
+        # linear (default fallback for any unknown mode string)
+        return np.where(
+            lower,
+            f0 + t * (fm - f0),
+            fm + t * (f1 - fm),
+        )
+
+    def _render_cv_to_frequency_mono(
+        self, module, frames, cv_in, f0, fm, f1, freq_fallback, waveform, mode
+    ):
+        """Mono path -- single phase accumulator, output ``(F,)``.
+
+        With no CV patched, the static ``freq`` param drives a vector-
+        ized phase ramp (constant inc, arange). With CV patched, the
+        per-sample CV is mapped to instantaneous Hz and phase is
+        integrated via cumsum.
+        """
+        state = self._state.setdefault(module.id, {"phase": 0.0})
+        # Discard voice-shaped state if it leaked over from a previous
+        # voice-branch call on the same module id.
+        if "phase_arr" in state:
+            state.clear()
+            state["phase"] = 0.0
+
+        sr = self.sample_rate
+        start_phase = state["phase"]
+
+        if cv_in is None:
+            # No CV cable -> static fallback frequency, vectorized ramp.
+            phase_inc = freq_fallback / sr
+            phases = (
+                start_phase + np.arange(frames, dtype=np.float64) * phase_inc
+            ) % 1.0
+            state["phase"] = (start_phase + frames * phase_inc) % 1.0
+        else:
+            inst_freq = self._cv_to_hz(cv_in, f0, fm, f1, mode)  # (F,)
+            inst_inc = inst_freq / sr
+            phases = (start_phase + np.cumsum(inst_inc)) % 1.0
+            state["phase"] = float(phases[-1])
+
+        wave = self._osc_waveshape(phases, waveform)
+        return wave.astype(np.float32)
+
+    def _render_cv_to_frequency_voice(
+        self, module, frames, cv_in, f0, fm, f1, waveform, mode
+    ):
+        """Voice-aware path -- V independent phase accumulators.
+
+        ``cv_in`` is ``(V, F)``. Each voice slot integrates its own
+        phase via per-row cumsum. Output is ``(V, F)``. Per-voice
+        phase state persists across blocks so a slot that briefly
+        goes silent (CV=0 -> f0) and comes back doesn't restart from
+        zero phase mid-cycle.
+
+        Silent slots advance at f0 (since cv=0 maps to f0); downstream
+        VCA/ADSR gating silences those voices in practice. Same
+        harmless behaviour as the Oscillator's voice path.
+        """
+        V = cv_in.shape[0]
+        state = self._state.setdefault(module.id, {})
+
+        needs_reinit = (
+            "phase_arr" not in state
+            or state["phase_arr"].shape[0] != V
+        )
+        if needs_reinit:
+            state.clear()
+            state["phase_arr"] = np.zeros(V, dtype=np.float64)
+
+        sr = self.sample_rate
+        start_phase = state["phase_arr"]  # (V,)
+
+        inst_freq = self._cv_to_hz(cv_in, f0, fm, f1, mode)  # (V, F)
+        inst_inc = inst_freq / sr
+        phases = (
+            start_phase[:, None] + np.cumsum(inst_inc, axis=1)
+        ) % 1.0  # (V, F)
+        state["phase_arr"] = phases[:, -1].copy()
+
+        wave = self._osc_waveshape(phases, waveform)  # (V, F)
+        return wave.astype(np.float32)
 
     # ----- Mixer rendering ------------------------------------------------
 
