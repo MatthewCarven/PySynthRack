@@ -586,46 +586,121 @@ class NumpyBackend(AudioBackend):
     _KB_RELEASE_S = 0.020
 
     def _render_keyboard(self, module, frames: int) -> dict[str, np.ndarray]:
-        """Returns both the audio buffer and a gate buffer.
+        """Voice-aware keyboard renderer.
 
-        Gate semantics: high while any key is held, low while idle. This is
-        the master-envelope mode — new notes pressed during a held chord do
-        not retrigger the gate. The per-voice attack/release ramps that
-        live inside this function prevent click on note-on/off; they are
-        independent of any external ADSR plugged into the gate.
+        Slice 4 mirror of :meth:`_render_midi_input`. Emits per-slot
+        ``(MAX_VOICES, frames)`` buffers on ``out`` and ``gate``;
+        downstream voice-aware modules carry the per-voice identity
+        through to the speaker, where the implicit sum at the mono
+        sink mixes them back to stereo. Un-migrated mono consumers
+        see a collapsed-to-1D view via ``_input_buffer``'s default
+        ``collapse=True`` (the sum-on-fetch path established in slice
+        2), so older patches still work without changes.
+
+        Differences from :meth:`_render_midi_input` are all in what
+        Keyboard *doesn't* have:
+
+          * No velocity. Every voice plays at unit gain (the velocity
+            param exists on MIDIInput because hardware sends it; a
+            computer keyboard has no way to express it).
+          * No pitch bend. ``freq = midi_to_freq(note)`` directly, no
+            ``freq_multiplier`` knob.
+          * No mod wheel, no aftertouch, no sustain pedal. Keyboard's
+            port set stays at ``out`` + ``gate`` only.
+
+        Per-slot state lives in ``self._state[module.id]`` as numpy
+        arrays indexed by slot, same shape as MIDIInput's:
+
+          * ``phase``     -- oscillator phase, [0, 1).
+          * ``env``       -- per-slot attack/release ramp level, [0, 1].
+          * ``last_note`` -- the MIDI note this slot was rendering on
+                            the previous block; resets phase + env on
+                            slot reassignment so the new voice starts
+                            cleanly rather than picking up the previous
+                            voice's phase mid-cycle.
+          * ``releasing`` -- bool: True while the slot is ramping its
+                            envelope down. Latched on the gate-fall
+                            edge, cleared on gate-rise (retrigger
+                            before the tail finished).
+
+        Silent slots (``note == -1``) write zeros and reset their
+        state so the next allocation starts clean.
+
+        Gate semantics shift from the pre-slice-4 "global block-
+        constant" model to per-voice block-constant: a chord with
+        notes in slots 0 and 5 raises ``gate[0]`` and ``gate[5]``
+        independently, with no interaction. A subsequent note_on for
+        a third note rises a new gate edge in its own slot, leaving
+        the existing slots' gate values unchanged. This is the
+        polyphonic behaviour an ADSR per voice needs to fire one
+        envelope per note rather than retriggering on every chord
+        change.
         """
-        state = self._state.setdefault(module.id, {"voices": {}})
-        voices: dict[int, dict] = state["voices"]
+        state = self._state.setdefault(
+            module.id,
+            {
+                "phase": np.zeros(self._MAX_VOICES, dtype=np.float64),
+                "env": np.zeros(self._MAX_VOICES, dtype=np.float64),
+                "last_note": np.full(self._MAX_VOICES, -1, dtype=np.int32),
+                "releasing": np.zeros(self._MAX_VOICES, dtype=bool),
+            },
+        )
 
         sr = self.sample_rate
         waveform = str(module.params.get("waveform", "sine"))
         volume = float(module.params.get("volume", 0.5))
 
-        active = module.snapshot_active_notes()
-
-        for note in active:
-            voice = voices.get(note)
-            if voice is None:
-                voices[note] = {"phase": 0.0, "env": 0.0, "releasing": False}
-            else:
-                voice["releasing"] = False
-        for note in list(voices):
-            if note not in active:
-                voices[note]["releasing"] = True
+        slots = module.snapshot_voice_slots()  # length _MAX_VOICES
 
         attack_samples = max(1, int(self._KB_ATTACK_S * sr))
         release_samples = max(1, int(self._KB_RELEASE_S * sr))
 
-        audio = np.zeros(frames, dtype=np.float32)
+        audio = np.zeros((self._MAX_VOICES, frames), dtype=np.float32)
+        gate = np.zeros((self._MAX_VOICES, frames), dtype=np.float32)
 
-        for note, voice in list(voices.items()):
+        for i, slot in enumerate(slots):
+            note = int(slot["note"])
+            if note == -1:
+                # Slot empty -- reset state so the next allocation gets
+                # a clean phase/env, and emit silence for this voice.
+                state["phase"][i] = 0.0
+                state["env"][i] = 0.0
+                state["last_note"][i] = -1
+                state["releasing"][i] = False
+                continue
+
+            # Detect slot reassignment: a new note was allocated into
+            # this slot since the last block. Reset phase/env so the
+            # new voice starts cleanly rather than picking up the
+            # previous voice's phase mid-cycle.
+            if int(state["last_note"][i]) != note:
+                state["phase"][i] = 0.0
+                state["env"][i] = 0.0
+                state["releasing"][i] = False
+                state["last_note"][i] = note
+
+            gating = bool(slot["gating"])
+
+            # Edge transitions on the gate.
+            if not gating and not bool(state["releasing"][i]):
+                # Falling edge: start the release ramp.
+                state["releasing"][i] = True
+            elif gating and bool(state["releasing"][i]):
+                # Rising edge (retrigger before tail finished): cancel
+                # the release. The env-step branch below picks attack
+                # automatically because env < 1.
+                state["releasing"][i] = False
+
+            # Phase ramp for this voice.
             freq = midi_to_freq(note)
             phase_inc = freq / sr
+            start_phase = float(state["phase"][i])
             phases = (
-                voice["phase"] + np.arange(frames, dtype=np.float64) * phase_inc
+                start_phase + np.arange(frames, dtype=np.float64) * phase_inc
             ) % 1.0
-            voice["phase"] = (voice["phase"] + frames * phase_inc) % 1.0
+            state["phase"][i] = (start_phase + frames * phase_inc) % 1.0
 
+            # Waveform.
             if waveform == "sine":
                 wave = np.sin(2.0 * np.pi * phases)
             elif waveform == "saw":
@@ -637,25 +712,30 @@ class NumpyBackend(AudioBackend):
             else:
                 wave = np.zeros(frames, dtype=np.float64)
 
-            if voice["releasing"]:
+            # Envelope ramp -- same short attack/release as the old
+            # mono renderer, just per-slot now.
+            env_start = float(state["env"][i])
+            if bool(state["releasing"][i]):
                 delta = -1.0 / release_samples
-            elif voice["env"] < 1.0:
+            elif env_start < 1.0:
                 delta = 1.0 / attack_samples
             else:
                 delta = 0.0
-            env_ramp = voice["env"] + np.arange(frames, dtype=np.float64) * delta
+            env_ramp = env_start + np.arange(frames, dtype=np.float64) * delta
             np.clip(env_ramp, 0.0, 1.0, out=env_ramp)
-            voice["env"] = float(max(0.0, min(1.0, voice["env"] + frames * delta)))
+            state["env"][i] = float(
+                max(0.0, min(1.0, env_start + frames * delta))
+            )
 
-            audio += (wave * env_ramp).astype(np.float32)
+            audio[i] = (wave * env_ramp).astype(np.float32)
 
-            if voice["releasing"] and voice["env"] <= 1e-5:
-                del voices[note]
+            # Gate: block-constant per slot. A within-block falling
+            # edge produces a one-block delay before the gate drops,
+            # matching the MIDIInput renderer's behaviour and the
+            # pre-slice keyboard's per-block gate granularity.
+            gate[i] = 1.0 if gating else 0.0
 
         audio *= volume
-
-        gate_value = 1.0 if active else 0.0
-        gate = np.full(frames, gate_value, dtype=np.float32)
 
         return {"out": audio, "gate": gate}
 

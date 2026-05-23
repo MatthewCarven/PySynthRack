@@ -942,3 +942,210 @@ class TestCrossoverVoiceAware:
         for v in range(16):
             np.testing.assert_allclose(out_v["low"][v], out_m["low"], atol=1e-5)
             np.testing.assert_allclose(out_v["high"][v], out_m["high"], atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Keyboard voice-aware path (slice 4)
+# ---------------------------------------------------------------------------
+
+
+class TestKeyboardVoiceAware:
+    """Slice 4 tests for the Keyboard renderer.
+
+    Mirror image of the MIDIInput voice tests -- both note sources now
+    publish the same (V, F) per-slot buffers, so anything voice-aware
+    downstream behaves identically regardless of the source.
+    """
+
+    def _build_keyboard_only(self, **kb_params):
+        patch = Patch()
+        kb = patch.add_module("keyboard", params=kb_params)
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        backend.compile(patch)
+        return backend, kb, patch
+
+    def test_renderer_returns_voice_aware_shape(self):
+        # Both out and gate are (MAX_VOICES, frames). Pre-slice-4 was
+        # mono (F,) for both.
+        backend, kb, patch = self._build_keyboard_only(volume=0.5)
+        kb.note_on(60)
+        result = backend._render_keyboard(kb, frames=512)
+        assert result["out"].shape == (16, 512)
+        assert result["gate"].shape == (16, 512)
+        # First note lands in slot 0.
+        assert float(np.max(np.abs(result["out"][0]))) > 0.0
+        assert float(np.max(result["gate"][0])) == 1.0
+        # Every other slot silent on both buffers.
+        for i in range(1, 16):
+            assert float(np.max(np.abs(result["out"][i]))) == 0.0
+            assert float(np.max(result["gate"][i])) == 0.0
+
+    def test_notes_distribute_across_slots(self):
+        # Three notes -> three distinct slot rows nonzero.
+        backend, kb, patch = self._build_keyboard_only(volume=0.5)
+        kb.note_on(60)
+        kb.note_on(64)
+        kb.note_on(67)
+        # Settle a few blocks.
+        for _ in range(4):
+            result = backend._render_keyboard(kb, frames=512)
+        nonzero_slots = [
+            i for i in range(16)
+            if float(np.max(np.abs(result["out"][i]))) > 0.0
+        ]
+        assert len(nonzero_slots) == 3, (
+            f"expected 3 active slots, got {nonzero_slots}"
+        )
+
+    def test_released_voice_leaves_held_voices_alone(self):
+        # Press two notes, release one. The released slot ramps down;
+        # the held slot's gate and audio stay at full strength.
+        backend, kb, patch = self._build_keyboard_only(volume=0.5)
+        kb.note_on(60)
+        kb.note_on(67)
+        for _ in range(4):
+            backend._render_keyboard(kb, frames=512)
+
+        kb.note_off(60)  # release the first note
+        # Render a few blocks so the release ramp on slot 0 completes
+        # (release is 20ms = ~882 samples; render 8 blocks of 512 to be safe).
+        for _ in range(8):
+            result = backend._render_keyboard(kb, frames=512)
+        # Slot 0 is fully released by now -- its gate has been low for
+        # multiple blocks and its envelope ramped to zero.
+        assert float(np.max(result["gate"][0])) == 0.0
+        # Slot 1 (the 67 note) is still held; gate high, audio nonzero.
+        assert float(np.max(result["gate"][1])) == 1.0
+        assert float(np.max(np.abs(result["out"][1]))) > 0.0
+
+
+class TestKeyboardPolyphonicChain:
+    """End-to-end: Keyboard -> ADSR -> VCA -> Speaker (canonical poly voice).
+
+    Mirror of TestPolyphonicChain but with Keyboard as the note source
+    instead of MIDIInput. Releases one voice in a chord and verifies
+    the held voice keeps sustaining -- the headline polyphony property.
+    """
+
+    def _build_poly_chain(self, attack=0.001, sustain=0.7, release=0.3):
+        patch = Patch()
+        kb = patch.add_module(
+            "keyboard",
+            params={"volume": 0.5, "waveform": "sine"},
+        )
+        env = patch.add_module(
+            "adsr",
+            params={
+                "attack": attack,
+                "decay": 0.01,
+                "sustain": sustain,
+                "release": release,
+            },
+        )
+        vca = patch.add_module("vca")
+        spk = patch.add_module("speaker_output")
+        patch.connect(kb.id, "out", vca.id, "audio")
+        patch.connect(kb.id, "gate", env.id, "gate")
+        patch.connect(env.id, "cv", vca.id, "cv")
+        patch.connect(vca.id, "out", spk.id, "in")
+        return patch, kb, env, vca, spk
+
+    def _run(self, backend, blocks=15):
+        last = None
+        for _ in range(blocks):
+            last = backend.render_block(512)
+        return last
+
+    def test_chain_renders_audio(self):
+        # Smoke test: a note through the whole chain produces audio.
+        patch, kb, env, vca, spk = self._build_poly_chain(
+            attack=0.001, sustain=0.7, release=0.05
+        )
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        backend.compile(patch)
+        kb.note_on(60)
+        out = self._run(backend, blocks=20)
+        peak = float(np.max(np.abs(out)))
+        assert peak > 0.2, f"poly chain peak too low: {peak:.3f}"
+
+    def test_released_voice_decays_while_held_voice_sustains(self):
+        # The headline polyphony test, ported from MIDIInput. Two
+        # notes, release one, verify the held voice keeps sustaining
+        # while the released voice decays.
+        patch, kb, env, vca, spk = self._build_poly_chain(
+            attack=0.001, sustain=0.7, release=0.3,
+        )
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        backend.compile(patch)
+
+        kb.note_on(60)
+        kb.note_on(67)
+        self._run(backend, blocks=30)
+        peak_two = float(np.max(np.abs(self._run(backend, blocks=4))))
+
+        kb.note_off(67)
+        # ~26 blocks for release at 0.3s / (512/44100).
+        self._run(backend, blocks=30)
+        peak_one_after_release = float(np.max(np.abs(self._run(backend, blocks=4))))
+
+        assert peak_one_after_release < peak_two * 0.9, (
+            f"released voice did not decay: peak_two={peak_two:.3f}, "
+            f"peak_after={peak_one_after_release:.3f}"
+        )
+        assert peak_one_after_release > 0.15, (
+            f"held voice fell silent after partial release: "
+            f"peak_after={peak_one_after_release:.3f}"
+        )
+
+    def test_no_notes_silent(self):
+        patch, kb, env, vca, spk = self._build_poly_chain()
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        backend.compile(patch)
+        out = self._run(backend, blocks=5)
+        assert float(np.max(np.abs(out))) < 1e-6
+
+    def test_keyboard_and_midi_input_produce_equivalent_chain_behavior(self):
+        # Cross-source sanity: with both note sources now publishing the
+        # same (V, F) shape, the downstream chain should treat them
+        # equivalently. Drive the same sine on the same MIDI note
+        # through each, and verify both chains produce audio in the
+        # same ballpark RMS.
+        # Keyboard chain.
+        pk, kb, env_k, vca_k, spk_k = self._build_poly_chain(
+            attack=0.001, sustain=0.7, release=0.05,
+        )
+        bk = NumpyBackend(sample_rate=44100, block_size=512)
+        bk.compile(pk)
+        kb.note_on(60)
+        out_k = self._run(bk, blocks=20)
+        rms_k = float(np.sqrt(np.mean(out_k ** 2)))
+
+        # MIDIInput chain (same topology).
+        pm = Patch()
+        midi = pm.add_module(
+            "midi_input", params={"volume": 0.5, "waveform": "sine"}
+        )
+        env_m = pm.add_module(
+            "adsr",
+            params={"attack": 0.001, "decay": 0.01, "sustain": 0.7, "release": 0.05},
+        )
+        vca_m = pm.add_module("vca")
+        spk_m = pm.add_module("speaker_output")
+        pm.connect(midi.id, "out", vca_m.id, "audio")
+        pm.connect(midi.id, "gate", env_m.id, "gate")
+        pm.connect(env_m.id, "cv", vca_m.id, "cv")
+        pm.connect(vca_m.id, "out", spk_m.id, "in")
+        bm = NumpyBackend(sample_rate=44100, block_size=512)
+        bm.compile(pm)
+        midi.note_on(60, 1.0)
+        out_m = self._run(bm, blocks=20)
+        rms_m = float(np.sqrt(np.mean(out_m ** 2)))
+
+        # Same waveform, same envelope, same VCA, same speaker -- the
+        # two RMS values should be in the same order of magnitude.
+        # Allow a generous 2x margin since MIDIInput applies velocity
+        # gain and Keyboard plays at unit gain.
+        assert 0.5 * rms_k < rms_m < 2.0 * rms_k, (
+            f"keyboard chain RMS ({rms_k:.4f}) and MIDI chain RMS "
+            f"({rms_m:.4f}) diverge more than expected"
+        )

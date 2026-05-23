@@ -1,13 +1,29 @@
 """Keyboard module — computer keys play notes polyphonically.
 
-A Keyboard owns a thread-safe set of currently-pressed MIDI notes. The UI
-mutates that set in response to DearPyGui key-press / key-release events;
-the audio backend reads it each block to decide which voices to render.
+A Keyboard owns a thread-safe 16-slot :class:`VoiceSlots` allocator. The
+UI mutates that allocator in response to DearPyGui key-press / key-
+release events; the audio backend reads it each block to decide which
+voices to render.
 
-Each voice synthesizes one waveform at the note's frequency. Multiple
-voices sum together (polyphony — chord = stack of voices). A short attack
-and release ramp prevents click artefacts on note-on / note-off; a full
-ADSR is a separate v0.2 module.
+Each voice synthesizes one waveform at the note's frequency, with its
+own short attack/release ramp to prevent clicks on note-on / note-off.
+A full ADSR is a separate module.
+
+Voice-aware output (slice 4, 2026-05-23).  The renderer emits per-slot
+``(MAX_VOICES, frames)`` buffers on both ``out`` and ``gate`` -- the
+same shape MIDIInput already publishes. Downstream voice-aware modules
+(ADSR, VCA, Filter, Oscillator, LFO, Crossover) carry the per-voice
+identity through to the speaker, where the implicit sum at the mono
+sink mixes them back to stereo. Un-migrated mono consumers see a
+collapsed-to-1D view via ``_input_buffer``'s default ``collapse=True``,
+so older patches still work.
+
+Public API stays narrow on purpose: Keyboard is computer-keyboard
+input, not a MIDI controller. No velocity (every note is unit gain),
+no pitch wheel, no sustain pedal, no mod CV. The richer controls live
+on :class:`MIDIInput`. The two modules share the same renderer shape
+and ``VoiceSlots`` plumbing, so anything voice-aware downstream
+behaves identically regardless of the source.
 """
 from __future__ import annotations
 
@@ -15,6 +31,7 @@ import threading
 
 from ..core.module import Module, register_module_type
 from ..core.port import Port
+from ..core.voicing import VoiceSlots, VoiceSnapshot
 
 
 # Standard MIDI: C4 (middle C) = note 60. The formula below puts:
@@ -48,7 +65,11 @@ class Keyboard(Module):
         volume: Master output level in [0, 1].
 
     Runtime state (not serialized):
-        active_notes: MIDI note numbers currently held down.
+        voices: :class:`VoiceSlots` allocator backing the held-note
+            state. Held notes and released-but-not-yet-stolen voices
+            both live here. The slot index is what the voice-aware
+            renderer keys its per-voice state off (phase, envelope,
+            last-note for slot-reassignment detection).
     """
 
     TYPE = "keyboard"
@@ -58,9 +79,10 @@ class Keyboard(Module):
         "volume": 0.5,
     }
     INPUT_PORTS: list[Port] = []
-    # ``out`` carries the polyphonic audio. ``gate`` carries a single
-    # global note-on signal — high while any key is held, low otherwise —
-    # which is what an ADSR envelope listens to in master-envelope mode.
+    # Voice-aware outputs (slice 4): the renderer emits per-slot
+    # ``(MAX_VOICES, frames)`` buffers on both ports. Mirrors the
+    # MIDIInput shape so anything downstream that already handles
+    # MIDIInput handles Keyboard identically.
     OUTPUT_PORTS = [
         Port("out", "out", "audio"),
         Port("gate", "out", "gate"),
@@ -68,25 +90,54 @@ class Keyboard(Module):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        # Transient runtime state — not part of params, not serialized.
-        self.active_notes: set[int] = set()
+        # 16-slot voice allocator. Replaces the flat ``active_notes``
+        # set that earlier versions used -- the slot index is what the
+        # voice-aware renderer keys its per-voice state off.
+        # ``snapshot_active_notes()`` is preserved as a thin proxy over
+        # ``voices.held_notes()`` so existing UI callers and tests
+        # don't notice the change.
+        self.voices: VoiceSlots = VoiceSlots()
         self._lock = threading.Lock()
 
     # ----- transport ------------------------------------------------------
 
     def note_on(self, midi_note: int) -> None:
+        """Press a key. Allocates (or retriggers) a voice slot.
+
+        Keyboard always allocates at unit velocity -- the velocity
+        param exists on :class:`MIDIInput` because hardware controllers
+        send it, but a computer keyboard has no way to express it.
+        """
         with self._lock:
-            self.active_notes.add(int(midi_note))
+            self.voices.allocate(int(midi_note), 1.0)
 
     def note_off(self, midi_note: int) -> None:
+        """Release a key. The slot transitions to released; its
+        release tail keeps playing until the slot is reused."""
         with self._lock:
-            self.active_notes.discard(int(midi_note))
+            self.voices.release(int(midi_note))
 
     def all_notes_off(self) -> None:
+        """Panic -- clear every slot to empty. Used for stop-transport
+        and the GUI's escape-from-stuck-notes shortcut."""
         with self._lock:
-            self.active_notes.clear()
+            self.voices.all_notes_off()
 
     def snapshot_active_notes(self) -> set[int]:
-        """Return a thread-safe copy of the currently-pressed notes."""
+        """Return the set of currently-held MIDI notes.
+
+        Stable across the slice-4 migration: the UI keeps treating
+        this as ``set[int]``. Only physically-held keys appear here --
+        a slot that's been released but is still emitting its tail
+        does NOT appear in this set (the key is up).
+        """
         with self._lock:
-            return set(self.active_notes)
+            return set(self.voices.held_notes().keys())
+
+    def snapshot_voice_slots(self) -> list[VoiceSnapshot]:
+        """Return a 16-element per-slot snapshot for the voice-aware
+        renderer. Slot index is the addressable voice id; empty slots
+        are present with ``note=-1`` and ``gating=False``. Mirrors
+        :meth:`MIDIInput.snapshot_voice_slots`."""
+        with self._lock:
+            return self.voices.snapshot()

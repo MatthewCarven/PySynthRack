@@ -1,4 +1,11 @@
-"""Tests for the Keyboard module + its numpy-backend renderer."""
+"""Tests for the Keyboard module + its numpy-backend renderer.
+
+Slice 4 (2026-05-23): Keyboard renderer mirrors MIDIInput's per-slot
+``(MAX_VOICES, frames)`` shape on both ``out`` and ``gate``. Tests that
+called ``_render_keyboard`` directly were updated to expect the new
+shape; the public Keyboard model API (``note_on`` / ``note_off`` /
+``all_notes_off`` / ``snapshot_active_notes``) is unchanged.
+"""
 from __future__ import annotations
 
 import math
@@ -57,6 +64,9 @@ class TestKeyboardModel:
         kb = patch.add_module("keyboard")
         kb.note_on(60)
         kb.note_on(64)
+        # snapshot_active_notes() still returns a set (slice 4 keeps
+        # this contract for the UI). Internally it pulls from
+        # VoiceSlots.held_notes().keys().
         assert kb.snapshot_active_notes() == {60, 64}
         kb.note_off(60)
         assert kb.snapshot_active_notes() == {64}
@@ -69,8 +79,29 @@ class TestKeyboardModel:
         kb.note_on(60)
         data = kb.to_dict()
         # The JSON shape must NOT contain transient runtime state.
+        # Post slice 4 the runtime state lives on ``voices``
+        # (VoiceSlots), but the same rule applies -- no runtime
+        # voice state in the serialized form.
         assert "active_notes" not in data
         assert "active_notes" not in data.get("params", {})
+        assert "voices" not in data
+        assert "voices" not in data.get("params", {})
+
+    def test_snapshot_voice_slots_returns_max_voices_entries(self):
+        # Slice 4: renderer hook. The renderer iterates exactly
+        # MAX_VOICES (=16) slots; empty slots have note=-1, gating=False.
+        patch = Patch()
+        kb = patch.add_module("keyboard")
+        kb.note_on(60)
+        slots = kb.snapshot_voice_slots()
+        assert len(slots) == 16
+        # First allocation lands in slot 0.
+        assert slots[0]["note"] == 60
+        assert slots[0]["gating"] is True
+        # Every other slot is empty.
+        for i in range(1, 16):
+            assert slots[i]["note"] == -1
+            assert slots[i]["gating"] is False
 
 
 class TestKeyboardRendering:
@@ -87,14 +118,19 @@ class TestKeyboardRendering:
         backend.compile(patch)
         kb = next(m for m in patch if m.TYPE == "keyboard")
         result = backend._render_keyboard(kb, frames=512)
+        # Slice 4: both out and gate are (V, F). Silent everywhere.
+        assert result["out"].shape == (16, 512)
+        assert result["gate"].shape == (16, 512)
         assert np.allclose(result["out"], 0.0)
-        # No notes held → gate should be low.
         assert np.allclose(result["gate"], 0.0)
 
     def test_press_then_release_produces_then_decays_signal(self):
         """Press a key, render one block — should hear something. Release,
         render another block — should still hear something (release ramp).
-        Render many more blocks — should decay to silence."""
+        Render many more blocks — should decay to silence.
+
+        Slice 4: audio is (V, F). Use ``np.max(np.abs(buf))`` across the
+        whole buffer to detect any per-voice activity."""
         patch, kb = self._make_patch_with_keyboard()
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         backend.compile(patch)
@@ -110,13 +146,17 @@ class TestKeyboardRendering:
         buf_release = backend._render_keyboard(kb, frames=512)["out"]
         assert np.max(np.abs(buf_release)) > 0.0
 
-        # Far enough after release, voice should be reaped and silent.
+        # Far enough after release, the slot's tail decays fully to zero.
         for _ in range(50):
             buf_after = backend._render_keyboard(kb, frames=512)["out"]
         assert np.allclose(buf_after, 0.0), "voice should be silent after release"
 
     def test_polyphony_sums_voices(self):
-        """Two notes at once should give more energy than one note alone."""
+        """Two notes at once should give more energy than one note alone.
+
+        Slice 4: with per-slot (V, F) audio, each note occupies its own
+        slot row. Sum across the voice axis to get the mono mix the
+        speaker would render, then compare RMS."""
         patch, kb = self._make_patch_with_keyboard()
         backend = NumpyBackend(sample_rate=44100, block_size=2048)
         backend.compile(patch)
@@ -125,50 +165,76 @@ class TestKeyboardRendering:
         kb.note_on(60)
         for _ in range(20):
             single = backend._render_keyboard(kb, frames=2048)["out"]
-        single_rms = float(np.sqrt(np.mean(single**2)))
+        single_mono = single.sum(axis=0)
+        single_rms = float(np.sqrt(np.mean(single_mono ** 2)))
 
         kb.note_on(64)  # add another note — chord
         for _ in range(20):
             both = backend._render_keyboard(kb, frames=2048)["out"]
-        both_rms = float(np.sqrt(np.mean(both**2)))
+        both_mono = both.sum(axis=0)
+        both_rms = float(np.sqrt(np.mean(both_mono ** 2)))
 
         assert both_rms > single_rms, (
             f"polyphonic sum should be louder: single={single_rms:.4f}, "
             f"both={both_rms:.4f}"
         )
+        # Sanity: each note should occupy its own slot, not pile into one.
+        # After the second note_on, slot 1 has a nonzero row.
+        assert float(np.max(np.abs(both[0]))) > 0.0
+        assert float(np.max(np.abs(both[1]))) > 0.0
 
     def test_attack_ramp_avoids_click(self):
-        """The first sample of the first block after note_on should be near
+        """The first sample of the slot-0 row after note_on should be near
         zero (envelope hasn't ramped up yet). This is what prevents the
-        characteristic 'tick' of an abrupt waveform start."""
+        characteristic 'tick' of an abrupt waveform start.
+
+        Voice-aware shape (slice 4): the audio buffer is (V, F). The
+        first allocated note lands in slot 0, so we check ``buf[0, 0]``."""
         patch, kb = self._make_patch_with_keyboard()
         backend = NumpyBackend(sample_rate=44100, block_size=64)
         backend.compile(patch)
         kb.note_on(60)
         buf = backend._render_keyboard(kb, frames=64)["out"]
-        # First few samples should be small relative to peak.
+        assert buf.shape == (16, 64)
+        # First few samples of slot 0 should be small relative to peak.
         # (Attack is 5ms = 220 samples at 44.1k, so the first 64-sample
         # block should not have reached full amplitude.)
-        assert abs(buf[0]) < 0.05
+        assert abs(float(buf[0, 0])) < 0.05
 
-    def test_gate_high_while_held_low_when_idle(self):
-        """Gate output reflects master-envelope semantics: high if any key
-        is held, low otherwise. Doesn't retrigger on additional keys."""
+    def test_gate_per_voice_high_when_held_low_when_idle(self):
+        """Gate output is per-voice (slice 4). A held key drives its own
+        slot's gate high; other slots stay low. New notes allocate fresh
+        slots without retriggering existing ones -- the per-voice
+        granularity that lets a downstream ADSR fire one envelope per
+        note rather than one shared envelope per chord."""
         patch, kb = self._make_patch_with_keyboard()
         backend = NumpyBackend(sample_rate=44100, block_size=128)
         backend.compile(patch)
 
         idle = backend._render_keyboard(kb, frames=128)["gate"]
+        assert idle.shape == (16, 128)
+        # No notes held -> every slot's gate is low.
         assert np.allclose(idle, 0.0)
 
         kb.note_on(60)
         held = backend._render_keyboard(kb, frames=128)["gate"]
-        assert np.allclose(held, 1.0)
+        # First note allocates slot 0: slot 0 gate goes high, every
+        # other slot stays low.
+        assert np.allclose(held[0], 1.0)
+        for i in range(1, 16):
+            assert np.allclose(held[i], 0.0), f"slot {i} unexpectedly gated"
 
-        kb.note_on(64)  # add to held chord → gate stays high (no retrigger)
+        kb.note_on(64)
         chord = backend._render_keyboard(kb, frames=128)["gate"]
-        assert np.allclose(chord, 1.0)
+        # Second note allocates slot 1. Both slots 0 and 1 gate high;
+        # the others stay low. Slot 0's gate did NOT drop in between
+        # (no retrigger of held voices).
+        assert np.allclose(chord[0], 1.0)
+        assert np.allclose(chord[1], 1.0)
+        for i in range(2, 16):
+            assert np.allclose(chord[i], 0.0)
 
         kb.all_notes_off()
         released = backend._render_keyboard(kb, frames=128)["gate"]
+        # Panic clears every slot -> every gate goes low.
         assert np.allclose(released, 0.0)

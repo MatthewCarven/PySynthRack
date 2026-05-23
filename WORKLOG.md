@@ -1919,3 +1919,165 @@ same self-polyphonic shape as MIDIInput (voice slots, per-slot
 output buffers).  Mechanically a port of the MIDIInput renderer
 adapted to the keyboard's note-set source.
 
+
+## 2026-05-23 (much later) -- Voice routing slice 4: Keyboard migrated to MIDIInput shape
+
+**What.**  Final voice-routing slice. Keyboard now uses the 16-slot
+``VoiceSlots`` allocator instead of a flat ``active_notes`` set, and
+its renderer emits per-slot ``(MAX_VOICES, frames)`` buffers on
+``out`` and ``gate`` -- the same shape MIDIInput already publishes.
+With this slice both note sources publish identical per-voice
+signals, so anything downstream behaves identically regardless of
+which one is driving it.
+
+**Voice routing is complete.**  All eight voice-impacted modules --
+two note sources (Keyboard, MIDIInput) plus six stateful DSP
+modules (ADSR, VCA, Filter, Oscillator, LFO, Crossover) -- now
+honour the voice axis. The canonical polyphonic patch
+``Keyboard -> ADSR -> VCA -> Speaker`` produces per-voice envelopes
+end-to-end, exactly like its MIDIInput equivalent.
+
+**Decision: keep Keyboard's API narrow.**  MIDIInput grew velocity,
+pitch wheel, mod wheel, channel aftertouch and sustain pedal
+because real hardware sends them. None of those have a UI surface
+on a computer keyboard -- you can't express velocity through a key
+press, there's no wheel to deflect, no pedal to depress. So
+Keyboard stays at:
+
+  * ``note_on(midi_note)`` -- unit velocity, no second arg
+  * ``note_off(midi_note)``
+  * ``all_notes_off()``
+  * ``snapshot_active_notes()`` -> ``set[int]`` for the UI
+  * ``snapshot_voice_slots()`` -> per-slot snapshot for the renderer
+  * Ports: ``out`` + ``gate`` only (no pitch_cv / mod_cv / pressure_cv)
+
+The renderer mirrors ``_render_midi_input`` minus the controller
+features. Per-slot state has the same shape (``phase`` / ``env`` /
+``last_note`` / ``releasing`` as ``(V,)`` arrays) so the same slot-
+reassignment + edge-detection logic works without change.
+
+**Public API preserved.**  Existing UI code calls only
+``note_on(midi_note)``, ``note_off(midi_note)``, ``all_notes_off()``.
+All three keep their signatures. ``snapshot_active_notes()`` still
+returns a ``set[int]`` -- internally it reads
+``VoiceSlots.held_notes().keys()`` and casts to set, so the UI
+sees no change.
+
+**Gate semantics shift.**  Pre-slice-4 the gate was a single
+block-constant signal: high if any key was held, low otherwise. No
+retrigger when adding notes to a held chord. Post-slice-4 the gate
+is per-voice block-constant: each slot has its own gate, raised
+when that slot's note is allocated and dropped when released. A
+new note in a chord rises its own slot's gate rather than
+retriggering the existing slots -- which is exactly the
+polyphonic behaviour a downstream ADSR per voice needs.
+
+The pre-slice "no retrigger on additional keys" property survives
+in a slightly different form: each existing voice's gate keeps its
+state independently across chord changes. Old patches that depend
+on the *summed* gate behaviour still work because un-migrated mono
+consumers get the collapsed-to-1D view via ``_input_buffer``'s
+default ``collapse=True`` -- summing all 16 per-slot gates of
+``{0, 1}`` values back to 1 whenever any slot is gating.
+
+**State-leak regression test updated.**
+``test_compile_drops_state_when_module_type_changes`` previously
+asserted the keyboard state contained a ``voices`` key (from the
+old ``{"voices": {note: voice_state}}`` shape). The new state
+uses the MIDIInput-mirror shape (``phase`` / ``env`` /
+``last_note`` / ``releasing`` numpy arrays); the assertion checks
+``"phase" in state_after`` and continues to catch the original
+regression (oscillator state surviving into a keyboard slot).
+
+**ADSR test helper updated.**  ``tests/test_adsr.py`` builds
+patches as ``keyboard -> ADSR`` and renders the ADSR's CV out.
+Pre-slice-4 the keyboard sent a mono ``(F,)`` gate, the ADSR
+returned a mono ``(F,)`` CV. Post-slice-4 the keyboard sends a
+``(V, F)`` gate, the (voice-aware as of slice 3a) ADSR returns a
+``(V, F)`` CV. The test helper ``_render_cv`` now collapses the
+voice axis via ``cv.sum(axis=0)`` when the result is 2D -- the
+same implicit-sum-at-mono-sinks rule the SpeakerOutput uses. Since
+every ADSR test presses one note at a time, the collapsed mono CV
+is identical to what the pre-slice mono path returned, and every
+assertion passes unchanged.
+
+**Updated tests in ``tests/test_keyboard.py``.**
+
+  * ``test_silent_when_no_keys_held`` -- now checks both ``out``
+    and ``gate`` are ``(16, 512)`` and all-zero.
+  * ``test_attack_ramp_avoids_click`` -- now checks ``buf[0, 0]``
+    (slot 0, sample 0) instead of ``buf[0]`` (which under the
+    old shape was sample 0 but under the new shape is the whole
+    slot-0 row).
+  * ``test_gate_per_voice_high_when_held_low_when_idle`` (renamed
+    from ``test_gate_high_while_held_low_when_idle``) -- proves
+    per-voice gate semantics: pressing note A raises ``gate[0]``,
+    pressing note B raises ``gate[1]`` without disturbing
+    ``gate[0]``, panic drops every slot's gate to 0.
+  * ``test_polyphony_sums_voices`` -- now sums across the voice
+    axis before computing RMS (same shape as the SpeakerOutput's
+    mono mix), plus a sanity check that two notes occupy two
+    distinct slot rows.
+  * NEW: ``test_snapshot_voice_slots_returns_max_voices_entries``
+    -- verifies the renderer hook returns 16 entries and the
+    first allocation lands in slot 0.
+
+**NEW tests: ``TestKeyboardVoiceAware`` + ``TestKeyboardPolyphonicChain``**
+(7 tests appended to ``tests/test_voice_aware.py``).
+
+``TestKeyboardVoiceAware`` (3 tests):
+
+  * ``test_renderer_returns_voice_aware_shape`` -- both buffers
+    are ``(16, 512)``, first note lands in slot 0, every other
+    slot silent on both buffers.
+  * ``test_notes_distribute_across_slots`` -- three notes fill
+    three distinct slot rows.
+  * ``test_released_voice_leaves_held_voices_alone`` -- per-voice
+    independence: releasing one note in a two-note chord drops
+    that slot's gate while the other slot's gate and audio stay
+    at full strength.
+
+``TestKeyboardPolyphonicChain`` (4 tests, mirror of
+``TestPolyphonicChain`` from slice 3a):
+
+  * ``test_chain_renders_audio`` -- a note through
+    ``Keyboard -> ADSR -> VCA -> Speaker`` produces audio.
+  * ``test_released_voice_decays_while_held_voice_sustains`` --
+    the headline polyphony property, ported from MIDIInput: two
+    notes, release one, the released voice's envelope decays
+    while the held voice stays at sustain.
+  * ``test_no_notes_silent`` -- the chain is silent with no
+    notes held.
+  * ``test_keyboard_and_midi_input_produce_equivalent_chain_behavior``
+    -- cross-source sanity. Drive the same MIDI note through
+    each note source into the same downstream chain; the two
+    chains produce RMS values within a 2x ratio (margin allows
+    for MIDIInput's velocity-scaled gain vs Keyboard's unit gain).
+
+**Verification.**  Full project suite off the mount: **290 passed,
+1 failed, 18 mido-skipped** in the bash sandbox. The single fail
+(``test_no_nan_with_zero_durations`` -- ``NameError: name 'sr' is
+not defined``) is a pre-existing linter edit in ``test_adsr.py``
+that removed the ``sr = 44100`` line under the test docstring; not
+introduced by slice 4. Was 283 + 7 new (3 Keyboard voice-aware +
+4 polyphonic chain) + 1 new (``test_snapshot_voice_slots_returns_
+max_voices_entries``) -- 8 net new tests this slice.
+
+Same sandbox + verify protocol as 3b.2: staged numpy_backend.py,
+keyboard.py and the test appendix in ``/sessions/.../outputs``,
+AST-parsed, ran the suite against a ``/tmp/pyrack_s4`` clone of
+the project tree, copied whole files to the mount via ``cp``,
+byte-verified size against the staged copies, AST-parsed on the
+mount, ran the suite directly off the mount.
+
+**What comes next.**  Voice routing as a project is done. The
+remaining v0.4 work is:
+
+  * PolyBLEP / wavetable anti-aliased osc shapes (replace naive
+    saw/square). Best done after voice routing settled, which it
+    now is -- new shapes only need one implementation across both
+    branches of every shape-polymorphic renderer.
+  * Pyo backend wired for the new voice-aware modules so it's a
+    drop-in fast path. Today pyo still stubs the v0.2/v0.3/v0.4
+    modules; numpy is the real engine.
+
