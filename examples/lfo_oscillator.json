@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    {
+      "id": 1,
+      "type": "lfo",
+      "name": "Vibrato LFO",
+      "params": {"waveform": "sine", "rate": 5.5, "depth": 0.08, "bipolar": true}
+    },
+    {
+      "id": 2,
+      "type": "lfo",
+      "name": "Carrier LFO",
+      "params": {"waveform": "sine", "rate": 220.0, "depth": 1.0, "bipolar": true}
+    },
+    {
+      "id": 3,
+      "type": "cv_to_audio",
+      "name": "CV -> Audio",
+      "params": {"gain": 1.0}
+    },
+    {
+      "id": 4,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {"gain": 0.4}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "cv", "dst_module_id": 2, "dst_port": "rate_cv"},
+    {"src_module_id": 2, "src_port": "cv", "dst_module_id": 3, "dst_port": "cv"},
+    {"src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 60],
+      "2": [40, 320],
+      "3": [360, 320],
+      "4": [680, 320]
+    }
+  }
+}

@@ -4,6 +4,334 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-05-23 (even later) -- CVToAudio signal-kind bridge
+
+Second of the bridge modules, mirror partner of AudioToCV. Where
+AudioToCV brings audio across into the CV domain via a real
+envelope-follower, CVToAudio is the trivial reverse: the patch
+model bans ``cv → audio`` cables (see :meth:`Patch.connect`), so
+this module exists *purely* to satisfy the type system. The DSP
+is a buffer copy multiplied by a single ``gain`` param.
+
+**Why so much smaller than AudioToCV.** The two bridges are
+architecturally asymmetric. Audio carries a wider amplitude
+spectrum at higher rates than typical CV, so the audio→CV trip
+needs *summarization* (rectify + smoother) to be useful. The
+CV→audio trip needs no summarization -- the bytes already are
+audio samples, just labelled differently. About 30 lines of
+renderer code vs AudioToCV's ~120.
+
+**Use cases enabled.** Three, in descending order of musical
+payoff:
+
+- *Audio-rate LFO as oscillator*. Crank an LFO's ``rate`` into
+  the audible range (e.g. 220 Hz), drop it through CVToAudio
+  into the speaker, and the LFO becomes a tone source. The LFO
+  has waveforms the dedicated Oscillator module doesn't have
+  (its specific clipping/saw shapes, plus the ``random``
+  sample-and-hold which sounds like a quantized noise stream
+  at audio rate). Better: the LFO already exposes ``rate_cv``
+  as a 1V/oct input, so once the LFO is audible you get
+  *built-in FM* by patching any modulator into it. Two-LFO FM
+  patches now work without any new module beyond CVToAudio.
+- *Percussive clicks*. An ADSR with ~1 ms attack and ~5 ms
+  decay is a single audible transient when sent through
+  CVToAudio. This is the foundational shape for synthesized
+  kicks and percussion -- the user can sample one to a .wav
+  via the DiskWriter and use it as a one-shot.
+- *CV oscilloscope by WAV*. Route any modulator through
+  CVToAudio into the DiskWriter; the resulting .wav file is a
+  visual record of the modulator shape over time. Niche but
+  exactly the right tool for debugging slow envelopes or
+  LFOs whose shape needs verification.
+
+**Pitch comes from oscillation rate, not CV value.** The
+documentation in the module makes this explicit because it's an
+easy misread: a constant CV (e.g. a held ADSR sustain) becomes
+DC at the speaker -- silent, but a real load on the cone. The
+speaker frequency is determined by how the CV *varies over
+time*. To raise the pitch of a CVToAudio-fed tone you raise the
+LFO's ``rate`` (or its ``rate_cv``), not its ``depth``. ``depth``
+controls loudness.
+
+**DC blocking: deliberately not included.** Considered and
+declined. Modular convention is that the user adds a high-pass
+module if the patch needs one. The synth already trusts the user
+with self-oscillating filters, audio-rate FM, and sum-past-unity
+CVCombiners; adding silent safety here would be inconsistent.
+Speaker hardware survives DC offsets within reason; the speaker
+limiter clamps to [-1, 1] which is also the natural CV range.
+If a real high-pass module becomes desirable later it should be
+its own module, not a hidden side-effect of this one.
+
+**Voice-awareness by shape preservation.** No state means no
+branching. The renderer reads its input via ``_input_buffer``
+with ``collapse=False`` so a polyphonic CV (e.g. a per-voice
+ADSR) arrives with its ``(V, F)`` shape intact, multiplies by
+gain, casts to float32, and returns. Mono inputs stay mono.
+Downstream Speaker drain collapses the voice axis the same way
+it does for voice-aware audio from any other source -- the
+"implicit sum at mono sinks" rule from voice routing slice 2
+covers this without special-casing.
+
+**Files added/changed:**
+
+- ``src/pysynthrack/modules/cvtoaudio.py`` -- new ``CVToAudio``
+  Module subclass. Type string ``cv_to_audio``. Default
+  ``gain=1.0``. Single ``cv`` input port (signal_kind ``cv``),
+  single ``out`` output port (signal_kind ``audio``).
+- ``src/pysynthrack/modules/__init__.py`` -- import +
+  ``__all__`` entry, alphabetized after CVCombiner.
+- ``src/pysynthrack/audio/numpy_backend.py`` -- dispatch line in
+  ``_render_module`` routing ``"cv_to_audio"`` to
+  ``_render_cv_to_audio``. The renderer is six executable lines:
+  ``_input_buffer(collapse=False)``, missing-cable check, gain
+  load, multiply, cast, return.
+- ``examples/lfo_oscillator.json`` -- canonical "LFO as
+  oscillator" patch. Two LFOs: a slow 5.5 Hz "Vibrato LFO" at
+  depth 0.08 feeds the carrier's ``rate_cv``; the 220 Hz
+  "Carrier LFO" goes through CVToAudio at gain 1.0 to a
+  speaker at gain 0.4. End-to-end FM with no Oscillator module
+  in sight.
+- ``tests/test_cvtoaudio.py`` -- 13 new tests across four
+  classes. Model: registration, defaults, ports, signal kinds,
+  JSON round-trip, LFO→CVToAudio cabling accepted, audio→CV-in
+  cabling rejected, CVToAudio→Speaker cabling accepted. Mono
+  behaviour: unpatched input is silent, gain=1 is sample-exact
+  passthrough, gain=2 doubles, gain=-1 inverts. Voice-aware:
+  (V, F) shape preserved with per-row gain scaling and silent
+  voices stay silent, mono fast path stays mono when input is
+  1D. Integration: 220 Hz LFO through CVToAudio shows a FFT
+  peak within one bin (~10 Hz at block=4096) of 220 Hz; the
+  two-LFO FM patch puts >30% of spectral energy in a ±20 Hz
+  band around the carrier (proving the sideband structure is
+  centered correctly).
+
+**Verified in sandbox:**
+
+- ``pytest tests/test_cvtoaudio.py`` → 13/13 pass on first run.
+- Full suite → 317 passed (304 prior + 13 new), 18 skipped
+  (mido optional), 1 failed (the pre-existing
+  ``test_adsr.py::test_no_nan_with_zero_durations`` undefined-
+  ``sr`` bug, still untouched and in TODO as a drive-by).
+- ``examples/lfo_oscillator.json`` smoke render: peak 0.400
+  (under the limiter), spectral peak at 226.1 Hz with clear
+  vibrato sidebands at 215.3, 236.9, 247.6 Hz -- spaced
+  ~10.8 Hz which matches a 5.5 Hz vibrato (the visible spacing
+  is twice the modulator rate when looking at single-sided
+  sidebands from a bipolar carrier). Textbook FM spectrum from
+  two LFOs and one type-cast.
+
+**No truncation incidents this slice.** Whole-file writes from
+``/tmp/stage`` with ``cp`` + ``diff -q`` verification ran clean
+on every change (modules/__init__.py, numpy_backend.py,
+TODO.md). The refined memory note from the AudioToCV slice was
+load-bearing: line-count check as the primary truncation
+detector (AST parse alone can pass on a syntactically-valid cut)
+makes the stage→copy→verify rhythm fast enough that there's no
+incentive to fall back to in-place Edit.
+
+**Sound-design pairings to try (Matthew):**
+
+- Open ``examples/lfo_oscillator.json``. The carrier is a sine
+  -- swap it for ``square`` or ``saw`` to hear how LFO
+  waveshapes sound at audio rate (the LFO's square is hard
+  and rich in harmonics; its saw is a classic ramp). The
+  ``random`` waveform at 220 Hz is a sample-quantized noise
+  with rhythmic character.
+- Drop the carrier rate to ~80 Hz and the vibrato depth to
+  0.05: that's a fundamental bass note with subtle pitch
+  drift, like a slightly out-of-tune analog oscillator.
+- Patch a third LFO modulating the *vibrato LFO's* depth
+  via... hm, depth isn't CV-modulatable yet. Add a CVCombiner
+  feeding the carrier's ``rate_cv`` instead, with the
+  vibrato LFO on one input and an ADSR on another -- now the
+  vibrato fades in over the note's lifetime.
+- Build a kick: Keyboard gate → ADSR (1 ms attack, 80 ms
+  decay, 0 sustain, 0 release) → CVToAudio → Speaker.
+  Triggers a clean low-frequency thump.
+
+**What's next.** The third bridge module ``Schmitt`` (CV
+threshold → gate edge) remains in the wishlist. After Matthew's
+nudge, the immediate follow-up is a **CV-to-frequency
+generator** -- a different beast from CVToAudio: that one will
+*interpret* the CV value as a frequency (probably 1V/oct or
+similar), producing a fresh oscillation at that frequency rather
+than passing the CV's waveshape through. Conceptually it's a
+"VCO with V/oct control" packaged as a dedicated module rather
+than a wired-up Oscillator with ``freq_cv``. Will think through
+the design when Matthew kicks that one off.
+
+---
+
+## 2026-05-23 (later still) -- AudioToCV envelope follower
+
+First of the signal-kind bridge modules. The patch model walls off
+``audio`` from ``cv`` at the cable layer (``patch.py:113``), so until
+today there was no way for an audio signal to drive a ``*_cv`` input.
+``AudioToCV`` is the fix: rectify the input, smooth with an
+asymmetric one-pole IIR (separate attack and release time
+constants), emit a non-negative CV. Three params -- ``attack_ms``,
+``release_ms``, ``gain`` -- and one input / one output port.
+
+**Why this module first.** Of the three originally-proposed bridges
+(AudioToCV / CVToAudio / Schmitt), AudioToCV is the one with the
+strongest "I patched this and it sounds great" payoff:
+
+- Self-modulating filter -- ``filter.out → audio_to_cv → filter.cutoff_cv``
+  closes the filter when its own output gets loud. Classic
+  "self-wah" without an LFO. Effects you cannot fake with the
+  existing LFO/ADSR modules because those don't know the signal
+  level.
+- Sidechain ducking -- a kick's output drives an AudioToCV whose CV
+  pulls a pad's VCA down. Same patch idea as the dance-music
+  technique baked into compressors.
+- Audio-rate to control-rate bridge -- generic. Any ``*_cv`` port
+  can now be driven by the envelope of any audio signal.
+
+CVToAudio and Schmitt are still useful and can come later; AudioToCV
+unlocks more new sound design alone.
+
+**DSP shape.** Asymmetric one-pole IIR with time-constant
+ergonomics:
+
+    coef = 1 - exp(-1 / (time_seconds * sample_rate))
+    target = |audio[n]|
+    if target > level: level += attack_coef * (target - level)
+    else:              level += release_coef * (target - level)
+    out[n] = level * gain
+
+Per-sample state (the smoother level feeds back into the next
+sample's update), so the DSP loop is a Python ``for n in
+range(frames)`` -- same pattern as the scalar biquad in
+``_render_filter_mono`` and the S&H branch in ``_render_lfo``. At
+512-sample blocks the cost is in the same ballpark. Coefficients
+are derived once per block from the params; per-sample work is one
+compare + one fused-multiply-add. Zero or negative time constants
+clamp to ``coef = 1.0`` (instant).
+
+Why per-sample state rather than block-mean: an envelope follower's
+whole job is to track *transient* dynamics inside a block. Block-mean
+on the audio (the trick we use for ``filter.cutoff_cv``) would
+average a snare hit and a quiet tail into the same number. Fast
+attacks of ~1-5 ms are well below typical block sizes, so the
+follower must integrate at sample rate to keep its character.
+
+**Voice-aware, shape-polymorphic.** Same convention as the rest of
+the slice-3b stateful modules. Branches on the audio input's
+``ndim``:
+
+- 1D ``(F,)`` audio -> scalar smoother state ``level`` -> 1D ``(F,)``
+  output. Mono fast path; bitwise-stable against any earlier
+  rectifier implementation.
+- 2D ``(V, F)`` audio -> per-voice smoother state ``level_arr`` of
+  shape ``(V,)`` -> ``(V, F)`` output. Per-sample update is
+  vectorized across voices: ``abs`` + ``np.where`` (per-voice
+  attack/release coefficient pick) + IIR step are each a single
+  numpy op over the length-V state vector. F serial steps; no Python
+  loop over voices. Per-voice envelope followers are exactly what
+  you want for the polyphonic "each note ducks its own filter" use
+  case once those voices are split out.
+
+State reinitializes cleanly when the input switches shape
+(``level_arr`` discarded if the input becomes mono; ``level``
+discarded if the input becomes voice-aware). Same shape-handover
+pattern as LFO / Filter / Oscillator.
+
+**Missing-cable behaviour.** Audio in unpatched -> output silence
+and the smoother state is left as-is. The "as-is" matters because
+reconnecting the cable later shouldn't snap the level back from a
+stale decayed value mid-transient -- the smoother resumes from
+where it left off and any spike in the new input is followed
+normally.
+
+**Files added/changed:**
+
+- ``src/pysynthrack/modules/audiotocv.py`` -- new ``AudioToCV``
+  Module subclass. Type string ``audio_to_cv``. Defaults
+  ``attack_ms=5.0``, ``release_ms=100.0``, ``gain=1.0``. Single
+  ``in`` audio input port, single ``cv`` output port.
+- ``src/pysynthrack/modules/__init__.py`` -- registration import
+  + ``__all__`` entry, alphabetized between ADSR and Combiner.
+- ``src/pysynthrack/audio/numpy_backend.py`` -- dispatch line in
+  ``_render_module`` routing ``"audio_to_cv"`` to the new
+  ``_render_audio_to_cv``. The renderer derives the two
+  coefficients once per block, branches on input ``ndim`` to the
+  mono or voice path, and writes its level state into
+  ``self._state[module.id]``.
+- ``examples/envelope_follower_wah.json`` -- canonical "self-wah"
+  patch: Keyboard saw at oct 3 -> lowpass filter (cutoff 320, Q 2.2)
+  -> AudioToCV (attack 6ms, release 140ms, gain 0.9) -> back into
+  the filter's ``cutoff_cv``. Hold a note: the resonant peak rides
+  the envelope of the filter's own output. Tuned so peaks stay
+  under the speaker limiter (max output ~0.32, RMS rises ~0.12 ->
+  0.16 as the envelope opens).
+- ``tests/test_audiotocv.py`` -- 14 new tests across four classes.
+  Model: registration, defaults, ports, signal kinds, JSON round-trip,
+  rejection of CV-into-audio cabling, acceptance of AudioToCV.cv ->
+  Filter.cutoff_cv. Mono behavior: silence stays silent, unpatched
+  input is silent, step input reaches ~63% at one attack-time,
+  release decays to ~37% at one release-time, gain scales,
+  negative audio is rectified. Voice-aware: ``(V, F)`` in -> ``(V, F)``
+  out with independent per-voice steady-state levels, per-voice
+  state persists across blocks, mono<->voice state-reinit on shape
+  change. Integration: the full self-modulating filter chain
+  compiles, renders, and produces non-zero output through the
+  speaker.
+
+**Verified in sandbox:** ``pytest tests/test_audiotocv.py`` -> 14
+pass. Full suite -> 304 passed, 18 skipped (mido optional), 1
+failed -- ``tests/test_adsr.py::test_no_nan_with_zero_durations``
+is **pre-existing**: it references an undefined ``sr`` (missing
+``sr = 44100`` setup line). Untouched by this change, but noted in
+TODO.md as a drive-by.
+
+Audible test (smoke render of ``envelope_follower_wah.json``):
+- Idle peak: 0.0000 (silence).
+- Note-on C3: peak settles to 0.32 with RMS rising 0.119 -> 0.164
+  -> 0.152 across 30 blocks of 512 frames. The RMS shape is the
+  follower swinging the resonant peak through the note's
+  partials.
+
+**The truncation gauntlet, run again.** Two Edit-tool truncations
+fired during this slice: numpy_backend.py lost ~120 lines off the
+end after the first AudioToCV insertion, and TODO.md lost its last
+four items on the wishlist-section rewrite. Both recovered by
+restoring from ``git show HEAD:<path>``, building the new content
+in /tmp/stage via Python string ops, and copying the staged file
+to the mount as a whole-file overwrite. The
+``feedback_mount_write_protocol`` memory was load-bearing here:
+stage-then-copy-then-verify-size is the only safe rhythm for
+multi-hundred-line files on this mount. Note for future: even
+small Edits on the mount can corrupt the file tail; whole-file
+writes are not optional for anything bigger than a one-liner.
+
+**Sound-design pairings to try (Matthew):**
+
+- Open ``envelope_follower_wah.json``, hold a chord. The resonance
+  rides the envelope of the filter's own output -- pluck-like
+  attacks brighten the tone, decays close it down.
+- Patch a kick-like noise burst (Keyboard at oct 2, percussive
+  ADSR) into AudioToCV, route its CV through a CVCombiner with
+  a fixed positive bias, then drive a pad's VCA cv input with the
+  combined value subtracted. That's a sidechain duck without a
+  dedicated compressor module.
+- Crank ``release_ms`` to 800 ms or more for a slow following
+  envelope -- great for subtle "breathing" modulation that's
+  dynamics-aware instead of LFO-aware.
+- Drop ``attack_ms`` to 0.1 and ``release_ms`` to 5: the follower
+  becomes a near-peak detector, useful for hard ducking effects.
+
+**What's next.** With AudioToCV in, the obvious follow-ups are
+CVToAudio (the dual; would let an LFO double as a tonal source)
+and Schmitt (CV-threshold-to-gate, for envelope chaining). Both
+are still in the wishlist with no new urgency. The bigger
+sound-design unlocks are still the LeftSpeakerOut / RightSpeakerOut
+pair just added to v0.4 and PolyBLEP for the oscillator's saw and
+square shapes.
+
+---
+
 ## 2026-05-13 (v0.3 starts) — CV-modulatable params
 
 The big sound-design unlock: LFOs and envelopes can now sweep param

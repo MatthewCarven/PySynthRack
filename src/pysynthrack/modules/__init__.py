@@ -8,9 +8,11 @@ exist should:
     import pysynthrack.modules  # noqa: F401
 """
 from .adsr import ADSR
+from .audiotocv import AudioToCV
 from .combiner import Combiner
 from .crossover import Crossover
 from .cvcombiner import CVCombiner
+from .cvtoaudio import CVToAudio
 from .diskwriter import DiskWriter
 from .filter import Filter
 from .keyboard import Keyboard
@@ -23,9 +25,11 @@ from .vca import VCA
 
 __all__ = [
     "ADSR",
+    "AudioToCV",
     "Combiner",
     "Crossover",
     "CVCombiner",
+    "CVToAudio",
     "DiskWriter",
     "Filter",
     "Keyboard",

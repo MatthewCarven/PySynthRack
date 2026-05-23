@@ -359,6 +359,10 @@ class NumpyBackend(AudioBackend):
             return self._render_adsr(module, frames, buffers, patch)
         if module.TYPE == "vca":
             return self._render_vca(module, frames, buffers, patch)
+        if module.TYPE == "audio_to_cv":
+            return self._render_audio_to_cv(module, frames, buffers, patch)
+        if module.TYPE == "cv_to_audio":
+            return self._render_cv_to_audio(module, frames, buffers, patch)
         if module.TYPE == "lfo":
             return self._render_lfo(module, frames, buffers, patch)
         if module.TYPE == "mixer":
@@ -1660,6 +1664,147 @@ class NumpyBackend(AudioBackend):
         if cv_in is None:
             return (audio_in * gain).astype(np.float32)
         return (audio_in * cv_in * gain).astype(np.float32)
+
+    # ----- AudioToCV rendering --------------------------------------------
+
+    def _render_audio_to_cv(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Envelope follower: rectify input + asymmetric one-pole smoothing.
+
+        Per-sample state (the smoother's current level feeds back into
+        the next sample), so the DSP loop runs in Python -- same pattern
+        as the scalar biquad in ``_render_filter_mono`` and the S&H
+        branch in ``_render_lfo``. At 512-sample blocks the cost is in
+        the same ballpark as those modules.
+
+        Coefficients are derived from time constants:
+
+            coef = 1 - exp(-1 / (time_seconds * sample_rate))
+
+        A target rising above the current level uses ``attack_coef``;
+        a target below uses ``release_coef``. Zero or negative time
+        constants are clamped to "instant" (coef = 1.0).
+
+        Voice-aware. Branches on the audio input's ``ndim``:
+
+          * 1D ``(F,)`` audio -> scalar smoother state, output ``(F,)``.
+          * 2D ``(V, F)`` audio -> per-voice smoother state stored as a
+            length-V vector, output ``(V, F)``. Per-sample updates are
+            vectorized across voices: three V-wide numpy ops per
+            sample, no per-voice Python loop.
+
+        Missing audio in -> silence out and the smoother state is left
+        as-is (so reconnecting the cable doesn't snap back from a stale
+        decayed level mid-transient).
+        """
+        audio_in = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
+        if audio_in is None:
+            return np.zeros(frames, dtype=np.float32)
+
+        attack_ms = float(module.params.get("attack_ms", 5.0))
+        release_ms = float(module.params.get("release_ms", 100.0))
+        gain = float(module.params.get("gain", 1.0))
+
+        sr = self.sample_rate
+        attack_coef = 1.0 if attack_ms <= 0.0 else 1.0 - float(
+            np.exp(-1.0 / (max(attack_ms, 1e-6) * 1e-3 * sr))
+        )
+        release_coef = 1.0 if release_ms <= 0.0 else 1.0 - float(
+            np.exp(-1.0 / (max(release_ms, 1e-6) * 1e-3 * sr))
+        )
+
+        if audio_in.ndim == 2:
+            return self._render_audio_to_cv_voice(
+                module, frames, audio_in, attack_coef, release_coef, gain
+            )
+        return self._render_audio_to_cv_mono(
+            module, frames, audio_in, attack_coef, release_coef, gain
+        )
+
+    def _render_audio_to_cv_mono(
+        self, module, frames, audio_in, attack_coef, release_coef, gain
+    ):
+        """Scalar follower state, single smoother. Output ``(F,)``."""
+        state = self._state.setdefault(module.id, {"level": 0.0})
+        # Discard voice-branch state if we previously rendered (V, F).
+        if "level_arr" in state:
+            state.clear()
+            state["level"] = 0.0
+
+        out = np.empty(frames, dtype=np.float32)
+        level = float(state["level"])
+        abs_in = np.abs(audio_in).astype(np.float64)
+        for n in range(frames):
+            target = float(abs_in[n])
+            coef = attack_coef if target > level else release_coef
+            level += coef * (target - level)
+            out[n] = level
+        state["level"] = level
+        return (out * gain).astype(np.float32)
+
+    def _render_audio_to_cv_voice(
+        self, module, frames, audio_in, attack_coef, release_coef, gain
+    ):
+        """Per-voice follower state. Output ``(V, F)``.
+
+        ``audio_in`` is ``(V, F)``. Per-sample updates run vectorized
+        across voices: ``abs`` + ``where`` + IIR step are each one
+        numpy op over the length-V state vector, then we write a row
+        of the output. F serial steps, no Python loop over voices.
+        """
+        V = audio_in.shape[0]
+        state = self._state.setdefault(module.id, {})
+
+        needs_reinit = (
+            "level_arr" not in state or state["level_arr"].shape[0] != V
+        )
+        if needs_reinit:
+            state.clear()
+            state["level_arr"] = np.zeros(V, dtype=np.float64)
+
+        level = state["level_arr"]  # (V,) -- mutated across the loop.
+        out = np.empty((V, frames), dtype=np.float32)
+        abs_in = np.abs(audio_in).astype(np.float64)
+        for n in range(frames):
+            target = abs_in[:, n]  # (V,)
+            coef = np.where(target > level, attack_coef, release_coef)
+            level = level + coef * (target - level)
+            out[:, n] = level
+        state["level_arr"] = level
+        return (out * gain).astype(np.float32)
+
+    # ----- CVToAudio rendering --------------------------------------------
+
+    def _render_cv_to_audio(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Signal-kind relabel: CV input -> audio output, optional gain.
+
+        Stateless. The patch model forbids ``cv -> audio`` cables, so
+        this module exists purely to satisfy the type system; the DSP
+        is a buffer copy (multiplied by ``gain``).
+
+        Voice-awareness is by shape preservation. The CV input arrives
+        via :meth:`_input_buffer` with ``collapse=False`` so a
+        ``(V, F)`` polyphonic CV (e.g. per-voice ADSR) reaches us with
+        its voice axis intact, and the output keeps the same shape.
+        Downstream Speaker drain collapses the voice axis at the
+        mono boundary like it does for any other voice-aware audio.
+
+        Missing cable -> silence (1D ``(F,)`` zeros). We can't know
+        the intended voice count without an input, so the un-patched
+        case always emits mono.
+
+        No DC blocking. A constant CV (e.g. an ADSR's sustain level)
+        produces a DC offset that the Speaker limiter clamps -- the
+        user is trusted to patch a high-pass module if they need one.
+        """
+        cv_in = self._input_buffer(
+            patch, buffers, module.id, "cv", collapse=False
+        )
+        if cv_in is None:
+            return np.zeros(frames, dtype=np.float32)
+        gain = float(module.params.get("gain", 1.0))
+        return (cv_in * gain).astype(np.float32)
 
     # ----- Mixer rendering ------------------------------------------------
 

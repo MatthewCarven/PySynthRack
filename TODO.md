@@ -66,12 +66,17 @@ Living list of what's next. Edit freely.
 - [x] Error handler integrated at GUI outermost catch + audio callback panic path; crashes written to `~/.pysynthrack/crashes/` (shipped 2026-05-15)
 - [x] Single-file Windows `.exe` build (PyInstaller) -- `build.ps1` + `pysynthrack.spec`, examples bundled read-only, console variant `build_cli.ps1` for debugging (shipped 2026-05-17)
 - [x] MIDI follow-up: sustain pedal (CC 64) — shipped 2026-05-20 with voice routing slice 1. Per-slot `sustained` flag on `VoiceSlots`; pedal-down causes note_off to mark the slot sustained instead of releasing; pedal-up drops every sustained voice in one pass.
+- [ ] LeftSpeakerOut module — mono audio in routed exclusively to the left channel of the output device. Backend drain mixes any LeftSpeakerOut sinks into the left bus only; right bus stays silent for that node. Patches can place a Left + Right pair to get hard-panned stereo without a stereo Speaker module.
+- [ ] RightSpeakerOut module — mirror of LeftSpeakerOut; audio in routed exclusively to the right channel. Compose with LeftSpeakerOut for stereo patches.
 - [ ] PolyBLEP or wavetable anti-aliased osc shapes (replace naive saw/square)
 - [ ] CPU profile: pyo backend wired for the same modules so it's a drop-in fast path
 
 ## Later / wishlist
 
-- [ ] Signal-kind bridge modules: `AudioToCV` envelope follower (RMS the audio into a CV value, e.g. for self-modulating filter cutoff), `CVToAudio` (let you hear an LFO / envelope through the speaker for debugging slow modulators), `Schmitt` (CV threshold crossing emits a gate edge for chaining envelopes off a CV signal). Orthogonal to backend choice; cheap to add whenever DSP exploration sounds fun.
+- [x] `AudioToCV` envelope follower — shipped 2026-05-23. Rectifies the input + asymmetric one-pole (attack_ms / release_ms / gain) smoother; voice-aware shape-polymorphic on the audio input's ndim. Bridges the audio→cv signal-kind wall so the filter's own output can drive `cutoff_cv` (self-wah), a kick can sidechain a pad's VCA, etc. Example: `examples/envelope_follower_wah.json`. 14 new tests; full suite 304 passing (one pre-existing test_adsr failure noted below, untouched).
+- [x] `CVToAudio` — shipped 2026-05-23. Signal-kind passthrough (no DSP, just a type-tag relabel) with one `gain` param. Voice-aware by shape preservation. Unlocks audio-rate LFO as a primary tone source with built-in FM via `rate_cv`, percussive clicks from fast envelopes, and CV-oscilloscope-via-WAV recording. Example: `examples/lfo_oscillator.json` (220 Hz carrier LFO with 5.5 Hz vibrato modulator into the carrier's `rate_cv`). 13 new tests; full suite 317 passing.
+- [ ] Signal-kind bridge modules — remaining: `Schmitt` (CV threshold crossing emits a gate edge for chaining envelopes off a CV signal). The last of the three originally-proposed bridges; lower urgency than the audio↔CV pair but cheap to add when chained-envelope patches need it.
+- [ ] Drive-by: `tests/test_adsr.py::test_no_nan_with_zero_durations` references an undefined `sr` (missing `sr = 44100` line at the top of the test). Pre-existing — not introduced by AudioToCV work, but worth a one-line fix.
 - [ ] CV utility modules: `Constant` (params: value; outputs a fixed CV — useful as a CVCombiner input to bias another modulator), `CVScale` (cv in × gain param → cv out), `CVOffset` (cv in + offset param → cv out). The MIDIInput's `bend_range` / `mod_scale` patterns hint at the need; these utilities let any source feed any destination with arbitrary scale/offset without baking the knob into the source module.
 - [ ] Sample-and-hold module
 - [ ] Noise generator (white / pink)

@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "next_id": 6,
+  "modules": [
+    {
+      "id": 1,
+      "type": "keyboard",
+      "name": "Keyboard",
+      "params": {"octave": 3, "waveform": "saw", "volume": 0.4}
+    },
+    {
+      "id": 2,
+      "type": "filter",
+      "name": "Self-Wah Filter",
+      "params": {"mode": "lowpass", "cutoff": 320.0, "resonance": 2.2}
+    },
+    {
+      "id": 3,
+      "type": "audio_to_cv",
+      "name": "Envelope Follower",
+      "params": {"attack_ms": 6.0, "release_ms": 140.0, "gain": 0.9}
+    },
+    {
+      "id": 4,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {"gain": 0.5}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "in"},
+    {"src_module_id": 2, "src_port": "out", "dst_module_id": 3, "dst_port": "in"},
+    {"src_module_id": 3, "src_port": "cv", "dst_module_id": 2, "dst_port": "cutoff_cv"},
+    {"src_module_id": 2, "src_port": "out", "dst_module_id": 4, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 60],
+      "2": [360, 180],
+      "3": [360, 420],
+      "4": [680, 180]
+    }
+  }
+}
