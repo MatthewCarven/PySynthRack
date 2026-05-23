@@ -639,3 +639,306 @@ class TestOscillatorVoiceAware:
         voice = self._render(backend2, osc2, patch2, freq_cv=voice_cv)
         # Voice 0 should match the mono-with-CV path bit-near.
         np.testing.assert_allclose(voice[0], mono, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# LFO voice-aware path (slice 3b.2)
+# ---------------------------------------------------------------------------
+
+
+class TestLFOVoiceAware:
+    """LFO slice-3b.2 tests.
+
+    The LFO renderer branches on rate_cv's ndim. None / 1D -> the
+    pre-slice-3 scalar phase path; output (F,). 2D (V, F) -> V
+    independent phase accumulators, each clocked at its own per-voice
+    block-mean rate; output (V, F).
+    """
+
+    def _build_lfo_patch(self, **lfo_params):
+        patch = Patch()
+        lfo = patch.add_module("lfo", params=lfo_params)
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        backend.compile(patch)
+        return backend, lfo, patch
+
+    def _render(self, backend, lfo, patch, rate_cv=None, frames=512):
+        from pysynthrack.core.patch import Cable
+        CV_SRC = 9301
+        patch.cables[:] = [
+            c for c in patch.cables if c.src_module_id != CV_SRC
+        ]
+        buffers = {}
+        if rate_cv is not None:
+            patch.cables.append(Cable(
+                src_module_id=CV_SRC, src_port="out",
+                dst_module_id=lfo.id, dst_port="rate_cv",
+            ))
+            buffers[(CV_SRC, "out")] = rate_cv
+        return backend._render_lfo(lfo, frames, buffers, patch)
+
+    def test_voice_rate_cv_returns_voice_shape(self):
+        # (V, F) rate_cv -> (V, F) output. Zero CV in every slot means
+        # all voices clock at the base rate from the same starting
+        # phase, so every voice produces an identical waveform.
+        backend, lfo, patch = self._build_lfo_patch(
+            waveform="sine", rate=4.0, depth=1.0, bipolar=True,
+        )
+        rate_cv = np.zeros((16, 512), dtype=np.float32)
+        out = self._render(backend, lfo, patch, rate_cv=rate_cv)
+        assert out.shape == (16, 512)
+        for v in range(1, 16):
+            np.testing.assert_allclose(out[v], out[0], atol=1e-6)
+
+    def test_per_voice_rate_via_rate_cv(self):
+        # Per-voice rate: voice 0 at 0V (=base rate), voice 5 at +2V
+        # (=4x base rate, two octaves). After one block, voice 5
+        # should have advanced ~4x more phase than voice 0.
+        backend, lfo, patch = self._build_lfo_patch(
+            waveform="saw", rate=4.0, depth=1.0, bipolar=True,
+        )
+        rate_cv = np.zeros((16, 512), dtype=np.float32)
+        rate_cv[0, :] = 0.0
+        rate_cv[5, :] = 2.0  # +2 octaves -> 16 Hz
+        out = self._render(backend, lfo, patch, rate_cv=rate_cv)
+        # Saw shape: phase is a ramp. Count zero crossings as a proxy
+        # for how many cycles each voice completed.
+        def zc(buf):
+            return int(np.sum(np.diff(np.sign(buf)) != 0))
+        zc_v0 = zc(out[0])
+        zc_v5 = zc(out[5])
+        # 4 Hz at 44.1 kHz over 512 samples -> ~0.046 cycles (likely 0
+        # zero crossings in saw). 16 Hz -> ~0.186 cycles (also small).
+        # Better test: voice 5's max phase should be larger than v0's.
+        # Use sine instead so we get measurable values, or check that
+        # the cumulative phase advance differs. Stick with the simpler
+        # zero-crossing check + an env-amplitude check on a longer
+        # render to make sure rates differ.
+        # If both are 0 (sub-cycle), check final-sample values: at saw
+        # ramps from -1 to +1 over one period, voice 5 should be 4x
+        # further along its ramp than voice 0.
+        if zc_v5 == zc_v0:
+            # both are sub-cycle; compare endpoint phase progress.
+            # saw runs -1 -> +1 then jumps back; voice 5's value
+            # should be greater than voice 0's by roughly the rate
+            # ratio in a small phase range.
+            v0_end = float(out[0, -1])
+            v5_end = float(out[5, -1])
+            # voice 5 has rolled further into the saw ramp.
+            assert v5_end > v0_end + 0.005, (
+                f"voice 5 didn\'t advance further than voice 0: "
+                f"v0={v0_end:.4f}, v5={v5_end:.4f}"
+            )
+        else:
+            assert zc_v5 > zc_v0, (
+                f"voice 5 should cycle more than voice 0: "
+                f"zc0={zc_v0}, zc5={zc_v5}"
+            )
+
+    def test_per_voice_phase_persists_across_blocks(self):
+        # Phase per voice must accumulate across blocks -- not reset.
+        # Render two blocks; the second block's first sample should
+        # continue smoothly from the first block's last sample.
+        backend, lfo, patch = self._build_lfo_patch(
+            waveform="sine", rate=1.0, depth=1.0, bipolar=True,
+        )
+        rate_cv = np.zeros((16, 512), dtype=np.float32)
+        b1 = self._render(backend, lfo, patch, rate_cv=rate_cv)
+        b2 = self._render(backend, lfo, patch, rate_cv=rate_cv)
+        for v in range(16):
+            jump = abs(float(b2[v, 0]) - float(b1[v, -1]))
+            # 1 Hz at 44.1 kHz -> dphi = 1/44100 -> sin step ~ 1.4e-4.
+            # Give generous margin for sub-sample interpolation.
+            assert jump < 0.01, (
+                f"voice {v}: phase discontinuous between blocks "
+                f"(jump={jump:.5f})"
+            )
+
+    def test_mono_rate_cv_returns_mono(self):
+        # Backward compat: 1D rate_cv -> scalar phase path, 1D output.
+        backend, lfo, patch = self._build_lfo_patch(
+            waveform="sine", rate=4.0, depth=1.0, bipolar=True,
+        )
+        rate_cv = np.zeros(512, dtype=np.float32)
+        out = self._render(backend, lfo, patch, rate_cv=rate_cv)
+        assert out.shape == (512,)
+        assert out.ndim == 1
+
+    def test_no_rate_cv_returns_mono(self):
+        # No rate_cv connected -> mono fast path. Same shape as the
+        # pre-slice LFO.
+        backend, lfo, patch = self._build_lfo_patch(
+            waveform="sine", rate=4.0, depth=1.0, bipolar=True,
+        )
+        out = self._render(backend, lfo, patch, rate_cv=None)
+        assert out.shape == (512,)
+
+    def test_unipolar_voice_output_stays_non_negative(self):
+        # bipolar=False on the voice path applies the same [-1,1] ->
+        # [0,1] mapping as the mono path. Verify per-voice output is
+        # always >= 0 across many blocks.
+        backend, lfo, patch = self._build_lfo_patch(
+            waveform="sine", rate=8.0, depth=1.0, bipolar=False,
+        )
+        rate_cv = np.zeros((16, 512), dtype=np.float32)
+        for _ in range(4):
+            out = self._render(backend, lfo, patch, rate_cv=rate_cv)
+        assert out.shape == (16, 512)
+        assert float(np.min(out)) >= -1e-7, (
+            f"unipolar LFO produced negative value: min={float(np.min(out))}"
+        )
+
+    def test_voice_matches_mono_at_zero_cv(self):
+        # Voice path row 0 with rate_cv = 0 should match the mono path
+        # with rate_cv = 0 to floating-point tolerance -- both reduce
+        # to the same per-block phase ramp.
+        backend1, lfo1, patch1 = self._build_lfo_patch(
+            waveform="triangle", rate=2.5, depth=0.8, bipolar=True,
+        )
+        mono = self._render(
+            backend1, lfo1, patch1, rate_cv=np.zeros(512, dtype=np.float32)
+        )
+        backend2, lfo2, patch2 = self._build_lfo_patch(
+            waveform="triangle", rate=2.5, depth=0.8, bipolar=True,
+        )
+        voice = self._render(
+            backend2, lfo2, patch2, rate_cv=np.zeros((16, 512), dtype=np.float32)
+        )
+        np.testing.assert_allclose(voice[0], mono, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Crossover voice-aware path (slice 3b.2)
+# ---------------------------------------------------------------------------
+
+
+class TestCrossoverVoiceAware:
+    """Crossover slice-3b.2 tests.
+
+    The Crossover renderer branches on its audio input's ndim. 1D ->
+    the pre-slice scalar cascaded-biquad path; outputs 1D low + high.
+    2D (V, F) -> V parallel cascaded biquads per branch, each with its
+    own (x1, x2, y1, y2) memory; outputs (V, F) low + (V, F) high.
+    """
+
+    def _build_xo_patch(self, **xo_params):
+        patch = Patch()
+        xo = patch.add_module("crossover", params=xo_params)
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        backend.compile(patch)
+        return backend, xo, patch
+
+    def _render(self, backend, xo, patch, audio, frames=512):
+        from pysynthrack.core.patch import Cable
+        AUDIO_SRC = 9401
+        patch.cables[:] = [
+            c for c in patch.cables if c.src_module_id != AUDIO_SRC
+        ]
+        patch.cables.append(Cable(
+            src_module_id=AUDIO_SRC, src_port="out",
+            dst_module_id=xo.id, dst_port="in",
+        ))
+        buffers = {(AUDIO_SRC, "out"): audio}
+        return backend._render_crossover(xo, frames, buffers, patch)
+
+    def test_voice_audio_returns_voice_shape_for_both_outputs(self):
+        # (V, F) audio in -> {"low": (V, F), "high": (V, F)}.
+        backend, xo, patch = self._build_xo_patch(frequency=1000.0)
+        sr = 44100
+        t = np.arange(512) / sr
+        # Mid-band test tone on slot 7 only.
+        audio = np.zeros((16, 512), dtype=np.float32)
+        audio[7, :] = (np.sin(2 * np.pi * 1000 * t) * 0.5).astype(np.float32)
+        out = self._render(backend, xo, patch, audio)
+        assert out["low"].shape == (16, 512)
+        assert out["high"].shape == (16, 512)
+        # Slot 7 has signal; every other slot is silent.
+        for i in range(16):
+            if i == 7:
+                continue
+            assert float(np.max(np.abs(out["low"][i]))) == 0.0
+            assert float(np.max(np.abs(out["high"][i]))) == 0.0
+        # Slot 7 should have both branches producing nonzero output
+        # (1 kHz is right at the corner -- -6 dB on each branch).
+        assert float(np.max(np.abs(out["low"][7]))) > 1e-3
+        assert float(np.max(np.abs(out["high"][7]))) > 1e-3
+
+    def test_per_voice_biquad_memory_is_independent(self):
+        # Warm up slot 0 with sustained signal, then drive slot 5 with
+        # an impulse and slot 0 with silence. Slot 5's impulse must
+        # not leak into slot 0's output -- the proof of independent
+        # per-voice biquad memory.
+        backend, xo, patch = self._build_xo_patch(frequency=500.0)
+        warmup = np.zeros((16, 512), dtype=np.float32)
+        warmup[0, :] = 1.0
+        for _ in range(5):
+            self._render(backend, xo, patch, warmup)
+
+        impulse = np.zeros((16, 512), dtype=np.float32)
+        impulse[5, 0] = 1.0
+        out = self._render(backend, xo, patch, impulse)
+
+        # Slot 5 must respond to its own impulse.
+        assert float(np.max(np.abs(out["low"][5, :100]))) > 1e-3
+        # Slot 0 has no fresh input, only decaying memory from warmup.
+        # The slot-5 impulse must NOT spike slot 0. Check that slot 0
+        # decays smoothly (no sharp peak from cross-talk).
+        slot0_first_quarter = float(np.mean(np.abs(out["low"][0, :128])))
+        slot0_last_quarter = float(np.mean(np.abs(out["low"][0, 384:])))
+        assert slot0_last_quarter <= slot0_first_quarter + 1e-6
+
+    def test_low_plus_high_recombines_to_input(self):
+        # The Linkwitz-Riley guarantee on the voice path: low + high
+        # sums back to the (delayed) input, sample-accurate aside
+        # from group delay. Verify on slot 3 with a sine in the pass
+        # region of one branch.
+        backend, xo, patch = self._build_xo_patch(frequency=2000.0)
+        sr = 44100
+        t = np.arange(512) / sr
+        audio = np.zeros((16, 512), dtype=np.float32)
+        audio[3, :] = (np.sin(2 * np.pi * 500 * t) * 0.5).astype(np.float32)
+        # Let the biquad memory settle.
+        for _ in range(4):
+            out = self._render(backend, xo, patch, audio)
+        recombined = out["low"][3] + out["high"][3]
+        # Compare RMS to the input -- the recombined signal should
+        # match the input in magnitude to within a few percent
+        # (LR4 sum is flat in magnitude, modulo settling).
+        input_rms = float(np.sqrt(np.mean(audio[3] ** 2)))
+        recombined_rms = float(np.sqrt(np.mean(recombined ** 2)))
+        assert abs(recombined_rms - input_rms) / input_rms < 0.05, (
+            f"recombined RMS ({recombined_rms:.4f}) deviates from "
+            f"input RMS ({input_rms:.4f})"
+        )
+
+    def test_mono_audio_still_returns_mono(self):
+        # Backward compat: 1D in -> 1D low + 1D high.
+        backend, xo, patch = self._build_xo_patch(frequency=1000.0)
+        sr = 44100
+        t = np.arange(512) / sr
+        audio = (np.sin(2 * np.pi * 1000 * t) * 0.5).astype(np.float32)
+        for _ in range(3):
+            out = self._render(backend, xo, patch, audio)
+        assert out["low"].shape == (512,)
+        assert out["high"].shape == (512,)
+        assert out["low"].ndim == 1
+        assert out["high"].ndim == 1
+
+    def test_voice_path_matches_mono_path_for_replicated_voice(self):
+        # Per-voice rows are independent: feeding identical signal to
+        # every slot should produce identical output rows that all
+        # match the mono path bit-near.
+        backend_voice, xo_v, patch_v = self._build_xo_patch(frequency=800.0)
+        backend_mono, xo_m, patch_m = self._build_xo_patch(frequency=800.0)
+        sr = 44100
+        t = np.arange(512) / sr
+        tone_mono = (np.sin(2 * np.pi * 600 * t) * 0.5).astype(np.float32)
+        tone_voice = np.broadcast_to(tone_mono, (16, 512)).copy()
+        # Run multiple blocks so the biquad memory tracks identically.
+        for _ in range(4):
+            out_v = self._render(backend_voice, xo_v, patch_v, tone_voice)
+            out_m = self._render(backend_mono, xo_m, patch_m, tone_mono)
+        # Every voice row should match the mono output to fp tolerance.
+        for v in range(16):
+            np.testing.assert_allclose(out_v["low"][v], out_m["low"], atol=1e-5)
+            np.testing.assert_allclose(out_v["high"][v], out_m["high"], atol=1e-5)

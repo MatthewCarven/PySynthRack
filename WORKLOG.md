@@ -1773,3 +1773,149 @@ whether to migrate LFO to voice-aware at all, or just document
 why it stays mono.  Crossover is more clear-cut -- it's a stateful
 pair of biquads per branch, V parallel pairs is a direct port of
 the Filter pattern.
+
+## 2026-05-23 (later) -- Voice routing slice 3b.2: voice-aware LFO + Crossover
+
+**What.**  Third and final installment of the downstream-module
+migration before Keyboard.  LFO and Crossover now respect the voice
+axis.  After this slice, all six stateful modules (ADSR, VCA, Filter,
+Oscillator, LFO, Crossover) take per-voice signals correctly; only
+Keyboard remains (slice 4).
+
+**Decision: migrate LFO after all.**  The 3b.1 entry left a question
+open -- "per-voice LFO is a niche use, maybe document why it stays
+mono?".  Decided to migrate.  Two reasons:
+
+* The cost is negligible.  LFO with no rate_cv is the common case
+  and routes to the unchanged mono fast path.  Only a 2D rate_cv
+  signal triggers the voice branch.  No existing patch pays any
+  cost, and the migration unlocks per-voice rate modulation when
+  it's needed (one obvious use: aftertouch -> LFO rate, where each
+  voice's aftertouch could clock its own LFO at a different speed).
+* The pattern is the same as Oscillator.  Branch on the CV input's
+  ndim, V independent phase accumulators in the voice branch,
+  per-voice block-mean rate.  Implementation is ~80 lines and
+  follows the same state-isolation discipline (``phase`` vs
+  ``phase_arr``).  Cheap to add now while the pattern is fresh;
+  expensive to revisit later if a "polyrate LFO" use case shows up
+  and the migration has to happen against a settled codebase.
+
+**LFO migration.**  ``_render_lfo`` is now a small dispatcher that
+opts ``rate_cv`` into ``collapse=False`` and branches on ndim:
+
+* None or 1D ``(F,)`` -> ``_render_lfo_mono``, lifted unchanged from
+  the pre-slice implementation.  Single scalar phase accumulator,
+  vectorized phase ramp via ``arange``.  Every existing LFO test
+  passes bit-for-bit identically.
+
+* 2D ``(V, F)`` -> ``_render_lfo_voice``.  V independent phase
+  accumulators (``phase_arr`` as ``(V,)`` array).  Per-voice
+  block-mean rate (1V/oct, same convention as the mono branch).
+  Per-row phase ramps via broadcast:
+  ``start_phase[:, None] + step[None, :] * phase_inc[:, None]``.
+  Output ``(V, F)``.
+
+  Block-mean (rather than per-sample cumsum) is the deliberate
+  cost/quality trade -- LFO is sub-audio by definition and the
+  oscillator-style per-sample integration would be overkill.
+  Per-voice phase persists across blocks, same policy as the
+  oscillator voice path.
+
+  ``random`` waveform's sample-and-hold goes per-voice too:
+  ``random_arr`` is a ``(V,)`` array of per-voice held values.
+  Each voice independently detects its own phase wrap and rerolls,
+  serial across voices because S&H isn't vectorizable along the
+  voice axis (each row's output depends on its own prior value at
+  its own wrap edges).
+
+**Crossover migration.**  Direct port of the Filter pattern.
+``_render_crossover`` is a dispatcher that branches on the audio
+input's ndim:
+
+* ``ndim == 1`` -> ``_render_crossover_mono``, lifted unchanged.
+  Scalar memory for two cascaded biquads per branch (16 scalar
+  state variables).  Outputs ``{"low": (F,), "high": (F,)}``.
+
+* ``ndim == 2`` -> ``_render_crossover_voice``.  V parallel
+  cascaded biquads per branch.  Memory as 16 ``(V,)`` arrays
+  (``lp1_x1_arr`` ... ``hp2_y2_arr``).  Per-sample recurrence is
+  byte-identical to mono -- the only difference is that ``x``,
+  the intermediate stage outputs, and the (x1, x2, y1, y2)
+  memories are ``(V,)`` arrays.  Outputs
+  ``{"low": (V, F), "high": (V, F)}``.
+
+  Coefficients stay scalar because Crossover has no frequency_cv
+  yet, so the same LP/HP coefficient set applies to every voice.
+  Broadcasting handles the scalar-times-vector arithmetic.
+
+Coefficient computation extracted to ``_crossover_coeffs(freq)`` so
+both branches share one source of truth for the LR4 building
+blocks.
+
+**State branch isolation.**  Same protocol as 3b.1: mono state uses
+unsuffixed keys (``"phase"`` / ``"lp1_x1"`` / ...), voice state uses
+``_arr`` suffixed keys (``"phase_arr"`` / ``"lp1_x1_arr"`` / ...).
+Each branch checks for the other branch's keys on first call and
+reinitialises if it finds them.
+
+**New tests: ``TestLFOVoiceAware`` + ``TestCrossoverVoiceAware``**
+(12 tests appended to ``tests/test_voice_aware.py``).
+
+LFO tests (7):
+
+* ``test_voice_rate_cv_returns_voice_shape`` -- (V, F) rate_cv of
+  zeros, every voice produces the same waveform (inter-voice
+  consistency).
+* ``test_per_voice_rate_via_rate_cv`` -- slot 0 at 0V (=4 Hz), slot
+  5 at +2V (=16 Hz, two octaves up), voice 5 advances further
+  along its phase ramp than voice 0 within one block.
+* ``test_per_voice_phase_persists_across_blocks`` -- two-block
+  sample continuity check for every voice.
+* ``test_mono_rate_cv_returns_mono`` and
+  ``test_no_rate_cv_returns_mono`` -- backward compat for the two
+  ways the mono path can be entered.
+* ``test_unipolar_voice_output_stays_non_negative`` -- bipolar=False
+  shaping applies correctly on the voice path; output >= 0 across
+  many blocks.
+* ``test_voice_matches_mono_at_zero_cv`` -- voice row 0 with
+  rate_cv=0 agrees with mono with rate_cv=0 to 1e-6.
+
+Crossover tests (5):
+
+* ``test_voice_audio_returns_voice_shape_for_both_outputs`` -- 1 kHz
+  tone in slot 7 only.  Both low and high outputs are (16, 512),
+  slot 7 carries signal on both branches (-6 dB at the corner),
+  every other slot is silent on both branches.
+* ``test_per_voice_biquad_memory_is_independent`` -- warmup slot 0,
+  then impulse into slot 5 while slot 0's input goes to 0.  Slot
+  5's impulse response appears in slot 5; slot 0 decays from its
+  prior state without being kicked by slot 5's impulse.
+* ``test_low_plus_high_recombines_to_input`` -- the LR4 property on
+  the voice path: low + high RMS matches input RMS to within 5%.
+* ``test_mono_audio_still_returns_mono`` -- backward compat.
+* ``test_voice_path_matches_mono_path_for_replicated_voice`` --
+  feed identical signal to every voice slot, every voice's output
+  row matches the mono path's output to 1e-5 (proves the parallel
+  biquads agree with the scalar biquad when fed the same input).
+
+**Verification.**  Full project suite off the mount: **283 tests pass,
+0 fail** (was 271 + 12 new; 18 mido tests skipped in the bash sandbox
+but pass under Matthew's ``[midi]``-installed venv).  Same sandbox
++ verify protocol as 3b.1: staged in ``/sessions/.../outputs``,
+AST-parsed, ran the suite against a sandbox clone of the project
+tree, copied whole files to the mount with ``cp``, AST-parsed and
+size-verified on the mount, ran the suite directly off the mount.
+
+**Slice 3b complete.**  All six stateful DSP modules are voice-aware.
+The canonical polyphonic patch -- MIDIInput -> Oscillator (per-voice
+pitch) -> Filter (per-voice cutoff envelope) -> VCA (per-voice ADSR)
+-> Speaker -- now runs end-to-end with each voice's identity
+preserved through every stage.  The two routing modules in 3b.2 also
+mean a Crossover can sit in a polyphonic chain (e.g. multi-band
+processing per voice) without collapsing to mono.
+
+**Next: slice 4 -- Keyboard migration.**  Mirror Keyboard onto the
+same self-polyphonic shape as MIDIInput (voice slots, per-slot
+output buffers).  Mechanically a port of the MIDIInput renderer
+adapted to the keyboard's note-set source.
+

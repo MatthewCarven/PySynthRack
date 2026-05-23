@@ -1336,13 +1336,51 @@ class NumpyBackend(AudioBackend):
     def _render_lfo(self, module, frames: int, buffers=None, patch=None) -> np.ndarray:
         """Low-frequency oscillator emitting a CV signal.
 
-        Phase state is per-module (so multiple LFOs in one patch don't
-        share state). ``random`` waveform is sample-and-hold: re-roll
-        once per cycle when the phase wraps past 1.0.
+        Shape-polymorphic (slice 3b.2). The branch is decided by
+        ``rate_cv``'s shape -- phase state is what changes with rate:
+
+          * ``rate_cv`` 2D ``(V, F)`` -> voice-aware path. V independent
+            phase accumulators, one per voice slot, each clocked at its
+            own per-voice block-mean rate. Output ``(V, F)``.
+          * ``rate_cv`` 1D ``(F,)`` or None -> mono path with a single
+            phase accumulator. Output ``(F,)``.
+
+        Phase state is per-module so multiple LFOs in one patch don't
+        share state. ``random`` waveform is sample-and-hold: re-roll
+        once per cycle when the phase wraps past 1.0, with per-voice
+        S&H values in the voice branch so independently-clocked voices
+        roll their own randoms on their own wrap edges.
+        """
+        # collapse=False so a voice-aware (V, F) rate_cv reaches us
+        # with the voice axis intact. ``buffers``/``patch`` are None
+        # when called from unit tests in isolation, in which case
+        # rate_cv is unavailable -- same back-compat trick we use on
+        # _render_oscillator.
+        rate_cv = None
+        if buffers is not None and patch is not None:
+            rate_cv = self._input_buffer(
+                patch, buffers, module.id, "rate_cv", collapse=False
+            )
+
+        if rate_cv is not None and rate_cv.ndim == 2:
+            return self._render_lfo_voice(module, frames, rate_cv)
+        return self._render_lfo_mono(module, frames, rate_cv)
+
+    def _render_lfo_mono(self, module, frames, rate_cv):
+        """Mono fast path -- scalar phase, vectorized phase ramp.
+
+        Unchanged from the pre-slice-3b.2 implementation; the scalar
+        ramp + waveshape is exactly the same so every existing LFO test
+        passes bit-for-bit identically.
         """
         state = self._state.setdefault(
             module.id, {"phase": 0.0, "random_value": 0.0}
         )
+        # If state belongs to the voice branch (different keys),
+        # discard and reinit to mono shape.
+        if "phase_arr" in state:
+            state.clear()
+            state.update({"phase": 0.0, "random_value": 0.0})
 
         waveform = str(module.params.get("waveform", "sine"))
         rate = float(module.params.get("rate", 4.0))
@@ -1350,18 +1388,17 @@ class NumpyBackend(AudioBackend):
         bipolar = bool(module.params.get("bipolar", False))
 
         sr = self.sample_rate
-        # Clamp to a safe range: 0.001 Hz floor (one cycle per ~17 min) and
-        # an effective ceiling at Nyquist/2 — beyond that an LFO is just
-        # an audio oscillator and the user should reach for ``oscillator``.
-        # CV-modulate the rate: 1V/octave, block-mean.
-        # ``buffers``/``patch`` are None when called from unit tests in
-        # isolation, in which case rate_cv is unavailable — same back-
-        # compat trick we use on _render_oscillator.
-        if buffers is not None and patch is not None:
-            rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
-            if rate_cv is not None and rate_cv.size > 0:
-                rate = rate * float(2.0 ** float(np.mean(rate_cv)))
+        # CV-modulate the rate: 1V/octave, block-mean. If rate_cv is
+        # 2D for any reason it shouldn't reach this branch -- the
+        # dispatcher routes (V, F) to the voice path. mean() over a
+        # 1D slice is the same as the old code.
+        if rate_cv is not None and rate_cv.size > 0:
+            rate = rate * float(2.0 ** float(np.mean(rate_cv)))
 
+        # Clamp to a safe range: 0.001 Hz floor (one cycle per ~17 min)
+        # and an effective ceiling at Nyquist/2 -- beyond that an LFO
+        # is just an audio oscillator and the user should reach for
+        # ``oscillator``.
         rate = max(0.001, min(rate, sr * 0.45))
         depth = max(0.0, min(depth, 1.0))
 
@@ -1399,11 +1436,113 @@ class NumpyBackend(AudioBackend):
         state["phase"] = new_phase
 
         if not bipolar:
-            # Map [-1, 1] → [0, 1] (so a sine-LFO into a VCA gives a smooth
+            # Map [-1, 1] -> [0, 1] (so a sine-LFO into a VCA gives a smooth
             # tremolo rather than an inverted-phase audio fight).
             wave = (wave + 1.0) * 0.5
 
         return (wave * depth).astype(np.float32)
+
+    def _render_lfo_voice(self, module, frames, rate_cv):
+        """Voice-aware path -- V independent phase accumulators.
+
+        ``rate_cv`` is ``(V, F)``. Each voice gets its own block-mean
+        rate (1V/oct) and accumulates phase at its own increment, with
+        per-voice phase state persisting across blocks. Output is
+        ``(V, F)``.
+
+        Block-mean cadence on the per-voice rate matches the mono path
+        -- one rate per block per voice. Audio-rate rate modulation
+        would need per-sample increments via cumsum (cf. the oscillator
+        voice path); the LFO is sub-audio by definition, so block-mean
+        is the right cost/quality trade-off.
+
+        Per-voice phase persists across blocks rather than resetting on
+        retrigger -- mirrors the oscillator voice-path policy and
+        avoids click on rate jumps. For ``random`` waveform each voice
+        carries its own sample-and-hold value, re-rolled on its own
+        phase wrap (independently-clocked voices roll independently).
+        """
+        V = rate_cv.shape[0]
+        state = self._state.setdefault(module.id, {})
+
+        # Reinit if state belongs to the mono branch or the voice
+        # count changed.
+        needs_reinit = (
+            "phase_arr" not in state
+            or state["phase_arr"].shape[0] != V
+        )
+        if needs_reinit:
+            state.clear()
+            state["phase_arr"] = np.zeros(V, dtype=np.float64)
+            state["random_arr"] = np.zeros(V, dtype=np.float64)
+
+        waveform = str(module.params.get("waveform", "sine"))
+        base_rate = float(module.params.get("rate", 4.0))
+        depth = float(module.params.get("depth", 1.0))
+        bipolar = bool(module.params.get("bipolar", False))
+
+        sr = self.sample_rate
+        depth_c = max(0.0, min(depth, 1.0))
+
+        # Per-voice block-mean rate (1V/oct). Each voice gets its own
+        # phase increment for this block.
+        cv_block_mean = rate_cv.mean(axis=1)  # (V,)
+        rate_per_voice = base_rate * np.power(
+            2.0, cv_block_mean.astype(np.float64)
+        )
+        rate_per_voice = np.clip(rate_per_voice, 0.001, sr * 0.45)
+
+        phase_inc_per_voice = rate_per_voice / sr  # (V,)
+        start_phase = state["phase_arr"]  # (V,)
+
+        # Per-voice phase ramps via broadcast: (V, 1) + (1, F) * (V, 1)
+        # -> (V, F). Each row is a phase ramp clocked at that voice's
+        # rate.
+        step = np.arange(frames, dtype=np.float64)  # (F,)
+        phases = (
+            start_phase[:, None]
+            + step[None, :] * phase_inc_per_voice[:, None]
+        ) % 1.0  # (V, F)
+        new_phase = (start_phase + frames * phase_inc_per_voice) % 1.0
+
+        if waveform == "sine":
+            wave = np.sin(2.0 * np.pi * phases)
+        elif waveform == "triangle":
+            wave = 1.0 - 4.0 * np.abs(phases - 0.5)
+        elif waveform == "square":
+            wave = np.where(phases < 0.5, 1.0, -1.0)
+        elif waveform == "saw":
+            wave = 2.0 * phases - 1.0
+        elif waveform == "random":
+            # Per-voice sample-and-hold. Each voice independently
+            # detects its own phase wrap and re-rolls. Serial across
+            # voices (S&H isn't vectorizable -- each row's output
+            # depends on its own prior value on the wrap edges).
+            wave = np.empty((V, frames), dtype=np.float64)
+            random_arr = state["random_arr"]
+            for v in range(V):
+                row_phases = phases[v]
+                row_start = float(start_phase[v])
+                current = float(random_arr[v])
+                if frames > 0:
+                    if row_start == 0.0 and current == 0.0:
+                        current = float(np.random.uniform(-1.0, 1.0))
+                    diffs = np.diff(np.concatenate([[row_start], row_phases]))
+                    for i in range(frames):
+                        if diffs[i] < 0.0:
+                            current = float(np.random.uniform(-1.0, 1.0))
+                        wave[v, i] = current
+                    random_arr[v] = current
+            state["random_arr"] = random_arr
+        else:
+            wave = np.zeros((V, frames), dtype=np.float64)
+
+        state["phase_arr"] = new_phase
+
+        if not bipolar:
+            wave = (wave + 1.0) * 0.5
+
+        return (wave * depth_c).astype(np.float32)
 
     # ----- VCA rendering --------------------------------------------------
 
@@ -1503,31 +1642,47 @@ class NumpyBackend(AudioBackend):
     def _render_crossover(self, module, frames: int, buffers, patch) -> dict:
         """Linkwitz-Riley 4th-order two-way split: low + high outputs.
 
-        Two cascaded Butterworth (Q=1/√2) biquads per branch. The shared
-        ``a`` denominator and the LP/HP numerators are the standard RBJ
-        cookbook coefficients; running them in series gives the LR4
-        magnitude response (-24 dB/oct, -6 dB at corner) and the phase
-        relationship that lets low+high sum back to a flat magnitude.
+        Shape-polymorphic (slice 3b.2). A 1D ``(F,)`` audio input drives
+        a single pair of cascaded biquads per branch and emits two 1D
+        buffers -- the pre-slice fast path. A 2D ``(V, F)`` audio input
+        runs V parallel pairs of cascaded biquads per branch (one set
+        per voice slot) and emits two ``(V, F)`` buffers; each voice
+        keeps its own biquad memory so a per-voice carrier upstream
+        gets split cleanly without cross-talk.
+
+        Two cascaded Butterworth (Q=1/sqrt(2)) biquads per branch. The
+        shared ``a`` denominator and the LP/HP numerators are the
+        standard RBJ cookbook coefficients; running them in series
+        gives the LR4 magnitude response (-24 dB/oct, -6 dB at corner)
+        and the phase relationship that lets low+high sum back to a
+        flat magnitude. Coefficients are scalars (no frequency_cv yet
+        on Crossover) so the voice branch shares one coeff set across
+        all V parallel biquads -- only the per-voice (x1, x2, y1, y2)
+        memory differs.
         """
-        src = self._input_buffer(patch, buffers, module.id, "in")
+        # collapse=False so a voice-aware (V, F) audio input reaches us
+        # with the voice axis intact.
+        src = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
         if src is None:
             zero = np.zeros(frames, dtype=np.float32)
             return {"low": zero, "high": zero.copy()}
 
-        state = self._state.setdefault(
-            module.id,
-            {
-                "lp1_x1": 0.0, "lp1_x2": 0.0, "lp1_y1": 0.0, "lp1_y2": 0.0,
-                "lp2_x1": 0.0, "lp2_x2": 0.0, "lp2_y1": 0.0, "lp2_y2": 0.0,
-                "hp1_x1": 0.0, "hp1_x2": 0.0, "hp1_y1": 0.0, "hp1_y2": 0.0,
-                "hp2_x1": 0.0, "hp2_x2": 0.0, "hp2_y1": 0.0, "hp2_y2": 0.0,
-            },
-        )
+        if src.ndim == 2:
+            return self._render_crossover_voice(module, frames, src)
+        return self._render_crossover_mono(module, frames, src)
 
+    def _crossover_coeffs(self, freq):
+        """Compute the LR4 building-block biquad coefficients.
+
+        Returns ``(lp_b0, lp_b1, lp_b2, hp_b0, hp_b1, hp_b2, a1n, a2n)``
+        already normalized by a0. Shared between the mono and voice
+        branches so the coefficient math lives in exactly one place.
+        """
         sr = self.sample_rate
-        freq = float(module.params.get("frequency", 1000.0))
         freq = max(20.0, min(freq, sr * 0.45))
-        q = 1.0 / (2.0 ** 0.5)  # Butterworth -> Q ≈ 0.7071
+        q = 1.0 / (2.0 ** 0.5)  # Butterworth -> Q ~ 0.7071
 
         w0 = 2.0 * np.pi * freq / sr
         cos_w0 = float(np.cos(w0))
@@ -1543,6 +1698,41 @@ class NumpyBackend(AudioBackend):
         hp_b0 = ((1.0 + cos_w0) / 2.0) / a0
         hp_b1 = (-(1.0 + cos_w0)) / a0
         hp_b2 = ((1.0 + cos_w0) / 2.0) / a0
+        return lp_b0, lp_b1, lp_b2, hp_b0, hp_b1, hp_b2, a1n, a2n
+
+    def _render_crossover_mono(self, module, frames, src):
+        """Mono fast path -- scalar state, output 1D low + high.
+
+        Functionally unchanged from the pre-slice-3b.2 implementation;
+        the scalar inner loop is exactly the same so every existing
+        Crossover test passes bit-for-bit identically.
+        """
+        state = self._state.setdefault(
+            module.id,
+            {
+                "lp1_x1": 0.0, "lp1_x2": 0.0, "lp1_y1": 0.0, "lp1_y2": 0.0,
+                "lp2_x1": 0.0, "lp2_x2": 0.0, "lp2_y1": 0.0, "lp2_y2": 0.0,
+                "hp1_x1": 0.0, "hp1_x2": 0.0, "hp1_y1": 0.0, "hp1_y2": 0.0,
+                "hp2_x1": 0.0, "hp2_x2": 0.0, "hp2_y1": 0.0, "hp2_y2": 0.0,
+            },
+        )
+        # If state belongs to the voice branch from a previous call
+        # (different audio shape), discard and reinit to mono shape.
+        if "lp1_x1_arr" in state:
+            state.clear()
+            state.update(
+                {
+                    "lp1_x1": 0.0, "lp1_x2": 0.0, "lp1_y1": 0.0, "lp1_y2": 0.0,
+                    "lp2_x1": 0.0, "lp2_x2": 0.0, "lp2_y1": 0.0, "lp2_y2": 0.0,
+                    "hp1_x1": 0.0, "hp1_x2": 0.0, "hp1_y1": 0.0, "hp1_y2": 0.0,
+                    "hp2_x1": 0.0, "hp2_x2": 0.0, "hp2_y1": 0.0, "hp2_y2": 0.0,
+                }
+            )
+
+        freq = float(module.params.get("frequency", 1000.0))
+        lp_b0, lp_b1, lp_b2, hp_b0, hp_b1, hp_b2, a1n, a2n = (
+            self._crossover_coeffs(freq)
+        )
 
         low = np.empty(frames, dtype=np.float32)
         high = np.empty(frames, dtype=np.float32)
@@ -1585,6 +1775,92 @@ class NumpyBackend(AudioBackend):
         state["hp1_y1"] = hp1_y1; state["hp1_y2"] = hp1_y2
         state["hp2_x1"] = hp2_x1; state["hp2_x2"] = hp2_x2
         state["hp2_y1"] = hp2_y1; state["hp2_y2"] = hp2_y2
+
+        return {"low": low, "high": high}
+
+    def _render_crossover_voice(self, module, frames, src):
+        """Voice-aware path -- V parallel cascaded biquads, output (V, F).
+
+        Inner per-sample loop is still serial in time (cascaded biquads
+        are causal); the per-voice updates inside each sample are
+        vectorized across V via numpy broadcasting. The inner recurrence
+        is identical to the mono path -- the only difference is that
+        ``x``, the intermediate stage outputs, and the (x1, x2, y1, y2)
+        memories are ``(V,)`` arrays. Coefficients stay scalar because
+        Crossover has no frequency_cv yet, so the same numbers apply to
+        every voice; broadcast handles it.
+
+        For V=16 and frames=512 the per-iteration cost is essentially
+        identical to the mono path -- numpy makes a (V,)-wide multiply-
+        add basically free at this size, same trade-off as the filter
+        voice path.
+        """
+        V = src.shape[0]
+        state = self._state.setdefault(module.id, {})
+
+        # Reinit if state belongs to the mono branch or the voice
+        # count changed (latter is paranoia -- V is always
+        # _MAX_VOICES today).
+        needs_reinit = (
+            "lp1_x1_arr" not in state
+            or state["lp1_x1_arr"].shape[0] != V
+        )
+        if needs_reinit:
+            state.clear()
+            for k in (
+                "lp1_x1_arr", "lp1_x2_arr", "lp1_y1_arr", "lp1_y2_arr",
+                "lp2_x1_arr", "lp2_x2_arr", "lp2_y1_arr", "lp2_y2_arr",
+                "hp1_x1_arr", "hp1_x2_arr", "hp1_y1_arr", "hp1_y2_arr",
+                "hp2_x1_arr", "hp2_x2_arr", "hp2_y1_arr", "hp2_y2_arr",
+            ):
+                state[k] = np.zeros(V, dtype=np.float64)
+
+        freq = float(module.params.get("frequency", 1000.0))
+        lp_b0, lp_b1, lp_b2, hp_b0, hp_b1, hp_b2, a1n, a2n = (
+            self._crossover_coeffs(freq)
+        )
+
+        low = np.empty((V, frames), dtype=np.float32)
+        high = np.empty((V, frames), dtype=np.float32)
+
+        lp1_x1 = state["lp1_x1_arr"]; lp1_x2 = state["lp1_x2_arr"]
+        lp1_y1 = state["lp1_y1_arr"]; lp1_y2 = state["lp1_y2_arr"]
+        lp2_x1 = state["lp2_x1_arr"]; lp2_x2 = state["lp2_x2_arr"]
+        lp2_y1 = state["lp2_y1_arr"]; lp2_y2 = state["lp2_y2_arr"]
+        hp1_x1 = state["hp1_x1_arr"]; hp1_x2 = state["hp1_x2_arr"]
+        hp1_y1 = state["hp1_y1_arr"]; hp1_y2 = state["hp1_y2_arr"]
+        hp2_x1 = state["hp2_x1_arr"]; hp2_x2 = state["hp2_x2_arr"]
+        hp2_y1 = state["hp2_y1_arr"]; hp2_y2 = state["hp2_y2_arr"]
+
+        for n in range(frames):
+            x = src[:, n].astype(np.float64)  # (V,)
+            # LP stage 1
+            y = lp_b0 * x + lp_b1 * lp1_x1 + lp_b2 * lp1_x2 - a1n * lp1_y1 - a2n * lp1_y2
+            lp1_x2 = lp1_x1; lp1_x1 = x
+            lp1_y2 = lp1_y1; lp1_y1 = y
+            # LP stage 2
+            z = lp_b0 * y + lp_b1 * lp2_x1 + lp_b2 * lp2_x2 - a1n * lp2_y1 - a2n * lp2_y2
+            lp2_x2 = lp2_x1; lp2_x1 = y
+            lp2_y2 = lp2_y1; lp2_y1 = z
+            low[:, n] = z
+            # HP stage 1
+            u = hp_b0 * x + hp_b1 * hp1_x1 + hp_b2 * hp1_x2 - a1n * hp1_y1 - a2n * hp1_y2
+            hp1_x2 = hp1_x1; hp1_x1 = x
+            hp1_y2 = hp1_y1; hp1_y1 = u
+            # HP stage 2
+            v = hp_b0 * u + hp_b1 * hp2_x1 + hp_b2 * hp2_x2 - a1n * hp2_y1 - a2n * hp2_y2
+            hp2_x2 = hp2_x1; hp2_x1 = u
+            hp2_y2 = hp2_y1; hp2_y1 = v
+            high[:, n] = v
+
+        state["lp1_x1_arr"] = lp1_x1; state["lp1_x2_arr"] = lp1_x2
+        state["lp1_y1_arr"] = lp1_y1; state["lp1_y2_arr"] = lp1_y2
+        state["lp2_x1_arr"] = lp2_x1; state["lp2_x2_arr"] = lp2_x2
+        state["lp2_y1_arr"] = lp2_y1; state["lp2_y2_arr"] = lp2_y2
+        state["hp1_x1_arr"] = hp1_x1; state["hp1_x2_arr"] = hp1_x2
+        state["hp1_y1_arr"] = hp1_y1; state["hp1_y2_arr"] = hp1_y2
+        state["hp2_x1_arr"] = hp2_x1; state["hp2_x2_arr"] = hp2_x2
+        state["hp2_y1_arr"] = hp2_y1; state["hp2_y2_arr"] = hp2_y2
 
         return {"low": low, "high": high}
 
