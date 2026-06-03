@@ -61,7 +61,9 @@ class Keyboard(Module):
 
     Parameters:
         octave: Base octave for the home row (default 4 → home row starts at C4).
-        waveform: Voice waveform — sine / saw / square / triangle.
+        waveform: Voice waveform. Naive sine / saw / square /
+            triangle, PolyBLEP/PolyBLAMP *_blep, or wavetable *_wt
+            (see oscillator.WAVEFORMS).
         volume: Master output level in [0, 1].
 
     Runtime state (not serialized):

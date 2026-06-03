@@ -119,7 +119,9 @@ class MIDIInput(Module):
             note-on velocity (0-127 mapped to 0-1). When False, every note
             plays at unit velocity — useful when the controller has bad
             velocity curves.
-        waveform: ``"sine"`` / ``"saw"`` / ``"square"`` / ``"triangle"``.
+        waveform: naive ``"sine"`` / ``"saw"`` / ``"square"`` /
+            ``"triangle"``, PolyBLEP/PolyBLAMP ``*_blep``, or
+            wavetable ``*_wt`` (see ``oscillator.WAVEFORMS``).
         volume: Master output level applied after voice summing, in [0, 1].
         bend_range: Pitch-wheel range in semitones. +-1.0 of normalized
             wheel deflection maps to +-``bend_range`` semitones, applied

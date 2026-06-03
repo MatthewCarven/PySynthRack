@@ -6,7 +6,8 @@ A modular software synthesizer in Python with a drag-cable node-graph UI. Think 
 
 What works in v0.1:
 
-- Oscillator module (sine / saw / square / triangle)
+- Oscillator module — sine / saw / square / triangle, each (except sine) in three
+  band-limiting flavours: naive, PolyBLEP/PolyBLAMP (`*_blep`), and wavetable (`*_wt`)
 - Speaker output module
 - Drag-cable node-graph UI (DearPyGui)
 - Start/Stop audio

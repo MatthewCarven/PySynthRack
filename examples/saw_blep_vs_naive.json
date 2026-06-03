@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    {
+      "id": 1,
+      "type": "oscillator",
+      "name": "Saw NAIVE (aliased)",
+      "params": {
+        "waveform": "saw",
+        "freq": 2349.0,
+        "amp": 0.4
+      }
+    },
+    {
+      "id": 2,
+      "type": "oscillator",
+      "name": "Saw BLEP (clean)",
+      "params": {
+        "waveform": "saw_blep",
+        "freq": 2349.0,
+        "amp": 0.4
+      }
+    },
+    {
+      "id": 3,
+      "type": "mixer",
+      "name": "A/B  (ch1=naive, ch2=blep)",
+      "params": {
+        "gain1": 1.0,
+        "gain2": 0.0,
+        "gain3": 0.0,
+        "gain4": 0.0,
+        "master": 0.6
+      }
+    },
+    {
+      "id": 4,
+      "type": "speaker_output",
+      "name": "Output (no filter — hear the aliasing)",
+      "params": {
+        "gain": 0.7
+      }
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 3, "dst_port": "in1"},
+    {"src_module_id": 2, "src_port": "out", "dst_module_id": 3, "dst_port": "in2"},
+    {"src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 60],
+      "2": [40, 260],
+      "3": [380, 160],
+      "4": [700, 160]
+    }
+  }
+}

@@ -155,7 +155,7 @@ class TestADSRBehavior:
         patch, kb, env = _adsr_with_gate_source(
             attack=0.0, decay=0.0, sustain=0.5, release=0.0
         )
-        backend = NumpyBackend(sample_rate=sr, block_size=512)
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
         backend.compile(patch)
         kb.note_on(60)
         cv = _render_cv(backend, patch, env, frames=512)

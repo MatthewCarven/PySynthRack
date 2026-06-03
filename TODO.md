@@ -68,7 +68,16 @@ Living list of what's next. Edit freely.
 - [x] MIDI follow-up: sustain pedal (CC 64) — shipped 2026-05-20 with voice routing slice 1. Per-slot `sustained` flag on `VoiceSlots`; pedal-down causes note_off to mark the slot sustained instead of releasing; pedal-up drops every sustained voice in one pass.
 - [ ] LeftSpeakerOut module — mono audio in routed exclusively to the left channel of the output device. Backend drain mixes any LeftSpeakerOut sinks into the left bus only; right bus stays silent for that node. Patches can place a Left + Right pair to get hard-panned stereo without a stereo Speaker module.
 - [ ] RightSpeakerOut module — mirror of LeftSpeakerOut; audio in routed exclusively to the right channel. Compose with LeftSpeakerOut for stereo patches.
-- [ ] PolyBLEP or wavetable anti-aliased osc shapes (replace naive saw/square)
+- [x] PolyBLEP / wavetable anti-aliased osc shapes — **shipped 2026-06-04**, offered
+      *alongside* the naive shapes rather than replacing them (naive kept for cheap
+      lo-fi character). Each audio shape now has three forms selected by the `waveform`
+      string suffix: naive (`saw` / `square` / `triangle`), PolyBLEP/PolyBLAMP (`saw_blep`
+      / `square_blep` / `triangle_blep`), band-limited wavetable (`saw_wt` / `square_wt`
+      / `triangle_wt`); `sine` stays naive-only (already band-limited). Centralised in
+      `_osc_waveshape(phases, waveform, dt)` so the Oscillator, CVToFrequency *and* the
+      Keyboard/MIDIInput note sources all share one implementation. FFT tests confirm
+      ~30-40x (PolyBLEP) and up to ~800x (wavetable, high fundamental) alias-energy
+      reduction for saw/square; 20 new tests in `tests/test_antialiasing.py`, full suite 360.
 - [ ] CPU profile: pyo backend wired for the same modules so it's a drop-in fast path
 
 ## Later / wishlist
@@ -78,7 +87,7 @@ Living list of what's next. Edit freely.
 - [ ] Signal-kind bridge modules — remaining: `Schmitt` (CV threshold crossing emits a gate edge for chaining envelopes off a CV signal). The last of the three originally-proposed bridges; lower urgency than the audio↔CV pair but cheap to add when chained-envelope patches need it.
 - [x] `CVToFrequency` phase 1 — shipped 2026-05-23. Self-contained CV-controlled oscillator. Three-point CV→Hz mapping (`f0` at CV=0, `fm` at CV=0.5, `f1` at CV=1.0) with `mode` param (`"log"` default for musical octaves — equal-octave splits, `"linear"` for bent sweeps — equal-Hz splits), `waveform` (sine/triangle/square/saw), and a `freq` fallback for unpatched CV. Bipolar CV is clamped to [0, 1] (phase 2 adds the negative-side mapping). Voice-aware via shape-polymorphism on the CV input — (V, F) CV → V independent phase accumulators. Example: `examples/cvtofreq_blip.json` (synthesized-kick pitch envelope). 22 new tests; full suite 339 passing.
 - [ ] `CVToFrequency` phase 2 — negative-side mirror. Adds `negative_enabled: bool` (default False, preserves phase-1 clamp behaviour), `f0_neg` / `fm_neg` / `f1_neg`, and `mode_neg` (independent of `mode` — lets the user mix log on positive side with linear on negative side, or vice versa). When enabled, CV in [-1, 0] uses the negative mapping. Zero-crossing is the user's responsibility (set `f0` == `f0_neg` for smooth, set different for a deliberate step). See `memory/project_cvtofrequency_plan.md`.
-- [ ] Drive-by: `tests/test_adsr.py::test_no_nan_with_zero_durations` references an undefined `sr` (missing `sr = 44100` line at the top of the test). Pre-existing — not introduced by AudioToCV work, but worth a one-line fix.
+- [x] Drive-by: `tests/test_adsr.py::test_no_nan_with_zero_durations` undefined `sr` — fixed 2026-06-04 (inlined `sample_rate=44100`). Suite now fully green.
 - [ ] CV utility modules: `Constant` (params: value; outputs a fixed CV — useful as a CVCombiner input to bias another modulator), `CVScale` (cv in × gain param → cv out), `CVOffset` (cv in + offset param → cv out). The MIDIInput's `bend_range` / `mod_scale` patterns hint at the need; these utilities let any source feed any destination with arbitrary scale/offset without baking the knob into the source module.
 - [ ] Sample-and-hold module
 - [ ] Noise generator (white / pink)

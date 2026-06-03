@@ -2580,3 +2580,114 @@ remaining v0.4 work is:
     drop-in fast path. Today pyo still stubs the v0.2/v0.3/v0.4
     modules; numpy is the real engine.
 
+
+---
+
+## 2026-06-04 — Anti-aliased oscillator shapes (PolyBLEP / PolyBLAMP + wavetable)
+
+Picked up the v0.4 "PolyBLEP or wavetable anti-aliased osc shapes" item.
+Per Matthew's call, the anti-aliased shapes are offered **alongside** the
+naive saw/square/triangle rather than replacing them — naive aliasing is
+cheap and sometimes exactly the lo-fi character you want. Both PolyBLEP and
+wavetable are selectable, and the note-source oscillators (Keyboard +
+MIDIInput) come along for the ride so every oscillator in the synth shares
+one sound.
+
+**Design — expanded `waveform` vocabulary.** Rather than a separate
+orthogonal `antialias` param, the shape + band-limiting method live in one
+string as `"<base>_<method>"`:
+
+  * naive: `sine`, `saw`, `square`, `triangle` (unchanged from v0.2).
+  * PolyBLEP/PolyBLAMP: `saw_blep`, `square_blep`, `triangle_blep`.
+  * wavetable: `saw_wt`, `square_wt`, `triangle_wt`.
+  * `sine` stays naive-only — it is already band-limited.
+
+`oscillator.WAVEFORMS` grew from 4 to 10 entries. The UI dropdown derives
+from that tuple for every non-LFO module, so Oscillator, Keyboard,
+MIDIInput and CVToFrequency all surface the new shapes with no UI change.
+Old patch JSON keeps loading: legacy `"saw"` etc. still map to the naive
+path. `cvtofrequency.WAVEFORMS` mirrors the same tuple; Keyboard/MIDIInput
+docstrings updated to point at `oscillator.WAVEFORMS`.
+
+**NEW: anti-aliasing DSP centralised in `_osc_waveshape`.**
+`_osc_waveshape(phases, waveform, dt=None)` now parses the base shape and
+method from the waveform string and dispatches:
+
+  * `_waveshape_naive` — the old elementwise math, unchanged.
+  * `_waveshape_blep` — naive shape plus a discontinuity correction.
+    `_poly_blep` (two-sample PolyBLEP residual) corrects saw's wrap edge
+    and square's two edges; `_poly_blamp` (its integral) rounds triangle's
+    two slope corners, scaled by the ±8 slope change × dt.
+  * `_waveshape_wt` — band-limited wavetable lookup with linear
+    interpolation. `_get_wavetable(base)` lazily builds and caches an
+    11-band per-octave mipmap (2048-sample tables), each additively
+    synthesised with only the harmonics that stay below Nyquist for the
+    top of its octave band, then peak-normalised. The band is chosen per
+    block from the largest `dt` (highest instantaneous freq → fewest-
+    harmonics table → never aliases within the block); extreme FM
+    excursions therefore fall back conservatively.
+
+`dt` is the per-sample phase increment (`freq / sample_rate`), scalar for a
+constant-frequency mono ramp or an array broadcastable to `phases` for
+CV/FM. `dt is None` (isolated/unit-test callers with no frequency)
+gracefully degrades any anti-aliased shape to its naive form.
+
+**CHANGED: `dt` threaded through every caller.** The four vectorised
+phase-ramp call sites — `_render_oscillator_mono`, `_render_oscillator_voice`,
+`_render_cv_to_frequency_mono`, `_render_cv_to_frequency_voice` — now pass
+the phase increment they already compute (`phase_inc` scalar or `inst_inc`
+(F,)/(V,F) array) into `_osc_waveshape`. Voice-aware shape preservation is
+unchanged: a (V, F) `dt` flows through the BLEP/wavetable maths elementwise.
+
+**CHANGED: Keyboard + MIDIInput route through the shared shaper.** The two
+note-source renderers had identical inline `if waveform == "sine": ...`
+blocks operating on a per-voice `phases` array with scalar `phase_inc`.
+Both were replaced with a single `wave = self._osc_waveshape(phases,
+waveform, dt=phase_inc)` call, so the note sources get the same naive /
+PolyBLEP / wavetable shapes as the patched Oscillator. No behaviour change
+for the naive shapes; the envelope/gate/velocity logic around them is
+untouched.
+
+**NEW: wavetable cache on the backend.** `self._wavetables: dict[str,
+np.ndarray]` holds the mipmaps, built once on first `*_wt` use and shared
+across every oscillator-like module in the patch.
+
+**Drive-by fix.** `tests/test_adsr.py::test_no_nan_with_zero_durations`
+referenced an undefined `sr` (a linter had dropped the `sr = 44100` line);
+inlined `sample_rate=44100`. The suite is now fully green with no
+pre-existing failures.
+
+**NEW tests: `tests/test_antialiasing.py` (20 tests).** Spectral
+assertions rather than sample-exact, since band-limiting deliberately
+changes the time-domain waveform. `_alias_fraction` FFTs a rendered tone
+and measures the share of energy NOT on a harmonic of the fundamental.
+Coverage:
+
+  * Vocabulary + backward compat — all 10 shapes present; naive saw/square
+    are bit-for-bit what they were.
+  * Aliasing reduction — `*_blep` and `*_wt` cut saw/square aliased energy
+    by >5x at a 2.2 kHz fundamental; triangle_blep is no worse than naive
+    (triangle barely aliases) and stays a recognisable triangle; every
+    anti-aliased shape is finite and bounded ≤1.1.
+  * Helper contract — `dt=None` degrades to naive; the wavetable cache is
+    built once (identity-equal on second fetch) with the right shape;
+    `sine` + dt stays a clean sine.
+  * Voice-aware — (V, F) freq_cv preserves (16, 512) output shape for
+    blep + wt.
+  * CVToFrequency — renders finite, audible audio with blep/wt.
+  * Keyboard — `saw_blep` cuts aliasing >3x vs naive `saw` at a high note;
+    new waveforms render at the right (V, F) shape.
+  * MIDIInput — new waveforms render finite per-voice audio.
+
+**Verification.** Same staged-in-sandbox + verify protocol as prior slices:
+edited a `/tmp/pyrack_aa` clone via bash (Edit tool truncates on the
+Windows mount), tuned the DSP against an FFT harness, ran the suite on the
+clone, copied whole files to the mount via `cp`, byte-verified size, AST-
+parsed on the mount, and ran the suite directly off the mount. Result off
+the mount: **360 passed, 18 mido-skipped, 0 failed** (was 339 + 20 new +
+1 fixed drive-by).
+
+**What comes next.** v0.4 remaining: LeftSpeakerOut / RightSpeakerOut
+hard-panned sinks, and the pyo backend wired for the voice-aware modules as
+a drop-in fast path (pyo still stubs v0.2+; numpy is the real engine). The
+new wavetable mipmaps would port cleanly to a pyo implementation later.

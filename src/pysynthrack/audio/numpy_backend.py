@@ -11,9 +11,27 @@ audio buffer and a gate buffer), and downstream lookups go through the
 specific cable's ``src_port`` and ``dst_port`` so a VCA can read its
 ``audio`` and ``cv`` inputs by name.
 
-Anti-aliasing for saw/square/triangle is intentionally absent in v0.2 —
-PolyBLEP / wavetable upgrade planned. The naive shapes are fine for now,
-and the filter helps mask aliasing artefacts above its cutoff.
+Anti-aliased oscillator shapes are available alongside the naive ones.
+Every audio-rate shape (saw / square / triangle) ships in three flavours,
+selected by the ``waveform`` string suffix:
+
+  * ``saw`` / ``square`` / ``triangle`` -- naive (cheap, aliases above the
+    fundamental; sometimes exactly the lo-fi character you want).
+  * ``saw_blep`` / ``square_blep`` / ``triangle_blep`` -- PolyBLEP (saw,
+    square) and PolyBLAMP (triangle) correction at the waveform's
+    discontinuities. Cheap, integrates with the per-sample phase ramp, and
+    tracks arbitrary/FM frequencies sample-accurately.
+  * ``saw_wt`` / ``square_wt`` / ``triangle_wt`` -- band-limited wavetable.
+    A per-octave mipmap of additively-synthesised tables (generated once,
+    cached on the backend); the table whose harmonic set stays below
+    Nyquist for the block's top frequency is chosen, then linearly
+    interpolated. Strongest alias rejection; table is picked per block so
+    extreme FM excursions fall back conservatively (fewer harmonics).
+
+``sine`` is already band-limited, so it has only the one naive form. The
+shaping is centralised in :meth:`_osc_waveshape`, which both the
+Oscillator and CVToFrequency renderers (and, via the same call, the
+Keyboard / MIDIInput note sources) route through.
 """
 from __future__ import annotations
 
@@ -71,6 +89,12 @@ class NumpyBackend(AudioBackend):
         # compile() so a recompile gets a fresh chance.
         self._render_disabled: bool = False
         self._crash_reported: bool = False
+        # Lazily-built band-limited wavetable mipmaps for the ``*_wt``
+        # oscillator shapes. Keyed by base shape ("saw"/"square"/
+        # "triangle"); each value is a (NUM_WT_TABLES, WT_LEN) float64
+        # array of per-octave tables. Built once on first use via
+        # _get_wavetable; shared across every oscillator-like module.
+        self._wavetables: dict[str, np.ndarray] = {}
 
     # ----- availability ----------------------------------------------------
 
@@ -468,22 +492,193 @@ class NumpyBackend(AudioBackend):
             module, frames, freq, amp, waveform, freq_cv, amp_cv
         )
 
-    def _osc_waveshape(self, phases, waveform):
+    # Wavetable mipmap parameters. WT_LEN is the per-table sample count;
+    # NUM_WT_TABLES octave bands span WT_BASE_FREQ .. ~Nyquist.
+    WT_LEN = 2048
+    NUM_WT_TABLES = 11
+    WT_BASE_FREQ = 20.0
+
+    def _osc_waveshape(self, phases, waveform, dt=None):
         """Apply the waveform shaping function to a phase array.
 
         ``phases`` can be any shape (1D for mono, 2D for voice) -- all
-        ops are elementwise so the same code handles both. Returns an
-        array of the same shape with values in roughly [-1, 1].
+        ops are elementwise (or shape-preserving) so the same code
+        handles both. Returns an array of the same shape with values in
+        roughly [-1, 1].
+
+        The ``waveform`` string carries both the shape and the band-
+        limiting method as ``"<base>_<method>"``:
+
+          * no suffix (``"sine"``, ``"saw"``, ``"square"``, ``"triangle"``)
+            -> naive shapes, unchanged from v0.2.
+          * ``"_blep"`` -> PolyBLEP (saw, square) / PolyBLAMP (triangle)
+            discontinuity correction. Needs ``dt`` (the per-sample phase
+            increment, == freq / sample_rate) to size the correction
+            window. ``dt`` may be a scalar (constant-frequency mono ramp)
+            or an array broadcastable to ``phases`` (per-sample CV / FM).
+          * ``"_wt"`` -> band-limited wavetable lookup. ``dt`` selects the
+            mipmap band (per block, from the largest dt -> highest freq,
+            the conservative choice).
+
+        ``dt is None`` (isolated callers / unit tests that drive the
+        helper without a frequency) gracefully degrades any anti-aliased
+        shape to its naive form, since there is no frequency to band-limit
+        against.
         """
-        if waveform == "sine":
+        if "_" in waveform:
+            base, method = waveform.rsplit("_", 1)
+        else:
+            base, method = waveform, "naive"
+
+        if method == "blep" and dt is not None:
+            return self._waveshape_blep(base, phases, dt)
+        if method == "wt" and dt is not None:
+            return self._waveshape_wt(base, phases, dt)
+        # naive (or anti-aliased requested with no dt -> degrade to naive)
+        return self._waveshape_naive(base, phases)
+
+    @staticmethod
+    def _waveshape_naive(base, phases):
+        if base == "sine":
             return np.sin(2.0 * np.pi * phases)
-        if waveform == "saw":
+        if base == "saw":
             return 2.0 * phases - 1.0
-        if waveform == "square":
+        if base == "square":
             return np.where(phases < 0.5, 1.0, -1.0)
-        if waveform == "triangle":
+        if base == "triangle":
             return 1.0 - 4.0 * np.abs(phases - 0.5)
         return np.zeros_like(phases)
+
+    @staticmethod
+    def _poly_blep(t, dt):
+        """Two-sample PolyBLEP residual for a unit upward step at phase 0/1.
+
+        Correction is non-zero only within ``dt`` of a wrap point. ``t``
+        and ``dt`` broadcast together; returns an array shaped like ``t``.
+        """
+        t = np.asarray(t, dtype=np.float64)
+        dt = np.broadcast_to(np.asarray(dt, dtype=np.float64), t.shape)
+        safe = np.where(dt == 0.0, 1.0, dt)
+        res = np.zeros_like(t)
+        m1 = t < dt
+        x = np.where(m1, t / safe, 0.0)
+        res = np.where(m1, x + x - x * x - 1.0, res)
+        m2 = t > 1.0 - dt
+        x2 = np.where(m2, (t - 1.0) / safe, 0.0)
+        res = np.where(m2, x2 * x2 + x2 + x2 + 1.0, res)
+        return res
+
+    @staticmethod
+    def _poly_blamp(t, dt):
+        """Two-sample PolyBLAMP residual (integral of PolyBLEP).
+
+        Corrects slope discontinuities (triangle corners). Same broadcast
+        rules as :meth:`_poly_blep`.
+        """
+        t = np.asarray(t, dtype=np.float64)
+        dt = np.broadcast_to(np.asarray(dt, dtype=np.float64), t.shape)
+        safe = np.where(dt == 0.0, 1.0, dt)
+        res = np.zeros_like(t)
+        m1 = t < dt
+        x = np.where(m1, t / safe - 1.0, 0.0)
+        res = np.where(m1, -1.0 / 3.0 * x * x * x, res)
+        m2 = t > 1.0 - dt
+        x2 = np.where(m2, (t - 1.0) / safe + 1.0, 0.0)
+        res = np.where(m2, 1.0 / 3.0 * x2 * x2 * x2, res)
+        return res
+
+    def _waveshape_blep(self, base, phases, dt):
+        """PolyBLEP saw/square, PolyBLAMP triangle. Sine has no edges."""
+        phases = np.asarray(phases, dtype=np.float64)
+        if base == "saw":
+            return (2.0 * phases - 1.0) - self._poly_blep(phases, dt)
+        if base == "square":
+            v = np.where(phases < 0.5, 1.0, -1.0)
+            v = v + self._poly_blep(phases, dt)
+            v = v - self._poly_blep((phases + 0.5) % 1.0, dt)
+            return v
+        if base == "triangle":
+            tri = 1.0 - 4.0 * np.abs(phases - 0.5)
+            dtb = np.broadcast_to(np.asarray(dt, np.float64), phases.shape)
+            # Naive triangle slope is +/-4; the slope change at each corner
+            # is +/-8. PolyBLAMP rounds those corners.
+            tri = tri + 8.0 * dtb * self._poly_blamp(phases, dt)
+            tri = tri - 8.0 * dtb * self._poly_blamp((phases + 0.5) % 1.0, dt)
+            return tri
+        # sine / unknown -> naive (sine is already band-limited)
+        return self._waveshape_naive(base, phases)
+
+    def _get_wavetable(self, base):
+        """Build (cached) the per-octave band-limited mipmap for ``base``.
+
+        Returns a ``(NUM_WT_TABLES, WT_LEN)`` float64 array. Table ``j``
+        is additively synthesised with every harmonic that stays below
+        Nyquist for the *top* of octave band ``j`` (so the whole band is
+        alias-free), then peak-normalised to +/-1.
+        """
+        cached = self._wavetables.get(base)
+        if cached is not None:
+            return cached
+
+        L = self.WT_LEN
+        ph = np.arange(L, dtype=np.float64) / L
+        nyq = self.sample_rate / 2.0
+        tables = np.zeros((self.NUM_WT_TABLES, L), dtype=np.float64)
+        for j in range(self.NUM_WT_TABLES):
+            f_high = self.WT_BASE_FREQ * (2.0 ** (j + 1))
+            max_h = max(1, int(nyq / f_high))
+            acc = np.zeros(L, dtype=np.float64)
+            if base == "saw":
+                for k in range(1, max_h + 1):
+                    acc += (1.0 / k) * np.sin(2.0 * np.pi * k * ph)
+                acc *= 2.0 / np.pi
+            elif base == "square":
+                for k in range(1, max_h + 1, 2):
+                    acc += (1.0 / k) * np.sin(2.0 * np.pi * k * ph)
+                acc *= 4.0 / np.pi
+            elif base == "triangle":
+                k = 1
+                sign = 1.0
+                while k <= max_h:
+                    acc += sign * (1.0 / (k * k)) * np.sin(2.0 * np.pi * k * ph)
+                    sign = -sign
+                    k += 2
+                acc *= 8.0 / (np.pi * np.pi)
+            else:
+                acc = np.sin(2.0 * np.pi * ph)
+            peak = float(np.max(np.abs(acc))) or 1.0
+            tables[j] = acc / peak
+
+        self._wavetables[base] = tables
+        return tables
+
+    def _waveshape_wt(self, base, phases, dt):
+        """Band-limited wavetable lookup with linear interpolation.
+
+        ``dt`` selects the mipmap band from the block's top frequency
+        (largest dt -> highest fundamental -> fewest-harmonics table, the
+        conservative pick that never aliases within the block).
+        """
+        if base == "sine":
+            return np.sin(2.0 * np.pi * np.asarray(phases, np.float64))
+        tables = self._get_wavetable(base)
+        # Representative frequency for band selection.
+        dt_max = float(np.max(np.asarray(dt, dtype=np.float64)))
+        freq = max(dt_max * self.sample_rate, self.WT_BASE_FREQ)
+        j = int(np.clip(
+            np.floor(np.log2(freq / self.WT_BASE_FREQ)),
+            0,
+            self.NUM_WT_TABLES - 1,
+        ))
+        tbl = tables[j]
+        L = self.WT_LEN
+        phases = np.asarray(phases, dtype=np.float64)
+        pos = phases * L
+        floor_pos = np.floor(pos)
+        i0 = floor_pos.astype(np.int64) % L
+        i1 = (i0 + 1) % L
+        frac = pos - floor_pos
+        return tbl[i0] * (1.0 - frac) + tbl[i1] * frac
 
     def _render_oscillator_mono(
         self, module, frames, freq, amp, waveform, freq_cv, amp_cv
@@ -510,6 +705,7 @@ class NumpyBackend(AudioBackend):
             phase_inc = freq / sr
             phases = (start_phase + np.arange(frames, dtype=np.float64) * phase_inc) % 1.0
             state["phase"] = (start_phase + frames * phase_inc) % 1.0
+            dt = phase_inc
         else:
             # Per-sample frequency from CV. Integrate phase one sample
             # at a time -- cheap in numpy via cumsum of per-sample
@@ -518,8 +714,9 @@ class NumpyBackend(AudioBackend):
             inst_inc = inst_freq / sr
             phases = (start_phase + np.cumsum(inst_inc)) % 1.0
             state["phase"] = float(phases[-1])
+            dt = inst_inc
 
-        wave = self._osc_waveshape(phases, waveform)
+        wave = self._osc_waveshape(phases, waveform, dt=dt)
         wave = wave * amp
         if amp_cv is not None:
             # amp_cv may be (F,) (same shape, elementwise) or (V, F)
@@ -575,7 +772,7 @@ class NumpyBackend(AudioBackend):
         phases = (start_phase[:, None] + np.cumsum(inst_inc, axis=1)) % 1.0  # (V, F)
         state["phase_arr"] = phases[:, -1].copy()
 
-        wave = self._osc_waveshape(phases, waveform)  # (V, F)
+        wave = self._osc_waveshape(phases, waveform, dt=inst_inc)  # (V, F)
         wave = wave * amp
         if amp_cv is not None:
             # amp_cv (V, F) -> elementwise; amp_cv (F,) -> broadcasts
@@ -706,17 +903,11 @@ class NumpyBackend(AudioBackend):
             ) % 1.0
             state["phase"][i] = (start_phase + frames * phase_inc) % 1.0
 
-            # Waveform.
-            if waveform == "sine":
-                wave = np.sin(2.0 * np.pi * phases)
-            elif waveform == "saw":
-                wave = 2.0 * phases - 1.0
-            elif waveform == "square":
-                wave = np.where(phases < 0.5, 1.0, -1.0)
-            elif waveform == "triangle":
-                wave = 1.0 - 4.0 * np.abs(phases - 0.5)
-            else:
-                wave = np.zeros(frames, dtype=np.float64)
+            # Waveform. Routed through the shared shaper so the note
+            # sources get the same naive / PolyBLEP / wavetable shapes as
+            # the Oscillator. dt is this voice's constant per-sample phase
+            # increment.
+            wave = self._osc_waveshape(phases, waveform, dt=phase_inc)
 
             # Envelope ramp -- same short attack/release as the old
             # mono renderer, just per-slot now.
@@ -878,17 +1069,11 @@ class NumpyBackend(AudioBackend):
             ) % 1.0
             state["phase"][i] = (start_phase + frames * phase_inc) % 1.0
 
-            # Waveform.
-            if waveform == "sine":
-                wave = np.sin(2.0 * np.pi * phases)
-            elif waveform == "saw":
-                wave = 2.0 * phases - 1.0
-            elif waveform == "square":
-                wave = np.where(phases < 0.5, 1.0, -1.0)
-            elif waveform == "triangle":
-                wave = 1.0 - 4.0 * np.abs(phases - 0.5)
-            else:
-                wave = np.zeros(frames, dtype=np.float64)
+            # Waveform. Routed through the shared shaper so the note
+            # sources get the same naive / PolyBLEP / wavetable shapes as
+            # the Oscillator. dt is this voice's constant per-sample phase
+            # increment.
+            wave = self._osc_waveshape(phases, waveform, dt=phase_inc)
 
             # Envelope ramp -- same short attack/release as the old
             # mono renderer, just per-slot now.
@@ -1921,13 +2106,15 @@ class NumpyBackend(AudioBackend):
                 start_phase + np.arange(frames, dtype=np.float64) * phase_inc
             ) % 1.0
             state["phase"] = (start_phase + frames * phase_inc) % 1.0
+            dt = phase_inc
         else:
             inst_freq = self._cv_to_hz(cv_in, f0, fm, f1, mode)  # (F,)
             inst_inc = inst_freq / sr
             phases = (start_phase + np.cumsum(inst_inc)) % 1.0
             state["phase"] = float(phases[-1])
+            dt = inst_inc
 
-        wave = self._osc_waveshape(phases, waveform)
+        wave = self._osc_waveshape(phases, waveform, dt=dt)
         return wave.astype(np.float32)
 
     def _render_cv_to_frequency_voice(
@@ -1966,7 +2153,7 @@ class NumpyBackend(AudioBackend):
         ) % 1.0  # (V, F)
         state["phase_arr"] = phases[:, -1].copy()
 
-        wave = self._osc_waveshape(phases, waveform)  # (V, F)
+        wave = self._osc_waveshape(phases, waveform, dt=inst_inc)  # (V, F)
         return wave.astype(np.float32)
 
     # ----- Mixer rendering ------------------------------------------------

@@ -55,7 +55,19 @@ from __future__ import annotations
 from ..core.module import Module, register_module_type
 from ..core.port import Port
 
-WAVEFORMS = ("sine", "saw", "square", "triangle")
+# Mirrors oscillator.WAVEFORMS: naive + PolyBLEP/PolyBLAMP + wavetable.
+WAVEFORMS = (
+    "sine",
+    "saw",
+    "square",
+    "triangle",
+    "saw_blep",
+    "square_blep",
+    "triangle_blep",
+    "saw_wt",
+    "square_wt",
+    "triangle_wt",
+)
 MODES = ("log", "linear")
 
 
