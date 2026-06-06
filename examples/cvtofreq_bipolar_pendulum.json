@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "next_id": 4,
+  "modules": [
+    {
+      "id": 1,
+      "type": "lfo",
+      "name": "Pendulum LFO",
+      "params": {
+        "waveform": "sine",
+        "rate": 0.2,
+        "depth": 1.0,
+        "bipolar": true
+      }
+    },
+    {
+      "id": 2,
+      "type": "cv_to_frequency",
+      "name": "Bipolar CV Osc",
+      "params": {
+        "waveform": "saw_blep",
+        "f0": 220.0,
+        "fm": 440.0,
+        "f1": 880.0,
+        "mode": "log",
+        "freq": 440.0,
+        "negative_enabled": true,
+        "f0_neg": 220.0,
+        "fm_neg": 330.0,
+        "f1_neg": 440.0,
+        "mode_neg": "linear"
+      }
+    },
+    {
+      "id": 3,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "cv",
+      "dst_module_id": 2,
+      "dst_port": "cv"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "in"
+    }
+  ]
+}

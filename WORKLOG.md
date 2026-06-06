@@ -2878,3 +2878,58 @@ Filter vectorization (the would-be next pass) is therefore **not
 needed** for current patch sizes — filed as an optional wishlist item
 with its dependency question (pure-numpy voice batching vs
 scipy.signal.lfilter) for if patches ever grow past the headroom.
+
+## 2026-06-07 — CVToFrequency phase 2: negative-side mirror
+
+(Also today: Matthew rebuilt the .exe with the vectorized ADSR —
+compiles and plays well.)
+
+**NEW params on `cv_to_frequency`** (per the 2026-05-23 design,
+`memory/project_cvtofrequency_plan.md`): `negative_enabled` (default
+False — phase-1 clamp preserved exactly), `f0_neg` (Hz at CV=0⁻,
+default 110.0 = f0's default so the zero-crossing starts smooth),
+`fm_neg` (CV=-0.5), `f1_neg` (CV=-1.0), `mode_neg` (log|linear,
+independent of `mode` — log upswing with linear downswing is the
+whole point). CV exactly 0 belongs to the positive side; the crossing
+snaps f0 → f0_neg and continuity is deliberately the user's choice.
+CV beyond ±1 clamps to the nearest endpoint.
+
+**CHANGED: renderer.** New `_cv_to_hz_mapped(cv, pos, neg)` staticmethod
+dispatches on sign — `neg is None` reproduces phase 1 bit-for-bit
+(same `_cv_to_hz` call), else both curves evaluate and `np.where`
+selects (negative side maps |cv| through the neg anchors, so the
+shared [0,1] clamp handles the beyond--1 case for free). Mono and
+voice paths now take `(pos, neg)` tuples instead of loose
+f0/fm/f1/mode scalars; phase accumulators untouched.
+
+**FIXED (drive-by): cv_to_frequency's `mode` combo listed the filter's
+items.** The UI's `mode` dispatch only knew cv_combiner vs
+filter-shaped-everything-else, so since phase 1 the node's mode combo
+offered lowpass/highpass/bandpass — selecting any wrote a junk mode
+string the renderer silently treated as linear. Now imports
+cvtofrequency.MODES, dispatches per type, and the same arm serves the
+new `mode_neg` combo. `negative_enabled` renders via the existing
+bool→checkbox path; the *_neg Hz params via the generic drag-float,
+same as f0/fm/f1.
+
+**NEW example: `examples/cvtofreq_bipolar_pendulum.json`.** Bipolar
+sine LFO (0.2 Hz) swinging a saw_blep across both curves: upswing log
+220→440→880 (musical octaves), downswing linear 220→330→440 (bent).
+f0 == f0_neg keeps the crossing smooth. Verified to load through real
+patch IO and render (peak 0.79).
+
+**NEW tests: 12 in `TestCVToFrequencyPhase2`** — disabled-ignores-neg-
+curve (back-compat with a loud f1_neg configured), f1_neg/fm_neg
+anchors, zero-belongs-to-positive, just-below-zero ≈ f0_neg,
+clamp-below--1, positive side unchanged when enabled, mixed
+log/linear independence (geometric vs arithmetic midpoint from the
+same anchors), deliberate zero-crossing step, JSON round-trip,
+voice-aware ±1 rows (per-row FFT), full bipolar sweep finite.
+Two phase-1 tests updated: defaults dict gains the new keys, and
+`test_unknown_param_rejected` needed a new impostor — phase 1 had
+used `negative_enabled` as its example of an unknown param.
+
+**Verification.** Usual protocol: built in /tmp clone, suite there,
+whole-file cp of all five files, byte-verified, AST-parsed on the
+mount, suite re-run from the mount: **383 passed, 18 mido-skipped**
+(371 + 12).

@@ -2131,9 +2131,14 @@ class NumpyBackend(AudioBackend):
           * 2D ``(V, F)`` CV -> voice-aware path, V independent phase
             accumulators (one per voice slot), output ``(V, F)``.
 
-        Bipolar sources (e.g. an LFO with ``bipolar=True``) get their
-        negative half clamped to f0 in phase 1; the planned phase 2
-        adds a separate negative-side mapping with its own mode.
+        Bipolar CV (phase 2, 2026-06-07): with ``negative_enabled``,
+        CV in [-1, 0) maps through an independent mirror curve --
+        ``f0_neg`` at CV=0, ``fm_neg`` at CV=-0.5, ``f1_neg`` at
+        CV=-1.0 -- with its own ``mode_neg``. CV exactly 0 belongs to
+        the positive side; zero-crossing continuity is the user's
+        choice (f0 == f0_neg for smooth, different for a step). When
+        disabled (default), bipolar CV clamps to [0, 1] exactly as
+        phase 1 shipped.
         """
         # collapse=False so a voice-aware (V, F) CV reaches us with the
         # voice axis intact.
@@ -2147,13 +2152,25 @@ class NumpyBackend(AudioBackend):
         freq_fallback = float(module.params.get("freq", 440.0))
         waveform = str(module.params.get("waveform", "sine"))
         mode = str(module.params.get("mode", "log"))
+        pos = (f0, fm, f1, mode)
+
+        # Phase 2: independent negative-side curve, opt-in. ``neg`` is
+        # None when disabled, which keeps the phase-1 [0, 1] clamp.
+        neg = None
+        if bool(module.params.get("negative_enabled", False)):
+            neg = (
+                float(module.params.get("f0_neg", f0)),
+                float(module.params.get("fm_neg", 440.0)),
+                float(module.params.get("f1_neg", 1760.0)),
+                str(module.params.get("mode_neg", "log")),
+            )
 
         if cv_in is not None and cv_in.ndim == 2:
             return self._render_cv_to_frequency_voice(
-                module, frames, cv_in, f0, fm, f1, waveform, mode
+                module, frames, cv_in, pos, neg, waveform
             )
         return self._render_cv_to_frequency_mono(
-            module, frames, cv_in, f0, fm, f1, freq_fallback, waveform, mode
+            module, frames, cv_in, pos, neg, freq_fallback, waveform
         )
 
     @staticmethod
@@ -2192,8 +2209,28 @@ class NumpyBackend(AudioBackend):
             fm + t * (f1 - fm),
         )
 
+    @staticmethod
+    def _cv_to_hz_mapped(cv, pos, neg):
+        """Sign-aware CV→Hz dispatch.
+
+        ``pos`` and ``neg`` are ``(f0, fm, f1, mode)`` tuples. With
+        ``neg`` None (negative_enabled False) this is exactly the
+        phase-1 positive mapping and its internal [0, 1] clamp.
+        Otherwise cv >= 0 maps through ``pos`` and cv < 0 maps through
+        ``neg`` on \|cv\|, so the negative anchors read naturally:
+        f0_neg at CV=0⁻, fm_neg at CV=-0.5, f1_neg at CV=-1.0, and CV
+        below -1 clamps to f1_neg via the shared [0, 1] clamp on the
+        mirrored value.
+        """
+        if neg is None:
+            return NumpyBackend._cv_to_hz(cv, *pos)
+        cv64 = cv.astype(np.float64)
+        pos_hz = NumpyBackend._cv_to_hz(cv64, *pos)
+        neg_hz = NumpyBackend._cv_to_hz(-cv64, *neg)
+        return np.where(cv64 >= 0.0, pos_hz, neg_hz)
+
     def _render_cv_to_frequency_mono(
-        self, module, frames, cv_in, f0, fm, f1, freq_fallback, waveform, mode
+        self, module, frames, cv_in, pos, neg, freq_fallback, waveform
     ):
         """Mono path -- single phase accumulator, output ``(F,)``.
 
@@ -2221,7 +2258,7 @@ class NumpyBackend(AudioBackend):
             state["phase"] = (start_phase + frames * phase_inc) % 1.0
             dt = phase_inc
         else:
-            inst_freq = self._cv_to_hz(cv_in, f0, fm, f1, mode)  # (F,)
+            inst_freq = self._cv_to_hz_mapped(cv_in, pos, neg)  # (F,)
             inst_inc = inst_freq / sr
             phases = (start_phase + np.cumsum(inst_inc)) % 1.0
             state["phase"] = float(phases[-1])
@@ -2231,7 +2268,7 @@ class NumpyBackend(AudioBackend):
         return wave.astype(np.float32)
 
     def _render_cv_to_frequency_voice(
-        self, module, frames, cv_in, f0, fm, f1, waveform, mode
+        self, module, frames, cv_in, pos, neg, waveform
     ):
         """Voice-aware path -- V independent phase accumulators.
 
@@ -2259,7 +2296,7 @@ class NumpyBackend(AudioBackend):
         sr = self.sample_rate
         start_phase = state["phase_arr"]  # (V,)
 
-        inst_freq = self._cv_to_hz(cv_in, f0, fm, f1, mode)  # (V, F)
+        inst_freq = self._cv_to_hz_mapped(cv_in, pos, neg)  # (V, F)
         inst_inc = inst_freq / sr
         phases = (
             start_phase[:, None] + np.cumsum(inst_inc, axis=1)

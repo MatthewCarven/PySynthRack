@@ -57,6 +57,11 @@ class TestCVToFrequencyModel:
             "f1": 1760.0,
             "freq": 440.0,
             "mode": "log",
+            "negative_enabled": False,
+            "f0_neg": 110.0,
+            "fm_neg": 440.0,
+            "f1_neg": 1760.0,
+            "mode_neg": "log",
         }
 
     def test_ports_and_signal_kinds(self):
@@ -90,9 +95,11 @@ class TestCVToFrequencyModel:
         assert ctf.params["mode"] == "linear"
 
     def test_unknown_param_rejected(self):
+        # (phase 1 used negative_enabled as the impostor here; it became
+        # a real param in phase 2, so the impostor moved on.)
         patch = Patch()
         with pytest.raises(KeyError):
-            patch.add_module("cv_to_frequency", params={"negative_enabled": True})
+            patch.add_module("cv_to_frequency", params={"negative_squelched": True})
 
     def test_cv_into_cv_input_accepted(self):
         """LFO.cv (cv) -> CVToFrequency.cv (cv): legal."""
@@ -414,3 +421,131 @@ class TestCVToFrequencyIntegration:
         assert rms > 0.1, f"output too quiet: rms={rms}"
         # Bounded by speaker clipper at +/- 1.0.
         assert float(np.max(np.abs(out))) <= 1.0
+
+
+# ----- Phase 2: negative-side mirror -----------------------------------------
+
+
+class TestCVToFrequencyPhase2:
+    """Negative-side mirror mapping (negative_enabled, *_neg params).
+
+    Same constant-CV / fictional-cable technique as the mono behaviour
+    class: one-second buffers so zero-crossing counts resolve Hz to
+    sub-percent accuracy.
+    """
+
+    PARAMS = {
+        "f0": 220.0,
+        "fm": 440.0,
+        "f1": 880.0,
+        "mode": "log",
+        "negative_enabled": True,
+        "f0_neg": 330.0,
+        "fm_neg": 550.0,
+        "f1_neg": 1100.0,
+        "mode_neg": "log",
+    }
+
+    def _make(self, params=None):
+        sr = 44100
+        patch = Patch()
+        ctf = patch.add_module(
+            "cv_to_frequency", params=dict(params if params is not None else self.PARAMS)
+        )
+        backend = NumpyBackend(sample_rate=sr, block_size=sr)
+        backend.compile(patch)
+        patch.cables.append(Cable(77, "cv", ctf.id, "cv"))
+        return sr, patch, ctf, backend
+
+    def _hz_at_cv(self, cv_value, params=None):
+        sr, patch, ctf, backend = self._make(params)
+        cv = np.full(sr, cv_value, dtype=np.float32)
+        buffers = {(77, "cv"): cv}
+        buf = backend._render_cv_to_frequency(ctf, sr, buffers, patch)
+        return _zero_crossings(buf) / 2.0
+
+    def test_disabled_ignores_negative_curve(self):
+        """negative_enabled=False: cv=-1 clamps to f0 even with a
+        loud f1_neg configured — phase-1 behaviour is the default."""
+        params = dict(self.PARAMS, negative_enabled=False)
+        assert abs(self._hz_at_cv(-1.0, params) - 220.0) < 3.0
+
+    def test_negative_full_produces_f1_neg(self):
+        assert abs(self._hz_at_cv(-1.0) - 1100.0) < 5.0
+
+    def test_negative_half_produces_fm_neg(self):
+        assert abs(self._hz_at_cv(-0.5) - 550.0) < 5.0
+
+    def test_zero_belongs_to_positive_side(self):
+        """CV exactly 0 -> f0, not f0_neg (the documented snap rule)."""
+        assert abs(self._hz_at_cv(0.0) - 220.0) < 3.0
+
+    def test_just_below_zero_lands_near_f0_neg(self):
+        """CV=-1/256 sits a hair down the negative curve: ~f0_neg."""
+        hz = self._hz_at_cv(-1.0 / 256.0)
+        assert abs(hz - 330.0) < 8.0
+
+    def test_negative_clamps_below_minus_one(self):
+        assert abs(self._hz_at_cv(-1.5) - 1100.0) < 5.0
+
+    def test_positive_side_unchanged_when_enabled(self):
+        assert abs(self._hz_at_cv(0.5) - 440.0) < 5.0
+        assert abs(self._hz_at_cv(1.0) - 880.0) < 5.0
+
+    def test_mixed_modes_are_independent(self):
+        """mode=log / mode_neg=linear: the lower-segment midpoint is the
+        geometric mean on the positive side but the arithmetic mean on
+        the negative side, from the same anchor spacing."""
+        params = dict(
+            self.PARAMS,
+            f0=200.0, fm=800.0, f1=1600.0, mode="log",
+            f0_neg=200.0, fm_neg=800.0, f1_neg=1600.0, mode_neg="linear",
+        )
+        hz_pos = self._hz_at_cv(0.25, params)
+        hz_neg = self._hz_at_cv(-0.25, params)
+        assert abs(hz_pos - 400.0) < 6.0   # sqrt(200*800) = 400 (geometric)
+        assert abs(hz_neg - 500.0) < 6.0   # (200+800)/2  = 500 (arithmetic)
+        assert abs(hz_pos - hz_neg) > 50.0  # measurably different curves
+
+    def test_zero_crossing_step_is_deliberate(self):
+        """f0 != f0_neg produces a hard frequency step across CV=0."""
+        params = dict(self.PARAMS, f0=220.0, f0_neg=660.0)
+        just_above = self._hz_at_cv(1.0 / 256.0, params)
+        just_below = self._hz_at_cv(-1.0 / 256.0, params)
+        assert abs(just_above - 220.0) < 8.0
+        assert abs(just_below - 660.0) < 12.0
+
+    def test_json_round_trip_phase2(self):
+        patch = Patch()
+        patch.add_module("cv_to_frequency", params=dict(self.PARAMS))
+        restored = Patch.from_dict(patch.to_dict())
+        ctf = next(m for m in restored if m.TYPE == "cv_to_frequency")
+        assert ctf.params["negative_enabled"] is True
+        assert ctf.params["f0_neg"] == 330.0
+        assert ctf.params["fm_neg"] == 550.0
+        assert ctf.params["f1_neg"] == 1100.0
+        assert ctf.params["mode_neg"] == "log"
+
+    def test_voice_aware_bipolar_rows(self):
+        """(V, F) CV with one row at +1 and one at -1: per-row FFT peaks
+        land on f1 and f1_neg respectively."""
+        sr, patch, ctf, backend = self._make()
+        cv = np.stack([
+            np.full(sr, 1.0, dtype=np.float32),
+            np.full(sr, -1.0, dtype=np.float32),
+        ])
+        buffers = {(77, "cv"): cv}
+        buf = backend._render_cv_to_frequency(ctf, sr, buffers, patch)
+        assert buf.shape == (2, sr)
+        assert abs(_fft_peak_hz(buf[0], sr) - 880.0) < 5.0
+        assert abs(_fft_peak_hz(buf[1], sr) - 1100.0) < 5.0
+
+    def test_bipolar_sweep_finite_and_audible(self):
+        """Full-range bipolar ramp through both curves: no NaNs/Infs,
+        nonzero signal, phase accumulator survives the sign flips."""
+        sr, patch, ctf, backend = self._make()
+        cv = np.linspace(-1.2, 1.2, sr, dtype=np.float32)
+        buffers = {(77, "cv"): cv}
+        buf = backend._render_cv_to_frequency(ctf, sr, buffers, patch)
+        assert np.isfinite(buf).all()
+        assert np.std(buf) > 0.1

@@ -26,6 +26,7 @@ from ..io_patch import load_patch, save_patch
 from ..modules.filter import FILTER_MODES
 from ..modules.keyboard import Keyboard, midi_to_name, semitone_to_midi
 from ..modules.cvcombiner import CVCOMBINER_MODES
+from ..modules.cvtofrequency import MODES as CVTOFREQ_MODES
 from ..modules.lfo import LFO_WAVEFORMS
 from ..modules.midiinput import AUTO_DEVICE, available_devices as midi_available_devices
 from ..modules.oscillator import WAVEFORMS
@@ -268,11 +269,17 @@ class App:
             )
             return
 
-        if param_name == "mode":
+        if param_name in {"mode", "mode_neg"}:
             # ``mode`` means different things on different modules:
-            # filter picks LP/HP/BP, cv_combiner picks sum/average.
+            # filter picks LP/HP/BP, cv_combiner picks sum/average,
+            # cv_to_frequency picks log/linear (and is the only module
+            # with a ``mode_neg``). The cv_to_frequency arm also fixes
+            # a phase-1 drive-by: its mode combo wrongly listed the
+            # filter's items before 2026-06-07.
             if module.TYPE == "cv_combiner":
                 items = list(CVCOMBINER_MODES)
+            elif module.TYPE == "cv_to_frequency":
+                items = list(CVTOFREQ_MODES)
             else:
                 items = list(FILTER_MODES)
             dpg.add_combo(

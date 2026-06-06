@@ -25,10 +25,17 @@ The ``mode`` param picks the interpolation flavour:
     spans. Useful for FM sidebands, sub-audio sweeps, or any
     "this isn't supposed to sound in tune" gesture.
 
-Bipolar CV in phase 1 is clamped to ``[0, 1]`` before mapping.
-Phase 2 (planned) adds a mirror three-point mapping for the
-negative side so an LFO can sweep a full bipolar range across
-two independently-shaped curves.
+Bipolar CV (phase 2, shipped 2026-06-07): with ``negative_enabled``
+(default False) the module grows a *mirror* three-point curve for
+the negative side — ``f0_neg`` at CV=0, ``fm_neg`` at CV=-0.5,
+``f1_neg`` at CV=-1.0 — with its own independent ``mode_neg``, so a
+bipolar LFO can sweep e.g. musically (log) on the upswing and bent
+(linear) on the downswing. CV exactly 0 belongs to the positive
+side; the zero-crossing snaps ``f0`` → ``f0_neg`` and continuity is
+deliberately the user's choice: set them equal for a smooth crossing
+or different for a hard step. CV outside [-1, 1] clamps to the
+nearest endpoint. With ``negative_enabled`` False, bipolar CV is
+clamped to ``[0, 1]`` before mapping, exactly as phase 1 shipped.
 
 Unpatched CV falls back to the ``freq`` param — the module always
 produces sound, matching :class:`Oscillator`'s pattern (where an
@@ -43,12 +50,6 @@ A 2D ``(V, F)`` CV (from a polyphonic source — e.g. a per-voice
 ADSR via a CVCombiner) drives V independent phase accumulators
 and emits ``(V, F)``. Same convention as the rest of the v0.4
 voice-aware DSP modules.
-
-Phase 1 ships the positive-side mapping only. Phase 2 will add
-``negative_enabled``, ``f0_neg`` / ``fm_neg`` / ``f1_neg``, and an
-independent ``mode_neg`` while preserving the phase-1 clamp
-behaviour by default. See ``memory/project_cvtofrequency_plan.md``
-for the full design.
 """
 from __future__ import annotations
 
@@ -77,7 +78,8 @@ class CVToFrequency(Module):
 
     Parameters:
         waveform: One of ``"sine"``, ``"saw"``, ``"square"``,
-            ``"triangle"``. Default ``"sine"``.
+            ``"triangle"`` (plus ``*_blep`` / ``*_wt`` anti-aliased
+            forms). Default ``"sine"``.
         f0: Frequency in Hz at CV=0. Default 110.0 (musical A2).
         fm: Frequency in Hz at CV=0.5. Default 440.0 (musical A4).
         f1: Frequency in Hz at CV=1.0. Default 1760.0 (musical A6).
@@ -87,12 +89,21 @@ class CVToFrequency(Module):
         mode: ``"log"`` (default, equal-octave splits) or
             ``"linear"`` (equal-Hz splits — deliberately non-
             musical for FM-style sweeps).
+        negative_enabled: Phase 2. Default False. When True, CV in
+            [-1, 0) maps through the independent negative-side
+            curve below instead of clamping to ``f0``.
+        f0_neg: Hz at CV=0 approached from below. Default 110.0
+            (equal to ``f0``'s default, so the zero-crossing is
+            smooth until deliberately split).
+        fm_neg: Hz at CV=-0.5. Default 440.0.
+        f1_neg: Hz at CV=-1.0. Default 1760.0.
+        mode_neg: ``"log"`` or ``"linear"``, independent of
+            ``mode`` — mix scales across the sign at will.
 
     Ports:
-        cv (in, cv): CV input clamped to [0, 1] before mapping.
-            Bipolar sources have their negative half clipped to
-            f0 in phase 1; phase 2 will add a separate negative-
-            side mapping.
+        cv (in, cv): CV input. [0, 1] maps through the positive
+            curve; with ``negative_enabled``, [-1, 0) maps through
+            the negative curve; otherwise it clamps to [0, 1].
         out (out, audio): synthesized waveform.
     """
 
@@ -104,6 +115,11 @@ class CVToFrequency(Module):
         "f1": 1760.0,
         "freq": 440.0,
         "mode": "log",
+        "negative_enabled": False,
+        "f0_neg": 110.0,
+        "fm_neg": 440.0,
+        "f1_neg": 1760.0,
+        "mode_neg": "log",
     }
     INPUT_PORTS = [Port("cv", "in", "cv")]
     OUTPUT_PORTS = [Port("out", "out", "audio")]
