@@ -2758,3 +2758,108 @@ Schmitt bridge, CV utilities (Constant/CVScale/CVOffset), S&H, noise,
 AD env, stereo-aware speaker (pan/width — the proper successor to the
 hard-pan pair), presets palette, undo/redo, packaging niceties. And the
 profile-first pyo plan above.
+
+## 2026-06-07 — CPU profile of the numpy backend (the pyo go/no-go measurement)
+
+**Decision recap.** Picking up the profile-first plan agreed 2026-06-06:
+measure before building any pyo backend. Matthew confirmed profile-first
+when offered the choice of jumping straight to the pyo epic.
+
+**NEW: `tools/profile_numpy.py`.** Standalone, device-free profiler.
+Builds the canonical chain from `examples/keyboard_adsr.json` in code
+(Keyboard → Filter → VCA with ADSR on the gate → Speaker), holds a
+16-note chord, and times `render_block(512)` over N blocks (default
+2000 ≈ 23 s of audio). Four scenarios: naive `saw`, `saw_blep`,
+`saw_wt`, and `saw_blep` + bipolar LFO into `cutoff_cv`. Reports
+mean/median/p99/max per block against the 11.61 ms budget, plus a
+worst-block verdict — the audio callback has no mercy for p99
+stragglers, so max-under-budget is the pass bar, not mean. GC left
+enabled (the live callback runs with GC on; its spikes are part of the
+honest answer). Sanity asserts: output finite and non-silent.
+
+**Sandbox first read (Linux container — indicative only, NOT the
+verdict machine).** 300 blocks/scenario: mean 8.9–9.4 ms (77–81% of
+budget), worst blocks 15.5–20.1 ms (134–173%) — deadline misses in
+every scenario. Anti-aliased shapes barely move the needle (saw_wt ≈
+naive saw within noise; blep +6%).
+
+**cProfile breakdown (the transferable result).** Of ~9.9 ms/block in
+the heavy scenario: `_render_adsr_voice` 6.3 ms (**63%**),
+`_render_filter_voice` 2.2 ms (**22%**), keyboard + osc waveshaping
+~1.0 ms, everything else noise. The giveaway: ~153,600 `astype`/`copy`
+calls per 300 blocks = one per *sample* — the ADSR (and filter) run
+per-sample Python loops. This is a vectorization problem, not a
+"numpy is too slow" problem: two hot functions own 85% of the block.
+
+**Implication for the pyo question.** Before a pyo epic (re-implement
+every module against pyo's graph), there is a much cheaper intermediate:
+vectorize `_render_adsr_voice` (analytic segment evaluation or
+cumulative-product one-pole) and `_render_filter_voice`
+(`scipy.signal.lfilter`-style or cascade trick — though biquads are
+genuinely sequential, a C-backed lfilter call beats a Python loop by
+~100x). If those land, numpy likely keeps up with 5-10x headroom and
+pyo stays parked indefinitely.
+
+**Next.** Matthew runs `tools\profile_numpy.py` natively (PowerShell,
+project venv) — sandbox CPU is a shared container and absolute numbers
+don't transfer. Native numbers decide: comfortable → park pyo; thin or
+missing → vectorize the two hot modules first and re-measure; only if
+*vectorized* numpy still can't keep up does the pyo epic get a green
+light.
+
+## 2026-06-07 (later) — Native profile verdict + ADSR vectorized (117x)
+
+**Native profile (Matthew's machine, the real numbers).** Mean
+11.2–11.9 ms against the 11.61 ms budget — 97–102% CPU. `saw_blep`
+missed the deadline on 1999/2000 blocks; even naive saw had no headroom
+left for the GUI. At 16 voices the synth could not render real-time.
+Per the decision ladder: vectorize the hot modules before any pyo work.
+
+**CHANGED: `_render_adsr_voice` vectorized — the 63% reclaimed.** The
+per-sample Python loop (one pass of ~10 small-array numpy ops per
+sample) is replaced by run-splitting: each voice's gate row is split at
+gate *edges* (typically zero per block), and within a run the envelope
+from a known entry state is a deterministic piecewise-linear chain —
+attack→decay→sustain or release→idle — emitted analytically by a new
+`_adsr_fill_run` helper (one `arange` + one clamp per stage). Stage
+lengths are closed-form (smallest k ≥ 1 crossing the target).
+
+**Semantics preserved, including the cascade.** Parity harness
+(7 param cases × 5 gate patterns × 16 voices × 8 sequential blocks,
+old vs new in separate processes) caught two things worth recording:
+1. The voice path's mask loop *cascades* stage transitions within a
+   sample — the attack-crossing sample immediately applies the decay
+   update, so it emits `max(1.0 - decay_step, sustain)`, never a bare
+   1.0 (and with decay=0 it falls through to sustain in one sample).
+   This deliberately differs from the mono scalar path (elif chain,
+   one stage per sample, emits the clamped 1.0). The rewrite
+   reproduces the cascade exactly; mono path untouched, still the
+   loop, still bit-for-bit.
+2. Bit-exactness vs the old loop is *impossible* vectorized: the loop
+   accumulated `level += step` with per-add rounding, so when a
+   crossing lands on an exact integer sample count the accumulated
+   value sits ~1e-13 below target and crosses one sample later than
+   the analytic `L0 + k*step`. Residual divergence: stage boundaries
+   shift ≤ 1 sample, value error ≤ one ramp step (measured max
+   1.5e-4), only when (target−L0)/step is near-integer. Inaudible CV
+   noise; the real contract is the suite.
+
+**Verification.** Parity harness as above; full suite in the sandbox
+clone **371 passed, 18 mido-skipped**; whole-file cp to the mount,
+byte-verified (114,471 bytes), AST-parsed on the mount, suite re-run
+from the mount: **371 passed** again.
+
+**Re-profile (sandbox, same container that ran 77–81% mean before):**
+mean 2.5–3.0 ms (21–26% of budget), worst block 30%, zero over-budget
+across all four scenarios — 3.2x faster overall. cProfile now:
+`_render_adsr_voice` 0.016 s/300 blocks (was 1.876 — 117x);
+`_render_filter_voice` is the new leader at ~68% of remaining render
+time, still a per-sample loop (~one astype per sample).
+
+**Next.** Matthew re-runs `tools\profile_numpy.py` natively. If his
+numbers land near the sandbox ratio (~3x), numpy keeps up with real
+headroom and pyo stays parked. Filter vectorization is the remaining
+candidate pass — but biquads are sequential IIRs, so the options are
+voice-axis batching (pure numpy, modest win) or `scipy.signal.lfilter`
+(C-speed, **new dependency** — Matthew's call given the numpy-only
+stance so far).

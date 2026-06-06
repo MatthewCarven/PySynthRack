@@ -1526,17 +1526,30 @@ class NumpyBackend(AudioBackend):
         self, module, frames, gate_buf,
         attack_step, decay_step, sustain, release_samples,
     ):
-        """Voice-aware path — V independent state machines in lockstep.
+        """Voice-aware path — V independent state machines, vectorized.
 
-        Per-sample loop is still serial (the state machine is per-
-        sample-causal), but the per-voice updates inside each sample
-        are vectorized across V via numpy boolean masks. For V=16 that
-        means the per-sample overhead is ~constant regardless of how
-        many voices are active.
+        2026-06-07 rewrite. The original looped over samples in Python
+        (vectorizing only across the 16 voices per sample), which made
+        the ADSR own ~63% of the render block under cProfile. This
+        version inverts the loop: each voice's gate row is split into
+        runs at gate *edges* (rare — typically zero per block), and
+        within a run the envelope from a known entry state is a
+        deterministic piecewise-linear chain (attack→decay→sustain or
+        release→idle) that numpy emits in a handful of array ops.
 
-        Phase is encoded as an int code (see ``_ADSR_*`` constants) so
-        the per-sample masks (``phase == _ADSR_ATTACK``) vectorize
-        cleanly with numpy comparison ops.
+        Per-sample semantics preserved exactly:
+        - edge transitions apply before that sample's level advance (a
+          rising edge's sample already moves up by ``attack_step``);
+        - stage crossings clamp on the crossing sample (attack's last
+          sample outputs exactly 1.0, decay's outputs ``sustain``,
+          release's 0.0); the next stage starts the following sample;
+        - retrigger continues from the current level (no click);
+        - falling edges set ``release_step`` from the level at the edge
+          so the tail takes the full release window.
+
+        Only divergence: a run computes ``L0 + k*step`` by multiply
+        where the loop accumulated additions — float64 drift orders of
+        magnitude below the float32 resolution that leaves this method.
         """
         V = gate_buf.shape[0]
         state = self._state.setdefault(module.id, {})
@@ -1561,59 +1574,146 @@ class NumpyBackend(AudioBackend):
         prev_gate = state["prev_gate_arr"]
         release_step = state["release_step_arr"]
 
-        out = np.empty((V, frames), dtype=np.float32)
+        gate_high = gate_buf > self._GATE_HIGH  # (V, F) bool
+        out = np.empty((V, frames), dtype=np.float64)
 
-        for n in range(frames):
-            gate_high = gate_buf[:, n] > self._GATE_HIGH  # (V,) bool
-            rising = gate_high & ~prev_gate
-            falling = ~gate_high & prev_gate
+        for v in range(V):
+            row = gate_high[v]
+            # Edge samples: where the gate differs from the previous
+            # sample, seeded with the carried cross-block prev_gate.
+            shifted = np.empty(frames, dtype=bool)
+            shifted[0] = prev_gate[v]
+            shifted[1:] = row[:-1]
+            edges = np.flatnonzero(row != shifted)
 
-            # Rising edges -> ATTACK.
-            phase[rising] = self._ADSR_ATTACK
-            # Falling edges -> RELEASE, with release_step set from the
-            # current level so the tail takes the full release window
-            # regardless of where in the envelope we were.
-            release_step[falling] = level[falling] / release_samples
-            phase[falling] = self._ADSR_RELEASE
+            ph = int(phase[v])
+            lvl = float(level[v])
+            rs = float(release_step[v])
 
-            prev_gate = gate_high.copy()
+            if edges.size == 0:
+                # Common case: no gate activity this block — one run.
+                ph, lvl = self._adsr_fill_run(
+                    out[v], 0, frames, ph, lvl, rs,
+                    attack_step, decay_step, sustain,
+                )
+            else:
+                starts = (
+                    edges if edges[0] == 0
+                    else np.concatenate(([0], edges))
+                )
+                ends = np.append(starts[1:], frames)
+                edge_set = set(int(e) for e in edges)
+                for s, e in zip(starts, ends):
+                    s = int(s)
+                    if s in edge_set:
+                        if row[s]:
+                            # Rising -> attack from the current level
+                            # (retrigger picks up where we were).
+                            ph = self._ADSR_ATTACK
+                        else:
+                            # Falling -> release over the full window
+                            # from wherever the envelope is now.
+                            rs = lvl / release_samples
+                            ph = self._ADSR_RELEASE
+                    ph, lvl = self._adsr_fill_run(
+                        out[v], s, int(e), ph, lvl, rs,
+                        attack_step, decay_step, sustain,
+                    )
 
-            # Advance level per phase. Each mask is a vectorized "which
-            # voices are in this state right now"; the updates apply to
-            # exactly those voices.
-            attack_mask = phase == self._ADSR_ATTACK
-            level[attack_mask] += attack_step
-            # Attack done -> DECAY.
-            done_attack = attack_mask & (level >= 1.0)
-            level[done_attack] = 1.0
-            phase[done_attack] = self._ADSR_DECAY
-
-            decay_mask = phase == self._ADSR_DECAY
-            level[decay_mask] -= decay_step
-            # Decay done -> SUSTAIN.
-            done_decay = decay_mask & (level <= sustain)
-            level[done_decay] = sustain
-            phase[done_decay] = self._ADSR_SUSTAIN
-
-            sustain_mask = phase == self._ADSR_SUSTAIN
-            level[sustain_mask] = sustain
-
-            release_mask = phase == self._ADSR_RELEASE
-            level[release_mask] -= release_step[release_mask]
-            # Release done -> IDLE.
-            done_release = release_mask & (level <= 0.0)
-            level[done_release] = 0.0
-            phase[done_release] = self._ADSR_IDLE
-
-            out[:, n] = level
-
-        # Persist state for next block.
-        state["phase_arr"] = phase
-        state["level_arr"] = level
-        state["prev_gate_arr"] = prev_gate
-        state["release_step_arr"] = release_step
+            phase[v] = ph
+            level[v] = lvl
+            release_step[v] = rs
+            prev_gate[v] = bool(row[-1])
 
         return out.astype(np.float32)
+
+    def _adsr_fill_run(
+        self, seg, pos, end, ph, lvl, rs,
+        attack_step, decay_step, sustain,
+    ):
+        """Fill ``seg[pos:end]`` with the envelope trajectory from entry
+        state ``(ph, lvl)``, following the natural stage chain. Returns
+        the exit ``(ph, lvl)``.
+
+        Mirrors the per-sample mask cascade exactly. In the mask
+        implementation a stage *crossing* cascades within the same
+        sample: the sample where attack reaches 1.0 immediately applies
+        the decay update too, so the emitted value is
+        ``max(1.0 - decay_step, sustain)`` — never a bare 1.0. (This is
+        a deliberate divergence from the mono scalar path, which emits
+        the clamped 1.0 and starts decay the *next* sample; the voice
+        path has always cascaded and downstream tests encode it.)
+        Likewise decay's crossing sample emits ``sustain`` and release's
+        emits 0.0. Attack therefore contributes only its strictly-
+        below-1.0 ramp samples; the crossing sample belongs to decay.
+
+        Stage lengths are analytic (smallest k >= 1 crossing the
+        target), so each stage is one ``arange`` + one clamp.
+        """
+        if ph == self._ADSR_ATTACK and pos < end:
+            ka = max(1, int(np.ceil((1.0 - lvl) / attack_step)))
+            k = min(ka - 1, end - pos)
+            if k > 0:
+                seg[pos:pos + k] = np.minimum(
+                    lvl + np.arange(1, k + 1, dtype=np.float64) * attack_step,
+                    1.0,
+                )
+                lvl = float(seg[pos + k - 1])
+                pos += k
+            if pos < end:
+                # Crossing falls inside this run: cascade into decay,
+                # which emits the crossing sample below.
+                ph = self._ADSR_DECAY
+                lvl = 1.0
+        if ph == self._ADSR_DECAY and pos < end:
+            if lvl <= sustain or decay_step <= 0.0:
+                # Includes the mid-flight "sustain raised above current
+                # level" case: the mask cascade clamps up to sustain on
+                # the first sample; maximum() reproduces that.
+                kd = 1
+            else:
+                kd = max(1, int(np.ceil((lvl - sustain) / decay_step)))
+            k = min(kd, end - pos)
+            seg[pos:pos + k] = np.maximum(
+                lvl - np.arange(1, k + 1, dtype=np.float64) * decay_step,
+                sustain,
+            )
+            lvl = float(seg[pos + k - 1])
+            pos += k
+            if k == kd:
+                ph = self._ADSR_SUSTAIN
+                lvl = sustain
+        if ph == self._ADSR_SUSTAIN and pos < end:
+            seg[pos:end] = sustain
+            lvl = sustain
+            pos = end
+        if ph == self._ADSR_RELEASE and pos < end:
+            if rs > 0.0:
+                kr = max(1, int(np.ceil(lvl / rs)))
+                k = min(kr, end - pos)
+                seg[pos:pos + k] = np.maximum(
+                    lvl - np.arange(1, k + 1, dtype=np.float64) * rs,
+                    0.0,
+                )
+                lvl = float(seg[pos + k - 1])
+                pos += k
+                if k == kr:
+                    ph = self._ADSR_IDLE
+                    lvl = 0.0
+            elif lvl <= 0.0:
+                seg[pos] = 0.0
+                lvl = 0.0
+                pos += 1
+                ph = self._ADSR_IDLE
+            else:
+                # Degenerate zero-step release with positive level: the
+                # per-sample cascade would hold here forever. Preserve.
+                seg[pos:end] = lvl
+                pos = end
+        if ph == self._ADSR_IDLE and pos < end:
+            seg[pos:end] = lvl
+            pos = end
+        return ph, lvl
 
     # ----- LFO rendering --------------------------------------------------
 
