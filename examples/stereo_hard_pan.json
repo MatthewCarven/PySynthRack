@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    {
+      "id": 1,
+      "type": "oscillator",
+      "name": "Saw L (220.0)",
+      "params": {
+        "waveform": "saw_blep",
+        "freq": 220.0,
+        "amp": 0.4
+      }
+    },
+    {
+      "id": 2,
+      "type": "oscillator",
+      "name": "Saw R (221.5 — beats vs L)",
+      "params": {
+        "waveform": "saw_blep",
+        "freq": 221.5,
+        "amp": 0.4
+      }
+    },
+    {
+      "id": 3,
+      "type": "left_speaker_output",
+      "name": "Left ear",
+      "params": {
+        "gain": 0.8
+      }
+    },
+    {
+      "id": 4,
+      "type": "right_speaker_output",
+      "name": "Right ear",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 3, "dst_port": "in"},
+    {"src_module_id": 2, "src_port": "out", "dst_module_id": 4, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [60, 80],
+      "2": [60, 300],
+      "3": [420, 80],
+      "4": [420, 300]
+    }
+  }
+}

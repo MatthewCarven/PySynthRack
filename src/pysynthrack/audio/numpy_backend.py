@@ -314,6 +314,15 @@ class NumpyBackend(AudioBackend):
             except BaseException:
                 pass
 
+    # Speaker-family sinks and the stereo channels each one feeds.
+    # (left, right) flags: SpeakerOutput is the v0.1 both-channels mono
+    # sink; the Left/Right pair hard-pans for poor-man's stereo.
+    _SPEAKER_CHANNELS = {
+        "speaker_output": (True, True),
+        "left_speaker_output": (True, False),
+        "right_speaker_output": (False, True),
+    }
+
     def render_block(self, frames: int) -> np.ndarray | None:
         """Pure-function rendering of one block. Used by the audio callback
         and by offline tests (no PortAudio device needed)."""
@@ -345,7 +354,8 @@ class NumpyBackend(AudioBackend):
 
         out = np.zeros((frames, 2), dtype=np.float32)
         for module in patch.modules.values():
-            if module.TYPE != "speaker_output":
+            channels = self._SPEAKER_CHANNELS.get(module.TYPE)
+            if channels is None:
                 continue
             incoming = patch.cables_into(module.id)
             if not incoming:
@@ -362,8 +372,11 @@ class NumpyBackend(AudioBackend):
                 src_buf = src_buf.sum(axis=0)
             gain = float(module.params.get("gain", 1.0))
             mixed = (src_buf * gain).astype(np.float32)
-            out[:, 0] += mixed
-            out[:, 1] += mixed
+            left, right = channels
+            if left:
+                out[:, 0] += mixed
+            if right:
+                out[:, 1] += mixed
 
         np.clip(out, -1.0, 1.0, out=out)
         return out
@@ -401,8 +414,8 @@ class NumpyBackend(AudioBackend):
             return self._render_crossover(module, frames, buffers, patch)
         if module.TYPE == "disk_writer":
             return self._render_disk_writer(module, frames, buffers, patch)
-        if module.TYPE == "speaker_output":
-            return None  # sink — drained by the speaker pass
+        if module.TYPE in self._SPEAKER_CHANNELS:
+            return None  # speaker-family sink — drained by the speaker pass
         return None
 
     # ----- input port helper ----------------------------------------------

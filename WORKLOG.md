@@ -2691,3 +2691,70 @@ the mount: **360 passed, 18 mido-skipped, 0 failed** (was 339 + 20 new +
 hard-panned sinks, and the pyo backend wired for the voice-aware modules as
 a drop-in fast path (pyo still stubs v0.2+; numpy is the real engine). The
 new wavetable mipmaps would port cleanly to a pyo implementation later.
+
+---
+
+## 2026-06-06 — LeftSpeakerOut / RightSpeakerOut + pyo deferral
+
+Two pieces this session: the hard-panned speaker pair (closing out v0.4's
+module work), and a roadmap decision about the pyo backend.
+
+**NEW: `LeftSpeakerOutput` + `RightSpeakerOutput`** (`modules/output.py`,
+TYPE `left_speaker_output` / `right_speaker_output`). Mono `in` port,
+`gain` param — exact mirrors of `SpeakerOutput` except each feeds one
+channel of the stereo bus. Registered in `modules/__init__.py`; the Add
+module menu derives from the registry so the UI picked them up with zero
+UI changes.
+
+**CHANGED: numpy drain generalised.** The speaker pass in `render_block`
+previously special-cased `speaker_output`. Now a `_SPEAKER_CHANNELS`
+class table maps each sink type to `(left, right)` flags —
+`speaker_output` (True, True), left (True, False), right (False, True) —
+and the loop adds the gained mono mix into whichever buses are flagged.
+The voice-aware implicit-sum-at-mono-sinks rule applies unchanged: a
+(16, F) source collapses to mono before being pinned to a channel. The
+`_render_module` sink short-circuit now tests membership in that table.
+
+**CHANGED: pyo speaker finalize routes channels.** Rather than stubbing,
+the existing `_finalize_speaker_output` gained pyo's `chnl` argument:
+left pins `.out(chnl=0)`, right `.out(chnl=1)`, plain stays `.out()`.
+`set_param` gain handling covers the family. Cheap, keeps pyo's working
+v0.1 surface (osc → speaker) coherent rather than letting it rot.
+
+**DECISION: pyo backend deferred off v0.4 — profile first.** Talked it
+through with Matthew (he was weighing a fresh pyo-native synth project
+vs porting later). Assessment: a pyo backend is a *re-implementation*
+of module semantics against pyo's object graph, not a translation of
+the numpy code — and it only pays off at near-total coverage because one
+backend runs the whole patch. Sized like the voice-routing epic. The
+model/JSON/UI layers are already engine-agnostic (the original
+abstract-backend decision paying off), so nothing is lost by waiting,
+and a fresh synth project would duplicate everything except the engine.
+Plan recorded in TODO: profile numpy with real patches first; only build
+the pyo backend if numpy can't keep up; stubs stay meanwhile.
+
+**NEW example: `examples/stereo_hard_pan.json`.** Two `saw_blep`
+oscillators detuned 220.0 vs 221.5 Hz, hard-panned L/R. On headphones the
+1.5 Hz detune reads as a slow binaural-style shimmer between the ears —
+also doubles as a demo of the new anti-aliased shapes.
+
+**NEW tests: `tests/test_speaker_outputs.py` (11 tests).** Model layer:
+registry presence, port/param schema, JSON round-trip through
+`patch_to_json`/`patch_from_json`. Drain: left fills L-only, right fills
+R-only, plain speaker still identical on both buses, an L+R pair carries
+distinct signals (zero-crossing pitch check confirms which side got
+which), per-sink gain, pinned + plain speakers mixing additively on the
+shared bus, voice-aware Keyboard source collapsing into a pinned channel,
+and an unconnected pinned sink staying silent.
+
+**Verification.** Usual protocol: edited a `/tmp/pyrack_sp` clone via
+bash, ran the suite there, `cp`'d whole files to the mount, byte-verified
+sizes, AST-parsed on the mount, re-ran the suite off the mount.
+**371 passed, 18 mido-skipped, 0 failed** (360 + 11 new).
+
+**What comes next.** v0.4 module work is done. Remaining open threads,
+all optional-tier: CVToFrequency phase 2 (designed, in memory),
+Schmitt bridge, CV utilities (Constant/CVScale/CVOffset), S&H, noise,
+AD env, stereo-aware speaker (pan/width — the proper successor to the
+hard-pan pair), presets palette, undo/redo, packaging niceties. And the
+profile-first pyo plan above.

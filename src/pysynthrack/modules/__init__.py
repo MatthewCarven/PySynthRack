@@ -21,7 +21,7 @@ from .lfo import LFO
 from .midiinput import MIDIInput
 from .mixer import Mixer
 from .oscillator import Oscillator
-from .output import SpeakerOutput
+from .output import LeftSpeakerOutput, RightSpeakerOutput, SpeakerOutput
 from .vca import VCA
 
 __all__ = [
@@ -35,10 +35,12 @@ __all__ = [
     "DiskWriter",
     "Filter",
     "Keyboard",
+    "LeftSpeakerOutput",
     "LFO",
     "MIDIInput",
     "Mixer",
     "Oscillator",
+    "RightSpeakerOutput",
     "SpeakerOutput",
     "VCA",
 ]

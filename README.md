@@ -8,7 +8,7 @@ What works in v0.1:
 
 - Oscillator module — sine / saw / square / triangle, each (except sine) in three
   band-limiting flavours: naive, PolyBLEP/PolyBLAMP (`*_blep`), and wavetable (`*_wt`)
-- Speaker output module
+- Speaker output module — plus LeftSpeakerOut / RightSpeakerOut hard-panned variants (pair them for stereo)
 - Drag-cable node-graph UI (DearPyGui)
 - Start/Stop audio
 - Save / load patch as JSON

@@ -66,8 +66,14 @@ Living list of what's next. Edit freely.
 - [x] Error handler integrated at GUI outermost catch + audio callback panic path; crashes written to `~/.pysynthrack/crashes/` (shipped 2026-05-15)
 - [x] Single-file Windows `.exe` build (PyInstaller) -- `build.ps1` + `pysynthrack.spec`, examples bundled read-only, console variant `build_cli.ps1` for debugging (shipped 2026-05-17)
 - [x] MIDI follow-up: sustain pedal (CC 64) — shipped 2026-05-20 with voice routing slice 1. Per-slot `sustained` flag on `VoiceSlots`; pedal-down causes note_off to mark the slot sustained instead of releasing; pedal-up drops every sustained voice in one pass.
-- [ ] LeftSpeakerOut module — mono audio in routed exclusively to the left channel of the output device. Backend drain mixes any LeftSpeakerOut sinks into the left bus only; right bus stays silent for that node. Patches can place a Left + Right pair to get hard-panned stereo without a stereo Speaker module.
-- [ ] RightSpeakerOut module — mirror of LeftSpeakerOut; audio in routed exclusively to the right channel. Compose with LeftSpeakerOut for stereo patches.
+- [x] LeftSpeakerOut + RightSpeakerOut modules — shipped 2026-06-06. `left_speaker_output` /
+      `right_speaker_output` sink types (mono `in`, `gain`), numpy drain generalised via a
+      `_SPEAKER_CHANNELS` (left, right) mask table; voice-aware sources still collapse via the
+      implicit-sum-at-mono-sinks rule, per pinned channel. Pyo backend's speaker finalize routes
+      them with `.out(chnl=0/1)` so its v0.1 surface stays coherent. UI picks both up automatically
+      from the registry. Example: `examples/stereo_hard_pan.json` (two `saw_blep` detuned 220.0 vs
+      221.5 hard-panned L/R — binaural-beat shimmer on headphones). 11 new tests in
+      `tests/test_speaker_outputs.py`; full suite 371 passing.
 - [x] PolyBLEP / wavetable anti-aliased osc shapes — **shipped 2026-06-04**, offered
       *alongside* the naive shapes rather than replacing them (naive kept for cheap
       lo-fi character). Each audio shape now has three forms selected by the `waveform`
@@ -78,9 +84,20 @@ Living list of what's next. Edit freely.
       Keyboard/MIDIInput note sources all share one implementation. FFT tests confirm
       ~30-40x (PolyBLEP) and up to ~800x (wavetable, high fundamental) alias-energy
       reduction for saw/square; 20 new tests in `tests/test_antialiasing.py`, full suite 360.
-- [ ] CPU profile: pyo backend wired for the same modules so it's a drop-in fast path
+- [x] ~~CPU profile: pyo backend wired for the same modules~~ — **deferred off v0.4,
+      2026-06-06** (decision with Matthew). A pyo backend is a re-implementation of every
+      module's semantics against pyo's object graph, not a port — and it only pays off at
+      near-total module coverage since one backend runs the whole patch. Moved to wishlist
+      below as profile-first. v0.4 closes with the speaker pair.
 
 ## Later / wishlist
+
+- [ ] CPU profile numpy with real patches (16-voice MIDI chord through the full
+      ADSR/VCA/Filter chain at 512-sample blocks). Only if numpy can't keep up: revisit the
+      pyo backend — sized like the voice-routing epic (re-express each module in pyo's object
+      vocabulary + parity tests + live graph rebuild). Model/JSON/UI are already engine-agnostic,
+      so a fresh cowork session could build it incrementally here; a separate pyo synth project
+      would duplicate everything except the engine. Stubs stay meanwhile.
 
 - [x] `AudioToCV` envelope follower — shipped 2026-05-23. Rectifies the input + asymmetric one-pole (attack_ms / release_ms / gain) smoother; voice-aware shape-polymorphic on the audio input's ndim. Bridges the audio→cv signal-kind wall so the filter's own output can drive `cutoff_cv` (self-wah), a kick can sidechain a pad's VCA, etc. Example: `examples/envelope_follower_wah.json`. 14 new tests; full suite 304 passing (one pre-existing test_adsr failure noted below, untouched).
 - [x] `CVToAudio` — shipped 2026-05-23. Signal-kind passthrough (no DSP, just a type-tag relabel) with one `gain` param. Voice-aware by shape preservation. Unlocks audio-rate LFO as a primary tone source with built-in FM via `rate_cv`, percussive clicks from fast envelopes, and CV-oscilloscope-via-WAV recording. Example: `examples/lfo_oscillator.json` (220 Hz carrier LFO with 5.5 Hz vibrato modulator into the carrier's `rate_cv`). 13 new tests; full suite 317 passing.

@@ -110,7 +110,9 @@ class PyoBackend(AudioBackend):
 
         # Third pass — speaker outputs need a final ``.out()`` call.
         for module in patch.modules.values():
-            if module.TYPE == "speaker_output":
+            if module.TYPE in (
+                "speaker_output", "left_speaker_output", "right_speaker_output"
+            ):
                 self._finalize_speaker_output(module, patch)
 
         if was_running:
@@ -121,7 +123,9 @@ class PyoBackend(AudioBackend):
     def _build_module(self, module) -> Any | None:
         if module.TYPE == "oscillator":
             return self._build_oscillator(module)
-        if module.TYPE == "speaker_output":
+        if module.TYPE in (
+            "speaker_output", "left_speaker_output", "right_speaker_output"
+        ):
             # Built in ``_finalize_speaker_output`` after its input is known.
             return None
         if module.TYPE == "keyboard":
@@ -236,7 +240,9 @@ class PyoBackend(AudioBackend):
         dst_module = patch.modules.get(cable.dst_module_id)
         if dst_module is None:
             return
-        if dst_module.TYPE == "speaker_output":
+        if dst_module.TYPE in (
+            "speaker_output", "left_speaker_output", "right_speaker_output"
+        ):
             # Wiring for speakers happens in ``_finalize_speaker_output``.
             return
         # Future module types (filter, mixer) will set their pyo input here.
@@ -253,7 +259,15 @@ class PyoBackend(AudioBackend):
         # object, but the canonical way to apply scalar gain is the ``mul``
         # attribute. We pipe through a ``Sig`` so we own the output object.
         out_obj = pyo.Sig(src_obj, mul=gain)
-        out_obj.out()
+        # SpeakerOutput plays on every channel; the Left/Right variants
+        # pin the signal to output channel 0 / 1 respectively (pyo's
+        # ``chnl`` argument).
+        if module.TYPE == "left_speaker_output":
+            out_obj.out(chnl=0)
+        elif module.TYPE == "right_speaker_output":
+            out_obj.out(chnl=1)
+        else:
+            out_obj.out()
         self._objects[module.id] = out_obj
         self._sinks.append(out_obj)
 
@@ -286,7 +300,9 @@ class PyoBackend(AudioBackend):
             elif name == "waveform":
                 # Swapping waveform changes the pyo class — rebuild.
                 self.compile(self._patch)
-        elif module.TYPE == "speaker_output":
+        elif module.TYPE in (
+            "speaker_output", "left_speaker_output", "right_speaker_output"
+        ):
             if name == "gain":
                 if hasattr(obj, "setMul"):
                     obj.setMul(float(value))
