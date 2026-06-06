@@ -400,6 +400,8 @@ class NumpyBackend(AudioBackend):
             return self._render_audio_to_cv(module, frames, buffers, patch)
         if module.TYPE == "cv_to_audio":
             return self._render_cv_to_audio(module, frames, buffers, patch)
+        if module.TYPE == "schmitt":
+            return self._render_schmitt(module, frames, buffers, patch)
         if module.TYPE == "cv_to_frequency":
             return self._render_cv_to_frequency(module, frames, buffers, patch)
         if module.TYPE == "lfo":
@@ -2107,6 +2109,74 @@ class NumpyBackend(AudioBackend):
         return (cv_in * gain).astype(np.float32)
 
     # ----- CVToFrequency rendering ----------------------------------------
+
+    # ----- Schmitt rendering ------------------------------------------------
+
+    def _render_schmitt(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """CV → gate Schmitt trigger with hysteresis.
+
+        Rising through ``high`` (strict >) sets the gate; falling
+        through ``low`` (strict <) clears it; inside the band the gate
+        holds its previous state — the hysteresis that makes a wobbly
+        CV usable as a clock without chatter.
+
+        Vectorized by event forward-fill (no per-sample loop): each
+        sample is classified +1 (above high), -1 (below low) or 0
+        (deadband); the gate at sample n is "was the most recent
+        nonzero event a +1", seeded with the carried cross-block
+        state via ``np.maximum.accumulate`` over event positions.
+
+        Shape-polymorphic on the CV input's ndim per the voice-aware
+        convention: ``(F,)`` in → ``(F,)`` out with scalar held state;
+        ``(V, F)`` in → ``(V, F)`` out with per-voice held state.
+        Unpatched input emits a constant-low gate. Output is float32
+        0.0 / 1.0 (comfortably astride the backend's ``_GATE_HIGH``).
+        """
+        cv_in = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
+
+        high = float(module.params.get("high", 0.6))
+        # An inverted pair degenerates to a plain comparator at high.
+        low = min(float(module.params.get("low", 0.4)), high)
+
+        state = self._state.setdefault(module.id, {"gate": False})
+
+        if cv_in is None:
+            return np.zeros(frames, dtype=np.float32)
+
+        if cv_in.ndim == 2:
+            V = cv_in.shape[0]
+            needs_reinit = (
+                "gate_arr" not in state or state["gate_arr"].shape[0] != V
+            )
+            if needs_reinit:
+                state.clear()
+                state["gate_arr"] = np.zeros(V, dtype=bool)
+            prev = state["gate_arr"][:, None]  # (V, 1)
+
+            ev = np.where(cv_in > high, 1, np.where(cv_in < low, -1, 0))
+            pos = np.where(ev != 0, np.arange(frames)[None, :], -1)
+            last = np.maximum.accumulate(pos, axis=1)  # (V, F)
+            picked = np.take_along_axis(ev, np.maximum(last, 0), axis=1)
+            gate = np.where(last >= 0, picked > 0, prev)
+
+            state["gate_arr"] = gate[:, -1].copy()
+            return gate.astype(np.float32)
+
+        # Mono path. Discard voice-shaped state if the input collapsed.
+        if "gate_arr" in state:
+            state.clear()
+            state["gate"] = False
+        prev_gate = bool(state["gate"])
+
+        ev = np.where(cv_in > high, 1, np.where(cv_in < low, -1, 0))
+        pos = np.where(ev != 0, np.arange(frames), -1)
+        last = np.maximum.accumulate(pos)
+        gate = np.where(last >= 0, ev[np.maximum(last, 0)] > 0, prev_gate)
+
+        state["gate"] = bool(gate[-1])
+        return gate.astype(np.float32)
 
     def _render_cv_to_frequency(
         self, module, frames: int, buffers, patch

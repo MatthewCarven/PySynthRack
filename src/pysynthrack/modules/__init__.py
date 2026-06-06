@@ -22,6 +22,7 @@ from .midiinput import MIDIInput
 from .mixer import Mixer
 from .oscillator import Oscillator
 from .output import LeftSpeakerOutput, RightSpeakerOutput, SpeakerOutput
+from .schmitt import Schmitt
 from .vca import VCA
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "Mixer",
     "Oscillator",
     "RightSpeakerOutput",
+    "Schmitt",
     "SpeakerOutput",
     "VCA",
 ]

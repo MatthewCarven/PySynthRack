@@ -2933,3 +2933,60 @@ used `negative_enabled` as its example of an unknown param.
 whole-file cp of all five files, byte-verified, AST-parsed on the
 mount, suite re-run from the mount: **383 passed, 18 mido-skipped**
 (371 + 12).
+
+## 2026-06-07 — Schmitt trigger: the last signal-kind bridge
+
+**NEW: `Schmitt` module** (`modules/schmitt.py`, TYPE `schmitt`).
+CV in → gate out with classic two-threshold hysteresis: rises through
+`high` (strict >, default 0.6) → gate sets; falls through `low`
+(strict <, default 0.4) → gate clears; inside the band the gate
+holds. The band is what makes a wobbly CV usable as a clock without
+chatter. `low` > `high` degenerates to a plain comparator at `high`
+(documented, tested) rather than anything surprising. Completes the
+bridge trio: AudioToCV (audio→cv), CVToAudio (cv→audio), Schmitt
+(cv→gate) — every signal-kind wall now has a door.
+
+**NEW: `_render_schmitt` in the numpy backend.** Vectorized by event
+forward-fill — samples classified +1/-1/0 (above high / below low /
+deadband), `np.maximum.accumulate` over event positions finds the
+most recent event per sample, gate = "was it a +1", seeded with
+carried cross-block state. **No per-sample Python loop** — today's
+ADSR lesson applied at birth. Shape-polymorphic per the voice
+convention: (F,) in → (F,) out with scalar state, (V, F) in → (V, F)
+out with per-voice state (per-voice envelope banks can clock
+per-voice triggers). Unpatched input emits constant-low. Output
+float32 0/1, comfortably astride `_GATE_HIGH`.
+
+**Registered everywhere:** `modules/__init__.py` import + `__all__`;
+pyo backend silent-stub list (alongside the other bridges); UI gets
+`high`/`low` added to the 0..1 slider set (generic drag-float would
+have been unbounded). Node appears in the Add menu via the registry,
+zero UI layout work.
+
+**NEW example: `examples/schmitt_lfo_clock.json`.** The headline use
+case: LFO (sine 1.5 Hz, unipolar) → Schmitt → ADSR gate; saw_blep 220
+through a VCA shaped by that envelope. A self-playing pluck at 1.5 Hz
+— no keyboard anywhere in the patch. Verified through real patch IO:
+renders ~2 s with loud blocks (peak 0.47) and fully silent troughs.
+
+**NEW tests: 20 in `tests/test_schmitt.py`.** Model (defaults, ports,
+kinds, JSON round-trip, unknown-param, type walls both directions —
+including gate→speaker rejected), mono behaviour (crossing sample
+exactness, deadband hold, hysteresis wobble survival, falling clear,
+strict-inequality thresholds, cross-block state, inverted-pair
+degeneration, unpatched silence), voice-aware (independent rows,
+per-voice cross-block state, mono fast path), integration (LFO →
+Schmitt → ADSR fires ~4 envelopes/s at rate 4, full release between
+cycles).
+
+**Verification.** Usual protocol: built in /tmp clone, suite there,
+whole-file cp of all seven files, byte-verified, AST-parsed on the
+mount, suite re-run from the mount: **403 passed, 18 mido-skipped**
+(383 + 20).
+
+**Spotted while in there (not fixed):** `_render_audio_to_cv_voice`
+still runs a per-sample Python loop. It's an asymmetric one-pole —
+genuinely recursive, signal-dependent coefficient switching — so it's
+not run-splittable the way the ADSR was. Cold path today (no envelope
+follower in the canonical patch); noted on the TODO wishlist for if
+follower-heavy patches ever profile hot.

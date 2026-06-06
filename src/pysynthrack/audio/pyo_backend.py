@@ -195,6 +195,7 @@ class PyoBackend(AudioBackend):
             "audio_to_cv",
             "cv_to_audio",
             "cv_to_frequency",
+            "schmitt",
         ):
             # v0.3+ routing / bridge / CV-oscillator modules. The numpy
             # backend is the real implementation; pyo support arrives

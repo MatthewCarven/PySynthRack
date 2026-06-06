@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "next_id": 7,
+  "modules": [
+    {
+      "id": 1,
+      "type": "lfo",
+      "name": "Clock LFO",
+      "params": {
+        "waveform": "sine",
+        "rate": 1.5,
+        "depth": 1.0,
+        "bipolar": false
+      }
+    },
+    {
+      "id": 2,
+      "type": "schmitt",
+      "name": "Schmitt Clock",
+      "params": {
+        "high": 0.6,
+        "low": 0.4
+      }
+    },
+    {
+      "id": 3,
+      "type": "adsr",
+      "name": "Plucky Env",
+      "params": {
+        "attack": 0.005,
+        "decay": 0.25,
+        "sustain": 0.0,
+        "release": 0.1
+      }
+    },
+    {
+      "id": 4,
+      "type": "oscillator",
+      "name": "Tone",
+      "params": {
+        "waveform": "saw_blep",
+        "freq": 220.0,
+        "amp": 0.6
+      }
+    },
+    {
+      "id": 5,
+      "type": "vca",
+      "name": "VCA",
+      "params": {
+        "gain": 1.0
+      }
+    },
+    {
+      "id": 6,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "cv",
+      "dst_module_id": 2,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "gate",
+      "dst_module_id": 3,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "audio"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "cv",
+      "dst_module_id": 5,
+      "dst_port": "cv"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out",
+      "dst_module_id": 6,
+      "dst_port": "in"
+    }
+  ]
+}

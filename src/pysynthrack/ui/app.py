@@ -402,7 +402,8 @@ class App:
                     user_data=user_data,
                 )
             elif (
-                param_name in {"amp", "gain", "volume", "sustain", "depth", "master"}
+                param_name
+                in {"amp", "gain", "volume", "sustain", "depth", "master", "high", "low"}
                 or param_name.startswith("gain")
             ):
                 # Mixer channel trims (gain1..gain4) and master live in
