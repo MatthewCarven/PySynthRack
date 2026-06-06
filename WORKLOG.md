@@ -2863,3 +2863,18 @@ candidate pass — but biquads are sequential IIRs, so the options are
 voice-axis batching (pure numpy, modest win) or `scipy.signal.lfilter`
 (C-speed, **new dependency** — Matthew's call given the numpy-only
 stance so far).
+
+## 2026-06-07 (close-out) — Native re-profile: numpy keeps up, pyo parked
+
+Matthew's native re-run after the ADSR vectorization: mean 3.4–3.9 ms
+(29–33% of budget), worst block 42%, **0/2000 blocks over** in all four
+scenarios. Before/after on the same machine: 97–102% mean with
+1999/2000 misses → 29–33% mean with none. The ladder resolves at step
+2: **no performance case for a pyo backend.** It stays parked
+indefinitely — the switchable-engine idea remains a *feature* question
+(revisit only if wanted for its own sake, per the 2026-06-06 deferral).
+
+Filter vectorization (the would-be next pass) is therefore **not
+needed** for current patch sizes — filed as an optional wishlist item
+with its dependency question (pure-numpy voice batching vs
+scipy.signal.lfilter) for if patches ever grow past the headroom.

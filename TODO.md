@@ -92,8 +92,10 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
-- [ ] CPU profile numpy with real patches (16-voice MIDI chord through the full
-      ADSR/VCA/Filter chain at 512-sample blocks). **In flight 2026-06-07**:
+- [x] CPU profile numpy with real patches — **closed 2026-06-07, numpy keeps up.**
+      Native after ADSR vectorization: 29–33% mean, worst 42%, 0/2000 misses (was
+      97–102% mean, 1999/2000 misses). **Pyo backend parked indefinitely — no
+      performance case.** Remains a feature question only. History:
       `tools/profile_numpy.py` shipped (4 scenarios, worst-block verdict). Sandbox first
       read: mean 77-81% of budget with worst-block deadline misses — but cProfile shows
       `_render_adsr_voice` (63%) + `_render_filter_voice` (22%) own the block via
@@ -103,10 +105,11 @@ Living list of what's next. Edit freely.
       deadlines** → ladder step 2 engaged. ADSR vectorized same day (run-splitting at
       gate edges, analytic stage chains; 117x on the function, 3.2x overall in sandbox —
       21–26% mean, worst 30%, zero misses). Suite 371 green, mono path untouched.
-      Remaining: Matthew re-runs native profile; filter vectorization if still needed
-      (biquad = sequential IIR: voice-axis batching in pure numpy, or scipy.signal.lfilter
-      = new dep, Matthew's call). Only if vectorized numpy still misses → pyo epic
-      (sized like voice routing). Model/JSON/UI stay engine-agnostic; stubs stay.
+      Model/JSON/UI stay engine-agnostic; pyo stubs stay.
+- [ ] Filter vectorization (optional — only if patches grow past current headroom).
+      `_render_filter_voice` is the dominant remaining cost (~68% of render) as a
+      per-sample biquad loop. Options: voice-axis batching in pure numpy (modest win,
+      no new deps) vs scipy.signal.lfilter (C-speed, new dependency — Matthew's call).
 
 - [x] `AudioToCV` envelope follower — shipped 2026-05-23. Rectifies the input + asymmetric one-pole (attack_ms / release_ms / gain) smoother; voice-aware shape-polymorphic on the audio input's ndim. Bridges the audio→cv signal-kind wall so the filter's own output can drive `cutoff_cv` (self-wah), a kick can sidechain a pad's VCA, etc. Example: `examples/envelope_follower_wah.json`. 14 new tests; full suite 304 passing (one pre-existing test_adsr failure noted below, untouched).
 - [x] `CVToAudio` — shipped 2026-05-23. Signal-kind passthrough (no DSP, just a type-tag relabel) with one `gain` param. Voice-aware by shape preservation. Unlocks audio-rate LFO as a primary tone source with built-in FM via `rate_cv`, percussive clicks from fast envelopes, and CV-oscilloscope-via-WAV recording. Example: `examples/lfo_oscillator.json` (220 Hz carrier LFO with 5.5 Hz vibrato modulator into the carrier's `rate_cv`). 13 new tests; full suite 317 passing.
