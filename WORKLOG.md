@@ -2990,3 +2990,39 @@ genuinely recursive, signal-dependent coefficient switching — so it's
 not run-splittable the way the ADSR was. Cold path today (no envelope
 follower in the canonical patch); noted on the TODO wishlist for if
 follower-heavy patches ever profile hot.
+
+
+## 2026-06-09 — Filter vectorization spike: scipy lfilter cleared
+
+**Decision: vectorize the biquad with `scipy.signal.lfilter`, not pure
+numpy.** The voice axis in `_render_filter_voice` is already vectorized
+(inner loop is a (V,)-wide multiply-add); what stays serial is the
+per-sample *time* loop, and a biquad's recurrence (`y[n]` needs `y[n-1]`,
+`y[n-2]`) can't be run-split the way the ADSR was. lfilter moves that
+time recurrence into C — the one lever left.
+
+**Spike (sandbox, throwaway — no tree changes beyond this log + TODO).**
+Faithful DF-I reference (verbatim `_filter_coeffs` + the exact mono and
+voice per-sample loops) vs an lfilter candidate carrying `zf`->`zi`
+across blocks. Resonant lowpass (1 kHz, Q 2), 512-sample blocks, SR 44100.
+- Equivalence: max abs error vs the current loop 7.6e-15 (mono),
+  1.0e-14 (voice) — float64 round-off, i.e. bit-identical. The zf->zi
+  handoff (the one fiddly part) is sound.
+- Speed: mono 0.119 -> 0.0068 ms/blk (17.5x); voice (V=16) 1.98 ->
+  0.043 ms/blk (46.2x). Voice path is 17.1% of the 11.6 ms block budget
+  today -> 0.4% with lfilter. Matches the profile's "filter is the
+  dominant remaining cost" finding.
+
+**Caveats.** Sandbox numbers — native Windows will move the absolute
+percentages (native ran hotter than sandbox on the ADSR work), but the
+17–46x ratio is a property of the C loop and should hold. Shared-coeff
+path only; per-voice cutoffs need a 16-call lfilter loop (smaller win,
+measured for real in slice 4).
+
+**Cost.** New dependency: scipy. Ships 3.12 Windows wheels (no MSVC),
+but bloats the single-file exe — quantify in slice 2.
+
+**Queued on TODO:** slices 2 (add dep + build check), 3 (mono path),
+4 (voice path), 5 (crossover, optional), 6 (native re-profile + docs).
+Each ends green + committable; multi-session by design. No production
+code touched this session.

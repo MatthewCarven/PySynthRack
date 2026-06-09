@@ -106,10 +106,28 @@ Living list of what's next. Edit freely.
       gate edges, analytic stage chains; 117x on the function, 3.2x overall in sandbox —
       21–26% mean, worst 30%, zero misses). Suite 371 green, mono path untouched.
       Model/JSON/UI stay engine-agnostic; pyo stubs stay.
-- [ ] Filter vectorization (optional — only if patches grow past current headroom).
-      `_render_filter_voice` is the dominant remaining cost (~68% of render) as a
-      per-sample biquad loop. Options: voice-axis batching in pure numpy (modest win,
-      no new deps) vs scipy.signal.lfilter (C-speed, new dependency — Matthew's call).
+- [ ] **Filter vectorization** (optional — only if patches grow past current
+      headroom). `_render_filter_voice` is the dominant remaining cost as a
+      per-sample biquad loop. Decision (2026-06-09): use `scipy.signal.lfilter` —
+      pure-numpy voice batching is already spent (the voice axis is vectorized; only
+      the serial *time* loop remains, and lfilter is the one lever that moves it to C).
+  - [x] Slice 1 — spike (sandbox, throwaway): lfilter vs the DF-I loop, zf→zi
+        cross-block state. Equivalence bit-identical (max err ~1e-14, mono + 16-voice);
+        speedup 17.5x mono, 46.2x voice (voice 17.1% → 0.4% of the 11.6 ms block
+        budget, in-sandbox). Green — proceed.
+  - [ ] Slice 2 — add scipy to deps (pyproject/requirements); verify install on the
+        3.12 build venv and that the PyInstaller exe still builds + how much it grows.
+        Build is Matthew's to run → ends in a hand-off.
+  - [ ] Slice 3 — `_render_filter_mono` → lfilter with zf→zi block continuity + a
+        numerical-equivalence test vs the old loop. Proves the state pattern on the
+        simplest path first.
+  - [ ] Slice 4 — `_render_filter_voice`: shared-coeff fast path = one lfilter along
+        the time axis (zi shape (V, 2)); per-voice cutoff = 16-call loop. Voice-aware
+        equivalence tests; measure the per-voice path's real (smaller) win.
+  - [ ] Slice 5 — crossover (optional, separable): same cascaded-biquad shape, sosfilt
+        fits. Own slice, own tests; droppable without affecting the filter work.
+  - [ ] Slice 6 — re-profile on native Windows for the real numbers; update
+        WORKLOG/TODO; decide whether filter vectorization can be marked done.
 
 - [x] `AudioToCV` envelope follower — shipped 2026-05-23. Rectifies the input + asymmetric one-pole (attack_ms / release_ms / gain) smoother; voice-aware shape-polymorphic on the audio input's ndim. Bridges the audio→cv signal-kind wall so the filter's own output can drive `cutoff_cv` (self-wah), a kick can sidechain a pad's VCA, etc. Example: `examples/envelope_follower_wah.json`. 14 new tests; full suite 304 passing (one pre-existing test_adsr failure noted below, untouched).
 - [x] `CVToAudio` — shipped 2026-05-23. Signal-kind passthrough (no DSP, just a type-tag relabel) with one `gain` param. Voice-aware by shape preservation. Unlocks audio-rate LFO as a primary tone source with built-in FM via `rate_cv`, percussive clicks from fast envelopes, and CV-oscilloscope-via-WAV recording. Example: `examples/lfo_oscillator.json` (220 Hz carrier LFO with 5.5 Hz vibrato modulator into the carrier's `rate_cv`). 13 new tests; full suite 317 passing.
