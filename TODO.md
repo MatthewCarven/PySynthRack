@@ -115,9 +115,17 @@ Living list of what's next. Edit freely.
         cross-block state. Equivalence bit-identical (max err ~1e-14, mono + 16-voice);
         speedup 17.5x mono, 46.2x voice (voice 17.1% → 0.4% of the 11.6 ms block
         budget, in-sandbox). Green — proceed.
-  - [ ] Slice 2 — add scipy to deps (pyproject/requirements); verify install on the
+  - [x] Slice 2 — add scipy to deps (pyproject/requirements); verify install on the
         3.12 build venv and that the PyInstaller exe still builds + how much it grows.
-        Build is Matthew's to run → ends in a hand-off.
+        Build is Matthew's to run → ends in a hand-off. **Closed 2026-06-10:** scipy
+        installed in build venv, exe builds clean at 23.1 MB. Size delta deferred to
+        slice 3 by construction — PyInstaller bundles only imported modules and nothing
+        imports scipy yet; 23.1 MB is the baseline to compare against.
+        **Claude's half done 2026-06-10:** `scipy>=1.11` added to pyproject + requirements;
+        `build.ps1` pre-flight now checks scipy; specs need no change (PyInstaller has a
+        built-in scipy hook, only `pyo` is excluded); cp312 win_amd64 wheel confirmed
+        (scipy 1.17.1, ~36 MB wheel). **Pending Matthew:** `uv pip install scipy` in the
+        build venv → `.\build.ps1` → note exe size delta → commit.
   - [ ] Slice 3 — `_render_filter_mono` → lfilter with zf→zi block continuity + a
         numerical-equivalence test vs the old loop. Proves the state pattern on the
         simplest path first.

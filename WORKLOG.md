@@ -3026,3 +3026,48 @@ but bloats the single-file exe — quantify in slice 2.
 4 (voice path), 5 (crossover, optional), 6 (native re-profile + docs).
 Each ends green + committable; multi-session by design. No production
 code touched this session.
+
+## 2026-06-10 — Filter vectorization slice 2: scipy dependency added
+
+**Dep declared.** `scipy>=1.11` added to `pyproject.toml` runtime deps and
+mirrored in `requirements.txt`. Floor chosen to keep `requires-python >=3.9`
+honest while letting the 3.12 build venv resolve current scipy.
+
+**Wheel check.** cp312 win_amd64 wheel confirmed available (scipy 1.17.1,
+~36 MB wheel) via pip resolution against PyPI — no MSVC needed on the
+build machine, consistent with the no-compiler constraint.
+
+**Build pipeline reviewed.** `pysynthrack.spec` / `pysynthrack-cli.spec`
+need no changes: only `pyo` is excluded, and PyInstaller ships a built-in
+scipy hook that collects its DLLs. One real gap fixed: `build.ps1`'s
+pre-flight import check didn't include scipy, so a venv missing it would
+pass pre-flight and produce an exe that breaks the moment slice 3 imports
+`lfilter`. Added `('scipy', 'scipy')` to the required list.
+
+**Verification.** Mount-write protocol followed: staged in sandbox,
+whole-file cp, byte-verified all three files; pyproject re-parsed as
+valid TOML. Full suite from the mount: **421 passed** (the 18 mido tests
+ran rather than skipped — sandbox has mido installed — so 403 + 18).
+No production code touched; nothing imports scipy yet (that's slice 3).
+
+**Hand-off to Matthew (closes slice 2):**
+```powershell
+cd "C:\Users\Admin\Desktop\-=Programming=-\Python Synthesiser 2\Python Synthesizer"
+.\.venv\Scripts\Activate.ps1
+uv pip install scipy
+.\build.ps1          # pre-flight now checks scipy; note the printed exe size
+```
+Record the size delta (last build's MB vs this one) in the TODO slice-2
+line, then commit.
+
+**Slice 2 closed (same day).** Matthew ran the install + build: pre-flight
+passed with scipy present, exe built clean — `dist/PySynthRack.exe`
+24,225,019 bytes (23.1 MB). Two notes from the run:
+- *Size delta is deferred to slice 3 by construction* — PyInstaller bundles
+  only what's imported and nothing imports scipy yet, so 23.1 MB is the
+  pre-scipy baseline, not the answer. Slice 3's build will show the growth.
+- *PowerShell ate the version spec*: `uv pip install scipy>=1.11` parses
+  `>` as a redirect — installed scipy unpinned (resolved fine) and left a
+  stray empty file `1.11`, which got swept into a junk commit. Cleaned up
+  by dropping that commit and amending the real one. Rule for future
+  hand-offs: always quote version specs in PowerShell.

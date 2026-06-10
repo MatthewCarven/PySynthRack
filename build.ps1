@@ -52,6 +52,7 @@ try {
 import importlib, sys
 required = [
     ('numpy', 'numpy'),
+    ('scipy', 'scipy'),
     ('sounddevice', 'sounddevice'),
     ('dearpygui.dearpygui', 'dearpygui'),
     ('mido', 'mido'),

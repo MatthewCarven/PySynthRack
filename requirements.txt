@@ -9,4 +9,5 @@
 #   pip install pyo             # better audio backend
 
 numpy>=1.24
+scipy>=1.11
 sounddevice>=0.4.6
