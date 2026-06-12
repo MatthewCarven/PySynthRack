@@ -1153,11 +1153,12 @@ class NumpyBackend(AudioBackend):
             use case: one LFO modulates every voice's filter equally).
           * No cutoff_cv -> static cutoff from the param.
 
-        The mono path runs through ``scipy.signal.lfilter`` (filter
-        vectorization slice 3, 2026-06-12): the serial time recurrence
-        executes in C, ~17x faster than the old per-sample Python loop.
-        The voice path still uses the per-sample loop with a (V,)-wide
-        broadcast per iteration; slice 4 moves it to lfilter too.
+        Both paths run through ``scipy.signal.lfilter`` (filter
+        vectorization slices 3+4, 2026-06-12): the serial time
+        recurrence executes in C. The voice path filters all V rows in
+        one call when the coefficients are shared, or falls back to V
+        single-row calls when a (V, F) cutoff_cv gives each voice its
+        own coefficients (lfilter can't vary coefficients across rows).
         """
         # collapse=False so a voice-aware (V, F) audio input reaches us
         # with the voice axis intact. cutoff_cv is also fetched with
@@ -1300,16 +1301,27 @@ class NumpyBackend(AudioBackend):
         return out64.astype(np.float32)
 
     def _render_filter_voice(self, module, frames, src_buf, cutoff_cv):
-        """Voice-aware path -- V parallel biquads, output ``(V, F)``.
+        """Voice-aware path -- V parallel biquads via lfilter, ``(V, F)``.
 
-        Per-sample loop is still serial (the biquad recurrence is
-        causal in time), but the per-voice updates inside each sample
-        are vectorized across V via numpy broadcasting. The inner
-        recurrence ``y0 = b0*x0 + b1*x1 + b2*x2 - a1n*y1 - a2n*y2`` is
-        identical to the mono path -- the only difference is that
-        ``x0..y2`` are ``(V,)`` arrays and ``b0..a2n`` are either
-        scalars (one cutoff for all voices) or ``(V,)`` arrays (per-
-        voice cutoffs). Broadcasting handles both.
+        Filter vectorization slice 4. Two shapes:
+
+        * Shared coefficients (static cutoff, or a mono/macro
+          cutoff_cv): one lfilter call filters all V rows along the
+          time axis with ``zi`` of shape (V, 2) -- the 46x spike case.
+        * Per-voice coefficients ((V, F) cutoff_cv -> V cutoffs):
+          lfilter cannot vary coefficients across rows, so V
+          independent single-row calls. Each row's recurrence still
+          runs in C; smaller but real win.
+
+        State design is the mono path's, vectorized (see
+        ``_render_filter_mono``): persisted state is the raw DF-I
+        history arrays ``(x1_arr, x2_arr, y1_arr, y2_arr)``, each
+        ``(V,)`` float64 -- coefficient-independent, so per-block
+        cutoff_cv coefficient changes behave exactly as the old loop.
+        Converted to the transposed-DF-II ``zi`` at block start (the
+        same two lfiltic-identity expressions; numpy broadcasting makes
+        the code identical for scalar and ``(V,)`` coefficients) and
+        read back off the buffer tails after.
         """
         V = src_buf.shape[0]
         state = self._state.setdefault(module.id, {})
@@ -1387,31 +1399,47 @@ class NumpyBackend(AudioBackend):
                 return src_buf.astype(np.float32)
             b0, b1, b2, a1n, a2n = coeffs  # scalars
 
+        if frames == 0:
+            return np.empty((V, 0), dtype=np.float32)
+
         x1 = state["x1_arr"]
         x2 = state["x2_arr"]
         y1 = state["y1_arr"]
         y2 = state["y2_arr"]
 
-        out = np.empty((V, frames), dtype=np.float32)
-        # Serial in time, vectorized across voices. Each iteration
-        # does a (V,)-wide multiply-add; with V=16 and frames=512
-        # numpy makes the per-iteration cost basically identical to
-        # one scalar iteration.
-        for n in range(frames):
-            x0 = src_buf[:, n].astype(np.float64)  # (V,)
-            y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1n * y1 - a2n * y2
-            out[:, n] = y0
-            x2 = x1
-            x1 = x0
-            y2 = y1
-            y1 = y0
+        # Raw history -> transposed-DF-II initial conditions. Same
+        # identity as the mono path; broadcasting covers both scalar
+        # and (V,) coefficients.
+        zi1 = b1 * x1 + b2 * x2 - a1n * y1 - a2n * y2  # (V,)
+        zi2 = b2 * x1 - a2n * y1                        # (V,)
+        x = src_buf.astype(np.float64)                  # (V, F)
 
-        state["x1_arr"] = x1
-        state["x2_arr"] = x2
-        state["y1_arr"] = y1
-        state["y2_arr"] = y2
+        if np.ndim(b0) == 0:
+            # Shared coefficients: filter all V rows in one C call.
+            out64, _zf = lfilter(
+                np.array([b0, b1, b2]),
+                np.array([1.0, a1n, a2n]),
+                x,
+                axis=1,
+                zi=np.stack([zi1, zi2], axis=1),
+            )
+        else:
+            # Per-voice coefficients: one C call per row.
+            out64 = np.empty((V, frames), dtype=np.float64)
+            for v in range(V):
+                out64[v], _zf = lfilter(
+                    np.array([b0[v], b1[v], b2[v]]),
+                    np.array([1.0, a1n[v], a2n[v]]),
+                    x[v],
+                    zi=np.array([zi1[v], zi2[v]]),
+                )
 
-        return out
+        state["x1_arr"] = x[:, -1].copy()
+        state["x2_arr"] = x[:, -2].copy() if frames >= 2 else x1
+        state["y1_arr"] = out64[:, -1].copy()
+        state["y2_arr"] = out64[:, -2].copy() if frames >= 2 else y1
+
+        return out64.astype(np.float32)
 
     # ----- ADSR rendering -------------------------------------------------
 

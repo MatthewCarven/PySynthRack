@@ -3150,3 +3150,57 @@ one lfilter along the time axis (zi shape (V, 2)); per-voice cutoffs =
 a 16-call loop. The raw-history↔zi conversion shipped here carries
 over with (V,) arrays in place of scalars.
 
+## 2026-06-12 — Filter vectorization slice 4: voice path on lfilter
+
+**Shipped, same session as slice 3.** `_render_filter_voice` now runs
+its V parallel biquads through lfilter. Two shapes, as planned:
+- *Shared coefficients* (static cutoff or macro cutoff_cv): one lfilter
+  call filters all 16 rows along the time axis with ``zi`` of shape
+  (V, 2) — the 46x spike case.
+- *Per-voice coefficients* ((V, F) cutoff_cv): lfilter can't vary
+  coefficients across rows, so 16 independent single-row calls. Each
+  row's recurrence still runs in C.
+
+**State design carried over from slice 3, vectorized.** Persisted
+state stays the raw DF-I history arrays (x1_arr..y2_arr), each (V,)
+float64 — coefficient-independent, so per-block coefficient changes
+(macro *or* per-voice) behave exactly as the old loop. The two
+lfiltic-identity expressions convert history → zi at block start;
+numpy broadcasting makes that code identical for scalar and (V,)
+coefficients, which is the payoff of choosing raw history in slice 3.
+State keys unchanged; the mono↔voice shape-switch reinit logic again
+needed no edits.
+
+**Equivalence: bit-identical again.** Max abs error 0.0 after the
+float32 cast across: all three modes (shared, 8 blocks), macro 1D CV
+changing every block, per-voice (V, F) CV changing every block (the
+case zf-carry would get wrong, per voice this time), frames=1 blocks,
+split-vs-whole renders in both coefficient shapes, and mono→voice
+shape-switch reinit. 9 new tests in `TestFilterVoiceLfilterEquivalence`
+with the verbatim old voice loop preserved as `_reference_filter_voice`
+— same oracle pattern as the mono tests.
+
+**Speed (sandbox).** Shared path 0.060 ms/blk vs the old loop's ~1.98
+(~33x measured end-to-end incl. python overhead; the spike's pure-loop
+ratio was 46x). Per-voice path 0.19 ms/blk (~10x) — the "smaller but
+real win" the TODO predicted. Native numbers land at slice 6's
+re-profile.
+
+**Suite:** 419 passed + 18 mido-skipped from the mount (was 410; +9).
+Drive-by: `_render_filter`'s docstring updated again — both paths now
+on lfilter.
+
+**Observation, not action:** post-commit, Claude.md and start.cmd show
+working-tree diffs that are pure CRLF/LF churn (content identical) —
+looks like autocrlf flip-flop, left alone. If it nags, a
+`.gitattributes` with explicit eol rules would settle it; not queued.
+
+**Hand-off to Matthew:** commit (message in chat). The optional
+`.\build.ps1` size-delta measurement from the slice-3 hand-off still
+applies unchanged if not yet run.
+
+**Next: slice 5 (optional, separable)** — crossover on sosfilt (LR4 =
+cascaded biquads, exactly sosfilt's shape). Droppable; if skipped,
+slice 6 (native re-profile + docs) closes the filter-vectorization
+arc.
+

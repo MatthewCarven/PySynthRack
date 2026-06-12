@@ -140,10 +140,17 @@ Living list of what's next. Edit freely.
         baseline; budget ~256 MB).
   - [x] ~~Transient~~ — cleared 2026-06-12: `git push --force-with-lease` landed;
         local main == origin/main, junk history gone.
-  - [ ] **Slice 4 ← NEXT** — `_render_filter_voice`: shared-coeff fast path = one lfilter along
-        the time axis (zi shape (V, 2)); per-voice cutoff = 16-call loop. Voice-aware
-        equivalence tests; measure the per-voice path's real (smaller) win.
-  - [ ] Slice 5 — crossover (optional, separable): same cascaded-biquad shape, sosfilt
+  - [x] Slice 4 — **shipped 2026-06-12** (same session as slice 3). `_render_filter_voice`
+        → lfilter. Shared coefficients: one call filtering all 16 rows along the time
+        axis, zi (V, 2). Per-voice cutoffs ((V,F) cutoff_cv): 16 single-row calls
+        (lfilter can't vary coeffs across rows). Same raw-history state design as
+        slice 3, vectorized — (V,) history arrays → broadcast zi conversion, identical
+        code for scalar and (V,) coeffs. Bit-identical to the old loop (max err 0.0,
+        all modes, macro + per-voice CV per-block sweeps, frames=1, mono↔voice
+        reinit). Sandbox timing: shared 0.06 ms/blk (~33x vs 1.98), per-voice
+        0.19 ms/blk (~10x). 9 new tests in TestFilterVoiceLfilterEquivalence with
+        the verbatim old voice loop as oracle; suite 419 (+18 mido).
+  - [ ] **Slice 5 ← NEXT** (optional, separable) — crossover: same cascaded-biquad shape, sosfilt
         fits. Own slice, own tests; droppable without affecting the filter work.
   - [ ] Slice 6 — re-profile on native Windows for the real numbers; update
         WORKLOG/TODO; decide whether filter vectorization can be marked done.

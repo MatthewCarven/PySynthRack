@@ -334,3 +334,211 @@ class TestFilterMonoLfilterEquivalence:
         buf = np.linspace(-1, 1, 256, dtype=np.float32)
         out = backend._render_filter_mono(filt, 256, buf, None)
         assert np.array_equal(out, buf)
+
+
+def _reference_filter_voice(backend, module, blocks, cv_blocks=None):
+    """The pre-slice-4 per-sample voice loop, kept verbatim as the oracle.
+
+    Scalar-in-time / vectorized-across-voices recurrence with raw
+    (x1, x2, y1, y2) arrays carried across blocks and coefficients
+    recomputed per block: shared scalars from _filter_coeffs, or
+    per-voice (V,) arrays from a (V, F) cutoff_cv block-mean.
+    """
+    mode = str(module.params.get("mode", "lowpass"))
+    base = float(module.params.get("cutoff", 1000.0))
+    q = float(module.params.get("resonance", 0.707))
+    V = blocks[0].shape[0]
+    x1 = np.zeros(V)
+    x2 = np.zeros(V)
+    y1 = np.zeros(V)
+    y2 = np.zeros(V)
+    outs = []
+    for i, src_buf in enumerate(blocks):
+        cv = None if cv_blocks is None else cv_blocks[i]
+        per_voice = (
+            cv is not None and cv.ndim == 2 and cv.shape[0] == V and cv.size > 0
+        )
+        if per_voice:
+            sr = backend.sample_rate
+            cpv = np.clip(
+                base * np.power(2.0, cv.mean(axis=1)), 20.0, sr * 0.45
+            )
+            qc = max(0.1, min(q, 20.0))
+            w0 = 2.0 * np.pi * cpv / sr
+            cw, sw = np.cos(w0), np.sin(w0)
+            al = sw / (2.0 * qc)
+            if mode == "lowpass":
+                b0 = (1.0 - cw) / 2.0
+                b1 = 1.0 - cw
+                b2 = (1.0 - cw) / 2.0
+            elif mode == "highpass":
+                b0 = (1.0 + cw) / 2.0
+                b1 = -(1.0 + cw)
+                b2 = (1.0 + cw) / 2.0
+            else:  # bandpass
+                b0 = sw / 2.0
+                b1 = np.zeros(V)
+                b2 = -sw / 2.0
+            a0 = 1.0 + al
+            b0, b1, b2 = b0 / a0, b1 / a0, b2 / a0
+            a1n = (-2.0 * cw) / a0
+            a2n = (1.0 - al) / a0
+        else:
+            cutoff = base
+            if cv is not None and cv.size > 0:
+                cutoff = cutoff * float(2.0 ** float(np.mean(cv)))
+            b0, b1, b2, a1n, a2n = backend._filter_coeffs(mode, cutoff, q)
+        frames = src_buf.shape[1]
+        out = np.empty((V, frames), dtype=np.float32)
+        for n in range(frames):
+            x0 = src_buf[:, n].astype(np.float64)
+            y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1n * y1 - a2n * y2
+            out[:, n] = y0
+            x2, x1 = x1, x0
+            y2, y1 = y1, y0
+        outs.append(out)
+    return np.concatenate(outs, axis=1)
+
+
+class TestFilterVoiceLfilterEquivalence:
+    """Slice 4: the lfilter voice path must match the old per-sample loop.
+
+    Same raw-history state design as the mono path, so equivalence is
+    bit-identical after the float32 cast -- including across blocks
+    where a (V, F) cutoff_cv gives every voice new coefficients each
+    block. Tolerance is < 1e-6 rather than == for the same
+    scipy-future-proofing reason as the mono tests.
+    """
+
+    V = 16
+    F = 512
+
+    def _fresh(self, mode="lowpass", cutoff=1000.0, res=2.0):
+        patch = Patch()
+        filt = patch.add_module(
+            "filter", params={"mode": mode, "cutoff": cutoff, "resonance": res}
+        )
+        return NumpyBackend(sample_rate=44100, block_size=self.F), filt
+
+    def _blocks(self, rng, n, frames=None):
+        frames = self.F if frames is None else frames
+        return [
+            (rng.standard_normal((self.V, frames)) * 0.5).astype(np.float32)
+            for _ in range(n)
+        ]
+
+    @staticmethod
+    def _err(a, b):
+        return np.max(np.abs(a.astype(np.float64) - b.astype(np.float64)))
+
+    @pytest.mark.parametrize("mode", FILTER_MODES)
+    def test_shared_coeff_multiblock(self, mode):
+        backend, filt = self._fresh(mode)
+        blocks = self._blocks(np.random.default_rng(42), 8)
+        got = np.concatenate(
+            [backend._render_filter_voice(filt, self.F, b, None) for b in blocks],
+            axis=1,
+        )
+        ref = _reference_filter_voice(backend, filt, blocks)
+        assert got.dtype == np.float32 and got.shape == (self.V, self.F * 8)
+        assert self._err(got, ref) < 1e-6
+
+    def test_macro_cv_changing_per_block(self):
+        """1D (F,) cutoff_cv: one shared coefficient set per block,
+        changing every block -- the macro filter-sweep case."""
+        backend, filt = self._fresh("lowpass", 800.0, 4.0)
+        rng = np.random.default_rng(7)
+        blocks = self._blocks(rng, 8)
+        sweep = (-1.0, -0.5, 0.0, 0.7, 1.5, -2.0, 2.0, 0.25)
+        cvs = [np.full(self.F, c, dtype=np.float32) for c in sweep]
+        got = np.concatenate(
+            [
+                backend._render_filter_voice(filt, self.F, b, cv)
+                for b, cv in zip(blocks, cvs)
+            ],
+            axis=1,
+        )
+        ref = _reference_filter_voice(backend, filt, blocks, cvs)
+        assert self._err(got, ref) < 1e-6
+
+    def test_per_voice_cv_changing_per_block(self):
+        """(V, F) cutoff_cv: every voice gets its own coefficients,
+        and they change every block -- the case where raw-history state
+        carry matters most (zf-carry would diverge here)."""
+        backend, filt = self._fresh("lowpass", 800.0, 4.0)
+        rng = np.random.default_rng(13)
+        blocks = self._blocks(rng, 8)
+        cvs = [
+            (rng.standard_normal((self.V, self.F)) * 0.8).astype(np.float32)
+            for _ in range(8)
+        ]
+        got = np.concatenate(
+            [
+                backend._render_filter_voice(filt, self.F, b, cv)
+                for b, cv in zip(blocks, cvs)
+            ],
+            axis=1,
+        )
+        ref = _reference_filter_voice(backend, filt, blocks, cvs)
+        assert self._err(got, ref) < 1e-6
+
+    def test_single_sample_blocks(self):
+        backend, filt = self._fresh()
+        rng = np.random.default_rng(3)
+        ones = self._blocks(rng, 64, frames=1)
+        got = np.concatenate(
+            [backend._render_filter_voice(filt, 1, b, None) for b in ones],
+            axis=1,
+        )
+        ref = _reference_filter_voice(backend, filt, ones)
+        assert self._err(got, ref) < 1e-6
+
+    def test_split_render_matches_whole_render(self):
+        """Intrinsic continuity, no oracle, both coefficient shapes.
+        The per-voice variant uses a per-voice-constant CV so the
+        block-mean (and thus the coefficients) is identical whether the
+        signal is rendered split or whole."""
+        rng = np.random.default_rng(11)
+        big = (rng.standard_normal((self.V, 1024)) * 0.5).astype(np.float32)
+        cv = np.tile(
+            np.linspace(-1.0, 1.0, self.V, dtype=np.float32)[:, None], (1, 1024)
+        )
+        for cv_whole in (None, cv):
+            b1, f1 = self._fresh("bandpass", 2000.0, 3.0)
+            halves = (
+                (big[:, : self.F], None if cv_whole is None else cv_whole[:, : self.F]),
+                (big[:, self.F :], None if cv_whole is None else cv_whole[:, self.F :]),
+            )
+            split = np.concatenate(
+                [
+                    b1._render_filter_voice(f1, self.F, part, part_cv)
+                    for part, part_cv in halves
+                ],
+                axis=1,
+            )
+            b2, f2 = self._fresh("bandpass", 2000.0, 3.0)
+            whole = b2._render_filter_voice(f2, 1024, big, cv_whole)
+            assert self._err(split, whole) < 1e-6
+
+    def test_mono_then_voice_reinits_state(self):
+        """Switching audio shape mono -> voice must discard mono state
+        and start the voice biquads from silence."""
+        backend, filt = self._fresh()
+        rng = np.random.default_rng(5)
+        mono_buf = (rng.standard_normal(self.F) * 0.5).astype(np.float32)
+        backend._render_filter_mono(filt, self.F, mono_buf, None)
+        blocks = self._blocks(rng, 2)
+        got = np.concatenate(
+            [backend._render_filter_voice(filt, self.F, b, None) for b in blocks],
+            axis=1,
+        )
+        ref = _reference_filter_voice(backend, filt, blocks)  # zero state
+        assert self._err(got, ref) < 1e-6
+
+    def test_unknown_mode_passthrough_per_voice_branch(self):
+        backend, filt = self._fresh("allpass??")
+        rng = np.random.default_rng(9)
+        buf = (rng.standard_normal((self.V, 256))).astype(np.float32)
+        cv = np.zeros((self.V, 256), dtype=np.float32)
+        out = backend._render_filter_voice(filt, 256, buf, cv)
+        assert np.array_equal(out, buf)
