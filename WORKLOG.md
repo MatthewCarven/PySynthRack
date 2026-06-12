@@ -3071,3 +3071,82 @@ passed with scipy present, exe built clean — `dist/PySynthRack.exe`
   stray empty file `1.11`, which got swept into a junk commit. Cleaned up
   by dropping that commit and amending the real one. Rule for future
   hand-offs: always quote version specs in PowerShell.
+
+
+## 2026-06-11 — Session close: slice 2 wrapped, state saved
+
+**Where things stand.** Slice 2 closed. Local main is clean — junk commit
+dropped, real commit amended (single slice-2 commit with full message +
+doc closure). Remote is one step behind reality: it still carries the two
+messy commits from before the cleanup, so the next push must be
+`git push --force-with-lease` and **not** preceded by a pull (a pull would
+merge the junk history back). Recorded as a transient TODO item.
+
+**Decisions this session.**
+- Size budget made explicit: Matthew is comfortable up to ~256 MB for the
+  exe. Baseline 23.1 MB; scipy expected +30–40 MB at slice 3. Size is a
+  non-issue for the remaining slices.
+- PowerShell hand-off rule learned the hard way: bare version specs
+  (`scipy>=1.11`) are parsed as redirects — always quote them.
+
+**Next session starts at slice 3:** `_render_filter_mono` → lfilter,
+zf→zi cross-block state continuity, numerical-equivalence test vs the
+old per-sample loop. The spike (2026-06-09 entry) has the validated
+pattern to lift: same coeffs, zf of block N becomes zi of block N+1,
+expect bit-identical output (~1e-14). Slice 4 (voice path) follows the
+same shape with zi (V, 2) and a 16-call loop for per-voice cutoffs.
+
+## 2026-06-12 — Filter vectorization slice 3: mono path on lfilter
+
+**Shipped.** `_render_filter_mono` now runs its biquad through one
+`scipy.signal.lfilter` call — the serial time recurrence executes in C
+(17.5x on the spike). First production code to import scipy.
+
+**One deliberate deviation from the spike's zf→zi pattern.** The spike
+carried lfilter's `zf` directly into the next block's `zi`. That is only
+exact while the coefficients stand still — `zf` is defined relative to
+one coefficient set, and the mono path recomputes coefficients every
+block from the block-mean cutoff_cv. The old loop's raw DF-I history
+(x1, x2, y1, y2) is coefficient-independent, so the shipped version
+keeps exactly that as the persisted state, converts it to the
+equivalent transposed-DF-II `zi` at block start (the `lfiltic` identity,
+inlined: zi1 = b1·x1 + b2·x2 − a1n·y1 − a2n·y2; zi2 = b2·x1 − a2n·y1)
+and reads the history back off the input/output tails after the call.
+Costs two scalar expressions per block; buys exactness under
+modulation. State-dict keys are unchanged, so the mono↔voice
+shape-switch reinit logic needed no edits — and slice 4 can vectorize
+the same conversion straight across the voice axis.
+
+**Equivalence: bit-identical, not just close.** Sandbox check against
+the verbatim old loop: max abs error 0.0 — after the float32 cast, not
+~1e-14 — across all three modes, an 8-block render with a different
+cutoff_cv every block (the case zf-carry would get wrong), frames=1
+blocks (history-tail edge case), and split-vs-whole renders. The 7 new
+tests in `TestFilterMonoLfilterEquivalence` (tests/test_filter.py)
+assert < 1e-6 rather than == so a future scipy that reorders float ops
+doesn't break the suite spuriously; the old loop lives on in the test
+file as `_reference_filter_mono`, the oracle.
+
+**Suite:** 410 passed + 18 mido-skipped from the mount (was 403; +7).
+Drive-by: the stale "we avoid scipy as a dep until the perf actually
+pinches" paragraph in `_render_filter`'s docstring replaced with the
+current story.
+
+**Housekeeping.** Verified the slice-2 history-cleanup push landed:
+local main == origin/main, junk commits gone. Transient TODO item
+cleared. Mount-write protocol followed: staged in sandbox, whole-file
+cp, byte-verified (cmp) both production files; AST-parsed on the mount.
+
+**Hand-off to Matthew:**
+- Commit — includes last session's still-uncommitted doc updates and
+  the start.cmd whitespace touch (git writes from the sandbox still
+  break on the mount). Suggested message in chat.
+- Optional: `.\build.ps1` — first build that actually imports scipy,
+  so the exe size delta (expected +30–40 MB on the 23.1 MB baseline)
+  finally becomes measurable. Record it against the slice-3 TODO note.
+
+**Next: slice 4** — `_render_filter_voice`: shared-coeff fast path =
+one lfilter along the time axis (zi shape (V, 2)); per-voice cutoffs =
+a 16-call loop. The raw-history↔zi conversion shipped here carries
+over with (V,) arrays in place of scalars.
+

@@ -199,3 +199,138 @@ class TestFilterStability:
         backend.compile(patch)
         out = backend._render_filter(filt, 256, {}, patch)
         assert np.allclose(out, 0.0)
+
+
+def _reference_filter_mono(backend, module, blocks, cv_blocks=None):
+    """The pre-slice-3 per-sample DF-I loop, kept verbatim as the oracle.
+
+    This is the exact mono implementation `_render_filter_mono` used
+    before filter vectorization slice 3 replaced it with
+    scipy.signal.lfilter: scalar Python recurrence, float64 math,
+    float32 output, raw (x1, x2, y1, y2) history carried across blocks
+    and coefficients recomputed per block from the block-mean cutoff_cv.
+    """
+    mode = str(module.params.get("mode", "lowpass"))
+    base = float(module.params.get("cutoff", 1000.0))
+    q = float(module.params.get("resonance", 0.707))
+    x1 = x2 = y1 = y2 = 0.0
+    outs = []
+    for i, src_buf in enumerate(blocks):
+        cutoff = base
+        cv = None if cv_blocks is None else cv_blocks[i]
+        if cv is not None and cv.size > 0:
+            cutoff = cutoff * float(2.0 ** float(np.mean(cv)))
+        b0, b1, b2, a1n, a2n = backend._filter_coeffs(mode, cutoff, q)
+        out = np.empty(len(src_buf), dtype=np.float32)
+        for n in range(len(src_buf)):
+            x0 = float(src_buf[n])
+            y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1n * y1 - a2n * y2
+            out[n] = y0
+            x2, x1 = x1, x0
+            y2, y1 = y1, y0
+        outs.append(out)
+    return np.concatenate(outs)
+
+
+class TestFilterMonoLfilterEquivalence:
+    """Slice 3: the lfilter mono path must match the old per-sample loop.
+
+    The new implementation carries raw DF-I history (coefficient-
+    independent) and converts it to lfilter's zi at block start, so it
+    should be *bit-identical* to the old loop after the float32 cast --
+    including across blocks where cutoff_cv changes the coefficients.
+    We still assert with a small tolerance rather than == so a future
+    scipy that reorders float ops doesn't break the suite spuriously.
+    """
+
+    @pytest.mark.parametrize("mode", FILTER_MODES)
+    def test_multiblock_equivalence_static_cutoff(self, mode):
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        patch = Patch()
+        filt = patch.add_module(
+            "filter", params={"mode": mode, "cutoff": 1000.0, "resonance": 2.0}
+        )
+        rng = np.random.default_rng(42)
+        blocks = [
+            (rng.standard_normal(512) * 0.5).astype(np.float32) for _ in range(8)
+        ]
+        got = np.concatenate(
+            [backend._render_filter_mono(filt, 512, b, None) for b in blocks]
+        )
+        ref = _reference_filter_mono(backend, filt, blocks)
+        assert got.dtype == np.float32
+        assert np.max(np.abs(got.astype(np.float64) - ref.astype(np.float64))) < 1e-6
+
+    def test_equivalence_with_per_block_cutoff_cv(self):
+        """Coefficients change between blocks; raw-history state carry
+        must reproduce the old loop exactly (this is the case that
+        carrying lfilter's zf across blocks would get wrong)."""
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        patch = Patch()
+        filt = patch.add_module(
+            "filter", params={"mode": "lowpass", "cutoff": 800.0, "resonance": 4.0}
+        )
+        rng = np.random.default_rng(7)
+        blocks = [
+            (rng.standard_normal(512) * 0.5).astype(np.float32) for _ in range(8)
+        ]
+        sweep = (-1.0, -0.5, 0.0, 0.7, 1.5, -2.0, 2.0, 0.25)
+        cvs = [np.full(512, c, dtype=np.float32) for c in sweep]
+        got = np.concatenate(
+            [
+                backend._render_filter_mono(filt, 512, b, cv)
+                for b, cv in zip(blocks, cvs)
+            ]
+        )
+        ref = _reference_filter_mono(backend, filt, blocks, cvs)
+        assert np.max(np.abs(got.astype(np.float64) - ref.astype(np.float64))) < 1e-6
+
+    def test_single_sample_blocks(self):
+        """frames=1 exercises the history-tail edge case (x2/y2 must
+        come from the carried state, not the one-sample buffer)."""
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        patch = Patch()
+        filt = patch.add_module(
+            "filter", params={"mode": "lowpass", "cutoff": 1000.0, "resonance": 2.0}
+        )
+        rng = np.random.default_rng(3)
+        ones = [rng.standard_normal(1).astype(np.float32) for _ in range(64)]
+        got = np.concatenate(
+            [backend._render_filter_mono(filt, 1, b, None) for b in ones]
+        )
+        ref = _reference_filter_mono(backend, filt, ones)
+        assert np.max(np.abs(got.astype(np.float64) - ref.astype(np.float64))) < 1e-6
+
+    def test_split_render_matches_whole_render(self):
+        """Intrinsic continuity check, no oracle: filtering two 512-
+        sample blocks back to back must equal filtering the same 1024
+        samples in one call."""
+        rng = np.random.default_rng(11)
+        big = (rng.standard_normal(1024) * 0.5).astype(np.float32)
+
+        def fresh():
+            patch = Patch()
+            filt = patch.add_module(
+                "filter",
+                params={"mode": "bandpass", "cutoff": 2000.0, "resonance": 3.0},
+            )
+            return NumpyBackend(sample_rate=44100, block_size=512), filt
+
+        b1, f1 = fresh()
+        split = np.concatenate(
+            [
+                b1._render_filter_mono(f1, 512, big[:512], None),
+                b1._render_filter_mono(f1, 512, big[512:], None),
+            ]
+        )
+        b2, f2 = fresh()
+        whole = b2._render_filter_mono(f2, 1024, big, None)
+        assert np.max(np.abs(split.astype(np.float64) - whole.astype(np.float64))) < 1e-6
+
+    def test_unknown_mode_passthrough_unchanged(self):
+        backend = NumpyBackend(sample_rate=44100, block_size=256)
+        patch = Patch()
+        filt = patch.add_module("filter", params={"mode": "notch?!"})
+        buf = np.linspace(-1, 1, 256, dtype=np.float32)
+        out = backend._render_filter_mono(filt, 256, buf, None)
+        assert np.array_equal(out, buf)

@@ -41,6 +41,7 @@ import wave
 from typing import Any
 
 import numpy as np
+from scipy.signal import lfilter
 
 from ..core.patch import Patch
 from ..modules.keyboard import midi_to_freq
@@ -1152,14 +1153,11 @@ class NumpyBackend(AudioBackend):
             use case: one LFO modulates every voice's filter equally).
           * No cutoff_cv -> static cutoff from the param.
 
-        Per-sample loop in Python -- slow per sample but constant-cost
-        per block; a 512-sample block costs ~100us in the mono path.
-        The voice path adds a (V,)-wide broadcast inside the same loop,
-        which numpy makes essentially free (~1.5x the mono cost for
-        V=16), still well under the ~11.6ms callback budget at 44.1 kHz.
-        For multi-filter chains we'd reach for scipy.signal.lfilter
-        (chunk-safe via ``zi``); we avoid scipy as a dep until the perf
-        actually pinches.
+        The mono path runs through ``scipy.signal.lfilter`` (filter
+        vectorization slice 3, 2026-06-12): the serial time recurrence
+        executes in C, ~17x faster than the old per-sample Python loop.
+        The voice path still uses the per-sample loop with a (V,)-wide
+        broadcast per iteration; slice 4 moves it to lfilter too.
         """
         # collapse=False so a voice-aware (V, F) audio input reaches us
         # with the voice axis intact. cutoff_cv is also fetched with
@@ -1223,11 +1221,28 @@ class NumpyBackend(AudioBackend):
         return b0, b1, b2, a1n, a2n
 
     def _render_filter_mono(self, module, frames, src_buf, cutoff_cv):
-        """Mono fast path -- single biquad, scalar state, output ``(F,)``.
+        """Mono fast path -- single biquad via ``scipy.signal.lfilter``.
 
-        Functionally unchanged from the pre-slice-3 implementation; the
-        scalar inner loop is exactly the same so every existing Filter
-        test passes bit-for-bit identically.
+        Filter vectorization slice 3: the per-sample Python loop is
+        gone; one lfilter call runs the biquad's time recurrence in C
+        (~17x on the 2026-06-09 spike). Output is float64 round-off
+        identical to the old loop (see
+        ``TestFilterMonoLfilterEquivalence``).
+
+        State stays the raw DF-I history ``(x1, x2, y1, y2)`` rather
+        than lfilter's ``zf``. Raw history is coefficient-independent,
+        so a block-mean cutoff_cv that changes the coefficients between
+        blocks behaves exactly as the old loop did; ``zf`` is defined
+        relative to one coefficient set and would diverge on changes.
+        At block start the history is converted to the equivalent
+        transposed-DF-II initial condition::
+
+            zi1 = b1*x1 + b2*x2 - a1n*y1 - a2n*y2
+            zi2 = b2*x1 - a2n*y1
+
+        (this is what ``scipy.signal.lfiltic`` computes -- inlined to
+        keep the hot path allocation-light), and after the block the
+        history is read back off the input/output tails.
         """
         state = self._state.setdefault(
             module.id, {"x1": 0.0, "x2": 0.0, "y1": 0.0, "y2": 0.0}
@@ -1244,10 +1259,11 @@ class NumpyBackend(AudioBackend):
 
         # CV-modulate the cutoff. 1V/octave: ``cutoff *= 2 ** mean(cv)``.
         # Block-mean keeps the biquad coefficient recomputation to one
-        # pass per block; audio-rate cutoff mod would need per-sample
-        # coefs (~9x cost in this tight scalar loop). If cutoff_cv is
-        # 2D (a voice-aware source feeding a mono filter), mean over
-        # both axes -- same effect as the old collapse=True path.
+        # pass per block; audio-rate cutoff mod would need a time-
+        # varying filter, which a single lfilter call can't express.
+        # If cutoff_cv is 2D (a voice-aware source feeding a mono
+        # filter), mean over both axes -- same effect as the old
+        # collapse=True path.
         if cutoff_cv is not None and cutoff_cv.size > 0:
             cutoff = cutoff * float(2.0 ** float(np.mean(cutoff_cv)))
 
@@ -1256,30 +1272,32 @@ class NumpyBackend(AudioBackend):
             return src_buf.astype(np.float32)  # unknown mode -> passthrough
         b0, b1, b2, a1n, a2n = coeffs
 
+        if frames == 0:
+            return np.empty(0, dtype=np.float32)
+
         x1 = state["x1"]
         x2 = state["x2"]
         y1 = state["y1"]
         y2 = state["y2"]
 
-        out = np.empty(frames, dtype=np.float32)
-        # Tight scalar loop. NumPy can't vectorize IIR (each sample
-        # depends on the previous output). Python's still fast enough
-        # at this size.
-        for n in range(frames):
-            x0 = float(src_buf[n])
-            y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1n * y1 - a2n * y2
-            out[n] = y0
-            x2 = x1
-            x1 = x0
-            y2 = y1
-            y1 = y0
+        zi = np.array(
+            [
+                b1 * x1 + b2 * x2 - a1n * y1 - a2n * y2,
+                b2 * x1 - a2n * y1,
+            ],
+            dtype=np.float64,
+        )
+        x = src_buf.astype(np.float64)
+        out64, _zf = lfilter(
+            np.array([b0, b1, b2]), np.array([1.0, a1n, a2n]), x, zi=zi
+        )
 
-        state["x1"] = x1
-        state["x2"] = x2
-        state["y1"] = y1
-        state["y2"] = y2
+        state["x1"] = float(x[-1])
+        state["x2"] = float(x[-2]) if frames >= 2 else x1
+        state["y1"] = float(out64[-1])
+        state["y2"] = float(out64[-2]) if frames >= 2 else y1
 
-        return out
+        return out64.astype(np.float32)
 
     def _render_filter_voice(self, module, frames, src_buf, cutoff_cv):
         """Voice-aware path -- V parallel biquads, output ``(V, F)``.

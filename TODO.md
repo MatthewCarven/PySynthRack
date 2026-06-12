@@ -126,10 +126,21 @@ Living list of what's next. Edit freely.
         built-in scipy hook, only `pyo` is excluded); cp312 win_amd64 wheel confirmed
         (scipy 1.17.1, ~36 MB wheel). **Pending Matthew:** `uv pip install scipy` in the
         build venv → `.\build.ps1` → note exe size delta → commit.
-  - [ ] Slice 3 — `_render_filter_mono` → lfilter with zf→zi block continuity + a
-        numerical-equivalence test vs the old loop. Proves the state pattern on the
-        simplest path first.
-  - [ ] Slice 4 — `_render_filter_voice`: shared-coeff fast path = one lfilter along
+  - [x] Slice 3 — **shipped 2026-06-12.** `_render_filter_mono` → one lfilter call.
+        Deliberate deviation from the spike's zf→zi carry (see WORKLOG): persisted
+        state stays the raw DF-I history (x1,x2,y1,y2) — coefficient-independent,
+        so per-block cutoff_cv coefficient changes behave exactly as the old loop —
+        converted to the equivalent DF-IIt `zi` at block start (lfiltic identity,
+        inlined) and read back off the buffer tails after. Result is *bit-identical*
+        to the old loop: max err 0.0 after the float32 cast, across all modes,
+        per-block CV sweeps, and frames=1 blocks. 7 new tests in
+        TestFilterMonoLfilterEquivalence with the verbatim old loop as oracle;
+        suite 410 (+18 mido). First production import of scipy — exe size delta
+        becomes measurable at the next build (expected +30–40 MB on 23.1 MB
+        baseline; budget ~256 MB).
+  - [x] ~~Transient~~ — cleared 2026-06-12: `git push --force-with-lease` landed;
+        local main == origin/main, junk history gone.
+  - [ ] **Slice 4 ← NEXT** — `_render_filter_voice`: shared-coeff fast path = one lfilter along
         the time axis (zi shape (V, 2)); per-voice cutoff = 16-call loop. Voice-aware
         equivalence tests; measure the per-voice path's real (smaller) win.
   - [ ] Slice 5 — crossover (optional, separable): same cascaded-biquad shape, sosfilt
