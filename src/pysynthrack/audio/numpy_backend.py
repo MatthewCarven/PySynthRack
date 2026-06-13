@@ -96,6 +96,16 @@ class NumpyBackend(AudioBackend):
         # array of per-octave tables. Built once on first use via
         # _get_wavetable; shared across every oscillator-like module.
         self._wavetables: dict[str, np.ndarray] = {}
+        # CV meter levels for the UI. The audio thread writes one
+        # scalar (block-mean) per cv-kind output port into a fresh dict
+        # each block, then swaps the reference in atomically; the GUI
+        # thread reads a snapshot. No lock — a stale meter frame is
+        # harmless, and reference assignment is atomic under the GIL.
+        # ``_cv_output_ports`` is the precomputed (module_id, port) list
+        # of cv outputs, rebuilt each compile so render_block doesn't
+        # have to re-derive signal kinds per block.
+        self._cv_output_ports: list[tuple[int, str]] = []
+        self._meter_levels: dict[tuple[int, str], float] = {}
 
     # ----- availability ----------------------------------------------------
 
@@ -109,6 +119,14 @@ class NumpyBackend(AudioBackend):
         with self._lock:
             self._patch = patch
             self._topo_order = self._topological_sort(patch)
+            # Precompute which output ports carry CV, for the UI meters.
+            cv_ports: list[tuple[int, str]] = []
+            for mid, module in patch.modules.items():
+                for port in module.output_ports:
+                    if port.signal_kind == "cv":
+                        cv_ports.append((mid, port.name))
+            self._cv_output_ports = cv_ports
+            self._meter_levels = {}
             # Recompile = a fresh chance. Clear any sticky crash state
             # from the previous patch so audio resumes on the new graph.
             self._render_disabled = False
@@ -330,6 +348,7 @@ class NumpyBackend(AudioBackend):
         with self._lock:
             patch = self._patch
             order = list(self._topo_order)
+            cv_ports = list(self._cv_output_ports)
         if patch is None:
             return None
 
@@ -352,6 +371,19 @@ class NumpyBackend(AudioBackend):
                 # module declares exactly one).
                 if module.OUTPUT_PORTS:
                     buffers[(module_id, module.OUTPUT_PORTS[0].name)] = result
+
+        # CV meters: one block-mean scalar per cv output port. Cheap
+        # (a handful of ports), and only touches buffers already built.
+        # Voice-aware (V, F) buffers collapse via a full mean. Build a
+        # fresh dict and swap the reference so the GUI never sees a
+        # half-updated map.
+        if cv_ports:
+            levels: dict[tuple[int, str], float] = {}
+            for key in cv_ports:
+                buf = buffers.get(key)
+                if buf is not None and buf.size:
+                    levels[key] = float(np.mean(buf))
+            self._meter_levels = levels
 
         out = np.zeros((frames, 2), dtype=np.float32)
         for module in patch.modules.values():
@@ -381,6 +413,16 @@ class NumpyBackend(AudioBackend):
 
         np.clip(out, -1.0, 1.0, out=out)
         return out
+
+    def snapshot_meter_levels(self) -> dict[tuple[int, str], float]:
+        """GUI hook: a copy of the latest per-cv-port block-mean levels.
+
+        Keyed by ``(module_id, output_port_name)``. Empty until the
+        first block renders, or when no patch carries CV outputs. The
+        copy keeps the caller isolated from the audio thread's next
+        reference swap.
+        """
+        return dict(self._meter_levels)
 
     # ----- per-module rendering -------------------------------------------
 

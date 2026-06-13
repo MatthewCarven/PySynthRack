@@ -91,6 +91,14 @@ class App:
         # doesn't fire note_on repeatedly while a key is held.
         self._held_keys: set[int] = set()
 
+        # CV meters. For each cv-kind output port we draw a progress bar
+        # under its node attribute; ``_cv_meter_bars`` maps the port key
+        # (module_id, port_name) to that bar's dpg tag. ``_meter_bounds``
+        # holds the per-port auto-range state [lo, hi] used to normalise
+        # the fill (instant-attack / slow-release; see _auto_range_fill).
+        self._cv_meter_bars: dict[tuple[int, str], int] = {}
+        self._meter_bounds: dict[tuple[int, str], list[float]] = {}
+
     # ----- entry point ----------------------------------------------------
 
     def run(self) -> None:
@@ -108,7 +116,13 @@ class App:
                 except Exception:
                     traceback.print_exc()
             self._set_status(f"Backend: {self.backend.name}  |  sr={self.backend.sample_rate}")
-            dpg.start_dearpygui()
+            # Manual render loop (vs dpg.start_dearpygui) so each frame can
+            # push fresh CV meter levels from the audio thread into the
+            # progress bars. render_dearpygui_frame paces itself to the
+            # viewport's vsync, so this is no busier than the built-in loop.
+            while dpg.is_dearpygui_running():
+                self._update_cv_meters()
+                dpg.render_dearpygui_frame()
         finally:
             try:
                 self.backend.stop()
@@ -244,6 +258,18 @@ class App:
                     attribute_type=dpg.mvNode_Attr_Output,
                 ) as attr_id:
                     dpg.add_text(f"{port.name} ▶")
+                    # A live meter for CV outputs: a 0..1 bar whose fill
+                    # is auto-ranged to the source's recent swing, with
+                    # the actual current value printed as the overlay.
+                    # Audio outputs get no meter (they'd peg at audio
+                    # rate and mean nothing at a glance).
+                    if port.signal_kind == "cv":
+                        bar = dpg.add_progress_bar(
+                            default_value=0.0,
+                            overlay="--",
+                            width=120,
+                        )
+                        self._cv_meter_bars[(module.id, port.name)] = bar
                 self._attr_to_port[attr_id] = (module.id, port.name, "out")
                 self._port_to_attr[(module.id, port.name, "out")] = attr_id
 
@@ -744,9 +770,73 @@ class App:
         self._attr_to_port.clear()
         self._port_to_attr.clear()
         self._link_to_cable.clear()
+        # The bars themselves were children of the editor and are already
+        # gone; drop our references and the stale auto-range bounds so a
+        # freshly-loaded patch starts metering from scratch.
+        self._cv_meter_bars.clear()
+        self._meter_bounds.clear()
         # Reset the cascade so a fresh-loaded patch (with no saved positions)
         # starts laying out from the top-left again.
         self._next_node_pos = [40, 40]
+
+    # ----- CV meters ------------------------------------------------------
+
+    # Per-frame release coefficient for the auto-range bounds. Each frame
+    # the [lo, hi] window relaxes this fraction of the way toward the
+    # current value (shrinking the range when the signal stops hitting
+    # its old extremes), then re-widens instantly to include the current
+    # value. ~0.02 at vsync rates settles over roughly a second -- fast
+    # enough to track a patch change, slow enough not to twitch.
+    _METER_RELEASE = 0.02
+
+    def _update_cv_meters(self) -> None:
+        """Push the backend's latest per-cv-port levels into the bars.
+
+        Called once per rendered frame. Cheap and defensive: backends
+        without the meter hook (e.g. the pyo stub) simply no-op, and a
+        port that isn't currently producing a level leaves its bar
+        untouched (frozen at its last reading) rather than snapping to
+        zero.
+        """
+        if not self._cv_meter_bars:
+            return
+        snapshot = getattr(self.backend, "snapshot_meter_levels", None)
+        if snapshot is None:
+            return
+        levels = snapshot()
+        for key, bar in self._cv_meter_bars.items():
+            value = levels.get(key)
+            if value is None:
+                continue
+            value = float(value)
+            fill = self._auto_range_fill(key, value)
+            dpg.set_value(bar, fill)
+            dpg.configure_item(bar, overlay=f"{value:+.2f}")
+
+    def _auto_range_fill(self, key: tuple[int, str], value: float) -> float:
+        """Normalise ``value`` into 0..1 against the port's auto-range
+        window, updating that window in place (instant attack, slow
+        release). A near-constant source (range ~ 0) parks the bar at
+        mid-scale rather than dividing by zero.
+        """
+        bounds = self._meter_bounds.get(key)
+        if bounds is None:
+            # First sight: seed the window on this value, show mid-scale.
+            self._meter_bounds[key] = [value, value]
+            return 0.5
+        lo, hi = bounds
+        k = self._METER_RELEASE
+        lo += (value - lo) * k
+        hi += (value - hi) * k
+        if value < lo:
+            lo = value
+        if value > hi:
+            hi = value
+        bounds[0], bounds[1] = lo, hi
+        span = hi - lo
+        if span < 1e-6:
+            return 0.5
+        return min(1.0, max(0.0, (value - lo) / span))
 
     def _recompile_if_running(self) -> None:
         if self.backend.is_running:

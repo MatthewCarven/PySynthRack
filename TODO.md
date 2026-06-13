@@ -120,7 +120,9 @@ Living list of what's next. Edit freely.
         Build is Matthew's to run → ends in a hand-off. **Closed 2026-06-10:** scipy
         installed in build venv, exe builds clean at 23.1 MB. Size delta deferred to
         slice 3 by construction — PyInstaller bundles only imported modules and nothing
-        imports scipy yet; 23.1 MB is the baseline to compare against.
+        imports scipy yet; 23.1 MB is the baseline to compare against. **Measured
+        2026-06-12: 54,206,720 bytes (51.7 MB) once scipy is imported — +28.6 MB
+        on the 23.1 MB baseline, well under Matthew's ~256 MB budget.**
         **Claude's half done 2026-06-10:** `scipy>=1.11` added to pyproject + requirements;
         `build.ps1` pre-flight now checks scipy; specs need no change (PyInstaller has a
         built-in scipy hook, only `pyo` is excluded); cp312 win_amd64 wheel confirmed
@@ -167,6 +169,15 @@ Living list of what's next. Edit freely.
 - [x] `CVToFrequency` phase 1 — shipped 2026-05-23. Self-contained CV-controlled oscillator. Three-point CV→Hz mapping (`f0` at CV=0, `fm` at CV=0.5, `f1` at CV=1.0) with `mode` param (`"log"` default for musical octaves — equal-octave splits, `"linear"` for bent sweeps — equal-Hz splits), `waveform` (sine/triangle/square/saw), and a `freq` fallback for unpatched CV. Bipolar CV is clamped to [0, 1] (phase 2 adds the negative-side mapping). Voice-aware via shape-polymorphism on the CV input — (V, F) CV → V independent phase accumulators. Example: `examples/cvtofreq_blip.json` (synthesized-kick pitch envelope). 22 new tests; full suite 339 passing.
 - [x] `CVToFrequency` phase 2 — shipped 2026-06-07. `negative_enabled` (default False, phase-1 clamp preserved), `f0_neg`/`fm_neg`/`f1_neg`, independent `mode_neg`; CV=0 belongs to the positive side, crossing continuity is the user's choice, beyond ±1 clamps. Drive-by: fixed the UI mode combo offering filter items on this node since phase 1. Example: `examples/cvtofreq_bipolar_pendulum.json` (log upswing, linear downswing). 12 new tests; suite 383.
 - [x] Drive-by: `tests/test_adsr.py::test_no_nan_with_zero_durations` undefined `sr` — fixed 2026-06-04 (inlined `sample_rate=44100`). Suite now fully green.
+- [x] **CV source meters** — shipped 2026-06-12. Each cv-kind *output* port draws a
+      0..1 progress bar under its node jack, auto-ranged per source (instant-attack /
+      slow-release window, constant sources park mid-scale) with the live value as the
+      bar overlay. Backend captures one block-mean scalar per cv output into
+      `_meter_levels` (atomic dict swap, no lock) exposed via `snapshot_meter_levels`;
+      UI swapped `start_dearpygui` for a manual render loop that ticks the bars each
+      frame. 7 headless tests in `tests/test_cv_meters.py`; suite 426. Possible
+      follow-ups: a fixed-range toggle for sources you know are 0..1, or input-side
+      meters too.
 - [ ] CV utility modules: `Constant` (params: value; outputs a fixed CV — useful as a CVCombiner input to bias another modulator), `CVScale` (cv in × gain param → cv out), `CVOffset` (cv in + offset param → cv out). The MIDIInput's `bend_range` / `mod_scale` patterns hint at the need; these utilities let any source feed any destination with arbitrary scale/offset without baking the knob into the source module.
 - [ ] Sample-and-hold module
 - [ ] Noise generator (white / pink)

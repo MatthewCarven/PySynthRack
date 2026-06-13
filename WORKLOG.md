@@ -3204,3 +3204,62 @@ cascaded biquads, exactly sosfilt's shape). Droppable; if skipped,
 slice 6 (native re-profile + docs) closes the filter-vectorization
 arc.
 
+## 2026-06-12 — CV source meters (+ exe size measured)
+
+**Matthew ran the scipy build:** `dist/PySynthRack.exe` is now
+54,206,720 bytes (51.7 MB) vs the 23.1 MB pre-scipy baseline — scipy
+costs +28.6 MB, comfortably under the ~256 MB budget (and the thing
+wants a couple GB of RAM to run regardless). Slice-3 TODO note
+annotated with the figure; the filter-vectorization size question is
+now closed.
+
+**New feature — live CV meters on the node graph.** Every cv-kind
+*output* port now shows a little 0..1 progress bar tucked under its
+jack, so you can see what a modulator is doing at a glance.
+
+*Backend (headless-tested).* `render_block` already builds every
+port's buffer and threw it away; now it also stashes one block-mean
+scalar per cv output port into `self._meter_levels`, building a fresh
+dict each block and swapping the reference in atomically — no lock,
+since a stale meter frame is harmless and the GUI only ever reads a
+`snapshot_meter_levels()` copy. The cv-output port list is precomputed
+each `compile()` (`_cv_output_ports`) so the hot path doesn't re-derive
+signal kinds, and it resets on every recompile so stale meters can't
+linger across a patch swap. Voice-aware (V, F) cv buffers collapse via
+a full mean. 7 tests in `tests/test_cv_meters.py` cover capture, the
+compile rebuild/reset, voice collapse, snapshot isolation, and the
+disconnected-port (absent, not garbage) case. Suite 419 → 426.
+
+*UI (Matthew runs to see it).* Two changes in `ui/app.py`:
+1. `run()` swaps `dpg.start_dearpygui()` for the manual
+   `while dpg.is_dearpygui_running(): self._update_cv_meters();
+   dpg.render_dearpygui_frame()` loop — same vsync pacing, but now
+   there's a per-frame hook. This is the one structural change.
+2. `_create_node_for_module` adds a `dpg.add_progress_bar` under each
+   cv output attribute (audio outputs get none — they'd peg at audio
+   rate and mean nothing). `_clear_editor` drops the bar refs +
+   auto-range state on patch load.
+
+*Auto-range (the chosen behaviour).* Matthew picked per-source
+auto-ranging over a fixed 0..1 bar — most CV here isn't unipolar
+(bipolar LFOs, wide pitch CV). `_auto_range_fill` keeps a per-port
+[lo, hi] window that relaxes 2%/frame toward the current value
+(shrinking when extremes stop arriving) then re-widens instantly to
+include it: instant attack, ~1 s release. A near-constant source
+(range < 1e-6) parks the bar mid-scale instead of dividing by zero,
+and the actual current value is printed as the bar overlay so the
+auto-range's "what does full mean" ambiguity is always resolved by a
+number. Verified the arithmetic standalone (sine sweeps full 0↔1,
+constant → 0.5, step change captured instantly); the DPG rendering is
+Matthew's to eyeball.
+
+**Hand-off to Matthew:** commit (message in chat), then run the GUI
+(`python -m pysynthrack` in the `[gui]` venv) and open a patch with an
+LFO or ADSR to watch the bars move. The pyo backend has no meter hook;
+`_update_cv_meters` no-ops there by design (getattr guard).
+
+**Next:** back to the filter arc if you like — slice 5 (crossover on
+sosfilt, optional) or slice 6 (native re-profile, closes it). Or keep
+adding modules; the CV-utility trio (Constant / CVScale / CVOffset) is
+still queued and would pair naturally with the new meters.
+
