@@ -16,6 +16,9 @@ What works in v0.1:
 
 Coming next: filters, ADSR envelope, LFO, mixer, splitter/combiner, Linkwitz-Riley crossover, disk-writer output, MIDI input.
 
+<img width="1266" height="793" alt="image" src="https://github.com/user-attachments/assets/60918d8e-b21c-46fd-a0d4-768854ec9ee6" />
+
+
 ## Architecture
 
 ```
