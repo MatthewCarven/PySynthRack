@@ -453,7 +453,7 @@ class App:
                     default_value=float(current),
                     speed=0.1,
                     min_value=0.01,
-                    max_value=100.0,
+                    max_value=120.0,
                     format="%.2f Hz",
                     width=140,
                     callback=self._on_param_changed,

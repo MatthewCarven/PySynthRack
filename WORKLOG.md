@@ -3263,3 +3263,15 @@ sosfilt, optional) or slice 6 (native re-profile, closes it). Or keep
 adding modules; the CV-utility trio (Constant / CVScale / CVOffset) is
 still queued and would pair naturally with the new meters.
 
+
+## 2026-06-17 — LFO rate slider ceiling 100 → 120 Hz
+
+Bumped the LFO `rate` drag_float `max_value` from 100.0 to 120.0 in
+`ui/app.py` (the only gate — the LFO module itself never clamped rate).
+Lets the CV LFO be dialed to 120 Hz in the GUI; `min_value` (0.01) and
+the `%.2f Hz` format are unchanged. Note `rate_cv` (1V/oct) can still
+push effective rate past the slider ceiling at runtime, as before.
+Staged via sandbox per the mount protocol; AST-parsed clean, line count
+unchanged (900), no residual `max_value=100`.
+
+**Hand-off to Matthew:** commit when convenient.
