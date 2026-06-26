@@ -38,6 +38,13 @@ See `docs/architecture.md` for the longer write-up.
 ## Windows Binary
 https://drive.google.com/file/d/1rM69rwT8YW5tqquJZ126CUD4lJsgooyq/view?usp=sharing
 
+<img width="609" height="34" alt="image" src="https://github.com/user-attachments/assets/21e8f531-fb40-496a-9b4f-723e3fcc7d32" />
+
+New Version
+https://drive.google.com/file/d/1O-8EN4LsOeG2Sx664ZExyqiz6oRdIVnG/view?usp=sharing
+
+<img width="597" height="30" alt="image" src="https://github.com/user-attachments/assets/20fb6933-d8cb-4555-ab50-f9e9df6bc05f" />
+
 ## Installation (Windows)
 
 PySynthRack splits its dependencies so the audio engine can be installed on any Python version, while the GUI (DearPyGui) is optional — DPG sometimes lags on bleeding-edge Python releases.
