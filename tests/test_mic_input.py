@@ -109,20 +109,23 @@ class TestRenderer:
 
 
 class TestResolveMicInput:
-    def test_default_device_resolves_to_none_mono(self):
+    def test_default_device_resolves_to_none(self):
         be = NumpyBackend(sample_rate=SR)
         patch = Patch()
         mic = patch.add_module("mic_input")  # device=""
-        # No sounddevice in the sandbox -> query fails -> (None, 1).
-        assert be._resolve_mic_input(mic) == (None, 1)
+        dev, ch = be._resolve_mic_input(mic)
+        assert dev is None          # "" -> system default input
+        assert ch in (1, 2)         # clamped 1..2: mono-dup, or true stereo
+                                    # (sandbox has no sounddevice -> 1; a real
+                                    # stereo default mic -> 2)
 
     def test_named_device_passed_through(self):
         be = NumpyBackend(sample_rate=SR)
         patch = Patch()
         mic = patch.add_module("mic_input", params={"device": "Scarlett 2i2"})
         dev, ch = be._resolve_mic_input(mic)
-        assert dev == "Scarlett 2i2"
-        assert ch == 1  # query fails without sd -> mono default
+        assert dev == "Scarlett 2i2"   # name passed straight through
+        assert ch in (1, 2)            # clamped 1..2 regardless of host
 
 
 class TestDeviceEnumeration:
