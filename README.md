@@ -18,6 +18,8 @@ Coming next: filters, ADSR envelope, LFO, mixer, splitter/combiner, Linkwitz-Ril
 
 <img width="1266" height="793" alt="image" src="https://github.com/user-attachments/assets/60918d8e-b21c-46fd-a0d4-768854ec9ee6" />
 
+<img width="1561" height="793" alt="image" src="https://github.com/user-attachments/assets/8741ae75-ae27-4e05-9c8c-cb4364d673a2" />
+
 
 ## Architecture
 
