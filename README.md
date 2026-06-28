@@ -43,10 +43,13 @@ https://drive.google.com/file/d/1rM69rwT8YW5tqquJZ126CUD4lJsgooyq/view?usp=shari
 New Version
 https://drive.google.com/file/d/1O-8EN4LsOeG2Sx664ZExyqiz6oRdIVnG/view?usp=sharing
 
+<img width="597" height="30" alt="image" src="https://github.com/user-attachments/assets/20fb6933-d8cb-4555-ab50-f9e9df6bc05f" />
+
 Extra New Version
 https://drive.google.com/file/d/1BsgRBylvy4ngGPuNp09A66T-OATiMogK/view?usp=sharing
 
-<img width="597" height="30" alt="image" src="https://github.com/user-attachments/assets/20fb6933-d8cb-4555-ab50-f9e9df6bc05f" />
+<img width="589" height="20" alt="image" src="https://github.com/user-attachments/assets/51c1cad6-5c5a-439c-b0fc-377bb706036f" />
+
 
 ## Installation (Windows)
 
