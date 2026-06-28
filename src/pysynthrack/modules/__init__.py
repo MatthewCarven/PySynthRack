@@ -19,6 +19,7 @@ from .fileplayer import FilePlayer
 from .filter import Filter
 from .keyboard import Keyboard
 from .lfo import LFO
+from .micinput import MicInput
 from .midiinput import MIDIInput
 from .mixer import Mixer
 from .oscillator import Oscillator
@@ -40,6 +41,7 @@ __all__ = [
     "Keyboard",
     "LeftSpeakerOutput",
     "LFO",
+    "MicInput",
     "MIDIInput",
     "Mixer",
     "Oscillator",

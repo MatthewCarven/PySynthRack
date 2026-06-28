@@ -107,6 +107,11 @@ class NumpyBackend(AudioBackend):
         # have to re-derive signal kinds per block.
         self._cv_output_ports: list[tuple[int, str]] = []
         self._meter_levels: dict[tuple[int, str], float] = {}
+        # Latest captured input block (frames, channels) from the
+        # duplex stream's callback, or None on an output-only stream.
+        # MicInput's renderer reads it; reset on stop so a stale block
+        # can't leak into the next run.
+        self._input_block: np.ndarray | None = None
 
     # ----- availability ----------------------------------------------------
 
@@ -222,6 +227,36 @@ class NumpyBackend(AudioBackend):
             )
         if self._patch is None:
             raise RuntimeError("Call compile(patch) before start().")
+        # Full-duplex only when a mic module is present; otherwise the
+        # cheaper output-only stream (no input device / permission
+        # needed). A duplex open that fails (no device, rate mismatch,
+        # permission denied) falls back to output-only so the rest of
+        # the patch still plays and MicInput just renders silence.
+        mic_modules = [
+            m for m in self._patch.modules.values() if m.TYPE == "mic_input"
+        ]
+        if mic_modules:
+            in_device, in_channels = self._resolve_mic_input(mic_modules[0])
+            try:
+                self._stream = sd.Stream(
+                    samplerate=self.sample_rate,
+                    blocksize=self.block_size,
+                    device=(in_device, None),
+                    channels=(in_channels, 2),
+                    dtype="float32",
+                    callback=self._duplex_callback,
+                )
+                self._stream.start()
+                self._running = True
+                return
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "MicInput: duplex stream open failed (%s); falling "
+                    "back to output-only — mic will be silent.", e
+                )
+                self._stream = None
+                self._input_block = None
         self._stream = sd.OutputStream(
             samplerate=self.sample_rate,
             channels=2,
@@ -241,6 +276,9 @@ class NumpyBackend(AudioBackend):
         finally:
             self._stream = None
             self._running = False
+        # Drop any captured input so a stale block can't leak into the
+        # next start() (which may be output-only).
+        self._input_block = None
         # Close any active disk writers so their WAV headers get
         # finalized when the user hits Stop on the transport.
         for mid in list(self._state.keys()):
@@ -272,6 +310,23 @@ class NumpyBackend(AudioBackend):
     def _audio_callback(self, outdata: np.ndarray, frames: int, time, status) -> None:
         if status:
             print(f"[NumpyBackend] stream status: {status}")
+        self._fill_output(outdata, frames)
+
+    def _duplex_callback(
+        self, indata: np.ndarray, outdata: np.ndarray, frames: int, time, status
+    ) -> None:
+        """Full-duplex callback: stash the captured input, then render.
+
+        ``indata`` is (frames, in_channels) and is only valid for the
+        duration of this call, which is fine — MicInput's renderer reads
+        it synchronously within the same render_block below.
+        """
+        if status:
+            print(f"[NumpyBackend] stream status: {status}")
+        self._input_block = indata
+        self._fill_output(outdata, frames)
+
+    def _fill_output(self, outdata: np.ndarray, frames: int) -> None:
         if self._render_disabled:
             outdata.fill(0.0)
             return
@@ -496,6 +551,8 @@ class NumpyBackend(AudioBackend):
             return self._render_disk_writer(module, frames, buffers, patch)
         if module.TYPE == "file_player":
             return self._render_file_player(module, frames, buffers, patch)
+        if module.TYPE == "mic_input":
+            return self._render_mic_input(module, frames, buffers, patch)
         if module.TYPE in self._SPEAKER_CHANNELS:
             return None  # speaker-family sink — drained by the speaker pass
         return None
@@ -2412,7 +2469,7 @@ class NumpyBackend(AudioBackend):
         ``neg`` None (negative_enabled False) this is exactly the
         phase-1 positive mapping and its internal [0, 1] clamp.
         Otherwise cv >= 0 maps through ``pos`` and cv < 0 maps through
-        ``neg`` on \|cv\|, so the negative anchors read naturally:
+        ``neg`` on |cv|, so the negative anchors read naturally:
         f0_neg at CV=0⁻, fm_neg at CV=-0.5, f1_neg at CV=-1.0, and CV
         below -1 clamps to f1_neg via the shared [0, 1] clamp on the
         mirrored value.
@@ -2785,6 +2842,52 @@ class NumpyBackend(AudioBackend):
         return {"low": low, "high": high}
 
     # ----- DiskWriter rendering -------------------------------------------
+
+    def _render_mic_input(self, module, frames: int, buffers=None, patch=None):
+        """Publish the latest captured input block as stereo audio.
+
+        Reads ``self._input_block`` (set by the duplex callback). A
+        2-channel device maps to left/right; a mono device duplicates to
+        both. No input (output-only stream, or before the first capture)
+        renders silence. A block shorter than ``frames`` is zero-padded,
+        a longer one truncated, so a momentary size mismatch can never
+        raise on the audio thread.
+        """
+        left = np.zeros(frames, dtype=np.float32)
+        right = np.zeros(frames, dtype=np.float32)
+        block = self._input_block
+        if block is not None and getattr(block, "ndim", 0) == 2 and block.shape[0] > 0:
+            n = min(frames, block.shape[0])
+            if block.shape[1] >= 2:
+                left[:n] = block[:n, 0]
+                right[:n] = block[:n, 1]
+            else:
+                mono = block[:n, 0]
+                left[:n] = mono
+                right[:n] = mono
+            gain = float(module.params.get("gain", 1.0))
+            if gain != 1.0:
+                left *= gain
+                right *= gain
+        return {"left": left, "right": right}
+
+    def _resolve_mic_input(self, module):
+        """(device, in_channels) for opening the duplex input.
+
+        ``device``: None for the system default (the ``""`` sentinel), or
+        the device-name string passed straight to sounddevice. Channels
+        are clamped to 1..2 from the device's reported input capability,
+        defaulting to mono if the query fails.
+        """
+        dev_name = str(module.params.get("device", ""))
+        in_device = None if dev_name == "" else dev_name
+        in_channels = 1
+        try:
+            info = sd.query_devices(in_device, "input")
+            in_channels = max(1, min(2, int(info.get("max_input_channels", 1))))
+        except Exception:
+            in_channels = 1
+        return in_device, in_channels
 
     def _render_file_player(self, module, frames: int, buffers=None, patch=None):
         """Stream a decoded WAV file to the ``left`` / ``right`` audio outs.

@@ -29,6 +29,7 @@ from ..modules.cvcombiner import CVCOMBINER_MODES
 from ..modules.cvtofrequency import MODES as CVTOFREQ_MODES
 from ..modules.lfo import LFO_WAVEFORMS
 from ..modules.midiinput import AUTO_DEVICE, available_devices as midi_available_devices
+from ..modules.micinput import available_input_devices as mic_available_devices
 from ..modules.oscillator import WAVEFORMS
 
 
@@ -351,8 +352,15 @@ class App:
         # module, or reopen the patch) to refresh after hot-plugging. An
         # empty string at the top is the "auto-pick first available" path,
         # so saved patches that don't pin a device still load and run.
-        if param_name == "device" and module.TYPE == "midi_input":
-            devices = midi_available_devices()
+        if param_name == "device" and module.TYPE in ("midi_input", "mic_input"):
+            # Snapshot the relevant device list at widget creation; the
+            # user recompiles (delete+re-add, or reopen the patch) to
+            # refresh after hot-plugging. MIDIInput lists MIDI ports;
+            # MicInput lists audio capture devices.
+            if module.TYPE == "midi_input":
+                devices = midi_available_devices()
+            else:
+                devices = mic_available_devices()
             items = [AUTO_DEVICE] + devices
             current_str = str(current)
             if current_str not in items:

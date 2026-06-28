@@ -3386,3 +3386,71 @@ hit play — the node shows e.g. `0:14 / 3:42` ticking up.
 **Next:** unchanged — filter slice 5 (crossover->sosfilt) / slice 6
 (re-profile), or the CV-utility trio. A patchable position CV output is
 now an easy add if you ever want to modulate *with* the playhead.
+
+
+## 2026-06-28 — MicInput module (live mic capture → stereo audio source)
+
+Beatbox in. New `mic_input` source: hands the patch live audio off an
+input device so a voice can be split by the Crossover and used as a
+modulation source — low band → AudioToCV → sub-osc amp (kick-driven
+envelope), high band → AudioToCV → CVToFrequency (hats steer a pitch).
+Example `examples/mic_beatbox_crossover.json` wires exactly that.
+
+*Decisions (asked Matthew):* stereo `left`/`right` outs (mono device
+duplicates to both); selectable input device via a dropdown like
+MIDIInput (vs default-only).
+
+*Module* (`modules/micinput.py`). `TYPE="mic_input"`, params `device`
+(`""`=system default) + `gain`, no inputs, two audio outs.
+`available_input_devices()` enumerates capture devices via sounddevice
+(filters `max_input_channels>0`, de-dupes, never raises); sounddevice
+import is guarded so the module still registers without PortAudio.
+
+*Backend* (`audio/numpy_backend.py`). The real work: live input means a
+**full-duplex** stream. `start()` now opens `sd.Stream` (input+output, one
+callback) *only* when the patch contains a mic module — patches without
+one keep the cheaper `sd.OutputStream`, so no-mic / no-permission users
+are never forced into capture. A duplex open that fails (no device, rate
+mismatch, permission denied) logs and falls back to output-only, so the
+rest of the patch still plays and the mic renders silence. `_audio_callback`
+was refactored: the shared render+write body is now `_fill_output`, the
+output-only callback calls it, and the new `_duplex_callback(indata,
+outdata, …)` stashes `self._input_block = indata` before calling it.
+`_render_mic_input` reads that block — 2ch → left/right, 1ch → duplicated,
+gain applied, short block zero-padded / long truncated so a size mismatch
+can never raise on the audio thread; None (output-only / pre-first-capture)
+→ silence. `_resolve_mic_input` maps the device param to (device, channels)
+for the open (`""`→default, channels clamped 1..2 from the device query).
+`stop()` clears `_input_block`. Drive-by: fixed the pre-existing
+`SyntaxWarning: invalid escape sequence '\|'` in the CVToFrequency docstring.
+
+*UI* (`ui/app.py`). The `device` combo branch now covers `mic_input` too
+(MIDI ports for midi_input, capture devices for mic_input); `gain` is the
+generic 0..2 slider and the stereo out jacks are automatic. Snapshotted at
+widget creation like MIDIInput — recompile to refresh after hot-plug.
+
+*No pyo change* — `_build_module` returns None for unknown types, so
+mic_input is a silent stub there (pyo is parked).
+
+*Tests* (`tests/test_mic_input.py`, 15). Shape/registration, stereo split,
+mono duplicate, gain, no-input silence, short/long block handling, full
+mic→speaker dispatch, `stop()` clears the block, `_resolve_mic_input`
+default/named, and device enumeration (empty without sounddevice, filters
++ de-dupes with a fake, never raises). Suite **458 (+18 mido)**, up from
+443. The duplex `sd.Stream` setup in `start()` and the UI combo can't run
+headless (no PortAudio/DPG in the sandbox) — those are Matthew's to verify
+live.
+
+**Feedback caveat:** mic → speakers in the same room = howl. The example
+and the module docstring both say wear headphones.
+
+**Built off-mount.** The project mount was serving corrupted reads this
+session (autocrlf-on-flaky-mount truncation); this work was built and
+tested against a fresh GitHub clone and delivered as a patch, so nothing
+touched the flaky working tree.
+
+**Hand-off to Matthew:** apply the patch (`git am`), then run the GUI,
+add a MicInput node, pick your input device, and beatbox through
+`mic_beatbox_crossover.json` (headphones!).
+
+**Next:** filter slice 5 (crossover→sosfilt) / slice 6, or CV-utility trio.

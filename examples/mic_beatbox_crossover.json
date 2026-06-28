@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "next_id": 9,
+  "modules": [
+    {
+      "id": 1,
+      "type": "mic_input",
+      "name": "Mic (beatbox in — wear headphones!)",
+      "params": {
+        "device": "",
+        "gain": 1.0
+      }
+    },
+    {
+      "id": 2,
+      "type": "crossover",
+      "name": "Crossover @ 700 Hz",
+      "params": {
+        "frequency": 700.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "audio_to_cv",
+      "name": "Low (kick) → env",
+      "params": {
+        "attack_ms": 3.0,
+        "release_ms": 90.0,
+        "gain": 1.5
+      }
+    },
+    {
+      "id": 4,
+      "type": "oscillator",
+      "name": "Sub (amp = kick band)",
+      "params": {
+        "waveform": "sine",
+        "freq": 55.0,
+        "amp": 0.6
+      }
+    },
+    {
+      "id": 5,
+      "type": "audio_to_cv",
+      "name": "High (hats/snare) → env",
+      "params": {
+        "attack_ms": 1.0,
+        "release_ms": 30.0,
+        "gain": 2.0
+      }
+    },
+    {
+      "id": 6,
+      "type": "cv_to_frequency",
+      "name": "Zap pitch from high band",
+      "params": {
+        "waveform": "square_blep",
+        "f0": 400.0,
+        "fm": 1600.0,
+        "f1": 6000.0,
+        "mode": "log"
+      }
+    },
+    {
+      "id": 7,
+      "type": "mixer",
+      "name": "Mix sub + zap",
+      "params": {
+        "gain1": 1.0,
+        "gain2": 0.5,
+        "gain3": 0.0,
+        "gain4": 0.0,
+        "master": 0.8
+      }
+    },
+    {
+      "id": 8,
+      "type": "speaker_output",
+      "name": "Out (headphones)",
+      "params": {
+        "gain": 1.0
+      }
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "left", "dst_module_id": 2, "dst_port": "in"},
+    {"src_module_id": 2, "src_port": "low",  "dst_module_id": 3, "dst_port": "in"},
+    {"src_module_id": 3, "src_port": "cv",   "dst_module_id": 4, "dst_port": "amp_cv"},
+    {"src_module_id": 2, "src_port": "high", "dst_module_id": 5, "dst_port": "in"},
+    {"src_module_id": 5, "src_port": "cv",   "dst_module_id": 6, "dst_port": "cv"},
+    {"src_module_id": 4, "src_port": "out",  "dst_module_id": 7, "dst_port": "in1"},
+    {"src_module_id": 6, "src_port": "out",  "dst_module_id": 7, "dst_port": "in2"},
+    {"src_module_id": 7, "src_port": "out",  "dst_module_id": 8, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 240],
+      "2": [320, 240],
+      "3": [580, 120],
+      "4": [840, 120],
+      "5": [580, 380],
+      "6": [840, 380],
+      "7": [1100, 240],
+      "8": [1340, 240]
+    }
+  }
+}

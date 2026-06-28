@@ -191,6 +191,18 @@ Living list of what's next. Edit freely.
       `examples/file_crossover_split.json`. Follow-ups: a retrigger/`gate`
       input for one-shot replays, 24-bit WAV support (scipy can't), a
       background loader to avoid the first-block decode hiccup.
+- [x] **MicInput (live capture source)** — shipped 2026-06-28. `mic_input`:
+      live microphone (or any input device) as a stereo (`left`/`right`)
+      audio source, so a voice can be crossover-split and used as a
+      modulation source (beatbox: low→AudioToCV→sub amp, high→AudioToCV→
+      CVToFrequency). Stereo out, selectable device dropdown. Backend opens
+      a full-duplex `sd.Stream` only when a mic module is present (else
+      output-only), with graceful fallback; `_duplex_callback` stashes the
+      input block, `_render_mic_input` maps it to L/R. 15 tests in
+      `tests/test_mic_input.py`; suite 458. Example:
+      `examples/mic_beatbox_crossover.json`. Follow-ups: input level meter,
+      a refresh-devices button (shared with MIDIInput’s same need),
+      mono-out variant if the stereo dupling is ever unwanted.
 - [ ] CV utility modules: `Constant` (params: value; outputs a fixed CV — useful as a CVCombiner input to bias another modulator), `CVScale` (cv in × gain param → cv out), `CVOffset` (cv in + offset param → cv out). The MIDIInput's `bend_range` / `mod_scale` patterns hint at the need; these utilities let any source feed any destination with arbitrary scale/offset without baking the knob into the source module.
 - [ ] Sample-and-hold module
 - [ ] Noise generator (white / pink)
