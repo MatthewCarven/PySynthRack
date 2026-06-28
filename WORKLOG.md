@@ -3275,3 +3275,114 @@ Staged via sandbox per the mount protocol; AST-parsed clean, line count
 unchanged (900), no residual `max_value=100`.
 
 **Hand-off to Matthew:** commit when convenient.
+
+
+## 2026-06-28 — FilePlayer module (WAV → stereo audio source)
+
+**New module: `file_player`.** A source that streams a WAV file into the
+patch, so a recorded track can be split by the Crossover and used as a
+modulation source. Closes Matthew's requested patch:
+`track → crossover → low → AudioToCV → Oscillator(amp_cv)` and
+`→ high → AudioToCV → CVToFrequency`. Everything downstream already
+existed — the player was the only missing piece.
+
+*Decisions (asked Matthew up front):* WAV-only (uses scipy.io.wavfile,
+already a dep — zero new deps, no exe growth; 24-bit PCM is the one gap,
+caught → silence); one-shot by default with a `loop` toggle; **stereo**
+`left` / `right` output ports (mono files duplicate to both, >2 channels
+keep the first two).
+
+*Module* (`modules/fileplayer.py`). `TYPE="file_player"`, params
+`path` / `gain` / `loop` / `armed`, no inputs, two audio outs. Pure model
+object as usual — no DSP.
+
+*Backend* (`audio/numpy_backend.py`). `_load_wav(path, target_sr)` decodes
+the whole file to a contiguous `(2, N)` float32 array once: dtype-aware
+normalise (int16/int32/uint8/float), mono→stereo duplicate, resample to the
+engine rate via `scipy.signal.resample_poly` when the file rate differs (a
+one-time load cost, not per block), returns `None` on any failure so the
+audio thread renders silence rather than raising. `_render_file_player`
+decodes lazily into `self._state` (re-decodes on path change), then each
+block is a slice: one-shot zero-pads past the end and parks; `loop` wraps
+with modular indexing so a block straddling the loop point is seamless;
+`armed=False` parks the playhead at 0 so re-arming replays from the top.
+`stop()` rewinds every file-player playhead so the next transport start
+replays a one-shot. First-block decode happens on the audio thread (like
+DiskWriter's lazy file open) — a multi-MB resample can hiccup the first
+block; acceptable for now, a background loader is the obvious upgrade if it
+bites.
+
+*No UI / pyo changes.* The generic `_add_param_widget` already covers
+`path` (text box), `gain` (0..2 slider) and the bool toggles (checkboxes),
+and `_create_node_for_module` builds the `left`/`right` output jacks
+automatically (audio outs, no meter). The pyo backend returns `None` for
+unknown types, so `file_player` is a silent stub there — consistent with
+crossover/diskwriter, and pyo is parked anyway.
+
+*Tests* (`tests/test_file_player.py`, 13). Shape/registration, mono
+duplicate, resample-to-engine-rate, one-shot→silence, seamless loop wrap,
+gain, armed reset, missing/empty path → stereo silence, path-change reload,
+`stop()` rewind, and the full `file → crossover → AudioToCV → Oscillator →
+speaker` chain renders finite, non-silent audio. Suite **439 (+18 mido)**,
+up from 426.
+
+*Example* (`examples/file_crossover_split.json`). Exactly Matthew's patch,
+both bands mixed to the speaker. Ships with an empty `path` (set it to a
+`.wav` after opening) and `loop` on; loads/compiles/renders clean with no
+file (the CVToFrequency drones at its `f0` until the high band steers it).
+
+**Hand-off to Matthew:** commit (message in chat). To hear it: open
+`examples/file_crossover_split.json`, set the FilePlayer `path` to a
+`.wav`, hit play — the low band amplitude-shapes a saw, the high band
+pitches a triangle. Drop a `.wav` straight into a DiskWriter chain too if
+you just want to crossover-split and re-record a band.
+
+**Next:** the filter arc still has slice 5 (crossover → sosfilt, optional)
+and slice 6 (native re-profile). Or the CV-utility trio (Constant /
+CVScale / CVOffset), which now pairs naturally with both the meters and
+the file player.
+
+
+## 2026-06-28 — FilePlayer: live elapsed / total playhead readout
+
+Follow-up to the FilePlayer above: a transport time display on the node,
+since audio outputs carry no CV meter and you couldn't otherwise see
+where you were in a track. Matthew picked a UI readout (over a patchable
+position CV output).
+
+*Backend* (`audio/numpy_backend.py`). New `snapshot_file_positions()` ->
+`{module_id: (elapsed_s, total_s)}`. Reads the per-module `_state` under
+`self._lock` (only to copy the mapping so a concurrent `compile` can't
+resize it mid-iteration); `pos` is written lock-free by the audio thread,
+but an int read is atomic and a marginally stale playhead is fine for a
+readout. `total = N/sr` from the decoded `(2,N)` buffer; `elapsed =
+min(pos, N)/sr` so a finished one-shot reports its end, not past it. No
+hot-path change — purely a pull from existing state. A file that hasn't
+been decoded yet (lazy, pre-first-render) or an empty/bad path reports
+`(0.0, 0.0)` / is simply absent.
+
+*UI* (`ui/app.py`). `file_player` nodes get a `dpg.add_text` row showing
+`"elapsed / total"` (`m:ss`); `_file_pos_labels` maps module_id -> tag.
+The manual render loop already ticks `_update_cv_meters()` each frame —
+added `_update_file_positions()` beside it, which pulls the snapshot and
+sets each label via `_format_time`. Same defensive shape as the meters:
+`getattr` hook guard (pyo no-ops), `.get(mid)` so a missing entry leaves
+the last text rather than blanking. `_clear_editor` drops the refs on
+patch load. Shows `0:00 / 0:00` until playback starts (decode is lazy by
+design); thereafter it counts up and, for a one-shot, freezes at the
+total.
+
+*Tests.* 4 added to `tests/test_file_player.py` (TestPositionReadout):
+elapsed+total track playback, one-shot elapsed clamps to total, missing
+path -> (0,0), `stop()` rewinds elapsed to 0 while total stays known
+(samples are kept). Suite **443 (+18 mido)**, up from 439. UI label
+wiring is Matthew's to eyeball (no DPG in the sandbox), but it's the
+verbatim CV-meter pattern.
+
+**Hand-off to Matthew:** commit (message in chat). Open
+`examples/file_crossover_split.json`, point the FilePlayer at a `.wav`,
+hit play — the node shows e.g. `0:14 / 3:42` ticking up.
+
+**Next:** unchanged — filter slice 5 (crossover->sosfilt) / slice 6
+(re-profile), or the CV-utility trio. A patchable position CV output is
+now an easy add if you ever want to modulate *with* the playhead.

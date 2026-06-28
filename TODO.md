@@ -178,6 +178,19 @@ Living list of what's next. Edit freely.
       frame. 7 headless tests in `tests/test_cv_meters.py`; suite 426. Possible
       follow-ups: a fixed-range toggle for sources you know are 0..1, or input-side
       meters too.
+- [x] **FilePlayer (WAV source)** — shipped 2026-06-28. `file_player`:
+      streams a WAV into the patch as a stereo (`left`/`right`) source so a
+      recorded track can be crossover-split and used as a modulation source
+      (Matthew's `track → crossover → low/high → AudioToCV → Osc/CVToFreq`
+      patch). WAV-only (scipy.io.wavfile, no new deps), one-shot default +
+      `loop` toggle, `gain`/`armed`, resamples to the engine rate on load.
+      Decode is lazy into backend state; one-shot zero-pads + parks, loop
+      wraps with modular indexing, `stop()` rewinds. No UI/pyo changes
+      (generic param widgets + auto output jacks; pyo silent-stub). 13 tests
+      in `tests/test_file_player.py`; suite 439. Example:
+      `examples/file_crossover_split.json`. Follow-ups: a retrigger/`gate`
+      input for one-shot replays, 24-bit WAV support (scipy can't), a
+      background loader to avoid the first-block decode hiccup.
 - [ ] CV utility modules: `Constant` (params: value; outputs a fixed CV — useful as a CVCombiner input to bias another modulator), `CVScale` (cv in × gain param → cv out), `CVOffset` (cv in + offset param → cv out). The MIDIInput's `bend_range` / `mod_scale` patterns hint at the need; these utilities let any source feed any destination with arbitrary scale/offset without baking the knob into the source module.
 - [ ] Sample-and-hold module
 - [ ] Noise generator (white / pink)

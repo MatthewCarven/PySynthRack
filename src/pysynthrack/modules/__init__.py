@@ -15,6 +15,7 @@ from .cvcombiner import CVCombiner
 from .cvtoaudio import CVToAudio
 from .cvtofrequency import CVToFrequency
 from .diskwriter import DiskWriter
+from .fileplayer import FilePlayer
 from .filter import Filter
 from .keyboard import Keyboard
 from .lfo import LFO
@@ -34,6 +35,7 @@ __all__ = [
     "CVToAudio",
     "CVToFrequency",
     "DiskWriter",
+    "FilePlayer",
     "Filter",
     "Keyboard",
     "LeftSpeakerOutput",

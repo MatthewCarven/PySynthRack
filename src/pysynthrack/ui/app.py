@@ -98,6 +98,10 @@ class App:
         # the fill (instant-attack / slow-release; see _auto_range_fill).
         self._cv_meter_bars: dict[tuple[int, str], int] = {}
         self._meter_bounds: dict[tuple[int, str], list[float]] = {}
+        # FilePlayer playhead readouts. Maps module_id -> the dpg text
+        # tag showing 'elapsed / total'; refreshed each frame in
+        # _update_file_positions from the backend's snapshot hook.
+        self._file_pos_labels: dict[int, int] = {}
 
     # ----- entry point ----------------------------------------------------
 
@@ -122,6 +126,7 @@ class App:
             # viewport's vsync, so this is no busier than the built-in loop.
             while dpg.is_dearpygui_running():
                 self._update_cv_meters()
+                self._update_file_positions()
                 dpg.render_dearpygui_frame()
         finally:
             try:
@@ -251,6 +256,15 @@ class App:
             for param_name, default in module.DEFAULT_PARAMS.items():
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                     self._add_param_widget(module, param_name, default)
+
+            # FilePlayer: a live 'elapsed / total' playhead readout. Audio
+            # outputs carry no CV meter, so this text is the one bit of
+            # transport feedback on the node; _update_file_positions ticks
+            # it each frame.
+            if module.TYPE == "file_player":
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                    label = dpg.add_text("0:00 / 0:00")
+                    self._file_pos_labels[module.id] = label
 
             # Outputs (right)
             for port in module.output_ports:
@@ -775,6 +789,7 @@ class App:
         # freshly-loaded patch starts metering from scratch.
         self._cv_meter_bars.clear()
         self._meter_bounds.clear()
+        self._file_pos_labels.clear()
         # Reset the cascade so a fresh-loaded patch (with no saved positions)
         # starts laying out from the top-left again.
         self._next_node_pos = [40, 40]
@@ -812,6 +827,35 @@ class App:
             fill = self._auto_range_fill(key, value)
             dpg.set_value(bar, fill)
             dpg.configure_item(bar, overlay=f"{value:+.2f}")
+
+    def _update_file_positions(self) -> None:
+        """Push each FilePlayer's elapsed / total playhead time into its
+        node readout. Once per frame; backends without the hook (the pyo
+        stub) no-op, and a node with no current entry keeps its last text.
+        """
+        if not self._file_pos_labels:
+            return
+        snapshot = getattr(self.backend, "snapshot_file_positions", None)
+        if snapshot is None:
+            return
+        positions = snapshot()
+        for mid, label in self._file_pos_labels.items():
+            pair = positions.get(mid)
+            if pair is None:
+                continue
+            elapsed, total = pair
+            dpg.set_value(
+                label,
+                f"{self._format_time(elapsed)} / {self._format_time(total)}",
+            )
+
+    @staticmethod
+    def _format_time(seconds: float) -> str:
+        """Seconds -> ``m:ss`` (minutes uncapped, e.g. ``12:05``)."""
+        seconds = max(0.0, float(seconds))
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{minutes}:{secs:02d}"
 
     def _auto_range_fill(self, key: tuple[int, str], value: float) -> float:
         """Normalise ``value`` into 0..1 against the port's auto-range

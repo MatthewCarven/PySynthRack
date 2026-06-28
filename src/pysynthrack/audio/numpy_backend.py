@@ -41,7 +41,8 @@ import wave
 from typing import Any
 
 import numpy as np
-from scipy.signal import lfilter
+from scipy.signal import lfilter, resample_poly
+from scipy.io import wavfile
 
 from ..core.patch import Patch
 from ..modules.keyboard import midi_to_freq
@@ -245,6 +246,11 @@ class NumpyBackend(AudioBackend):
         for mid in list(self._state.keys()):
             if self._state_types.get(mid) == "disk_writer":
                 self._close_disk_writer_state(self._state[mid])
+        # Reset file-player playheads so the next start() replays a
+        # one-shot from the top instead of resuming past its end.
+        for mid in list(self._state.keys()):
+            if self._state_types.get(mid) == "file_player":
+                self._state[mid]["pos"] = 0
         # Close any open MIDI ports so the next start() reopens cleanly.
         # The module instances stay alive (they're owned by the patch),
         # so the next compile() will reopen the port via start_midi().
@@ -424,6 +430,35 @@ class NumpyBackend(AudioBackend):
         """
         return dict(self._meter_levels)
 
+    def snapshot_file_positions(self) -> dict[int, tuple[float, float]]:
+        """GUI hook: each ``file_player``'s playhead as ``(elapsed, total)``
+        seconds, keyed by module id.
+
+        ``total`` is ``0.0`` until the file has been decoded (lazily, on the
+        first render) and for an empty/unreadable path; ``elapsed`` is
+        clamped to ``total`` once a one-shot has run off the end. The lock
+        is taken only to copy the state mapping so a concurrent ``compile``
+        can't resize it mid-iteration -- ``pos`` itself is written by the
+        audio thread without the lock, but an int read is atomic under the
+        GIL and a marginally stale playhead is harmless for a readout.
+        """
+        with self._lock:
+            items = list(self._state.items())
+            types = dict(self._state_types)
+        sr = float(self.sample_rate)
+        out: dict[int, tuple[float, float]] = {}
+        for mid, st in items:
+            if types.get(mid) != "file_player":
+                continue
+            samples = st.get("samples")
+            if samples is None or samples.shape[1] == 0:
+                out[mid] = (0.0, 0.0)
+                continue
+            n = samples.shape[1]
+            elapsed = min(int(st.get("pos", 0)), n) / sr
+            out[mid] = (elapsed, n / sr)
+        return out
+
     # ----- per-module rendering -------------------------------------------
 
     def _render_module(self, module, frames, buffers, patch):
@@ -459,6 +494,8 @@ class NumpyBackend(AudioBackend):
             return self._render_crossover(module, frames, buffers, patch)
         if module.TYPE == "disk_writer":
             return self._render_disk_writer(module, frames, buffers, patch)
+        if module.TYPE == "file_player":
+            return self._render_file_player(module, frames, buffers, patch)
         if module.TYPE in self._SPEAKER_CHANNELS:
             return None  # speaker-family sink — drained by the speaker pass
         return None
@@ -2748,6 +2785,118 @@ class NumpyBackend(AudioBackend):
         return {"low": low, "high": high}
 
     # ----- DiskWriter rendering -------------------------------------------
+
+    def _render_file_player(self, module, frames: int, buffers=None, patch=None):
+        """Stream a decoded WAV file to the ``left`` / ``right`` audio outs.
+
+        Decodes lazily on first use (and re-decodes after a path change)
+        into ``self._state``; every block thereafter is a slice of the
+        in-memory array, so there is no per-block disk I/O. One-shot by
+        default -- ``loop`` wraps the playhead with modular indexing so a
+        block straddling the loop point reads seamlessly. Both ports are
+        always returned (zeros when idle/finished) so downstream wiring is
+        defined whether or not the file is sounding.
+        """
+        state = self._state.setdefault(
+            module.id, {"path": None, "samples": None, "pos": 0}
+        )
+        path = str(module.params.get("path", ""))
+        if state["samples"] is None or state["path"] != path:
+            # First arrival, or the user pointed at a different file.
+            state["path"] = path
+            state["samples"] = self._load_wav(path, self.sample_rate)
+            state["pos"] = 0
+
+        armed = bool(module.params.get("armed", True))
+        samples = state["samples"]
+        if not armed or samples is None or samples.shape[1] == 0:
+            if not armed:
+                state["pos"] = 0  # re-arming replays from the top
+            return {
+                "left": np.zeros(frames, dtype=np.float32),
+                "right": np.zeros(frames, dtype=np.float32),
+            }
+
+        n = samples.shape[1]
+        pos = int(state["pos"])
+        gain = float(module.params.get("gain", 1.0))
+        loop = bool(module.params.get("loop", False))
+
+        left = np.zeros(frames, dtype=np.float32)
+        right = np.zeros(frames, dtype=np.float32)
+
+        if loop:
+            idx = (np.arange(frames) + pos) % n
+            left[:] = samples[0, idx]
+            right[:] = samples[1, idx]
+            state["pos"] = (pos + frames) % n
+        else:
+            if pos < n:
+                take = min(frames, n - pos)
+                left[:take] = samples[0, pos:pos + take]
+                right[:take] = samples[1, pos:pos + take]
+                # Park at n once finished -> silence on every later block.
+                state["pos"] = pos + take
+            # else: already past the end; both buffers stay zero.
+
+        if gain != 1.0:
+            left *= gain
+            right *= gain
+        return {"left": left, "right": right}
+
+    @staticmethod
+    def _load_wav(path, target_sr):
+        """Decode a WAV file to a contiguous ``(2, N)`` float32 array.
+
+        Returns ``None`` on any failure (empty/missing path, unreadable or
+        unsupported encoding) so the audio thread renders silence rather
+        than raising. Integer PCM is normalised to [-1, 1] by dtype; mono is
+        duplicated to stereo; >2 channels keep the first two; the audio is
+        resampled to ``target_sr`` when the file's native rate differs (a
+        one-time cost at load, not per block). 24-bit PCM is unsupported by
+        scipy and surfaces here as a caught read error -> silence.
+        """
+        import os
+
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            file_sr, data = wavfile.read(path)
+        except Exception as exc:  # pragma: no cover - filesystem/codec-specific
+            print(f"[FilePlayer] cannot read {path}: {exc}")
+            return None
+
+        data = np.asarray(data)
+        if data.dtype == np.int16:
+            flo = data.astype(np.float32) / 32768.0
+        elif data.dtype == np.int32:
+            flo = data.astype(np.float32) / 2147483648.0
+        elif data.dtype == np.uint8:
+            flo = (data.astype(np.float32) - 128.0) / 128.0
+        elif data.dtype in (np.float32, np.float64):
+            flo = data.astype(np.float32)
+        else:  # pragma: no cover - exotic dtype; best-effort peak-normalise
+            flo = data.astype(np.float32)
+            peak = float(np.max(np.abs(flo))) or 1.0
+            flo = flo / peak
+
+        # -> (channels, N)
+        chans = flo[np.newaxis, :] if flo.ndim == 1 else flo.T
+
+        if int(file_sr) != int(target_sr) and chans.shape[1] > 0:
+            from math import gcd
+            g = gcd(int(file_sr), int(target_sr))
+            up = int(target_sr) // g
+            down = int(file_sr) // g
+            chans = resample_poly(chans, up, down, axis=1).astype(np.float32)
+
+        if chans.shape[0] == 1:
+            stereo = np.repeat(chans, 2, axis=0)
+        elif chans.shape[0] >= 2:
+            stereo = chans[:2]
+        else:
+            return None
+        return np.ascontiguousarray(stereo, dtype=np.float32)
 
     def _render_disk_writer(self, module, frames: int, buffers, patch):
         """Enqueue blocks of audio for the worker thread to write to disk."""
