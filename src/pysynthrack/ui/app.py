@@ -33,6 +33,16 @@ from ..modules.midiinput import AUTO_DEVICE, available_devices as midi_available
 from ..modules.micinput import available_input_devices as mic_available_devices
 from ..modules.noise import NOISE_COLORS
 from ..modules.oscillator import WAVEFORMS
+from .zoom import (
+    ZOOM_DEFAULT,
+    ZOOM_MAX,
+    ZOOM_MIN,
+    clamp_zoom,
+    factor_to_percent,
+    percent_to_factor,
+    scale_pos,
+    step_zoom,
+)
 
 
 # Computer-keyboard → semitone-offset mapping. Home row A..K = white keys
@@ -66,6 +76,7 @@ EDITOR_TAG = "node_editor"
 AUDIO_BTN_TAG = "audio_btn"
 STATUS_TEXT_TAG = "status_text"
 MAIN_WINDOW_TAG = "main_window"
+ZOOM_SLIDER_TAG = "zoom_slider"
 
 from .._resources import examples_dir
 
@@ -93,6 +104,13 @@ class App:
 
         # Diagonal stagger for newly-added nodes so they don't stack.
         self._next_node_pos = [40, 40]
+
+        # Current UI scale ("zoom") factor; 1.0 == 100 %. imnodes has no
+        # real canvas zoom, so we fake it: scale the global font (the
+        # auto-sized nodes grow/shrink with it) and rescale every node's
+        # position by the same factor so spacing — and cable length —
+        # tracks the size. See ui/zoom.py for the dpg-free maths.
+        self._zoom: float = ZOOM_DEFAULT
 
         # Track which physical keys are currently down so OS auto-repeat
         # doesn't fire note_on repeatedly while a key is held.
@@ -171,6 +189,19 @@ class App:
                     callback=self._on_toggle_audio,
                 )
                 dpg.add_text("", tag=STATUS_TEXT_TAG)
+                dpg.add_spacer(width=24)
+                dpg.add_text("Zoom")
+                dpg.add_slider_int(
+                    tag=ZOOM_SLIDER_TAG,
+                    width=150,
+                    min_value=int(ZOOM_MIN * 100),
+                    max_value=int(ZOOM_MAX * 100),
+                    default_value=int(ZOOM_DEFAULT * 100),
+                    clamped=True,
+                    format="%d%%",
+                    callback=self._on_zoom_slider,
+                )
+                dpg.add_button(label="Reset", callback=self._on_zoom_reset)
 
             dpg.add_separator()
             dpg.add_text(
@@ -209,6 +240,23 @@ class App:
                 dpg.add_key_press_handler(
                     key=back_key, callback=self._on_delete_selected
                 )
+            # Ctrl+= / Ctrl+- / Ctrl+0 and Ctrl+mouse-wheel drive the UI
+            # zoom. Each callback re-checks Ctrl so a bare key still
+            # reaches the keyboard-as-MIDI handler untouched. Register
+            # every +/- spelling DPG exposes (main row and numpad).
+            for _name in ("mvKey_Plus", "mvKey_Add"):
+                _k = getattr(dpg, _name, None)
+                if _k is not None:
+                    dpg.add_key_press_handler(key=_k, callback=self._on_zoom_in_key)
+            for _name in ("mvKey_Minus", "mvKey_Subtract"):
+                _k = getattr(dpg, _name, None)
+                if _k is not None:
+                    dpg.add_key_press_handler(key=_k, callback=self._on_zoom_out_key)
+            for _name in ("mvKey_0", "mvKey_NumPad0"):
+                _k = getattr(dpg, _name, None)
+                if _k is not None:
+                    dpg.add_key_press_handler(key=_k, callback=self._on_zoom_reset_key)
+            dpg.add_mouse_wheel_handler(callback=self._on_zoom_wheel)
 
     def _build_file_dialogs(self) -> None:
         with dpg.file_dialog(
@@ -266,10 +314,12 @@ class App:
             self._next_node_pos[0] = (self._next_node_pos[0] + 220) % 800
             self._next_node_pos[1] = (self._next_node_pos[1] + 60) % 500
 
+        # Place at the logical position scaled by the current zoom so a
+        # node added (or loaded) while zoomed lands in the right spot.
         with dpg.node(
             label=f"{module.name} (#{module.id})",
             parent=EDITOR_TAG,
-            pos=pos,
+            pos=scale_pos(pos, self._zoom),
         ) as node_id:
             self._node_to_module[node_id] = module.id
             self._module_to_node[module.id] = node_id
@@ -1019,6 +1069,7 @@ class App:
 
     def _on_new(self) -> None:
         self._clear_editor()
+        self._reset_zoom_state()
         self.patch = Patch()
         self._recompile_if_running()
         self._set_status("New patch")
@@ -1054,6 +1105,89 @@ class App:
             traceback.print_exc()
             self._set_status(f"Save failed: {exc}")
 
+    # ----- zoom -----------------------------------------------------------
+
+    def _ctrl_down(self) -> bool:
+        """True if either Control key is currently held down."""
+        for _name in ("mvKey_LControl", "mvKey_RControl", "mvKey_Control"):
+            code = getattr(dpg, _name, None)
+            if code is None:
+                continue
+            try:
+                if dpg.is_key_down(code):
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _apply_zoom(self, new_zoom: float) -> None:
+        """Set the UI scale factor and rescale the canvas to match.
+
+        Scales the global font (nodes auto-size to their text, so they grow
+        or shrink with it) and multiplies every node's position by the same
+        ratio about the editor origin, so the relative layout — and the
+        cable lengths — track the size rather than overlapping or scattering.
+        Keeps the toolbar slider in sync; ``set_value`` does not re-fire the
+        slider callback, so there is no feedback loop.
+        """
+        new_zoom = clamp_zoom(float(new_zoom))
+        old = self._zoom or ZOOM_DEFAULT
+        ratio = new_zoom / old
+        if abs(ratio - 1.0) > 1e-9:
+            for node_id in list(self._node_to_module):
+                try:
+                    pos = dpg.get_item_pos(node_id)
+                except Exception:
+                    continue
+                if pos is None:
+                    continue
+                dpg.set_item_pos(node_id, list(scale_pos(pos, ratio)))
+        self._zoom = new_zoom
+        try:
+            dpg.set_global_font_scale(new_zoom)
+        except Exception:
+            pass
+        if dpg.does_item_exist(ZOOM_SLIDER_TAG):
+            dpg.set_value(ZOOM_SLIDER_TAG, factor_to_percent(new_zoom))
+
+    def _reset_zoom_state(self) -> None:
+        """Snap back to 100 % without moving any nodes.
+
+        Used on New / Open before nodes are (re)built: saved positions are
+        in logical (100 %) coords, so the canvas must be at 1.0 while they
+        are created. ``_apply_zoom`` then re-applies any saved zoom.
+        """
+        self._zoom = ZOOM_DEFAULT
+        try:
+            dpg.set_global_font_scale(ZOOM_DEFAULT)
+        except Exception:
+            pass
+        if dpg.does_item_exist(ZOOM_SLIDER_TAG):
+            dpg.set_value(ZOOM_SLIDER_TAG, factor_to_percent(ZOOM_DEFAULT))
+
+    def _on_zoom_slider(self, sender, app_data) -> None:
+        self._apply_zoom(percent_to_factor(app_data))
+
+    def _on_zoom_reset(self, *args) -> None:
+        self._apply_zoom(ZOOM_DEFAULT)
+
+    def _on_zoom_in_key(self, sender, app_data) -> None:
+        if self._ctrl_down():
+            self._apply_zoom(step_zoom(self._zoom, +1))
+
+    def _on_zoom_out_key(self, sender, app_data) -> None:
+        if self._ctrl_down():
+            self._apply_zoom(step_zoom(self._zoom, -1))
+
+    def _on_zoom_reset_key(self, sender, app_data) -> None:
+        if self._ctrl_down():
+            self._apply_zoom(ZOOM_DEFAULT)
+
+    def _on_zoom_wheel(self, sender, app_data) -> None:
+        if not self._ctrl_down():
+            return
+        self._apply_zoom(step_zoom(self._zoom, 1 if app_data > 0 else -1))
+
     def _capture_node_positions(self) -> None:
         """Snapshot the current DPG node positions into ``patch.ui``.
 
@@ -1061,6 +1195,10 @@ class App:
         the user dragged around. Stored as ``{"node_positions": {str(mid): [x, y]}}``
         — module-id keys are JSON strings to keep the round-trip clean.
         """
+        # Positions are stored at 100 % zoom (logical coords) so a patch
+        # saved while zoomed reloads with the same layout regardless of
+        # the zoom in effect at save time. Divide the factor out here.
+        z = self._zoom or ZOOM_DEFAULT
         positions: dict[str, list[float]] = {}
         for module_id, node_id in self._module_to_node.items():
             try:
@@ -1069,9 +1207,11 @@ class App:
                 continue
             if pos is None:
                 continue
-            positions[str(module_id)] = [float(pos[0]), float(pos[1])]
+            positions[str(module_id)] = [float(pos[0]) / z, float(pos[1]) / z]
         if positions:
             self.patch.ui["node_positions"] = positions
+        # Remember the zoom so reopening restores the same scale.
+        self.patch.ui["zoom"] = float(self._zoom)
 
     def _load_patch_from(self, path: str) -> None:
         was_running = self.backend.is_running
@@ -1080,6 +1220,9 @@ class App:
             dpg.set_item_label(AUDIO_BTN_TAG, "Start audio")
 
         self._clear_editor()
+        # Build the new patch's nodes at 100 % so saved (logical)
+        # positions land correctly; the saved zoom is re-applied below.
+        self._reset_zoom_state()
         self.patch = load_patch(path)
 
         saved_positions = self.patch.ui.get("node_positions", {})
@@ -1097,6 +1240,14 @@ class App:
                 continue
             link_id = dpg.add_node_link(src_attr, dst_attr, parent=EDITOR_TAG)
             self._link_to_cable[link_id] = cable
+
+        # Restore the saved zoom (if any) now that every node exists.
+        saved_zoom = self.patch.ui.get("zoom")
+        if saved_zoom is not None:
+            try:
+                self._apply_zoom(float(saved_zoom))
+            except (TypeError, ValueError):
+                pass
 
         self._set_status(f"Loaded: {os.path.basename(path)}")
 

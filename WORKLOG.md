@@ -4333,3 +4333,65 @@ clocks); per-step gate-length / ratchets on the sequencer; a direction param
 (up/down/ping-pong/random); pitch quantize-to-scale; multiple CV rows
 (a second value lane per step); save the sequencer's run position so a
 recompile doesn't restart it.
+
+---
+
+## 2026-07-01 — Window zoom (UI scale factor)
+
+Matthew's long-standing ask: zoom out to take in a complex patch, zoom in on
+a control for fidelity ("a window scaling factor like zoom in/out"). Up front,
+the honest constraint: DearPyGui's node editor wraps the C library *imnodes*,
+which has **no real canvas zoom** — it's imnodes' single most-requested
+feature, open upstream since 2020, and the DPG maintainer's position (issue
+#2530) is that the fix belongs upstream, no ETA. Chasing true zoom would mean
+forking the toolkit's C deps or swapping the editor — exactly the "I don't
+wanna break it" risk. So this ships a faithful **scale** zoom instead, pure
+Python, no new deps, no audio-engine changes.
+
+*How it works.* New `ui/zoom.py` holds the dpg-free maths (constants +
+`clamp_zoom` / `step_zoom` / `scale_pos` / `factor_to_percent` /
+`percent_to_factor`) so it unit-tests without a graphics context; `app.py`
+holds the DPG glue. `_apply_zoom(z)` does two things: `set_global_font_scale(z)`
+(nodes auto-size to their text, so they grow/shrink with the font) and
+multiplies every node's position by the ratio about the editor origin, so
+spacing — and therefore cable lengths — tracks the size instead of overlapping
+on zoom-in or scattering on zoom-out. Range **25–300 %**, geometric step ×1.1
+(each press is the same proportional change; in/out are exact inverses).
+
+*Controls (the picked variant — slider + keys + wheel).* A toolbar **Zoom %
+slider** (doubles as the readout) plus a Reset button; **Ctrl+= / Ctrl+- /
+Ctrl+0**; and **Ctrl+mouse-wheel**. Every key/wheel callback re-checks Ctrl, so
+a bare key still reaches the keyboard-as-MIDI handler untouched, and bare wheel
+is left alone. `set_value` on the slider doesn't re-fire its callback, so keys
+and slider stay in sync with no feedback loop.
+
+*Save / load.* Node positions are captured in **logical (100 %) coords**
+(divide out the live zoom) so a patch saved while zoomed reloads identically;
+the zoom factor is persisted in `patch.ui["zoom"]`. New/Open reset to 100 %
+before nodes are (re)built, then the saved zoom is re-applied once every node
+exists.
+
+*Known limits (cosmetic, not breakage).* The cables, jack circles and node
+borders are drawn by imnodes in screen pixels and **don't** scale with the
+font — slightly chunky cables fully zoomed out, slightly thin zoomed in. It's a
+**global** scale (menus/toolbar grow too), not a cursor-anchored canvas zoom,
+and the bitmap font is a touch soft at non-integer scales.
+
+*Tests.* `tests/test_ui_zoom.py` — 23 pure-maths tests (clamp, geometric step
+round-trips and bound saturation, position scaling/composition, percent
+round-trip). Suite **765** in the sandbox (+18 mido), +23 from 742; no backend
+tests touched. Separately, a headless **xvfb end-to-end check** drove the real
+`App` + real node editor: font scale tracks zoom, node positions rescale by the
+ratio (40→80, 260→520) and return to base on reset, the slider reads
+200/100/150/300, zoom clamps at 3.0, the key/wheel handlers no-op safely when
+Ctrl isn't held, and save stores logical coords + the zoom — all green.
+
+**Hand-off to Matthew:** delivered as `window_zoom.patch`, `git am`-verified
+clean on local HEAD `737e535` (clock+sequencer). Note GitHub `origin/main` is
+still `04a8119` — `737e535` is committed locally but unpushed, so apply this on
+your working tree, not a fresh clone of origin. UI-only, no new deps.
+
+**Next:** cursor-anchored zoom (pan toward the mouse as you scale); a
+"fit-to-all" button that frames the whole patch; scale link/border thickness
+too if imnodes ever exposes it via theme; remember the last zoom in window
+prefs; an optional crisp font atlas rasterised at the chosen scale.
