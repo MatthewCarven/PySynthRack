@@ -396,6 +396,53 @@ class App:
                 )
                 return
 
+        if module.TYPE == "pitch_shifter":
+            # Granular WSOLA transpose controls. semitones+cents set the
+            # shift; cv_depth scales pitch_cv; mix is dry/wet; grain_size
+            # and overlap shape the grain engine.
+            if param_name == "semitones":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-24.0, max_value=24.0, format="%.2f st",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cents":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-100.0, max_value=100.0, format="%.0f ct",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.1,
+                    min_value=0.0, max_value=48.0, format="%.1f st/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "mix":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "grain_size":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=10.0, max_value=200.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "overlap":
+                dpg.add_slider_int(
+                    label=param_name, default_value=int(current),
+                    min_value=2, max_value=4,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "resampler":
             # Varispeed transpose controls. Pitch is set in semitones
             # (C->D = +2) with a cents fine-tune on top; cv_depth scales

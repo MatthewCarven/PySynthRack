@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "next_id": 4,
+  "modules": [
+    { "id": 1, "type": "oscillator", "name": "saw 220", "params": { "waveform": "saw_blep", "freq": 220.0, "amp": 0.7 } },
+    { "id": 2, "type": "pitch_shifter", "name": "fifth harmony", "params": { "semitones": 7.0, "cents": 0.0, "cv_depth": 12.0, "mix": 0.5, "grain_size": 60.0, "overlap": 2 } },
+    { "id": 3, "type": "speaker_output", "name": "speaker_output", "params": { "gain": 0.8 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "in" },
+    { "src_module_id": 2, "src_port": "out", "dst_module_id": 3, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": { "1": [40, 140], "2": [360, 140], "3": [680, 140] }
+  }
+}

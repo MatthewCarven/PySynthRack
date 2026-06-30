@@ -59,6 +59,127 @@ except Exception:  # pragma: no cover - environment-dependent
     _HAS_SOUNDDEVICE = False
 
 
+class _GrainShifter:
+    """One voice's streaming WSOLA pitch-shift engine (time-preserving).
+
+    Time-stretches the input by the pitch ratio via waveform-similarity
+    overlap-add (grains nudged to where they best line up with the
+    previous one, so overlap joins stay phase-continuous), then resamples
+    by the same ratio to restore the original duration -- the net result
+    is a pitch shift that keeps the speed/length. Block-streaming: all
+    state (input ring, stretched-output ring, analysis + read pointers)
+    persists across :meth:`process` calls. See modules/pitch_shifter.py
+    for the musical description.
+
+    One engine handles one channel; the renderer keeps a list of these,
+    one per voice slot, so a single voice is bit-identical to the mono
+    render (same deterministic ops).
+    """
+
+    def __init__(self, grain: int, overlap: int, head: int) -> None:
+        self.Lg = max(8, int(grain))
+        self.Hs = max(1, self.Lg // max(1, int(overlap)))
+        self.Lov = max(1, self.Lg - self.Hs)
+        self.seek = max(1, self.Hs // 2)
+        self.win = np.hanning(self.Lg)
+        self.Lin = self.Lg + self.seek + head + 64
+        self.Lstr = 2 * self.Lg + head + 64
+        self.ib = np.zeros(self.Lin)        # input ring
+        self.ss = np.zeros(self.Lstr)       # stretched signal ring (OLA accum)
+        self.sw = np.zeros(self.Lstr)       # stretched window-sum ring
+        self.iw = 0                          # total input samples written
+        self.onset = 0                       # synth index of next grain
+        self.final = 0                       # stretched samples finalized
+        self.a = 0.0                         # analysis pointer (abs input idx)
+        self.tgt = np.zeros(self.Lov)        # similarity-search target
+        self.have_tgt = False
+        self.rp = 0.0                        # resample read ptr (abs stretched)
+        self.zeroed = 0                      # stretched idx zeroed up to
+        self.primed = False
+        self.bias = 1e-3                     # smallest-shift tie-break bias
+
+    def _produce_one(self, r: float) -> bool:
+        Lg, Hs, Lov, seek = self.Lg, self.Hs, self.Lov, self.seek
+        Ha = max(1, int(round(Hs / r)))
+        c = int(round(self.a))
+        if c + seek + Lg > self.iw:                      # not enough input yet
+            return False
+        if c - seek < self.iw - self.Lin + 2:            # would underflow ring
+            return False
+        if not self.have_tgt:
+            d0 = 0
+        else:
+            seg = self.ib[(c - seek + np.arange(2 * seek + Lov)) % self.Lin]
+            dot = np.correlate(seg, self.tgt, "valid")               # (2*seek+1,)
+            cs = np.concatenate([[0.0], np.cumsum(seg * seg)])
+            nrm = np.sqrt(np.maximum(cs[Lov:] - cs[:-Lov], 1e-12))[: 2 * seek + 1]
+            tn = float(np.linalg.norm(self.tgt)) + 1e-9
+            ncc = dot / (nrm * tn) - self.bias * np.abs(np.arange(-seek, seek + 1)) / seek
+            d0 = int(np.argmax(ncc)) - seek
+        sidx = c + d0
+        if sidx + Lg > self.iw:
+            sidx = self.iw - Lg
+        ring = (self.onset + np.arange(Lg)) % self.Lstr
+        self.ss[ring] += self.win * self.ib[(sidx + np.arange(Lg)) % self.Lin]
+        self.sw[ring] += self.win
+        self.tgt = self.ib[(sidx + Hs + np.arange(Lov)) % self.Lin].copy()
+        self.have_tgt = True
+        self.a = sidx + Ha
+        self.onset += Hs
+        self.final = self.onset
+        return True
+
+    def process(self, x: np.ndarray, r: float) -> np.ndarray:
+        """Push one input block (1D float64), return the shifted block."""
+        F = x.shape[0]
+        if F == 0:
+            return np.zeros(0, dtype=np.float64)
+        self.ib[(self.iw + np.arange(F)) % self.Lin] = x
+        self.iw += F
+        if not self.primed:
+            while self.final < self.Lg:
+                if not self._produce_one(r):
+                    break
+            if self.final >= self.Lg:
+                self.primed = True
+                self.rp = 0.0
+                self.zeroed = 0
+        out = np.zeros(F, dtype=np.float64)
+        if self.primed:
+            need = self.rp + r * F + 2.0
+            guard = 0
+            while self.final < need:
+                if not self._produce_one(r):
+                    break
+                guard += 1
+                if guard > 20000:
+                    break
+            pos = self.rp + np.arange(F) * r
+            pos = np.minimum(pos, self.final - 1.0001)   # underrun guard
+            i0 = np.floor(pos).astype(np.int64)
+            fr = pos - i0
+            w0 = self.sw[i0 % self.Lstr]
+            w1 = self.sw[(i0 + 1) % self.Lstr]
+            v0 = np.where(w0 > 1e-6, self.ss[i0 % self.Lstr] / np.where(w0 > 1e-6, w0, 1.0), 0.0)
+            v1 = np.where(w1 > 1e-6, self.ss[(i0 + 1) % self.Lstr] / np.where(w1 > 1e-6, w1, 1.0), 0.0)
+            out = v0 * (1.0 - fr) + v1 * fr
+            self.rp = min(self.rp + r * F, float(self.final))
+            tz = int(np.floor(self.rp)) - 1
+            if tz > self.zeroed:
+                sl = np.arange(self.zeroed, tz) % self.Lstr
+                self.ss[sl] = 0.0
+                self.sw[sl] = 0.0
+                self.zeroed = tz
+        return out
+
+    def dry_tap(self, F: int, Dc: int) -> np.ndarray:
+        """Latency-compensated dry read of the most recent block."""
+        dp = (self.iw - F) + np.arange(F) - Dc
+        d0 = np.floor(dp).astype(np.int64)
+        df = dp - d0
+        return self.ib[d0 % self.Lin] * (1.0 - df) + self.ib[(d0 + 1) % self.Lin] * df
+
+
 class NumpyBackend(AudioBackend):
     """Pure-Python fallback. Slower than pyo but works wherever numpy does."""
 
@@ -587,6 +708,8 @@ class NumpyBackend(AudioBackend):
             return self._render_meter(module, frames, buffers, patch)
         if module.TYPE == "resampler":
             return self._render_resampler(module, frames, buffers, patch)
+        if module.TYPE == "pitch_shifter":
+            return self._render_pitch_shifter(module, frames, buffers, patch)
         if module.TYPE == "disk_writer":
             return self._render_disk_writer(module, frames, buffers, patch)
         if module.TYPE == "file_player":
@@ -3603,6 +3726,94 @@ class NumpyBackend(AudioBackend):
         state["write_idx"] = head
         state["delay"] = new_delay
         state["last_st"] = last_st
+        return out
+
+    # ----- PitchShifter rendering -----------------------------------------
+
+    # Clamp the effective transpose so the playback ratio (and the stretch
+    # ring sized from it) stays bounded. +/-36 st -> ratio in [1/8, 8].
+    _PS_MAX_ST = 36.0
+
+    def _render_pitch_shifter(self, module, frames, buffers, patch):
+        """Granular WSOLA pitch shifter (time-preserving). Shape-polymorphic.
+
+        Branches on the audio input's ndim: 1D -> one grain engine; 2D
+        ``(V, F)`` -> V independent engines (one per voice slot). A mono
+        ``pitch_cv`` broadcasts across voices; a ``(V, F)`` ``pitch_cv``
+        drives each voice. Pitch CV is sampled per block (block-rate),
+        summed in semitone space. Missing audio in -> silence.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        if src is None:
+            return np.zeros(frames, dtype=np.float32)
+        pitch_cv = self._input_buffer(
+            patch, buffers, module.id, "pitch_cv", collapse=False
+        )
+        if src.ndim == 2:
+            V = src.shape[0]
+            if pitch_cv is None:
+                cv = None
+            elif pitch_cv.ndim == 1:
+                cv = np.broadcast_to(pitch_cv, (V, pitch_cv.shape[0]))
+            elif pitch_cv.shape[0] == V:
+                cv = pitch_cv
+            elif pitch_cv.shape[0] == 1:
+                cv = np.broadcast_to(pitch_cv, (V, pitch_cv.shape[1]))
+            else:
+                cv = np.broadcast_to(pitch_cv.mean(axis=0), (V, pitch_cv.shape[1]))
+            return self._pitch_shifter_core(module, frames, src, cv)
+
+        if pitch_cv is not None and pitch_cv.ndim == 2:
+            pitch_cv = pitch_cv.mean(axis=0)
+        out = self._pitch_shifter_core(
+            module,
+            frames,
+            src[np.newaxis, :],
+            None if pitch_cv is None else pitch_cv[np.newaxis, :],
+        )
+        return out[0]
+
+    def _pitch_shifter_core(self, module, frames, src, cv):
+        """Shared ``(V, F)`` engine; mono runs with V=1 (bit-identical)."""
+        V = src.shape[0]
+        sr = self.sample_rate
+        semis = float(module.params.get("semitones", 0.0))
+        cents = float(module.params.get("cents", 0.0))
+        cv_depth = float(module.params.get("cv_depth", 12.0))
+        mix = float(np.clip(float(module.params.get("mix", 1.0)), 0.0, 1.0))
+        grain_ms = float(module.params.get("grain_size", 50.0))
+        overlap = max(1, min(8, int(module.params.get("overlap", 2))))
+        Lg = max(8, int(round(grain_ms * 1e-3 * sr)))
+
+        head = max(16384, 16 * int(getattr(self, "block_size", 512)))
+        state = self._state.setdefault(module.id, {})
+        if state.get("V") != V or state.get("Lg") != Lg or state.get("ov") != overlap:
+            state.clear()
+            state["V"] = V
+            state["Lg"] = Lg
+            state["ov"] = overlap
+            state["eng"] = [_GrainShifter(Lg, overlap, head) for _ in range(V)]
+        engines = state["eng"]
+
+        if frames == 0:
+            return np.empty((V, 0), dtype=np.float32)
+
+        Dc = Lg  # approximate latency compensation for the dry tap
+        base_st = semis + cents / 100.0
+        out = np.empty((V, frames), dtype=np.float32)
+        for v in range(V):
+            st = base_st if cv is None else base_st + cv_depth * float(np.mean(cv[v]))
+            st = max(-self._PS_MAX_ST, min(self._PS_MAX_ST, st))
+            r = 2.0 ** (st / 12.0)
+            eng = engines[v]
+            wet = eng.process(src[v].astype(np.float64), r)
+            if mix >= 1.0:
+                blk = wet
+            elif mix <= 0.0:
+                blk = eng.dry_tap(frames, Dc)
+            else:
+                blk = (1.0 - mix) * eng.dry_tap(frames, Dc) + mix * wet
+            out[v] = blk.astype(np.float32)
         return out
 
     def _render_mic_input(self, module, frames: int, buffers=None, patch=None):

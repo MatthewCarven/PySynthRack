@@ -142,6 +142,7 @@ Every module type, its category, and its ports at a glance.
 | [`parametric_eq`](#parametric_eq) | Processor | `in` (audio) → `out` (audio) |
 | [`vca`](#vca) | Processor | `audio` (audio), `cv` (cv) → `out` (audio) |
 | [`resampler`](#resampler) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
+| [`pitch_shifter`](#pitch_shifter) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
 | [`adsr`](#adsr) | Modulation | `gate` (gate) → `cv` (cv) |
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
@@ -447,6 +448,56 @@ or feed the [FilePlayer](#file_player) in to pitch a sample. Wire an
 portamento and tape-stop sweeps. See `examples/resampler_tape_wobble.json`
 (saw → varispeed with a slow LFO wobbling the pitch → speaker).
 
+#### `pitch_shifter`
+
+A **time-preserving pitch shifter** — the speed-preserving cousin of
+the [resampler](#resampler). Where the resampler is varispeed (pitch
+and speed move together, like tape), this shifts pitch while the speed
+and duration stay put: transpose a held note, a loop, or live playing
+without it getting faster or slower.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to transpose. Unpatched → silence. |
+| `pitch_cv` | in | cv | Added to the transpose, scaled by `cv_depth` (summed in semitone space, sampled per block). |
+| `out` | out | audio | The pitch-shifted signal. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `semitones` | `0.0` | −24 … +24 st | Coarse transpose (C→D = +2). 0 = unity. |
+| `cents` | `0.0` | −100 … +100 ct | Fine-tune, added to `semitones`. |
+| `cv_depth` | `12.0` | 0 … 48 st/unit | Semitones per unit of `pitch_cv` (12 = one octave per unit). |
+| `mix` | `1.0` | 0 … 1 | Dry/wet: 0 = original, 1 = fully shifted. |
+| `grain_size` | `50.0` | 10 … 200 ms | Grain length — longer = smoother on sustained/low material, shorter = sharper transients. |
+| `overlap` | `2` | 2 … 4 | Number of overlapping grains — higher = smoother/denser at more CPU. |
+
+**How it works.** It uses **WSOLA** (waveform-similarity overlap-add):
+the audio is sliced into short overlapping grains and overlapped back
+together at the original rate (preserving duration), with each grain
+resampled to move the pitch. The “waveform-similarity” part nudges each
+grain to the position where it best lines up with the previous one, so
+the overlap joins stay phase-continuous — that's what keeps it clean on
+tonal material instead of the beating/doubling a naïve granular shifter
+produces on a held tone. Pitch is summed in semitone space and the
+engine adds about one grain of latency. Shape-polymorphic like
+[Filter](#filter): a mono input runs one grain engine, a voice-aware
+`(V, F)` input runs one independent engine per voice (a single voice row
+is bit-identical to the mono render). Pushed to extremes, or on very low
+material with short grains, it takes on a characteristic granular smear.
+
+**Patching.** `oscillator → pitch_shifter → speaker` to transpose a
+tone without changing tempo; feed the [FilePlayer](#file_player) in to
+re-pitch a loop while it keeps time. Wire an [LFO](#lfo) into `pitch_cv`
+for vibrato. Set `mix` to ~0.5 with `semitones` = 7 for a fifth stacked
+over the dry (instant harmony), or a couple of cents for detune-
+thickening. For pitch shifting where speed *should* follow, use the
+[resampler](#resampler). See `examples/pitch_shifter_harmony.json`
+(saw → +7 st at 50% mix → speaker: a self-playing fifth).
+
 ---
 
 ### Modulation
@@ -689,4 +740,5 @@ loads in the app. Notable ones referenced above:
 - `file_crossover_split.json` — a WAV track split and used as modulation.
 - `mic_beatbox_crossover.json` — live mic, beatbox-driven.
 - `resampler_tape_wobble.json` — varispeed pitch shift, LFO wobbling the pitch.
+- `pitch_shifter_harmony.json` — time-preserving shift; +7 st at 50% mix = a fifth harmony.
 - `stereo_hard_pan.json` — left/right speaker sinks.

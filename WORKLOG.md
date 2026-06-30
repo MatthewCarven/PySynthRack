@@ -4042,3 +4042,74 @@ repeat texture; a **pitch-only** sibling (granular or phase-vocoder) is the
 natural follow-up for shifting pitch while holding speed; a window-size /
 latency param and a dry/wet mix would round it out; an anti-alias lowpass
 before large up-shifts would tame the brightness.
+
+---
+
+## 2026-06-30 — PitchShifter (`pitch_shifter`): time-preserving granular shift
+
+The speed-preserving cousin of the resampler, and the most involved
+module so far. Scoped in-convo: granular over phase-vocoder, dry/wet
+mix, exposed grain knobs. The first prototype (plain windowed overlap-
+add) was correct on pitch + duration but **combed badly on tonal
+material** — each harmonic split into a beating ±grain-rate doublet,
+audible on the pure/near-pure waveforms this synth produces. Held for a
+steer; Matthew picked **WSOLA** (waveform-similarity overlap-add), which
+fixes it: each grain is nudged to the position that best correlates with
+the previous one (a tie-break bias toward the smallest shift keeps pure
+sines stable), so overlap joins are phase-continuous and the shift comes
+out clean.
+
+*Algorithm.* Pitch shift = WSOLA time-stretch by the ratio r, then
+resample by r to restore duration. Validated offline first (clean fifth
+on saw *and* sine, full amplitude), then ported to a streaming engine
+and stress-tested across block boundaries. A nasty bug en route: the
+stretched-output ring accumulated grains with `+=` but never cleared
+consumed slots, so stale data piled up as the ring wrapped — killed
+amplitude and smeared duration. Fix: zero each stretched slot once the
+read pointer passes it.
+
+*Engine* (`audio/numpy_backend.py`, `_GrainShifter` + `_render_pitch_shifter`).
+`_GrainShifter` is one channel's streaming WSOLA state (input ring,
+stretched-output OLA ring, analysis pointer with a vectorized NCC search
+via `np.correlate` + cumsum norms, and a vectorized resample read). The
+renderer keeps a list of engines, one per voice slot, so a single voice
+is bit-identical to mono. Pitch is summed in semitone space and sampled
+per block (block-rate CV — ample for vibrato); effective shift clamped
+to ±36 st. Dry tap is latency-compensated for the `mix`. Shape-
+polymorphic like Filter/Crossover.
+
+*Module* (`modules/pitch_shifter.py`). `in`(audio)+`pitch_cv`(cv) →
+`out`(audio). Params `semitones`(±24), `cents`, `cv_depth`(12),
+`mix`(1.0), `grain_size`(50 ms), `overlap`(2). Registered; pyo silent-
+stub extended.
+
+*UI* (`ui/app.py`). `_add_param_widget` `pitch_shifter` block: semitones
+(±24 st), cents (±100 ct), cv_depth (0–48 st/unit), mix (0–1), grain_size
+(10–200 ms), overlap (2–4 int).
+
+*Tests* (`tests/test_pitch_shifter.py`, 24). Model/ports/round-trip/type-
+walls; mono (disconnected→silence; octave up/down + a fifth; **time-
+preserving** = a held tone stays steady and full-level; CV in semitone
+space; mix=0 dry / mix=1 wet; finite on extremes; grain/overlap variants
+still shift); voice (row==mono bit-identical across 14 blocks, per-voice
+CV independence, mono↔voice reinit); integration (osc→shifter→speaker,
+50% mix harmony). Full suite **661 passing (+18 mido skipped)**, up from
+637 — exactly +24.
+
+*Docs.* `docs/MODULES.md` Processor index row + full entry. Example
+`examples/pitch_shifter_harmony.json` — saw → +7 st at 50% mix → speaker:
+a self-playing fifth (peak ≈ 0.55).
+
+**Hand-off to Matthew:** delivered as `pitch_shifter.patch`, **stacked on
+`resampler.patch`** — `git am` order: `resampler.patch` then
+`pitch_shifter.patch` (both verified clean on origin/main `3a8f729`, full
+suite green in the am'd tree). To hear it: open
+`pitch_shifter_harmony.json` (a fifth that holds tempo); set `mix` to 1.0
+for a full transpose, or feed it the FilePlayer to re-pitch a loop while
+it keeps time.
+
+**Next:** a formant-preserve option (resample the spectral envelope
+separately); pitch-synchronous grain sizing so deep bass stays clean with
+short grains; vectorize the per-voice search if it ever dominates a
+profile; transient detection to sharpen attacks; and a small octave-
+accuracy tighten (~12 cents sharp at +12 on a pure sine).

@@ -31,6 +31,7 @@ from .noise import Noise
 from .oscillator import Oscillator
 from .parametric_eq import ParametricEQ
 from .resampler import Resampler
+from .pitch_shifter import PitchShifter
 from .output import LeftSpeakerOutput, RightSpeakerOutput, SpeakerOutput
 from .samplehold import SampleHold
 from .schmitt import Schmitt
@@ -62,6 +63,7 @@ __all__ = [
     "Oscillator",
     "ParametricEQ",
     "Resampler",
+    "PitchShifter",
     "RightSpeakerOutput",
     "SampleHold",
     "Schmitt",
