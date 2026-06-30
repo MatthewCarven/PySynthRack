@@ -670,6 +670,10 @@ class NumpyBackend(AudioBackend):
             return self._render_cv_keyboard(module, frames)
         if module.TYPE == "cv_gates":
             return self._render_cv_gates(module, frames)
+        if module.TYPE == "clock":
+            return self._render_clock(module, frames)
+        if module.TYPE == "sequencer":
+            return self._render_sequencer(module, frames, buffers, patch)
         if module.TYPE == "midi_input":
             return self._render_midi_input(module, frames)
         if module.TYPE == "filter":
@@ -1410,6 +1414,107 @@ class NumpyBackend(AudioBackend):
             ks["level"] = level
             out[n] = level
         return out
+
+    # ----- clock / sequencer ---------------------------------------------
+
+    # Sequencer step ceiling — mirrors modules.sequencer.MAX_STEPS. Kept
+    # local to keep the backend free of a modules-layer import for a single
+    # integer (same pattern as _MAX_VOICES).
+    _SEQ_MAX_STEPS = 16
+
+    def _render_clock(self, module, frames: int) -> np.ndarray:
+        """Tempo-driven gate pulse train, fully vectorized.
+
+        Pulse frequency is ``bpm / 60 * division`` Hz. A float64 phase
+        accumulator carries across blocks so pulses stay phase-continuous
+        (no drift, no seam at block boundaries); the gate is high for the
+        first ``pulse_width`` fraction of each unit phase period. Returns a
+        mono ``(frames,)`` gate buffer.
+        """
+        bpm = max(1e-6, float(module.params.get("bpm", 120.0)))
+        division = max(1e-6, float(module.params.get("division", 4.0)))
+        pw = min(0.999, max(0.001, float(module.params.get("pulse_width", 0.5))))
+
+        freq = bpm / 60.0 * division  # pulses per second
+        inc = freq / self.sample_rate
+
+        st = self._state.setdefault(module.id, {"phase": 0.0})
+        phase0 = float(st.get("phase", 0.0))
+
+        # Phase at samples 1..frames (so a fresh clock at phase 0 emits a
+        # rising edge on the very first sample — the downstream sequencer
+        # then plays step 1 immediately).
+        n = np.arange(1, frames + 1, dtype=np.float64)
+        frac = np.mod(phase0 + inc * n, 1.0)
+        gate = (frac < pw).astype(np.float32)
+
+        st["phase"] = float(np.mod(phase0 + inc * frames, 1.0))
+        return gate
+
+    def _render_sequencer(self, module, frames: int, buffers, patch) -> dict:
+        """Clock-driven step sequencer → 1V/oct ``cv`` + ``gate``.
+
+        Advances one step per rising edge of the ``clock`` gate; a rising
+        edge on ``reset`` rewinds so the next clock plays step 1. The step
+        index starts at -1 so the first clock pulse lands on step 1
+        (index 0), and wraps modulo ``steps``. ``cv`` holds the current
+        step's pitch (``semitones / 12``) for the whole step — sample-and-
+        hold, so the note stays in tune while an envelope rings out after
+        the gate falls. ``gate`` is high while the clock is high *and* the
+        current step is enabled (a disabled step is a rest). Mono output.
+
+        Per-sample because it is an edge-driven counter; cheap (one int
+        compare + a couple of lookups per sample) and clear, matching the
+        ADSR/Schmitt style in this backend.
+        """
+        clock = self._input_buffer(patch, buffers, module.id, "clock")
+        reset = self._input_buffer(patch, buffers, module.id, "reset")
+
+        steps = int(module.params.get("steps", 8))
+        steps = max(1, min(self._SEQ_MAX_STEPS, steps))
+        pitches = [
+            float(module.params.get(f"step{i}_pitch", 0.0))
+            for i in range(1, self._SEQ_MAX_STEPS + 1)
+        ]
+        ons = [
+            bool(module.params.get(f"step{i}_on", True))
+            for i in range(1, self._SEQ_MAX_STEPS + 1)
+        ]
+
+        st = self._state.setdefault(
+            module.id,
+            {"idx": -1, "cv": 0.0, "prev_clock": False, "prev_reset": False},
+        )
+        idx = int(st["idx"])
+        cur_cv = float(st["cv"])
+        prev_clock = bool(st["prev_clock"])
+        prev_reset = bool(st["prev_reset"])
+
+        gate_high = self._GATE_HIGH
+        cv_out = np.empty(frames, dtype=np.float32)
+        gate_out = np.empty(frames, dtype=np.float32)
+
+        for n in range(frames):
+            c = bool(clock[n] > gate_high) if clock is not None else False
+            r = bool(reset[n] > gate_high) if reset is not None else False
+
+            if r and not prev_reset:
+                idx = -1  # next clock edge plays step 1
+            prev_reset = r
+
+            if c and not prev_clock:
+                idx = (idx + 1) % steps
+                cur_cv = pitches[idx] / 12.0
+            prev_clock = c
+
+            cv_out[n] = cur_cv
+            gate_out[n] = 1.0 if (c and idx >= 0 and ons[idx]) else 0.0
+
+        st["idx"] = idx
+        st["cv"] = cur_cv
+        st["prev_clock"] = prev_clock
+        st["prev_reset"] = prev_reset
+        return {"cv": cv_out, "gate": gate_out}
 
     # ----- MIDI input rendering ------------------------------------------
 

@@ -207,6 +207,9 @@ class PyoBackend(AudioBackend):
             "ad_envelope",
             "resampler",
             "pitch_shifter",
+            "cv_gates",
+            "clock",
+            "sequencer",
         ):
             # v0.3+ routing / bridge / CV-oscillator modules. The numpy
             # backend is the real implementation; pyo support arrives

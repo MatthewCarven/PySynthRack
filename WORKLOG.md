@@ -4263,3 +4263,73 @@ keys can be moved off C4; a per-key *retrigger vs legato* choice; optional
 exp/linear curve like the AD-envelope follow-up; and (if profiled hot with
 many keys held) vectorising `_adsr_key_block` analytically since the gate is
 block-constant.
+
+## 2026-07-01 — Clock (`clock`) + Sequencer (`sequencer`): the self-playing pair
+
+After cv_gates Matthew asked "where to now?" and picked **clock + step
+sequencer** — the piece that makes the rack play itself and drives the gate-
+bank/AD voices. Scoped via AskUserQuestion: **two modules** (a Clock BPM→gate
++ a clock-driven Sequencer) over a combined or sequencer-only build; **steps
+adjustable up to 16**; **per-step value = pitch in semitones → 1V/oct CV +
+gate**. Stated defaults (accepted): advance on the clock's rising edge,
+transport drives the clock, a `reset` input, gate pulses on enabled steps,
+per-step on/off for rests.
+
+*Clock* (`modules/clock.py` + `numpy_backend._render_clock`). Params bpm /
+division (pulses per beat) / pulse_width; one `out` gate. Pulse freq =
+`bpm/60 * division` Hz. FULLY VECTORIZED: a float64 phase accumulator carried
+in `self._state[id]["phase"]` across blocks (phase-continuous, no seam — a
+test renders 2048 in one go vs two 1024s and asserts bit-equality), gate =
+`mod(phase0 + inc*(1..frames), 1) < pulse_width`. A fresh clock (phase 0)
+emits a rising edge on sample 0 so the downstream sequencer plays step 1
+immediately.
+
+*Sequencer* (`modules/sequencer.py` + `numpy_backend._render_sequencer`).
+Inputs `clock` + `reset` (gate); outputs `cv` (1V/oct) + `gate`. Params:
+`steps` (1..16) and an interleaved data-driven list `step{i}_pitch`
+(semitones) + `step{i}_on` (rest toggle) for i=1..16 → 33 params, built by
+`_default_params()` with a C-major scale on the first 8 steps so a freshly
+dropped node plays something. `MAX_STEPS=16` defined once; backend mirrors it
+as `_SEQ_MAX_STEPS` (local int, no modules-layer import, same pattern as
+`_MAX_VOICES`). Per-sample edge-driven state machine (idx, held cv,
+prev_clock, prev_reset in `self._state`): idx starts at **-1** so the first
+clock rising edge lands on step 1 (index 0), advances `(idx+1) % steps`, reset
+rising edge sets idx=-1; `cv` holds `pitch[idx]/12` for the whole step
+(sample-and-hold, so a note stays in tune while its envelope rings out);
+`gate` = clock-high AND step enabled. Mono. Reading params fresh each block
+means bpm/pitch/steps tweaks apply live without resetting position (only a
+structural recompile drops state, like every other stateful module).
+
+*UI* (`ui/app.py`): TYPE-guarded branches — clock bpm (20–300 slider),
+division (0.25–16 drag /beat), pulse_width (0.01–0.99); sequencer steps
+(1–16 int slider), `*_pitch` (−24..24 st drag), and `*_on` falls through to
+the generic bool checkbox. The `cv` out gets the auto CV meter; palette is
+automatic. Verified headlessly with a stub dearpygui (each widget routes to
+the right control + bounds). pyo punt tuple extended with clock/sequencer
+(and cv_gates, which had been relying on the silent `return None` fallback) —
+informative-print only; correctness is the numpy backend's.
+
+*Tests / example / docs.* `tests/test_clock.py` (8: defaults/ports, binary
+gate, rate from bpm×division, division changes rate, duty = pulse_width,
+phase continuity across blocks, dispatch) + `tests/test_sequencer.py` (13:
+model/ports, first-pulse-plays-step-1, 1V/oct values, wrap, gate aligned to
+clock, disabled-step-is-a-rest, cv holds between pulses, reset rewinds, idle
+silent, dispatch, clock-drives-seq integration, full self-playing voice makes
+sound). Full suite **724 passed, 18 skipped** in the sandbox — +21 from 703.
+Example `examples/sequencer_melody.json`: clock → sequencer → saw osc
+freq_cv, gate → pluck ADSR → VCA → speaker; an 8-step riff (with one rest)
+that plays itself (peak ~0.40). `docs/MODULES.md` index rows + full `####
+clock` / `#### sequencer` entries.
+
+**Hand-off to Matthew:** delivered as `clock_sequencer.patch`, `git
+am`-verified clean on origin/main `04a8119` (CVGates) in a fresh clone, full
+suite 724 green in the am'd tree. To hear it: open `sequencer_melody.json`
+and hit play — it loops the riff on its own. Drive other modules off the same
+`clock` (an AD drum, a sample-hold) to lock everything to the beat; patch
+`sequencer.cv` into a filter `cutoff_cv` for stepped timbre instead of pitch.
+
+**Next:** swing/shuffle on the clock; clock run/reset inputs (sync several
+clocks); per-step gate-length / ratchets on the sequencer; a direction param
+(up/down/ping-pong/random); pitch quantize-to-scale; multiple CV rows
+(a second value lane per step); save the sequencer's run position so a
+recompile doesn't restart it.

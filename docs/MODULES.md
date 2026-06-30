@@ -148,6 +148,8 @@ Every module type, its category, and its ports at a glance.
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
 | [`adsr`](#adsr) | Modulation | `gate` (gate) → `cv` (cv) |
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
+| [`clock`](#clock) | Modulation | — → `out` (gate) |
+| [`sequencer`](#sequencer) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
 | [`audio_to_cv`](#audio_to_cv) | Bridge | `in` (audio) → `cv` (cv) |
 | [`cv_to_audio`](#cv_to_audio) | Bridge | `cv` (cv) → `out` (audio) |
 | [`schmitt`](#schmitt) | Bridge | `in` (cv) → `gate` (gate) |
@@ -616,6 +618,55 @@ A trigger-style **Attack–Decay** envelope for percussion and plucks. A trigger
 **How it works.** Rising edge → attack from the current level (a retrigger mid-decay picks up where it was, no click) → decay to 0 → idle. The trigger going low does nothing; the decay always completes. Shape-polymorphic like [adsr](#adsr): a `(V, F)` trigger drives V independent envelopes, bit-identical to the mono path per voice.
 
 **Patching.** `lfo → schmitt → ad_envelope.trig`, then `ad_envelope.cv → vca.cv` for a self-playing drum, or a keyboard/MIDI `gate → trig`. See `examples/ad_kick.json` (a clocked sine kick).
+
+#### `clock`
+
+The rack's **metronome**: a tempo turned into a steady gate pulse train. No
+input, no audio — it free-runs while the transport plays and emits a pulse on
+`out` that other modules step off (most obviously a [sequencer](#sequencer)'s
+`clock`, but equally an [adsr](#adsr)/[ad_envelope](#ad_envelope) trigger or a
+[sample_hold](#sample_hold) `trig`).
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `out` | out | gate | Pulse train at `bpm / 60 × division` Hz. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `bpm` | `120.0` | 20…300 | Tempo in beats per minute. |
+| `division` | `4.0` | 0.25…16 | Pulses per beat — 1 = quarter, 2 = eighth, 4 = sixteenth notes. |
+| `pulse_width` | `0.5` | 0.01…0.99 | Duty cycle (fraction of each period the gate is high). |
+
+**How it works.** A float64 phase accumulator carries across blocks so pulses stay phase-continuous (no drift, no seam). A fresh clock emits a rising edge on its first sample, so a downstream sequencer plays step 1 immediately.
+
+**Patching.** `clock.out → sequencer.clock`. See `examples/sequencer_melody.json`.
+
+#### `sequencer`
+
+A clock-driven **step sequencer** — the self-playing centrepiece. On each `clock` pulse it advances one step (up to 16) and emits that step's pitch as a **1V/octave** `cv` plus a `gate` that fires on enabled steps. Wire `cv → oscillator.freq_cv` (osc base `freq` = C4 = 261.6256 Hz to play in tune) and `gate → adsr → vca` and the patch plays a melody by itself.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `clock` | in | gate | Advance one step on each **rising edge**. First pulse plays step 1. |
+| `reset` | in | gate | A rising edge rewinds so the next clock plays step 1. Unpatched = free-running loop. |
+| `cv` | out | cv | Current step's pitch as 1V/oct (`semitones / 12`, C4 = 0 V), **held** for the whole step (sample-and-hold) so a note stays in tune while its envelope rings out. |
+| `gate` | out | gate | High while the clock is high **and** the current step is enabled. A disabled step is a rest. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `steps` | `8` | 1…16 | Active loop length; the sequence wraps back to step 1 after this many steps. |
+| `step{i}_pitch` | C-major scale | −24…24 st | Pitch of step *i* in semitones (i = 1…16). Default is an ascending C-major scale on the first 8 steps. |
+| `step{i}_on` | `true` | bool | Whether step *i* fires its gate. `false` = a rest (the step still consumes a clock tick). |
+
+**Patching.** `clock.out → sequencer.clock`; `sequencer.cv → oscillator.freq_cv`; `sequencer.gate → adsr.gate → vca.cv`; `oscillator.out → vca.audio → speaker`. See `examples/sequencer_melody.json`. The `cv` is generic 1V/oct — patch it into a filter `cutoff_cv` or any CV input for stepped modulation instead of pitch.
 
 #### `lfo`
 

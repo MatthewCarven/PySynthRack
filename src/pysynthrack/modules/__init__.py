@@ -10,6 +10,7 @@ exist should:
 from .ad_envelope import ADEnvelope
 from .adsr import ADSR
 from .audiotocv import AudioToCV
+from .clock import Clock
 from .combiner import Combiner
 from .constant import Constant
 from .crossover import Crossover
@@ -37,12 +38,14 @@ from .pitch_shifter import PitchShifter
 from .output import LeftSpeakerOutput, RightSpeakerOutput, SpeakerOutput
 from .samplehold import SampleHold
 from .schmitt import Schmitt
+from .sequencer import Sequencer
 from .vca import VCA
 
 __all__ = [
     "ADEnvelope",
     "ADSR",
     "AudioToCV",
+    "Clock",
     "Combiner",
     "Constant",
     "Crossover",
@@ -71,6 +74,7 @@ __all__ = [
     "RightSpeakerOutput",
     "SampleHold",
     "Schmitt",
+    "Sequencer",
     "SpeakerOutput",
     "VCA",
 ]

@@ -383,6 +383,48 @@ class App:
                 )
                 return
 
+        if module.TYPE == "clock":
+            # Tempo metronome: bpm, pulses-per-beat division, duty cycle.
+            if param_name == "bpm":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=20.0, max_value=300.0, format="%.1f BPM",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "division":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.25,
+                    min_value=0.25, max_value=16.0, format="%.2f /beat",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "pulse_width":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.01, max_value=0.99, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "sequencer":
+            # steps = loop length (int); step{i}_pitch = semitones (drag);
+            # step{i}_on = rest toggle (falls through to the generic checkbox).
+            if param_name == "steps":
+                dpg.add_slider_int(
+                    label=param_name, default_value=int(current),
+                    min_value=1, max_value=16,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name.endswith("_pitch"):
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=-24.0, max_value=24.0, format="%.0f st",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "parametric_eq":
             # Parametric EQ bands: ``band{i}_freq`` (Hz), ``band{i}_gain``
             # (dB, 0 = flat), ``band{i}_q`` (width). Distinct ranges from
