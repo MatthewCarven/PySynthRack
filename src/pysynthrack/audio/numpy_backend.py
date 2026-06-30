@@ -42,6 +42,8 @@ from typing import Any
 
 import numpy as np
 from scipy.signal import lfilter, resample_poly
+
+from . import media
 from scipy.io import wavfile
 
 from ..core.patch import Patch
@@ -3328,7 +3330,7 @@ class NumpyBackend(AudioBackend):
         if state["samples"] is None or state["path"] != path:
             # First arrival, or the user pointed at a different file.
             state["path"] = path
-            state["samples"] = self._load_wav(path, self.sample_rate)
+            state["samples"] = self._decode_audio(path, self.sample_rate)
             state["pos"] = 0
 
         armed = bool(module.params.get("armed", True))
@@ -3367,6 +3369,21 @@ class NumpyBackend(AudioBackend):
             left *= gain
             right *= gain
         return {"left": left, "right": right}
+
+    def _decode_audio(self, path, target_sr):
+        """Decode any supported media file to ``(2, N)`` float32 or None.
+
+        WAV takes the zero-dependency scipy fast path. Anything that
+        isn't a readable WAV — mp3/flac/ogg/m4a, the audio track of a
+        video (mp4/mkv/mov/webm), or even a 24-bit WAV scipy can't
+        open — falls back to ffmpeg when it's available (bundled via
+        the ``[media]`` extra, or a system ffmpeg). ``None`` on total
+        failure, so the player renders silence rather than raising.
+        """
+        samples = self._load_wav(path, target_sr)
+        if samples is not None:
+            return samples
+        return media.decode_with_ffmpeg(path, target_sr)
 
     @staticmethod
     def _load_wav(path, target_sr):

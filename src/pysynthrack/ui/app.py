@@ -243,6 +243,13 @@ class App:
             width=700,
             height=500,
         ):
+            # Audio + video containers ffmpeg can pull an audio track from
+            # (when the [media] extra or a system ffmpeg is present). Plain
+            # .wav always works; the rest fall back to silence without ffmpeg.
+            dpg.add_file_extension(
+                "Audio/Video{.wav,.mp3,.flac,.ogg,.m4a,.aac,.wma,.mp4,.m4v,.mov,.mkv,.webm,.avi}",
+                color=(150, 220, 255),
+            )
             dpg.add_file_extension(".wav", color=(150, 220, 255))
             dpg.add_file_extension(".*")
 

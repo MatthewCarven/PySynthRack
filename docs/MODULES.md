@@ -204,9 +204,12 @@ include `device`, `channel`, `octave_shift`, `velocity_sensitive`,
 
 #### `file_player`
 
-Streams a **WAV file** into the patch as a stereo audio source — so a recorded
-track can be split and used as sound or modulation. Decoded once into memory
-(resampled to the engine rate if needed), then streamed block by block.
+Streams an **audio file** into the patch as a stereo audio source — so a
+recorded track can be split and used as sound or modulation. WAV always
+works (no extra deps); with ffmpeg present it also reads mp3/flac/ogg/m4a
+and the **audio track of video files** (mp4/mkv/mov/webm). Decoded once
+into memory (resampled to the engine rate if needed), then streamed block
+by block.
 
 **Ports**
 
@@ -219,15 +222,19 @@ track can be split and used as sound or modulation. Decoded once into memory
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
-| `path` | `""` | file path | Path to a `.wav` — type it or use the node's **Browse...** button to pick one. Empty/missing/unreadable → silence (the patch still loads). **WAV only.** |
+| `path` | `""` | file path | Path to an audio/video file — type it or use the node's **Browse...** button. WAV always works; other formats (mp3/flac/ogg, video-audio) need ffmpeg. Empty/missing/unreadable → silence (the patch still loads). |
 | `gain` | `1.0` | 0…2 | Linear gain on both channels. |
 | `loop` | `false` | bool | `true` repeats seamlessly; `false` (default) plays once then silence until restart/re-arm. |
 | `armed` | `true` | bool | `false` outputs silence and parks the playhead at the start, so re-arming replays from the top. |
 
-**Notes.** A **Browse...** button beside the path field opens a WAV file
-picker (filtered to `.wav`) and writes the chosen path back into the field;
-the player re-decodes on the next block. The node also shows a live
-`elapsed / total` time readout. One-shots rewind when the transport stops. See `examples/file_crossover_split.json`
+**Notes.** A **Browse...** button beside the path field opens a file picker
+(audio + video formats) and writes the chosen path back into the field; the
+player re-decodes on the next block. Non-WAV formats are decoded by ffmpeg,
+found either from the `[media]` extra (`pip install -e ".[media]"`, a
+bundled binary that also travels inside the packaged exe) or a system
+`ffmpeg` on PATH; without ffmpeg, non-WAV files play silence. The node also
+shows a live `elapsed / total` time readout. One-shots rewind when the
+transport stops. See `examples/file_crossover_split.json`
 (track → crossover → AudioToCV → oscillator/CVToFrequency).
 
 #### `mic_input`

@@ -82,6 +82,20 @@ except Exception:
     # rtmidi not installed — fine, MIDI just won't be available.
     pass
 
+# ffmpeg binary bundled by imageio-ffmpeg (the [media] extra) — lets the
+# packaged exe decode mp3/flac/ogg and the audio track of video files
+# without a system ffmpeg install. Skipped cleanly if the extra isn't
+# installed, so the default build is byte-for-byte unchanged.
+try:
+    iio_datas, iio_bins, iio_hidden = collect_all("imageio_ffmpeg")
+    datas += iio_datas
+    binaries += iio_bins
+    hiddenimports += iio_hidden
+except Exception:
+    # imageio-ffmpeg not installed — fine, media decode falls back to a
+    # system ffmpeg (or WAV-only).
+    pass
+
 # ---------------------------------------------------------------------------
 # Analysis / build
 # ---------------------------------------------------------------------------

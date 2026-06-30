@@ -3786,3 +3786,74 @@ the Browse button.
 `fileplayer_browse.patch` (both clean on origin/main HEAD `ae0961f`).
 It's a GUI-only change, so confirm it live: open a patch with a
 FilePlayer, click **Browse...**, pick a WAV, hit play.
+
+---
+
+## 2026-06-30 — FilePlayer: ffmpeg decode (mp3/flac/ogg + video audio)
+
+Matthew wants to feed the FilePlayer audio from video files. Added an
+ffmpeg decode fallback so it reads anything ffmpeg can — mp3, flac, ogg,
+m4a, and the audio track of video containers (mp4/mkv/mov/webm) — while
+keeping WAV on the existing zero-dependency scipy path. He picked the
+"both" provisioning strategy: prefer a bundled binary, fall back to a
+system ffmpeg, else WAV-only.
+
+*New* (`audio/media.py`). `find_ffmpeg()` resolves an executable in two
+steps — a binary bundled by the optional `imageio-ffmpeg` dep first
+(`get_ffmpeg_exe()`), then `shutil.which("ffmpeg")` — cached for the
+process. `decode_with_ffmpeg(path, sr)` shells out
+(`ffmpeg -v error -nostdin -i path -vn -f f32le -ac 2 -ar sr pipe:1`),
+reads raw little-endian float32 off stdout, reshapes the interleaved
+bytes to a contiguous `(2, N)` — the exact contract `_load_wav` returns.
+ffmpeg does the stereo downmix and the resample; we only reshape. Any
+failure (no ffmpeg, missing file, no audio stream, nonzero exit, empty
+output) returns None so the player renders silence, never raises.
+
+*Wiring* (`numpy_backend.py`). New `_decode_audio(path, sr)`: try the
+scipy WAV fast path, and on None fall back to `media.decode_with_ffmpeg`.
+`_render_file_player` now calls `_decode_audio` instead of `_load_wav` —
+nothing else changed, so loop/playhead/one-shot/re-arm and the
+path-change re-decode all work unchanged. Bonus: a 24-bit WAV (which
+scipy can't open) now also succeeds via the ffmpeg fallback.
+
+*Deps / packaging.* New optional extra `media = ["imageio-ffmpeg>=0.4"]`
+(also folded into `[all]`); requirements.txt note. `pysynthrack.spec`
+gained a guarded `collect_all("imageio_ffmpeg")` so the bundled binary
+ships in the exe when the extra is installed — wrapped in try/except so
+the default build is byte-for-byte unchanged. **Build note for Matthew:
+verify the next `[media]` build actually bundles the binary and that the
+exe size lands where expected (was 51.7 MB; imageio-ffmpeg's binary is
+~30 MB, so ~80 MB, well under the ~256 MB budget).**
+
+*UI* (`ui/app.py`). The Browse dialog's filter widened from `.wav` only
+to a grouped Audio/Video filter (wav/mp3/flac/ogg/m4a/aac/wma + mp4/m4v/
+mov/mkv/webm/avi) plus `.wav` and `.*`.
+
+*Tests* (`tests/test_media.py`, 16). Discovery (no crash, sane types);
+byte parsing via a mocked subprocess (interleaved f32le → (2, N);
+empty/error/no-ffmpeg/missing-file/ragged-bytes → None); backend
+dispatch (readable WAV never invokes ffmpeg, garbage → None, non-WAV
+without ffmpeg → None); and real ffmpeg integration **skipped when no
+ffmpeg is present** (FLAC round-trip, decode resamples 22050→44100, the
+backend routes non-WAV through ffmpeg, a FilePlayer renders audible
+audio from a FLAC, and the audio track of a synthesized mp4 decodes).
+Full suite **577 passing (+18 mido skipped)** with ffmpeg available, up
+from 561 — exactly +16. On a machine with neither ffmpeg nor the extra,
+the 6 integration tests skip instead.
+
+*Known limits.* Decode is whole-file-into-memory (pre-existing FilePlayer
+trait) — a feature-length film's audio is GBs; streaming decode is a
+future upgrade. Decode still happens lazily on the audio thread on first
+play, so a big file gives one long first-block stall (also pre-existing).
+
+*Docs.* `docs/MODULES.md` FilePlayer entry rewritten (intro/path/notes).
+
+**Hand-off to Matthew:** delivered as a git patch **stacked on
+`fileplayer_browse.patch`** — `git am` order: `parametric_eq.patch`,
+`fileplayer_browse.patch`, then `fileplayer_ffmpeg.patch` (all clean on
+origin/main `ae0961f`). To use video audio: `pip install -e ".[media]"`
+(or have ffmpeg on PATH), open a FilePlayer, Browse to an mp4, play.
+
+**Next:** streaming/chunked decode for long files (drop the whole-file
+memory load); decode off the audio thread so first play never stalls; a
+small "ffmpeg: bundled / system / none" status hint on the node.
