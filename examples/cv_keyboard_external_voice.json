@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "next_id": 10,
+  "modules": [
+    {
+      "id": 1,
+      "type": "cv_keyboard",
+      "name": "CV Keyboard",
+      "params": {
+        "octave": 4
+      }
+    },
+    {
+      "id": 2,
+      "type": "oscillator",
+      "name": "Osc (built externally)",
+      "params": {
+        "waveform": "saw",
+        "freq": 261.6256,
+        "amp": 0.5
+      }
+    },
+    {
+      "id": 3,
+      "type": "adsr",
+      "name": "Pitched ADSR",
+      "params": {
+        "attack": 0.01,
+        "decay": 0.12,
+        "sustain": 0.6,
+        "release": 0.25
+      }
+    },
+    {
+      "id": 4,
+      "type": "vca",
+      "name": "Pitched VCA",
+      "params": {
+        "gain": 1.0
+      }
+    },
+    {
+      "id": 5,
+      "type": "noise",
+      "name": "Noise (per-key sound)",
+      "params": {
+        "color": "white",
+        "amp": 0.8
+      }
+    },
+    {
+      "id": 6,
+      "type": "adsr",
+      "name": "Snare ADSR (key C)",
+      "params": {
+        "attack": 0.001,
+        "decay": 0.10,
+        "sustain": 0.0,
+        "release": 0.08
+      }
+    },
+    {
+      "id": 7,
+      "type": "vca",
+      "name": "Noise VCA",
+      "params": {
+        "gain": 1.0
+      }
+    },
+    {
+      "id": 8,
+      "type": "mixer",
+      "name": "Mixer",
+      "params": {
+        "gain1": 1.0,
+        "gain2": 0.9,
+        "gain3": 1.0,
+        "gain4": 1.0,
+        "master": 0.7
+      }
+    },
+    {
+      "id": 9,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "pitch_cv", "dst_module_id": 2, "dst_port": "freq_cv" },
+    { "src_module_id": 2, "src_port": "out",      "dst_module_id": 4, "dst_port": "audio" },
+    { "src_module_id": 1, "src_port": "gate",     "dst_module_id": 3, "dst_port": "gate" },
+    { "src_module_id": 3, "src_port": "cv",       "dst_module_id": 4, "dst_port": "cv" },
+    { "src_module_id": 4, "src_port": "out",      "dst_module_id": 8, "dst_port": "in1" },
+    { "src_module_id": 1, "src_port": "key_c",    "dst_module_id": 6, "dst_port": "gate" },
+    { "src_module_id": 5, "src_port": "out",      "dst_module_id": 7, "dst_port": "audio" },
+    { "src_module_id": 6, "src_port": "cv",       "dst_module_id": 7, "dst_port": "cv" },
+    { "src_module_id": 7, "src_port": "out",      "dst_module_id": 8, "dst_port": "in2" },
+    { "src_module_id": 8, "src_port": "out",      "dst_module_id": 9, "dst_port": "in" }
+  ]
+}

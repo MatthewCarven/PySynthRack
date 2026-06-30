@@ -48,6 +48,7 @@ from scipy.io import wavfile
 
 from ..core.patch import Patch
 from ..modules.keyboard import midi_to_freq
+from ..modules.cv_keyboard import CV_REFERENCE_NOTE, KEY_GATE_NAMES
 from .backend import AudioBackend
 
 # Imported lazily so a missing PortAudio install doesn't crash module import.
@@ -664,6 +665,8 @@ class NumpyBackend(AudioBackend):
             return self._render_oscillator(module, frames, buffers, patch)
         if module.TYPE == "keyboard":
             return self._render_keyboard(module, frames)
+        if module.TYPE == "cv_keyboard":
+            return self._render_cv_keyboard(module, frames)
         if module.TYPE == "midi_input":
             return self._render_midi_input(module, frames)
         if module.TYPE == "filter":
@@ -1250,6 +1253,52 @@ class NumpyBackend(AudioBackend):
         audio *= volume
 
         return {"out": audio, "gate": gate}
+
+    # ----- CV keyboard rendering ------------------------------------------
+
+    def _render_cv_keyboard(self, module, frames: int) -> dict[str, np.ndarray]:
+        """Voice-aware CV/gate controller renderer.
+
+        Emits per-slot ``pitch_cv`` + ``gate`` of shape
+        ``(MAX_VOICES, frames)``, plus twelve mono per-pitch-class gate
+        jacks ``key_c`` .. ``key_b``. Unlike :meth:`_render_keyboard`,
+        CVKeyboard has no audio, no envelope, and no phase/last_note
+        state -- it is a controller, so the voice is built downstream.
+
+        ``pitch_cv`` is 1V/octave with C4 (MIDI 60) = 0 V. It is held for
+        any non-empty slot, including a released-but-still-tailing voice,
+        so a downstream ADSR release stays in tune; it only returns to 0
+        when the slot is reused (note == -1). ``gate[i]`` is high while
+        voice slot ``i`` is physically held (block-constant, like the
+        Keyboard/MIDIInput renderers). Each ``key_*`` jack is high while
+        any held voice is that pitch class (octave-folded), and stays 1D
+        because it is a channel-wide boolean.
+        """
+        slots = module.snapshot_voice_slots()  # length _MAX_VOICES
+
+        pitch_cv = np.zeros((self._MAX_VOICES, frames), dtype=np.float32)
+        gate = np.zeros((self._MAX_VOICES, frames), dtype=np.float32)
+        # Per-pitch-class "any held voice is this pc" flags, index 0 == C.
+        pc_on = [False] * 12
+
+        for i, slot in enumerate(slots):
+            note = int(slot["note"])
+            if note == -1:
+                continue
+            # 1V/oct, held through the release tail until the slot reuses.
+            pitch_cv[i, :] = (note - CV_REFERENCE_NOTE) / 12.0
+            if bool(slot["gating"]):
+                gate[i, :] = 1.0
+                pc_on[note % 12] = True
+
+        result: dict[str, np.ndarray] = {"pitch_cv": pitch_cv, "gate": gate}
+        for pc, name in enumerate(KEY_GATE_NAMES):
+            result[name] = (
+                np.ones(frames, dtype=np.float32)
+                if pc_on[pc]
+                else np.zeros(frames, dtype=np.float32)
+            )
+        return result
 
     # ----- MIDI input rendering ------------------------------------------
 

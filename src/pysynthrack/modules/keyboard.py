@@ -75,6 +75,10 @@ class Keyboard(Module):
     """
 
     TYPE = "keyboard"
+    # Marks this as a module the UI feeds physical key events to.
+    # CVKeyboard sets the same flag; the UI routes by this flag rather
+    # than by concrete type (see ui/app.py key handlers).
+    ACCEPTS_COMPUTER_KEYS = True
     DEFAULT_PARAMS = {
         "octave": 4,
         "waveform": "sine",

@@ -190,6 +190,7 @@ class PyoBackend(AudioBackend):
         if module.TYPE in (
             "combiner",
             "cv_combiner",
+            "cv_keyboard",
             "crossover",
             "disk_writer",
             "audio_to_cv",

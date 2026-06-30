@@ -132,6 +132,7 @@ Every module type, its category, and its ports at a glance.
 |-----------------|----------|------------------|
 | [`oscillator`](#oscillator) | Source | `freq_cv`,`amp_cv` (cv) → `out` (audio) |
 | [`keyboard`](#keyboard) | Source | — → `out` (audio), `gate` (gate) |
+| [`cv_keyboard`](#cv_keyboard) | Source | — → `pitch_cv` (cv), `gate`, `key_c`…`key_b` (gate) |
 | [`midi_input`](#midi_input) | Source | — → `out` (audio), `gate`, `pitch_cv`, `mod_cv`, `pressure_cv` |
 | [`file_player`](#file_player) | Source | — → `left`,`right` (audio) |
 | [`mic_input`](#mic_input) | Source | — → `left`,`right` (audio) |
@@ -198,6 +199,37 @@ with an `adsr` driving the VCA's `cv`. See `examples/hello_sine.json` and
 _To document._ Computer-keyboard note source (polyphonic). Outputs `out`
 (audio) and `gate`. Params: `octave`, `waveform`, `volume`. See
 `examples/keyboard_play.json`, `examples/keyboard_adsr.json`.
+
+#### `cv_keyboard`
+
+The **controller** sibling of [`keyboard`](#keyboard): the computer keys
+emit **CV and gate only** — no internal oscillator — so you build the voice
+yourself out in the patch (oscillator → filter → VCA → whatever). Same keys,
+a different sound every patch, exactly like a hardware modular keyboard. It
+shares Keyboard's 16-slot polyphony and accepts the same physical keys (both
+modules can be in a patch at once and play together).
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `pitch_cv` | out | cv | Held note as a **1V/octave** control voltage, **C4 (MIDI 60) = 0 V** (each semitone = 1/12). Per-voice. Wire into an [`oscillator`](#oscillator)'s `freq_cv` (set the osc's base `freq` to C4 = 261.6256 Hz to track in tune) or into [`cv_to_frequency`](#cv_to_frequency). Pitch is held through a voice's release tail so an ADSR release stays in tune. |
+| `gate` | out | gate | High while a key is held, per voice — drives one [`adsr`](#adsr)/[`ad_envelope`](#ad_envelope) envelope per note. |
+| `key_c` … `key_b` | out | gate | Twelve per-pitch-class gates ("all the keys are CV outs"). Each is high while **any** held voice is that pitch class (octave-folded: C4 and C5 both raise `key_c`). Patch one into a kick, another into a snare, etc. — a different module triggered per key. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `octave` | `4` | int | Base octave for the home row (same mapping as `keyboard`: home-row `A` = C of this octave). |
+
+**Patching.** The voice **must** pass through a `gate`-driven VCA — an
+oscillator drones on every voice slot (idle slots sit at `pitch_cv` = 0 = the
+C4 reference), and the gate/VCA is what articulates notes and silences the
+idle voices. Typical chain: `cv_keyboard.pitch_cv → oscillator.freq_cv`,
+`oscillator.out → vca.audio`, `cv_keyboard.gate → adsr.gate`,
+`adsr.cv → vca.cv`. For a per-key drum, `cv_keyboard.key_c → adsr.gate` on a
+separate noise voice. See `examples/cv_keyboard_external_voice.json`.
 
 #### `midi_input`
 
@@ -741,4 +773,5 @@ loads in the app. Notable ones referenced above:
 - `mic_beatbox_crossover.json` — live mic, beatbox-driven.
 - `resampler_tape_wobble.json` — varispeed pitch shift, LFO wobbling the pitch.
 - `pitch_shifter_harmony.json` — time-preserving shift; +7 st at 50% mix = a fifth harmony.
+- `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `stereo_hard_pan.json` — left/right speaker sinks.

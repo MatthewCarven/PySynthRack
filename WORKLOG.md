@@ -4113,3 +4113,76 @@ separately); pitch-synchronous grain sizing so deep bass stays clean with
 short grains; vectorize the per-voice search if it ever dominates a
 profile; transient detection to sharpen attacks; and a small octave-
 accuracy tighten (~12 cents sharp at +12 on a pure sine).
+
+## 2026-07-01 — CV Keyboard (`cv_keyboard`): keys as a CV/gate controller
+
+Matthew's dream: "a keyboard like the existing module but all the keys are
+CV outs for feeding to oscillators etc — for a different sound." So a
+*controller*, not a sound source: the computer keys emit control voltage,
+and the voice is built out in the patch (osc → filter → VCA → whatever).
+Same keys, a different sound every patch — the canonical modular keyboard.
+
+*Scoping (AskUserQuestion).* Three forks locked up front: (1) **output
+shape** → **both** a unified 1V/oct `pitch_cv` + `gate` **and** per-key
+gate jacks; (2) **voicing** → **voice-aware** (reuse the 16-slot
+`VoiceSlots` model); (3) **new module** vs extending Keyboard → **new
+dedicated module**. Matthew added "copy the existing if you want to" — so
+the note-ingest is lifted from Keyboard.
+
+*Model* (`modules/cv_keyboard.py`). `CVKeyboard(Module)` — `octave` is the
+only param (no waveform/volume; it makes no sound). Note ingest
+(`note_on`/`note_off`/`all_notes_off`/`snapshot_active_notes`/
+`snapshot_voice_slots`) copied verbatim from Keyboard over its own
+`VoiceSlots` + lock. Outputs: `pitch_cv` (cv), `gate` (gate), then twelve
+per-pitch-class gate jacks `key_c`..`key_b` built from a data-driven
+`KEY_GATE_NAMES` tuple so the port list and the renderer never drift.
+`CV_REFERENCE_NOTE = 60` (C4 = 0 V).
+
+*UI routing — the one shared touch.* Both Keyboard and CVKeyboard now carry
+an `ACCEPTS_COMPUTER_KEYS = True` class marker, and the app's three key
+handlers route by `getattr(module, "ACCEPTS_COMPUTER_KEYS", False)` instead
+of `isinstance(module, Keyboard)` (the now-unused `Keyboard` import was
+dropped). Decoupled — both keyboards can be in one patch and play together,
+and any future computer-key source opts in with the same flag. `octave`
+hits the existing generic int selector; `pitch_cv` (cv kind) gets the auto
+CV meter for free; the gate jacks get none (correct).
+
+*Renderer* (`numpy_backend._render_cv_keyboard`). No audio, no envelope, no
+phase/last_note state — far simpler than `_render_keyboard`. Per voice slot:
+`pitch_cv[i] = (note - 60) / 12` (held for any non-empty slot, **including a
+released-but-tailing voice**, so an ADSR release stays on pitch; zeroes only
+on slot reuse); `gate[i] = 1` while physically held. The twelve `key_*`
+arrays are mono `(frames,)` booleans — high while **any** held voice is that
+pitch class (octave-folded: C4 and C5 both raise `key_c`). pyo gets the
+usual silent-stub (added to the punt tuple).
+
+*Gotcha worth remembering.* The integration test first played `pitch_cv →
+osc → speaker` with no VCA and read **C4**, not the note pressed: an
+oscillator drones on **every** voice slot, and the 15 idle slots sit at
+`pitch_cv = 0 = C4`, so 15 idle voices drowned out the 1 real one. That's
+correct hardware behaviour — the gate/VCA is what articulates and silences
+idle voices. Fixed the test (and the example) to gate a VCA, which is the
+mandatory pattern; documented it in MODULES.md.
+
+*Tests / example / docs.* 20 tests in `tests/test_cv_keyboard.py` (port
+shape, the marker on both keyboards, 1V/oct values C3/C4/C5/G4/A4, per-voice
+gate independence, pitch-class folding, release-holds-pitch-drops-gate,
+all-notes-off, dispatch, and the FFT in-tune integration through a gated
+VCA). Full suite **681 passing (+18 mido skipped)**, up from 661 — exactly
++20. Example `examples/cv_keyboard_external_voice.json`: `pitch_cv → saw
+osc → ADSR/VCA → mixer`, and `key_c → a second ADSR/VCA on a noise burst →
+mixer` — press any C to fire a snare alongside the pitched voice.
+`docs/MODULES.md` index row + full `#### cv_keyboard` entry.
+
+**Hand-off to Matthew:** delivered as `cv_keyboard.patch`, `git am`-verified
+clean on origin/main `fdf597e`, full suite green in the am'd tree. To hear
+it: open `cv_keyboard_external_voice.json`, play the home row (A = C4) — the
+saw tracks pitch via `pitch_cv`, and pressing any C also triggers the noise
+snare off `key_c`. Swap the oscillator for any voice chain for a different
+sound.
+
+**Next:** the per-key gates are 12 pitch classes — an absolute 17-key
+(full home-row span) mode is an option; a `cv_reference` param to move 0 V
+off C4; a mono/last-note priority mode for vintage single-oscillator leads;
+velocity/aftertouch CV stays out of scope (computer keys can't express it —
+that's MIDIInput's lane).

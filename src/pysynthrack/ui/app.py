@@ -25,7 +25,7 @@ from ..core.module import all_module_types
 from ..core.patch import Cable, Patch
 from ..io_patch import load_patch, save_patch
 from ..modules.filter import FILTER_MODES
-from ..modules.keyboard import Keyboard, midi_to_name, semitone_to_midi
+from ..modules.keyboard import midi_to_name, semitone_to_midi
 from ..modules.cvcombiner import CVCOMBINER_MODES
 from ..modules.cvtofrequency import MODES as CVTOFREQ_MODES
 from ..modules.lfo import LFO_WAVEFORMS
@@ -819,7 +819,7 @@ class App:
         self._set_status(f"Selected: {os.path.basename(path)}")
 
     def _on_key_press(self, sender, app_data, user_data=None) -> None:
-        """Route a physical key press to every Keyboard module in the patch.
+        """Route a physical key press to every key-accepting module in the patch.
 
         ``app_data`` is the dpg key code. If the key isn't mapped to a
         semitone we ignore it. We also debounce auto-repeat: holding A
@@ -833,7 +833,7 @@ class App:
             return
         self._held_keys.add(key_code)
         for module in self.patch.modules.values():
-            if not isinstance(module, Keyboard):
+            if not getattr(module, "ACCEPTS_COMPUTER_KEYS", False):
                 continue
             octave = int(module.params.get("octave", 4))
             midi_note = semitone_to_midi(octave, semitone)
@@ -846,17 +846,17 @@ class App:
         if semitone is None:
             return
         for module in self.patch.modules.values():
-            if not isinstance(module, Keyboard):
+            if not getattr(module, "ACCEPTS_COMPUTER_KEYS", False):
                 continue
             octave = int(module.params.get("octave", 4))
             midi_note = semitone_to_midi(octave, semitone)
             module.note_off(midi_note)
 
     def _all_keyboards_notes_off(self) -> None:
-        """Release every note on every Keyboard module — avoids stuck notes."""
+        """Release every note on every key-accepting module — avoids stuck notes."""
         self._held_keys.clear()
         for module in self.patch.modules.values():
-            if isinstance(module, Keyboard):
+            if getattr(module, "ACCEPTS_COMPUTER_KEYS", False):
                 module.all_notes_off()
 
     def _on_delete_selected(self, sender, app_data, user_data=None) -> None:
