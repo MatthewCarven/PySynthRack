@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "next_id": 7,
+  "modules": [
+    {
+      "id": 1,
+      "type": "cv_gates",
+      "name": "CV Gates (play me)",
+      "params": {
+        "attack": 0.15,
+        "decay": 0.20,
+        "sustain": 0.70,
+        "release": 0.40
+      }
+    },
+    {
+      "id": 2,
+      "type": "oscillator",
+      "name": "Osc C3",
+      "params": { "waveform": "saw", "freq": 130.8128, "amp": 0.3 }
+    },
+    {
+      "id": 3,
+      "type": "oscillator",
+      "name": "Osc E3",
+      "params": { "waveform": "saw", "freq": 164.8138, "amp": 0.3 }
+    },
+    {
+      "id": 4,
+      "type": "oscillator",
+      "name": "Osc G3",
+      "params": { "waveform": "saw", "freq": 195.9977, "amp": 0.3 }
+    },
+    {
+      "id": 5,
+      "type": "mixer",
+      "name": "Mixer",
+      "params": {
+        "gain1": 1.0, "gain2": 1.0, "gain3": 1.0, "gain4": 1.0, "master": 0.6
+      }
+    },
+    {
+      "id": 6,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": { "gain": 0.8 }
+    }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "c4", "dst_module_id": 2, "dst_port": "amp_cv" },
+    { "src_module_id": 1, "src_port": "c4", "dst_module_id": 3, "dst_port": "amp_cv" },
+    { "src_module_id": 1, "src_port": "c4", "dst_module_id": 4, "dst_port": "amp_cv" },
+    { "src_module_id": 2, "src_port": "out", "dst_module_id": 5, "dst_port": "in1" },
+    { "src_module_id": 3, "src_port": "out", "dst_module_id": 5, "dst_port": "in2" },
+    { "src_module_id": 4, "src_port": "out", "dst_module_id": 5, "dst_port": "in3" },
+    { "src_module_id": 5, "src_port": "out", "dst_module_id": 6, "dst_port": "in" }
+  ]
+}

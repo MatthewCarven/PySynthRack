@@ -133,6 +133,7 @@ Every module type, its category, and its ports at a glance.
 | [`oscillator`](#oscillator) | Source | `freq_cv`,`amp_cv` (cv) → `out` (audio) |
 | [`keyboard`](#keyboard) | Source | — → `out` (audio), `gate` (gate) |
 | [`cv_keyboard`](#cv_keyboard) | Source | — → `pitch_cv` (cv), `gate`, `key_c`…`key_b` (gate) |
+| [`cv_gates`](#cv_gates) | Source | — → `c4`…`e5` (cv, one enveloped gate per key) |
 | [`midi_input`](#midi_input) | Source | — → `out` (audio), `gate`, `pitch_cv`, `mod_cv`, `pressure_cv` |
 | [`file_player`](#file_player) | Source | — → `left`,`right` (audio) |
 | [`mic_input`](#mic_input) | Source | — → `left`,`right` (audio) |
@@ -230,6 +231,39 @@ idle voices. Typical chain: `cv_keyboard.pitch_cv → oscillator.freq_cv`,
 `oscillator.out → vca.audio`, `cv_keyboard.gate → adsr.gate`,
 `adsr.cv → vca.cv`. For a per-key drum, `cv_keyboard.key_c → adsr.gate` on a
 separate noise voice. See `examples/cv_keyboard_external_voice.json`.
+
+#### `cv_gates`
+
+A bank of **per-key enveloped CV gates** for amplitude/trigger control — the
+amplitude counterpart to [`cv_keyboard`](#cv_keyboard) (which puts out pitch).
+Every one of the 17 home-row keys (`A`…`;` → C4 up to E5) has its **own** CV
+output that idles at 0 and, while the key is held, runs a shared ADSR toward
+1. Patch one key's jack into the `amp_cv` of three [`oscillator`](#oscillator)s
+(or three [`vca`](#vca)s) and a single keystroke envelopes all three together
+— fan-out is free, since one output port can feed any number of cables.
+Accepts the same physical keys as the other keyboards (they can all be in a
+patch at once).
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `c4` … `e5` | out | cv | Seventeen mono CV jacks, one per physical key, labelled by the note each plays. Each idles at 0 and, while its key is down, attacks toward 1, decays to `sustain`, holds, then releases to 0 on key-up. Independent per key (holding C doesn't disturb E). Drive an [`oscillator`](#oscillator) `amp_cv`, a [`vca`](#vca) `cv`, or any CV input. |
+
+**Parameters** (one shared ADSR for the whole bank)
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `attack` | `0.01` | 0…5 s | Time for the 0 → 1 ramp on key-down. 0 = instant. |
+| `decay` | `0.10` | 0…5 s | Time from 1.0 down to `sustain`. |
+| `sustain` | `0.80` | 0…1 | Held level while the key stays down (`1.0` = no decay dip). |
+| `release` | `0.30` | 0…5 s | Time from the key-up level down to 0. A release from mid-attack still takes the full window (no snap); re-pressing mid-release attacks from the current level (no click). |
+
+**Patching.** No internal voice and no pitch — `cv_gates` is purely a source
+of enveloped control voltages keyed to the computer keyboard. Headline use:
+`cv_gates.c4 → oscillator.amp_cv` on each of several oscillators summed into a
+[`mixer`](#mixer), so one key swells a whole chord. See
+`examples/cv_gates_amp.json`.
 
 #### `midi_input`
 

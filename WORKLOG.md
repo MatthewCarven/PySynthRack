@@ -4186,3 +4186,80 @@ sound.
 off C4; a mono/last-note priority mode for vintage single-oscillator leads;
 velocity/aftertouch CV stays out of scope (computer keys can't express it —
 that's MIDIInput's lane).
+
+## 2026-07-01 — CVGates (`cv_gates`): computer keys as a bank of enveloped CV gates
+
+Matthew wanted to "redo the cv keyboard" for **amplitude control**: a CV per
+key, 0 when up and rising to 1 when pressed, with variable A/D/S/R — so one
+keystroke can drive the `amp_cv` of, say, three oscillators at once and swell
+them all together. We talked the design through first.
+
+*Scoping (AskUserQuestion).* Two forks, both Matthew's pick: (1) ship it as a
+**new gate-bank module** (leave `cv_keyboard` untouched — no pitch-controller
+regression) rather than replacing/augmenting; (2) **17 outputs per physical
+key** (C4..E5, absolute) rather than 12 octave-folded pitch classes. He also
+confirmed in chat: **computer keyboard** (same input side as the other
+keyboards). Design notes settled in conversation: one **shared** A/D/S/R for
+the whole bank (per-key knobs would be 17×4 controls), each key an
+**independent** envelope; and the fan-out he wants is free — the patch model
+already allows many cables off one output port.
+
+*Model* (`modules/cv_gates.py`). `CVGates(Module)`, `TYPE="cv_gates"`,
+`ACCEPTS_COMPUTER_KEYS=True` (same flag the UI routes physical keys by, so it
+plays alongside `keyboard`/`cv_keyboard`). Params attack/decay/sustain/
+release only — **no `octave`**: pitch is meaningless for a gate bank, and
+leaving it off means the UI's `params.get("octave",4)` falls back to 4 so
+physical key *i* always lands on output *i*. Seventeen `cv` outputs named by
+note (`c4`..`e5`), built from a data-driven `KEY_CV_NAMES` tuple. State is a
+17-bool `_down` list under a lock; `note_on`/`note_off` map a routed MIDI
+note to a key index via `midi - 60` and **ignore out-of-range** notes (keys
+above/below the home row, like a short hardware keyboard). The envelope state
+itself lives in the backend; the module only tracks which keys are held.
+
+*Renderer* (`numpy_backend._render_cv_gates` + `_adsr_key_block`). Snapshots
+the 17 held-flags once per block (block-constant gate, like every keyboard
+renderer) and runs **17 independent ADSR state machines** sharing the four
+params, one mono `(frames,)` cv buffer per jack. The inner loop
+(`_adsr_key_block`) is the *exact* `_render_adsr_mono` state machine
+(idle→attack→decay→sustain→release→idle) but with a single block-constant
+gate bool instead of a per-sample buffer — so a key behaves identically to
+patching a keyboard gate into a standalone ADSR (release-from-mid-attack
+takes the full window; re-press mid-release attacks from the current level).
+Per-key state kept in `self._state[id]["keys"]`, rebuilt on slot-count
+mismatch; `compile()` already drops it on type-change/removal. **Idle-key
+short-circuit:** a key that's up, idle, and at 0 returns a fresh zero buffer
+without looping, so a bank with two keys held costs two envelopes, not 17.
+The 17 cv outs get the auto CV meter for free; pyo path unaffected.
+
+*UI* (`ui/app.py`). One TYPE-guarded `cv_gates` branch in `_add_param_widget`:
+attack/decay/release as bounded 0..5 s sliders, sustain as a 0..1 slider
+(the generic drag-float fallback would also work — that's what `adsr` uses —
+but bounded sliders are nicer). Palette/outputs/meters are all automatic.
+Verified headlessly with a stub `dearpygui` (no display in the sandbox):
+confirmed each param routes to the right slider with the right bounds, and an
+unrelated module's param still flows to its normal widget.
+
+*Tests / example / docs.* 22 tests in `tests/test_cv_gates.py` — model
+(ports, marker, key→index mapping + out-of-range ignore, snapshot-is-a-copy,
+all-notes-off), envelope (idle zeros, attack reaches 1, settles to sustain,
+sustain=1 has no decay dip, release to 0, retrigger-from-current-level,
+per-key independence, distinct idle buffers, instant attack), dispatch, an
+end-to-end `c4 → oscillator.amp_cv → speaker` amplitude test (silent→loud→
+silent), the headline `one key → three oscillators` fan-out (summed through a
+combiner, since the speaker takes one cable), and a save/load round-trip.
+Full suite **703 passed, 18 skipped** in the sandbox — exactly +22 from 681.
+Example `examples/cv_gates_amp.json`: press `A` (the `c4` key) and three saw
+oscillators (C3/E3/G3) swell together as one chord via the shared ADSR.
+`docs/MODULES.md` index row + full `#### cv_gates` entry.
+
+**Hand-off to Matthew:** delivered as `cv_gates.patch`, `git am`-verified
+clean on origin/main `3a5c576` (CV Keyboard), full suite green in the am'd
+tree. To hear it: open `cv_gates_amp.json`, hold `A` — the three oscillators
+attack/decay/sustain together; let go and they release. Re-patch any `c4`..`e5`
+jack to any number of `amp_cv`/VCA inputs to gate a different sound per key.
+
+**Next:** the obvious follow-ups — a `cv_reference`/octave-shift so the 17
+keys can be moved off C4; a per-key *retrigger vs legato* choice; optional
+exp/linear curve like the AD-envelope follow-up; and (if profiled hot with
+many keys held) vectorising `_adsr_key_block` analytically since the gate is
+block-constant.

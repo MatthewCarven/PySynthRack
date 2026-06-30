@@ -354,6 +354,35 @@ class App:
                 )
             return
 
+        if module.TYPE == "cv_gates":
+            # Per-key ADSR, shared across the whole gate bank. attack /
+            # decay / release are times in seconds; sustain is a 0..1 held
+            # level. Bounded sliders rather than the generic drag floats.
+            if param_name in ("attack", "decay", "release"):
+                dpg.add_slider_float(
+                    label=param_name,
+                    default_value=float(current),
+                    min_value=0.0,
+                    max_value=5.0,
+                    format="%.3f s",
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name == "sustain":
+                dpg.add_slider_float(
+                    label=param_name,
+                    default_value=float(current),
+                    min_value=0.0,
+                    max_value=1.0,
+                    format="%.2f",
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+
         if module.TYPE == "parametric_eq":
             # Parametric EQ bands: ``band{i}_freq`` (Hz), ``band{i}_gain``
             # (dB, 0 = flat), ``band{i}_q`` (width). Distinct ranges from

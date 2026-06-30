@@ -49,6 +49,7 @@ from scipy.io import wavfile
 from ..core.patch import Patch
 from ..modules.keyboard import midi_to_freq
 from ..modules.cv_keyboard import CV_REFERENCE_NOTE, KEY_GATE_NAMES
+from ..modules.cv_gates import KEY_CV_NAMES
 from .backend import AudioBackend
 
 # Imported lazily so a missing PortAudio install doesn't crash module import.
@@ -667,6 +668,8 @@ class NumpyBackend(AudioBackend):
             return self._render_keyboard(module, frames)
         if module.TYPE == "cv_keyboard":
             return self._render_cv_keyboard(module, frames)
+        if module.TYPE == "cv_gates":
+            return self._render_cv_gates(module, frames)
         if module.TYPE == "midi_input":
             return self._render_midi_input(module, frames)
         if module.TYPE == "filter":
@@ -1299,6 +1302,114 @@ class NumpyBackend(AudioBackend):
                 else np.zeros(frames, dtype=np.float32)
             )
         return result
+
+    def _render_cv_gates(self, module, frames: int) -> dict[str, np.ndarray]:
+        """Per-key ADSR bank for the CVGates controller.
+
+        Each of the 17 keys drives an independent attack/decay/sustain/
+        release state machine that shares the module's four envelope params.
+        The held state is block-constant (snapshotted once per block, like
+        every other keyboard renderer), so an envelope's rising/falling edge
+        lands on the first sample of the block in which the key changed --
+        identical to patching a keyboard gate into a standalone ADSR. Keys
+        that are up, idle, and already at 0 short-circuit to a fresh zero
+        buffer without running the per-sample loop, so a bank with two keys
+        held costs two envelopes, not seventeen.
+
+        Output: one mono ``(frames,)`` cv buffer per key, keyed by jack name.
+        """
+        down = module.snapshot_down()  # length NUM_KEYS
+
+        sr = self.sample_rate
+        attack_s = max(0.0, float(module.params.get("attack", 0.01)))
+        decay_s = max(0.0, float(module.params.get("decay", 0.10)))
+        sustain = max(0.0, min(1.0, float(module.params.get("sustain", 0.80))))
+        release_s = max(0.0, float(module.params.get("release", 0.30)))
+
+        attack_step = 1.0 / max(1.0, attack_s * sr)
+        decay_step = (1.0 - sustain) / max(1.0, decay_s * sr)
+        release_samples = max(1.0, release_s * sr)
+
+        # Per-key envelope state, keyed by module id. One dict per key with
+        # the same fields the mono ADSR uses. Rebuilt if the slot count ever
+        # mismatches (defensive against a stale/foreign state shape from a
+        # previous compile).
+        state = self._state.setdefault(module.id, {})
+        keys = state.get("keys")
+        if not isinstance(keys, list) or len(keys) != len(down):
+            keys = [
+                {"phase": "idle", "level": 0.0, "prev_gate": False,
+                 "release_step": 0.0}
+                for _ in range(len(down))
+            ]
+            state["keys"] = keys
+
+        result: dict[str, np.ndarray] = {}
+        for i, name in enumerate(KEY_CV_NAMES):
+            ks = keys[i]
+            gate_high = bool(down[i])
+            # Fully idle key (up, at rest, level 0): skip the loop.
+            if (
+                not gate_high
+                and not ks["prev_gate"]
+                and ks["phase"] == "idle"
+                and ks["level"] == 0.0
+            ):
+                result[name] = np.zeros(frames, dtype=np.float32)
+                continue
+            result[name] = self._adsr_key_block(
+                ks, gate_high, frames,
+                attack_step, decay_step, sustain, release_samples,
+            )
+        return result
+
+    def _adsr_key_block(
+        self, ks, gate_high, frames,
+        attack_step, decay_step, sustain, release_samples,
+    ):
+        """Advance one key's ADSR over ``frames`` samples under a
+        block-constant gate, mutating ``ks`` in place and returning a
+        ``(frames,)`` float32 buffer.
+
+        The state machine is identical to :meth:`_render_adsr_mono` (idle ->
+        attack -> decay -> sustain -> release -> idle); the only difference
+        is the gate is a single block-constant bool rather than a per-sample
+        buffer, which is exactly how every keyboard gate already behaves. A
+        release captured mid-attack still takes the full release window (no
+        snap), and a key re-pressed mid-release attacks from its current
+        level (no click).
+        """
+        out = np.empty(frames, dtype=np.float32)
+        for n in range(frames):
+            if gate_high and not ks["prev_gate"]:
+                ks["phase"] = "attack"
+            elif not gate_high and ks["prev_gate"]:
+                ks["release_step"] = ks["level"] / release_samples
+                ks["phase"] = "release"
+            ks["prev_gate"] = gate_high
+
+            phase = ks["phase"]
+            level = ks["level"]
+            if phase == "attack":
+                level += attack_step
+                if level >= 1.0:
+                    level = 1.0
+                    ks["phase"] = "decay"
+            elif phase == "decay":
+                level -= decay_step
+                if level <= sustain:
+                    level = sustain
+                    ks["phase"] = "sustain"
+            elif phase == "sustain":
+                level = sustain
+            elif phase == "release":
+                level -= ks["release_step"]
+                if level <= 0.0:
+                    level = 0.0
+                    ks["phase"] = "idle"
+            ks["level"] = level
+            out[n] = level
+        return out
 
     # ----- MIDI input rendering ------------------------------------------
 

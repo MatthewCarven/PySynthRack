@@ -16,6 +16,7 @@ from .crossover import Crossover
 from .cvcombiner import CVCombiner
 from .cvoffset import CVOffset
 from .cvscale import CVScale
+from .cv_gates import CVGates
 from .cv_keyboard import CVKeyboard
 from .cvtoaudio import CVToAudio
 from .cvtofrequency import CVToFrequency
@@ -46,6 +47,7 @@ __all__ = [
     "Constant",
     "Crossover",
     "CVCombiner",
+    "CVGates",
     "CVKeyboard",
     "CVOffset",
     "CVScale",
