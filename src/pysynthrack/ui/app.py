@@ -620,6 +620,47 @@ class App:
                 )
                 return
 
+        if module.TYPE == "delay":
+            # Echo controls. ``time`` is the delay in ms; ``feedback`` sets
+            # how many repeats; ``tone`` damps the feedback path (dark <->
+            # bright); ``mix`` is dry/wet; ``cv_depth`` scales the time_cv
+            # input in ms per unit.
+            if param_name == "time":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=1.0, max_value=2000.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "feedback":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=0.98, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "tone":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "mix":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=0.0, max_value=2000.0, format="%.0f ms/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if param_name == "waveform":
             # LFO has its own waveform list (includes "random"); other
             # modules share the oscillator's list.

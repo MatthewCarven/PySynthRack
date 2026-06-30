@@ -716,6 +716,8 @@ class NumpyBackend(AudioBackend):
             return self._render_parametric_eq(module, frames, buffers, patch)
         if module.TYPE == "meter":
             return self._render_meter(module, frames, buffers, patch)
+        if module.TYPE == "delay":
+            return self._render_delay(module, frames, buffers, patch)
         if module.TYPE == "resampler":
             return self._render_resampler(module, frames, buffers, patch)
         if module.TYPE == "pitch_shifter":
@@ -3820,6 +3822,172 @@ class NumpyBackend(AudioBackend):
         return x.astype(np.float32)
 
     # ----- DiskWriter rendering -------------------------------------------
+
+    # ----- Delay rendering ------------------------------------------------
+
+    # Longest delay the line can address, in milliseconds. The ring buffer
+    # is sized from this; both the ``time`` slider and the ``time_cv``
+    # modulation are clamped to it.
+    _DELAY_MAX_MS = 2000.0
+    # Shortest delay, in samples. >= 2 keeps both linear-interpolation taps
+    # strictly behind the write head (never reads the sample being written).
+    _DELAY_MIN_SAMP = 2.0
+
+    def _render_delay(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Analog-voiced feedback delay (echo) with a damped feedback path.
+
+        Shape-polymorphic like the other effects. Branches on the audio
+        input's ndim: 1D ``(F,)`` -> one delay line, ``(F,)`` out; 2D
+        ``(V, F)`` -> one delay line per voice slot, ``(V, F)`` out. A mono
+        ``time_cv`` broadcasts across voices; a ``(V, F)`` ``time_cv``
+        modulates each independently. Missing audio in -> silence, with the
+        line left intact so reconnecting the cable doesn't snap the tail.
+        """
+        src = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
+        if src is None:
+            return np.zeros(frames, dtype=np.float32)
+
+        time_cv = self._input_buffer(
+            patch, buffers, module.id, "time_cv", collapse=False
+        )
+
+        if src.ndim == 2:
+            V = src.shape[0]
+            if time_cv is None:
+                cv = None
+            elif time_cv.ndim == 1:
+                cv = np.broadcast_to(time_cv, (V, time_cv.shape[0]))
+            elif time_cv.shape[0] == V:
+                cv = time_cv
+            elif time_cv.shape[0] == 1:
+                cv = np.broadcast_to(time_cv, (V, time_cv.shape[1]))
+            else:
+                cv = np.broadcast_to(
+                    time_cv.mean(axis=0), (V, time_cv.shape[1])
+                )
+            return self._render_delay_core(module, frames, src, cv)
+
+        # Mono audio. A 2D time_cv collapses to one shared modulation
+        # (mean over voices) -- summing time voltages would be nonsense.
+        if time_cv is not None and time_cv.ndim == 2:
+            time_cv = time_cv.mean(axis=0)
+        out = self._render_delay_core(
+            module,
+            frames,
+            src[np.newaxis, :],
+            None if time_cv is None else time_cv[np.newaxis, :],
+        )
+        return out[0]
+
+    def _render_delay_core(self, module, frames, src, cv):
+        """Shared ``(V, F)`` feedback-delay engine.
+
+        Per output sample: read the line ``delay`` samples back with linear
+        interpolation; low-pass that read for the feedback path so each
+        recirculation darkens (the analog voicing); write ``in + feedback *
+        damped`` into the line; and mix the *un-damped* read into the dry
+        signal. The mono path calls this with ``V == 1``, so a single voice
+        row is bit-identical to the mono render -- the float ops are the
+        same per row regardless of V.
+
+        Per-sample (not block-vectorized) because the feedback recirculation
+        is sequential when the delay is shorter than a block; the constant-
+        delay >= block case could be vectorized later (see WORKLOG).
+        """
+        V = src.shape[0]
+        sr = self.sample_rate
+
+        time_ms = float(module.params.get("time", 300.0))
+        feedback = float(module.params.get("feedback", 0.4))
+        tone = float(module.params.get("tone", 0.5))
+        mix = float(module.params.get("mix", 0.35))
+        cv_depth_ms = float(module.params.get("cv_depth", 50.0))
+
+        feedback = min(max(feedback, 0.0), 0.98)   # stay below runaway
+        mix = min(max(mix, 0.0), 1.0)
+        tone = min(max(tone, 0.0), 1.0)
+
+        max_samp = self._DELAY_MAX_MS * sr / 1000.0
+        L = max(int(max_samp) + 4, frames + 4)
+
+        state = self._state.setdefault(module.id, {})
+        if "buf" not in state or state["buf"].shape != (V, L):
+            state.clear()
+            state["buf"] = np.zeros((V, L), dtype=np.float64)
+            state["write_idx"] = 0
+            state["lp"] = np.zeros(V, dtype=np.float64)
+
+        buf = state["buf"]
+        wp = int(state["write_idx"])
+        lp = state["lp"]
+
+        if frames == 0:
+            return np.empty((V, 0), dtype=np.float32)
+
+        # Damping one-pole coefficient from the tone knob: a log-swept
+        # cutoff from ~200 Hz (dark) to ~18 kHz (bright), sample-rate
+        # independent. tone == 1 -> wide open (essentially no damping).
+        fc = 200.0 * (18000.0 / 200.0) ** tone
+        g = 1.0 - float(np.exp(-2.0 * np.pi * fc / sr))
+        g = min(max(g, 0.0), 1.0)
+
+        x = src.astype(np.float64)                    # (V, F)
+        time_samp = time_ms * sr / 1000.0
+        cv_depth_samp = cv_depth_ms * sr / 1000.0
+        min_s = self._DELAY_MIN_SAMP
+        max_s = float(L - 2)
+
+        # Per-sample delay in samples, (V, F), clamped into the line.
+        if cv is None:
+            dly = np.full((V, frames), time_samp, dtype=np.float64)
+        else:
+            dly = time_samp + cv_depth_samp * cv.astype(np.float64)
+        np.clip(dly, min_s, max_s, out=dly)
+
+        rows = np.arange(V)
+        if float(dly.min()) >= frames:
+            # Fast path: every read this block lands at least one block back,
+            # so no read depends on a sample written this block and the whole
+            # block vectorizes. The damping one-pole runs via ``lfilter`` with
+            # its state carried in ``zi``. This is the common echo case
+            # (any musical delay time is many blocks long).
+            absidx = wp + np.arange(frames)                  # (F,) absolute
+            rp = absidx[np.newaxis, :] - dly                 # (V, F) read pos
+            i0 = np.floor(rp).astype(np.int64)
+            frac = rp - i0
+            d = (
+                buf[rows[:, None], i0 % L] * (1.0 - frac)
+                + buf[rows[:, None], (i0 + 1) % L] * frac
+            )
+            zi = ((1.0 - g) * lp)[:, np.newaxis]             # (V, 1)
+            damped = lfilter([g], [1.0, -(1.0 - g)], d, axis=-1, zi=zi)[0]
+            buf[rows[:, None], absidx % L] = x + feedback * damped
+            out = x * (1.0 - mix) + d * mix
+            lp = damped[:, -1].copy()
+            wp = (wp + frames) % L
+        else:
+            # Per-sample path: the delay dips below a block (short or heavily
+            # modulated), so the feedback recirculation is sequential.
+            out = np.empty((V, frames), dtype=np.float64)
+            for n in range(frames):
+                rp = wp - dly[:, n]                          # (V,)
+                i0 = np.floor(rp).astype(np.int64)
+                frac = rp - i0
+                d = (
+                    buf[rows, i0 % L] * (1.0 - frac)
+                    + buf[rows, (i0 + 1) % L] * frac
+                )
+                lp = lp + g * (d - lp)                       # damped feedback
+                buf[rows, wp % L] = x[:, n] + feedback * lp
+                out[:, n] = x[:, n] * (1.0 - mix) + d * mix
+                wp += 1
+            wp = wp % L
+
+        state["write_idx"] = int(wp)
+        state["lp"] = lp
+        return out.astype(np.float32)
 
     # ----- Resampler rendering --------------------------------------------
 

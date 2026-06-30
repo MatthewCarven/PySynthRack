@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "next_id": 8,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "Clock (120 BPM, 8ths)",
+      "params": { "bpm": 120.0, "division": 2.0, "pulse_width": 0.5 }
+    },
+    {
+      "id": 2,
+      "type": "sequencer",
+      "name": "Melody",
+      "params": {
+        "steps": 8,
+        "step1_pitch": 0.0,  "step1_on": true,
+        "step2_pitch": 4.0,  "step2_on": true,
+        "step3_pitch": 7.0,  "step3_on": true,
+        "step4_pitch": 4.0,  "step4_on": true,
+        "step5_pitch": 9.0,  "step5_on": true,
+        "step6_pitch": 7.0,  "step6_on": true,
+        "step7_pitch": 4.0,  "step7_on": false,
+        "step8_pitch": 0.0,  "step8_on": true
+      }
+    },
+    {
+      "id": 3,
+      "type": "oscillator",
+      "name": "Osc (C4 base)",
+      "params": { "waveform": "saw", "freq": 261.6256, "amp": 0.5 }
+    },
+    {
+      "id": 4,
+      "type": "adsr",
+      "name": "Pluck Env",
+      "params": { "attack": 0.005, "decay": 0.12, "sustain": 0.3, "release": 0.12 }
+    },
+    {
+      "id": 5,
+      "type": "vca",
+      "name": "VCA",
+      "params": { "gain": 1.0 }
+    },
+    {
+      "id": 7,
+      "type": "delay",
+      "name": "Dub Echo (dotted 8th)",
+      "params": { "time": 375.0, "feedback": 0.45, "tone": 0.32, "mix": 0.4, "cv_depth": 50.0 }
+    },
+    {
+      "id": 6,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": { "gain": 0.8 }
+    }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "cv",   "dst_module_id": 3, "dst_port": "freq_cv" },
+    { "src_module_id": 3, "src_port": "out",  "dst_module_id": 5, "dst_port": "audio" },
+    { "src_module_id": 2, "src_port": "gate", "dst_module_id": 4, "dst_port": "gate" },
+    { "src_module_id": 4, "src_port": "cv",   "dst_module_id": 5, "dst_port": "cv" },
+    { "src_module_id": 5, "src_port": "out",  "dst_module_id": 7, "dst_port": "in" },
+    { "src_module_id": 7, "src_port": "out",  "dst_module_id": 6, "dst_port": "in" }
+  ]
+}

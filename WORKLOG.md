@@ -4395,3 +4395,62 @@ your working tree, not a fresh clone of origin. UI-only, no new deps.
 "fit-to-all" button that frames the whole patch; scale link/border thickness
 too if imnodes ever exposes it via theme; remember the last zoom in window
 prefs; an optional crisp font atlas rasterised at the chosen scale.
+
+---
+
+## 2026-07-01 — Delay (analog-voiced feedback echo)
+
+Matthew's pick when he asked "what else can we do?" after the zoom feature.
+The synth had filter/EQ/crossover/pitch effects but **no time-based effect** —
+no echo, no reverb — so a delay was the clearest gap. Scoped in-convo via
+AskUserQuestion: **analog-voiced** (damped feedback) over clean/tape, and
+**free time + CV** over clock-sync, for a robust v1.
+
+*Module.* `delay`: `in` (audio) + `time_cv` (cv) → `out` (audio). Params
+`time` (ms, 1–2000), `feedback` (0–0.98, clamped below runaway), `tone`
+(0–1 damping), `mix` (dry/wet), `cv_depth` (ms of delay per `time_cv` unit).
+
+*DSP.* An interpolated ring-buffer delay line. The feedback path runs a
+one-pole low-pass whose cutoff the `tone` knob sweeps log-wise ~200 Hz→18 kHz
+(sample-rate-independent), so each recirculation darkens — the analog/BBD
+voicing. The output taps the **un-damped** read, so the first echo is bright
+and the tail melts as it recirculates. Shape-polymorphic like Filter/Crossover
+(mono → one line; `(V, F)` → one line per voice slot; a single voice row is
+bit-identical to mono).
+
+*Two paths, one result.* A feedback delay is sequential only when the delay is
+shorter than a block. When the minimum delay over the block is ≥ one block
+(every musical echo time — 300 ms is 14k samples), no read can depend on a
+sample written this block, so the whole block **vectorizes**: gathered
+interpolated reads, the damping one-pole via `lfilter` (state in `zi`), and a
+single fancy-indexed write. Short or heavily-modulated delays (< one block, the
+flanger/chorus edge) fall back to a per-sample loop. The two paths are
+**bit-identical** (verified max abs diff 0.0 on a 0.6-feedback signal). Perf:
+the fast path is **0.048 ms/block** (~0.4 % of the 11.6 ms budget) vs ~7 ms for
+the per-sample loop — the reason the fast path exists.
+
+*Tests / example / docs.* `tests/test_delay.py` — 22 tests: model
+(defaults/ports/kinds/JSON round-trip/unknown-param/type walls), DSP
+(disconnected→silence, `mix=0` bit-exact passthrough, single tap lands exactly
+`time` samples late incl. across a block boundary, feedback gives decaying
+repeats bounded by the feedback fraction, runaway feedback stays finite, `tone`
+damps the high-frequency tail), the two paths agree bit-for-bit, voice (row ==
+mono; voices echo independently via per-voice `time_cv`), `time_cv` lengthens
+the delay, and an osc→delay→speaker integration render. Suite **787** sandbox
+(+18 mido), +22 from 765. Example `examples/delay_dub_echo.json` (the
+`sequencer_melody` riff routed VCA → delay → speaker, a dotted-eighth dub echo
+at 120 BPM, self-playing, peak ~0.31). `docs/MODULES.md` index row + full
+`#### delay` section. pyo silent-stub extended; UI param widgets (time/cv_depth
+drags, feedback/tone/mix sliders).
+
+**Hand-off to Matthew:** delivered as `delay.patch`, `git am`-verified clean on
+a fresh tree at the post-zoom base (tree `c75e4c0`, == your mount HEAD
+`f854297`), full suite 787 green in the am'd tree. To hear it: open
+`delay_dub_echo.json` and play — the melody trails dotted-eighth echoes.
+
+**Next:** tempo-sync (a `clock` gate input → delay = N note divisions, the
+option not taken this round); ping-pong / stereo spread once the signal path
+goes stereo; optional saturation in the loop for a full tape voicing; a
+built-in mod LFO for one-knob chorus; a true sub-block flanger path; equal-power
+dry/wet. The fast/per-sample split is already done, so the perf follow-up that
+other effects still want is, for once, not on this list.

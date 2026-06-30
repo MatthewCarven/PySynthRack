@@ -145,6 +145,7 @@ Every module type, its category, and its ports at a glance.
 | [`vca`](#vca) | Processor | `audio` (audio), `cv` (cv) → `out` (audio) |
 | [`resampler`](#resampler) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
+| [`delay`](#delay) | Processor | `in` (audio), `time_cv` (cv) → `out` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
 | [`adsr`](#adsr) | Modulation | `gate` (gate) → `cv` (cv) |
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
@@ -565,6 +566,47 @@ over the dry (instant harmony), or a couple of cents for detune-
 thickening. For pitch shifting where speed *should* follow, use the
 [resampler](#resampler). See `examples/pitch_shifter_harmony.json`
 (saw → +7 st at 50% mix → speaker: a self-playing fifth).
+
+#### `delay`
+
+An **analog-voiced feedback delay** (echo). It feeds the signal into a
+delay line and mixes the delayed copy back in; part of that copy
+recirculates, so the echo repeats and fades. A damping low-pass in the
+feedback path rolls a little more high end off on every pass, so the
+repeats darken the way a tape or bucket-brigade (BBD) echo does, instead
+of staying digitally bright.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to echo. Unpatched → silence. |
+| `time_cv` | in | cv | Added to `time`, scaled by `cv_depth`. Modulate for wow / dub throws. |
+| `out` | out | audio | Dry + echo mix. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `time` | `300.0` | 1 … 2000 ms | Echo spacing. Slapback ~80 ms, roomy dub ~500 ms. |
+| `feedback` | `0.4` | 0 … 0.98 | How many repeats; clamped just below runaway. |
+| `tone` | `0.5` | 0 … 1 | Feedback damping: low = dark repeats, high = bright/faithful. |
+| `mix` | `0.35` | 0 … 1 | Dry / wet balance. |
+| `cv_depth` | `50.0` | 0 … 2000 ms/unit | Milliseconds of delay time per unit of `time_cv`. |
+
+Shape-polymorphic like [Filter](#filter) / [Crossover](#crossover): a
+mono input runs one delay line; a voice-aware `(V, F)` input runs one
+line per voice slot (a single voice row is bit-identical to mono). Any
+musical delay time is many blocks long, so the common case runs on a
+fully vectorized block path; only short or heavily modulated delays
+(under one block) fall back to a per-sample loop.
+
+**Patching.** `… → vca → delay → speaker` puts an echo on a voice; raise
+`feedback` and lower `tone` for a dub tail that melts away; wobble
+`time_cv` from an [LFO](#lfo) for tape flutter, or set a short `time`
+with a little modulation for chorus / vibrato shading. See
+`examples/delay_dub_echo.json` (a self-playing sequencer melody through a
+dotted-eighth dub echo).
 
 ---
 
