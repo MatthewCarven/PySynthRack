@@ -23,6 +23,7 @@ from .filter import Filter
 from .keyboard import Keyboard
 from .lfo import LFO
 from .micinput import MicInput
+from .meter import Meter
 from .midiinput import MIDIInput
 from .mixer import Mixer
 from .noise import Noise
@@ -51,6 +52,7 @@ __all__ = [
     "LeftSpeakerOutput",
     "LFO",
     "MicInput",
+    "Meter",
     "MIDIInput",
     "Mixer",
     "Noise",

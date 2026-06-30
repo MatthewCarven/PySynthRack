@@ -109,6 +109,11 @@ class NumpyBackend(AudioBackend):
         # have to re-derive signal kinds per block.
         self._cv_output_ports: list[tuple[int, str]] = []
         self._meter_levels: dict[tuple[int, str], float] = {}
+        # Latest per-Meter-module peak envelope (linear amplitude),
+        # written by the audio thread, read by the GUI as dB. Keys are
+        # created in compile() (GUI thread) so the audio thread only ever
+        # updates values -- snapshot_audio_levels can copy without a lock.
+        self._audio_levels: dict[int, float] = {}
         # Latest captured input block (frames, channels) from the
         # duplex stream's callback, or None on an output-only stream.
         # MicInput's renderer reads it; reset on stop so a stale block
@@ -135,6 +140,11 @@ class NumpyBackend(AudioBackend):
                         cv_ports.append((mid, port.name))
             self._cv_output_ports = cv_ports
             self._meter_levels = {}
+            self._audio_levels = {
+                mid: 0.0
+                for mid, m in patch.modules.items()
+                if m.TYPE == "meter"
+            }
             # Recompile = a fresh chance. Clear any sticky crash state
             # from the previous patch so audio resumes on the new graph.
             self._render_disabled = False
@@ -487,6 +497,16 @@ class NumpyBackend(AudioBackend):
         """
         return dict(self._meter_levels)
 
+    def snapshot_audio_levels(self) -> dict[int, float]:
+        """GUI hook: latest per-Meter-module peak envelope (linear amp).
+
+        Keyed by module_id. Values are a fast-attack/slow-decay peak of
+        the meter's input, 0..~1; the GUI converts to dBFS. Keys are
+        stable between compiles (created on the GUI thread), so this
+        copy never races the audio thread's value writes.
+        """
+        return dict(self._audio_levels)
+
     def snapshot_file_positions(self) -> dict[int, tuple[float, float]]:
         """GUI hook: each ``file_player``'s playhead as ``(elapsed, total)``
         seconds, keyed by module id.
@@ -561,6 +581,8 @@ class NumpyBackend(AudioBackend):
             return self._render_crossover(module, frames, buffers, patch)
         if module.TYPE == "parametric_eq":
             return self._render_parametric_eq(module, frames, buffers, patch)
+        if module.TYPE == "meter":
+            return self._render_meter(module, frames, buffers, patch)
         if module.TYPE == "disk_writer":
             return self._render_disk_writer(module, frames, buffers, patch)
         if module.TYPE == "file_player":
@@ -3369,6 +3391,44 @@ class NumpyBackend(AudioBackend):
             left *= gain
             right *= gain
         return {"left": left, "right": right}
+
+    # Per-block decay of the peak envelope (slow release). ~0.985 per
+    # block at 512/44100 falls roughly 0 -> -20 dB in ~1.8 s: a gentle
+    # VU-style fall that still reads 'recent maximum' at a glance.
+    _METER_DECAY = 0.985
+
+    def _render_meter(self, module, frames: int, buffers, patch):
+        """Level-meter tap: pass audio through, track a peak envelope.
+
+        The input is forwarded to ``out`` untouched (same array, same
+        shape -- mono or voice-aware), so a Meter is transparent inline.
+        Alongside, the block's peak (max |sample| over all samples and
+        voices) drives a fast-attack / slow-decay envelope kept in
+        module state; the latest value is published to ``_audio_levels``
+        for the GUI. Computing it here on the audio thread means a short
+        transient registers even between UI frames -- the meter latency
+        is block-rate, not frame-rate.
+        """
+        src = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
+        if src is None or src.size == 0:
+            peak = 0.0
+            out = np.zeros(frames, dtype=np.float32)
+        else:
+            peak = float(np.max(np.abs(src)))
+            out = src  # pass-through (read-only downstream, like any fan-out)
+
+        state = self._state.setdefault(module.id, {"env": 0.0})
+        env = state["env"]
+        if peak >= env:
+            env = peak  # instant attack
+        else:
+            env = peak + (env - peak) * self._METER_DECAY  # slow release
+        state["env"] = env
+        self._audio_levels[module.id] = env
+
+        return {"out": out}
 
     def _decode_audio(self, path, target_sr):
         """Decode any supported media file to ``(2, N)`` float32 or None.

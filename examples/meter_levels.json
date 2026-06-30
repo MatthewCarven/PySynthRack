@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "next_id": 7,
+  "modules": [
+    {"id": 1, "type": "oscillator", "name": "loud saw",  "params": {"waveform": "saw",    "freq": 110.0, "amp": 0.8}},
+    {"id": 2, "type": "meter",      "name": "meter A",    "params": {}},
+    {"id": 3, "type": "oscillator", "name": "quiet square","params": {"waveform": "square", "freq": 220.0, "amp": 0.25}},
+    {"id": 4, "type": "meter",      "name": "meter B",    "params": {}},
+    {"id": 5, "type": "mixer",      "name": "mixer",      "params": {"gain1": 1.0, "gain2": 1.0, "gain3": 0.0, "gain4": 0.0, "master": 0.7}},
+    {"id": 6, "type": "speaker_output", "name": "speaker_output", "params": {"gain": 1.0}}
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "in"},
+    {"src_module_id": 2, "src_port": "out", "dst_module_id": 5, "dst_port": "in1"},
+    {"src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "in"},
+    {"src_module_id": 4, "src_port": "out", "dst_module_id": 5, "dst_port": "in2"},
+    {"src_module_id": 5, "src_port": "out", "dst_module_id": 6, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 80], "2": [320, 80],
+      "3": [40, 320], "4": [320, 320],
+      "5": [620, 200], "6": [900, 200]
+    }
+  }
+}

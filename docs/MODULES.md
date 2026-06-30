@@ -153,6 +153,7 @@ Every module type, its category, and its ports at a glance.
 | [`cv_scale`](#cv_scale) | Utility | `in` (cv) → `out` (cv) |
 | [`cv_offset`](#cv_offset) | Utility | `in` (cv) → `out` (cv) |
 | [`sample_hold`](#sample_hold) | Utility | `in` (cv), `trig` (gate) → `out` (cv) |
+| [`meter`](#meter) | Utility | `in` (audio) → `out` (audio) |
 | [`speaker_output`](#speaker_output) | Sink | `in` (audio) → — |
 | [`left_speaker_output`](#left_speaker_output) | Sink | `in` (audio) → — |
 | [`right_speaker_output`](#right_speaker_output) | Sink | `in` (audio) → — |
@@ -541,6 +542,34 @@ generator's job); unpatched `trig` holds the last value. No params.
 Shape-polymorphic: mono `(F,)` or per-voice `(V, F)` with per-voice held
 values, a mono partner broadcasting across the voice axis. See
 `examples/sample_hold_arp.json`.
+
+#### `meter`
+
+A **level indicator** you patch any audio signal into — `in` passes
+straight through to `out` untouched, so a Meter can sit inline
+(`source → meter → speaker`) or hang off a fan-out cable purely to
+watch a level. The node shows the signal's **recent peak in dBFS**
+(a fixed −90 → 0 scale, so two meters read on the same reference and
+are directly comparable — handy for eyeballing, say, a MicInput
+against a FilePlayer before they hit a mixer).
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to measure. |
+| `out` | out | audio | The input, passed through unchanged. |
+
+**Parameters.** None — it only observes.
+
+**How it works.** The reading is a fast-attack / slow-decay peak
+envelope (max |sample| over the block, instant rise, gentle fall)
+computed on the audio thread, so a short transient registers even
+between UI repaints and the meter latency is block-rate, not
+frame-rate. Shape-polymorphic: a voice-aware `(V, F)` input shows the
+loudest voice. See `examples/meter_levels.json` (a loud saw and a
+quiet square, each through its own meter — the bars read clearly
+different levels).
 
 ---
 

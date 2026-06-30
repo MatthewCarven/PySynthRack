@@ -9,6 +9,7 @@ interface.
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
 import traceback
@@ -103,6 +104,8 @@ class App:
         # holds the per-port auto-range state [lo, hi] used to normalise
         # the fill (instant-attack / slow-release; see _auto_range_fill).
         self._cv_meter_bars: dict[tuple[int, str], int] = {}
+        # Meter-module level bars: module_id -> progress-bar tag.
+        self._audio_meter_bars: dict[int, int] = {}
         self._meter_bounds: dict[tuple[int, str], list[float]] = {}
         # FilePlayer playhead readouts. Maps module_id -> the dpg text
         # tag showing 'elapsed / total'; refreshed each frame in
@@ -132,6 +135,7 @@ class App:
             # viewport's vsync, so this is no busier than the built-in loop.
             while dpg.is_dearpygui_running():
                 self._update_cv_meters()
+                self._update_audio_meters()
                 self._update_file_positions()
                 dpg.render_dearpygui_frame()
         finally:
@@ -292,6 +296,15 @@ class App:
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                     label = dpg.add_text("0:00 / 0:00")
                     self._file_pos_labels[module.id] = label
+
+            # Meter: a dBFS level bar (-90..0), driven each frame from
+            # the backend's peak envelope.
+            if module.TYPE == "meter":
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                    bar = dpg.add_progress_bar(
+                        default_value=0.0, overlay="-inf dB", width=160
+                    )
+                    self._audio_meter_bars[module.id] = bar
 
             # Outputs (right)
             for port in module.output_ports:
@@ -946,6 +959,7 @@ class App:
         # freshly-loaded patch starts metering from scratch.
         self._cv_meter_bars.clear()
         self._meter_bounds.clear()
+        self._audio_meter_bars.clear()
         self._file_pos_labels.clear()
         # Reset the cascade so a fresh-loaded patch (with no saved positions)
         # starts laying out from the top-left again.
@@ -1013,6 +1027,39 @@ class App:
         minutes = int(seconds // 60)
         secs = int(seconds % 60)
         return f"{minutes}:{secs:02d}"
+
+    # Meter floor in dB; the bar spans [_METER_FLOOR_DB, 0] dBFS.
+    _METER_FLOOR_DB = -90.0
+
+    def _update_audio_meters(self) -> None:
+        """Push Meter-module peak levels into their dBFS bars.
+
+        Reads a snapshot of the backend's per-meter linear peak
+        envelopes and maps each to a fixed -90..0 dBFS bar (fixed, not
+        auto-ranged, so two meters are directly comparable). Cheap: a
+        handful of meters, one log10 each.
+        """
+        if not self._audio_meter_bars:
+            return
+        snap = getattr(self.backend, "snapshot_audio_levels", None)
+        if snap is None:
+            return
+        levels = snap()
+        floor = self._METER_FLOOR_DB
+        for module_id, bar in self._audio_meter_bars.items():
+            env = levels.get(module_id, 0.0)
+            if env > 1e-9:
+                db = 20.0 * math.log10(env)
+            else:
+                db = floor
+            db_clamped = max(floor, min(0.0, db))
+            fill = (db_clamped - floor) / (0.0 - floor)
+            overlay = "-inf dB" if db_clamped <= floor else f"{db_clamped:.1f} dB"
+            try:
+                dpg.set_value(bar, fill)
+                dpg.configure_item(bar, overlay=overlay)
+            except Exception:
+                pass
 
     def _auto_range_fill(self, key: tuple[int, str], value: float) -> float:
         """Normalise ``value`` into 0..1 against the port's auto-range

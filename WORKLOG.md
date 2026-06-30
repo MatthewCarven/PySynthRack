@@ -3857,3 +3857,63 @@ origin/main `ae0961f`). To use video audio: `pip install -e ".[media]"`
 **Next:** streaming/chunked decode for long files (drop the whole-file
 memory load); decode off the audio thread so first play never stalls; a
 small "ffmpeg: bundled / system / none" status hint on the node.
+
+---
+
+## 2026-06-30 — Meter module: audio level indicator (dBFS)
+
+Matthew wanted a level indicator he can hang off any audio signal to
+compare source levels (mic vs file player), low-latency, rough is fine.
+Chose a **dedicated Meter module** (over auto-meters on every jack) with
+a **dBFS scale floored at −90**.
+
+*New* (`modules/meter.py`). `Meter` — `TYPE="meter"`, audio `in` →
+**pass-through** audio `out`, no params. It's a monitoring tap: audio
+forwards untouched (same array, same shape, mono or voice-aware) so it
+sits inline (`source → meter → speaker`) or hangs off a fan-out cable.
+
+*Backend* (`numpy_backend.py`). `_render_meter` forwards `in`→`out` and
+updates a peak envelope: `peak = max(|block|)` (over samples and
+voices), **instant attack, slow decay** (`env = peak` if rising, else
+`peak + (env−peak)·_METER_DECAY`, `_METER_DECAY=0.985` ≈ 0→−20 dB in
+~1.8 s). Computed on the audio thread, so a transient registers even
+between UI frames — latency is block-rate (~12 ms), not frame-rate,
+which is what Matthew asked for. Levels go to a new `self._audio_levels`
+{module_id: linear peak}; `snapshot_audio_levels()` copies it for the
+GUI. Keys are pre-created in `compile()` on the GUI thread so the audio
+thread only ever updates values — the snapshot copy needs no lock (same
+discipline as the CV `_meter_levels`). pyo silent-stub extended.
+
+*UI* (`ui/app.py`). Meter nodes get a `dpg.add_progress_bar`;
+`_update_audio_meters()` (added to the render loop next to
+`_update_cv_meters`) reads the snapshot, maps each linear env to a
+**fixed −90..0 dBFS** bar (`20·log10`), and writes a `"-xx.x dB"` /
+`"-inf dB"` overlay. Fixed scale (not the CV meters' auto-range) on
+purpose: two meters must share a reference to be comparable. Bars
+tracked in `_audio_meter_bars`, cleared in `_clear_editor`.
+
+*Verification.* 18 tests in `tests/test_meter.py` (model/ports/round-
+trip/type-walls; pass-through mono+voice+disconnected; envelope: instant
+attack reads peak, max-abs peak, slow decay = before·_METER_DECAY,
+attack overrides a decayed level, silence→0, voice→loudest; osc→meter→
+speaker integration renders audible + meters nonzero). The DPG layer
+isn't in the suite, so checked headlessly under a real context: osc→
+meter→speaker, render, `_update_audio_meters()` — env 0.5 → −6.0 dB →
+bar fill 0.933 + overlay "-6.0 dB"; silence → "-inf dB", fill 0. Full
+suite **595 passing (+18 mido skipped)** with ffmpeg present, up from
+577 — exactly +18.
+
+*Docs.* `docs/MODULES.md` Utilities index row + entry. Example
+`examples/meter_levels.json` — a loud saw (≈−1.9 dB) and a quiet square
+(≈−12.0 dB), each through its own meter into a mixer: the two bars read
+clearly different, demonstrating the comparison use case.
+
+**Hand-off to Matthew:** delivered as a git patch **stacked 4th** —
+`git am` order: `parametric_eq.patch`, `fileplayer_browse.patch`,
+`fileplayer_ffmpeg.patch`, then `meter.patch` (all clean on origin/main
+`ae0961f`). GUI feature, so confirm live: open `examples/meter_levels.json`,
+hit play, watch the two bars.
+
+**Next:** if it gets heavy use, options worth offering — a peak-hold tick
+that lingers at the max; a switchable RMS mode; a stereo/2-channel meter;
+a clip indicator at 0 dBFS. All additive to this module.
