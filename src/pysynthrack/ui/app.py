@@ -86,6 +86,10 @@ class App:
         self._port_to_attr: dict[tuple[int, str, str], int] = {}  # (mod, port, dir) → attr_id
         self._link_to_cable: dict[int, Cable] = {}
 
+        # The file_player node whose Browse button was last clicked, so the
+        # shared WAV file dialog's callback knows which module to update.
+        self._wav_target_id: Optional[int] = None
+
         # Diagonal stagger for newly-added nodes so they don't stack.
         self._next_node_pos = [40, 40]
 
@@ -228,6 +232,20 @@ class App:
             dpg.add_file_extension(".json", color=(150, 220, 255))
             dpg.add_file_extension(".*")
 
+        # Shared by every FilePlayer node's Browse button. One dialog is
+        # enough because picking a file is modal; ``_wav_target_id`` records
+        # which node asked, set just before the dialog is shown.
+        with dpg.file_dialog(
+            label="Select WAV file",
+            show=False,
+            callback=self._on_wav_selected,
+            tag="wav_dialog",
+            width=700,
+            height=500,
+        ):
+            dpg.add_file_extension(".wav", color=(150, 220, 255))
+            dpg.add_file_extension(".*")
+
     # ----- node creation --------------------------------------------------
 
     def _create_node_for_module(self, module, pos=None) -> int:
@@ -294,6 +312,27 @@ class App:
     def _add_param_widget(self, module, param_name: str, default) -> None:
         current = module.params[param_name]
         user_data = (module.id, param_name)
+
+        if module.TYPE == "file_player" and param_name == "path":
+            # Path field + a Browse button that opens the shared WAV
+            # dialog. The field keeps an explicit tag so the dialog's
+            # callback can write the chosen path back into it; typing a
+            # path by hand still works via the same _on_param_changed.
+            with dpg.group(horizontal=True):
+                dpg.add_input_text(
+                    label=param_name,
+                    default_value=str(current),
+                    width=140,
+                    tag=f"fileplayer_path_{module.id}",
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                dpg.add_button(
+                    label="Browse...",
+                    callback=self._show_wav_dialog,
+                    user_data=module.id,
+                )
+            return
 
         if module.TYPE == "parametric_eq":
             # Parametric EQ bands: ``band{i}_freq`` (Hz), ``band{i}_gain``
@@ -624,6 +663,37 @@ class App:
             self.backend.set_param(module_id, param_name, app_data)
         except Exception as exc:
             self._set_status(f"Param error: {exc}")
+
+    def _show_wav_dialog(self, sender, app_data, user_data) -> None:
+        """A FilePlayer Browse button was clicked: open the WAV picker."""
+        self._wav_target_id = user_data  # module id
+        if dpg.does_item_exist("wav_dialog"):
+            dpg.show_item("wav_dialog")
+
+    def _on_wav_selected(self, sender, app_data) -> None:
+        """Apply the picked WAV path to the FilePlayer that requested it."""
+        module_id = self._wav_target_id
+        self._wav_target_id = None
+        if module_id is None:
+            return
+        selections = app_data.get("selections", {})
+        if selections:
+            path = next(iter(selections.values()))
+        else:
+            path = app_data.get("file_path_name")
+        if not path:
+            return
+        # Same mutation path as typing into the field; the renderer
+        # re-decodes on the next block because the path param changed.
+        try:
+            self.backend.set_param(module_id, "path", path)
+        except Exception as exc:
+            self._set_status(f"Param error: {exc}")
+            return
+        text_tag = f"fileplayer_path_{module_id}"
+        if dpg.does_item_exist(text_tag):
+            dpg.set_value(text_tag, path)
+        self._set_status(f"Selected: {os.path.basename(path)}")
 
     def _on_key_press(self, sender, app_data, user_data=None) -> None:
         """Route a physical key press to every Keyboard module in the patch.

@@ -3742,3 +3742,47 @@ play — a saw with weighted sub, scooped low-mids, and a touch of edge.
 (the obvious extension, deferred — Crossover has the same gap). Filter
 slice 5 (crossover on sosfilt) / slice 6 re-profile still open; AD perc
 envelope still the natural pairing for the noise drums.
+
+---
+
+## 2026-06-30 — FilePlayer: Browse button for WAV selection (UI)
+
+Small UX win Matthew asked for: a **Browse...** button on the FilePlayer
+node so you can pick the WAV from a file dialog instead of typing the
+path by hand.
+
+*UI* (`ui/app.py`, the only file touched). One shared WAV file dialog
+built in `_build_file_dialogs` alongside the existing open/save patch
+dialogs (tag `wav_dialog`, filtered to `.wav` + `.*`) — one is enough
+because picking a file is modal. `_add_param_widget` now special-cases
+the FilePlayer `path` param: it renders the path `input_text` (with an
+explicit tag `fileplayer_path_{id}`) next to a **Browse...** button in a
+horizontal group. The button's callback `_show_wav_dialog` records which
+node asked via `self._wav_target_id`, then shows the dialog;
+`_on_wav_selected` reads the picked path (`selections` first, falling
+back to `file_path_name`), applies it through the same
+`backend.set_param(id, "path", ...)` mutation that typing uses, and
+writes it back into the field with `dpg.set_value`. Typing a path by
+hand still works exactly as before — the dialog is purely additive.
+
+No backend change: `_render_file_player` already re-decodes when
+`state["path"] != params["path"]`, so a freshly-picked file loads on the
+next block without a recompile.
+
+*Verification.* The test suite doesn't cover the DPG layer, so checked
+headlessly instead: under a DPG context (numpy backend injected — the
+sandbox has no PortAudio) built the dialog + a FilePlayer node and drove
+the callbacks. Confirmed the path field starts at the param value, a
+simulated pick updates both the model param and the displayed field,
+`_wav_target_id` resets after, the `file_path_name`-only fallback works,
+and other node types still build. Full suite still **561 passing (+18
+mido skipped)** — unchanged, as expected for a UI-only edit.
+
+*Docs.* `docs/MODULES.md` FilePlayer entry — path row + Notes mention
+the Browse button.
+
+**Hand-off to Matthew:** delivered as a git patch **stacked on
+`parametric_eq.patch`** — `git am` order: `parametric_eq.patch` then
+`fileplayer_browse.patch` (both clean on origin/main HEAD `ae0961f`).
+It's a GUI-only change, so confirm it live: open a patch with a
+FilePlayer, click **Browse...**, pick a WAV, hit play.

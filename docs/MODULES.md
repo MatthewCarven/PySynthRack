@@ -219,13 +219,15 @@ track can be split and used as sound or modulation. Decoded once into memory
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
-| `path` | `""` | file path | Path to a `.wav`. Empty/missing/unreadable → silence (the patch still loads). **WAV only.** |
+| `path` | `""` | file path | Path to a `.wav` — type it or use the node's **Browse...** button to pick one. Empty/missing/unreadable → silence (the patch still loads). **WAV only.** |
 | `gain` | `1.0` | 0…2 | Linear gain on both channels. |
 | `loop` | `false` | bool | `true` repeats seamlessly; `false` (default) plays once then silence until restart/re-arm. |
 | `armed` | `true` | bool | `false` outputs silence and parks the playhead at the start, so re-arming replays from the top. |
 
-**Notes.** The node shows a live `elapsed / total` time readout. One-shots
-rewind when the transport stops. See `examples/file_crossover_split.json`
+**Notes.** A **Browse...** button beside the path field opens a WAV file
+picker (filtered to `.wav`) and writes the chosen path back into the field;
+the player re-decodes on the next block. The node also shows a live
+`elapsed / total` time readout. One-shots rewind when the transport stops. See `examples/file_crossover_split.json`
 (track → crossover → AudioToCV → oscillator/CVToFrequency).
 
 #### `mic_input`
