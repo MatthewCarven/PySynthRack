@@ -25,6 +25,7 @@ from .lfo import LFO
 from .micinput import MicInput
 from .midiinput import MIDIInput
 from .mixer import Mixer
+from .noise import Noise
 from .oscillator import Oscillator
 from .output import LeftSpeakerOutput, RightSpeakerOutput, SpeakerOutput
 from .samplehold import SampleHold
@@ -51,6 +52,7 @@ __all__ = [
     "MicInput",
     "MIDIInput",
     "Mixer",
+    "Noise",
     "Oscillator",
     "RightSpeakerOutput",
     "SampleHold",

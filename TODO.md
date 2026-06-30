@@ -235,7 +235,20 @@ Living list of what's next. Edit freely.
       clocked by an LFO→Schmitt → CVScale→CVOffset → CVToFrequency: a self-
       playing stepped arp). Follow-ups: `slew` param; track-and-hold mode (hold
       while gate high); pairs naturally with the Noise generator when it lands.
-- [ ] Noise generator (white / pink)
+- [x] **Noise generator (`noise`)** — shipped 2026-06-30. White or pink noise
+      source with no inputs and *two* output jacks carrying the same stream:
+      `out` (audio, into filters/speaker for drums/wind) and `cv` (into
+      Sample-and-Hold / modulation) — Matthew picked dual jacks over a single
+      kind so neither use needs a bridge. `color` param (white/pink) + `amp`.
+      White is uniform ±1; pink filters white through a 3rd-order pinking IIR
+      via `scipy.signal.lfilter` (zi carried across blocks, −3 dB/oct measured),
+      RMS-normalised to white so `amp` means the same level for both. Mono
+      source (like Constant). No new deps; UI gets a `color` combo; pyo silent-
+      stub. 26 tests in `tests/test_noise.py`; suite 534 (+18 mido). Example
+      `examples/noise_hat.json` (white → HP filter → VCA, ADSR clocked by
+      LFO→Schmitt: a self-playing hi-hat). Follow-ups: S&H could normal its
+      `in` to a noise source now that one exists; a `seed` param for
+      reproducible patches; brown/blue colors.
 - [ ] Drum-friendly env (AD instead of ADSR)
 - [ ] Stereo-aware speaker module (pan / width)
 - [ ] Patch presets palette (factory + user banks)

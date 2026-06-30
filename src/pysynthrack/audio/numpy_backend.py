@@ -553,6 +553,8 @@ class NumpyBackend(AudioBackend):
             return self._render_cv_offset(module, frames, buffers, patch)
         if module.TYPE == "sample_hold":
             return self._render_sample_hold(module, frames, buffers, patch)
+        if module.TYPE == "noise":
+            return self._render_noise(module, frames, buffers, patch)
         if module.TYPE == "crossover":
             return self._render_crossover(module, frames, buffers, patch)
         if module.TYPE == "disk_writer":
@@ -1591,6 +1593,15 @@ class NumpyBackend(AudioBackend):
     # us tolerance against fractional gate values (e.g. an LFO-style gate
     # in some future patching) without false triggers on numerical noise.
     _GATE_HIGH = 0.5
+
+    # Pink-noise generation: a 3rd-order IIR that tilts white noise to
+    # -3 dB/oct (music-dsp standard coefficients), applied via
+    # scipy.signal.lfilter with its state (zi) carried across blocks.
+    # _PINK_SCALE RMS-matches the output to uniform white (std ~0.577)
+    # so the `amp` param means the same level for both colors.
+    _PINK_B = (0.049922035, -0.095993537, 0.050612699, -0.004408786)
+    _PINK_A = (1.0, -2.494956002, 2.017265875, -0.522189400)
+    _PINK_SCALE = 11.7027
 
     # Integer phase codes for the vectorized state machine. The mono
     # fast path below still uses strings — we keep them separate so an
@@ -2667,6 +2678,54 @@ class NumpyBackend(AudioBackend):
         if cv_in is None:
             return np.full(frames, offset, dtype=np.float32)
         return (cv_in + offset).astype(np.float32)
+
+    # ----- Noise rendering ------------------------------------------------
+
+    def _render_noise(self, module, frames: int, buffers=None, patch=None) -> dict:
+        """White or pink noise; same stream on the ``out`` and ``cv`` jacks.
+
+        ``white`` is uniform ``[-1, 1]`` per sample (hard-bounded,
+        bright). ``pink`` filters that white through the class-level
+        pinking IIR via ``scipy.signal.lfilter`` -- the filter state
+        ``zi`` is carried in ``self._state`` across blocks so the
+        spectrum stays continuous at block seams -- then scaled by
+        ``_PINK_SCALE`` to RMS-match white. Both are multiplied by the
+        ``amp`` param.
+
+        A source has no voice context of its own, so the output is
+        always mono ``(frames,)`` (like :class:`Constant`); a 1D signal
+        broadcasts cleanly against any per-voice consumer. The same
+        float32 array is returned under both port names -- consumers
+        treat buffers as read-only, exactly as fan-out from any single
+        output already does.
+        """
+        color = str(module.params.get("color", "white"))
+        amp = float(module.params.get("amp", 1.0))
+
+        white = np.random.uniform(-1.0, 1.0, frames).astype(np.float32)
+
+        if color == "pink":
+            state = self._state.setdefault(module.id, {})
+            zi = state.get("pink_zi")
+            if zi is None:
+                zi = np.zeros(
+                    max(len(self._PINK_A), len(self._PINK_B)) - 1, dtype=np.float64
+                )
+            filtered, zf = lfilter(self._PINK_B, self._PINK_A, white, zi=zi)
+            state["pink_zi"] = zf
+            sig = (filtered * self._PINK_SCALE).astype(np.float32)
+        else:
+            # Any non-pink color is white. Drop stale pink state if the
+            # color was switched at runtime.
+            st = self._state.get(module.id)
+            if st is not None:
+                st.pop("pink_zi", None)
+            sig = white
+
+        if amp != 1.0:
+            sig = (sig * amp).astype(np.float32)
+        # Same array on both jacks (read-only downstream, like any fan-out).
+        return {"out": sig, "cv": sig}
 
     # ----- SampleHold rendering -------------------------------------------
 

@@ -30,6 +30,7 @@ from ..modules.cvtofrequency import MODES as CVTOFREQ_MODES
 from ..modules.lfo import LFO_WAVEFORMS
 from ..modules.midiinput import AUTO_DEVICE, available_devices as midi_available_devices
 from ..modules.micinput import available_input_devices as mic_available_devices
+from ..modules.noise import NOISE_COLORS
 from ..modules.oscillator import WAVEFORMS
 
 
@@ -326,6 +327,18 @@ class App:
             dpg.add_combo(
                 label=param_name,
                 items=items,
+                default_value=str(current),
+                width=120,
+                callback=self._on_param_changed,
+                user_data=user_data,
+            )
+            return
+
+        if param_name == "color":
+            # Noise color picker (white / pink).
+            dpg.add_combo(
+                label=param_name,
+                items=list(NOISE_COLORS),
                 default_value=str(current),
                 width=120,
                 callback=self._on_param_changed,

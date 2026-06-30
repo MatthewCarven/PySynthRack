@@ -3607,3 +3607,73 @@ quarter-ish second (the 4 Hz clock), each held steady between steps.
 **Next:** Noise generator (white/pink) is the obvious follow-up — it
 turns this into the textbook random-voltage source and would let the
 S&H normal to it later. Filter slice 5/6 still open.
+
+
+## 2026-06-30 — Noise generator (`noise`): white + pink
+
+The textbook random source, and the natural partner to Sample-and-Hold
+(noise → S&H = stepped random voltages). Off the backlog.
+
+*Design choice* (Matthew's call): **two output jacks**, an `out`
+(audio) and a `cv`, both carrying the same noise stream — so noise
+drives filters/speakers *and* modulation without any bridge module
+(the way Keyboard exposes `out` + `gate`). This beat "cv only" (audio
+would need a CVToAudio in every sound patch) and "audio only" (the only
+audio→cv bridge is the envelope follower, which would smear the noise
+rather than pass raw random values).
+
+*Module* (`modules/noise.py`). TYPE `noise`, no inputs, outputs `out`
+(audio) + `cv` (cv). Params `color` (`white`/`pink`, exported as
+`NOISE_COLORS`) and `amp` (default 1.0). Registered in
+`modules/__init__.py`.
+
+*Backend* (`audio/numpy_backend.py`). `_render_noise` returns a dict
+`{"out": sig, "cv": sig}` — the same float32 array on both jacks
+(consumers are read-only, exactly like existing fan-out). `white` is
+`np.random.uniform(-1, 1)` (hard-bounded, the convention LFO's
+`random` already uses). `pink` filters that white through a class-level
+3rd-order pinking IIR (`_PINK_B`/`_PINK_A`, the music-dsp standard
+coefficients) via `scipy.signal.lfilter` — the filter state `zi` is
+carried in `self._state` across blocks so the spectrum is continuous at
+block seams (same zi-carry pattern as the filter vectorization slices)
+— then scaled by `_PINK_SCALE = 11.7027` to RMS-match uniform white, so
+`amp` means the same level for both colors. Switching color back to
+white drops the stale `pink_zi`. Output is always mono `(frames,)` — a
+source has no voice context of its own (like Constant). The dict return
+lands under both ports via the existing multi-output store, and the
+`cv` jack auto-gets a CV meter. Measured: white spectrum flat
+(low/high ≈ 1.0), pink slope −3.0 dB/oct.
+
+*Pyo* (`audio/pyo_backend.py`). Added `noise` to the v0.3+ silent-stub.
+
+*UI* (`ui/app.py`). Added a `color` combo branch (imports
+`NOISE_COLORS`); `amp` reuses the existing 0..1 level slider.
+
+*Tests* (`tests/test_noise.py`, 26). Model (registration, defaults,
+dual-jack ports/signal kinds, JSON round-trip, unknown-param rejection,
+type walls: audio→audio-sink legal, cv→cv legal, audio→cv illegal,
+cv→audio-sink illegal); white (mono shape/dtype, both jacks the same
+array, hard-bounded to ±amp, ~zero mean, roughly flat spectrum via
+Welch, amp scales RMS); pink (mono, steep low/high tilt, slope ≈ −3
+dB/oct, zi carried + evolving across blocks, switch-to-white drops
+state, RMS ≈ white); randomness (consecutive blocks differ, two modules
+independent); integration (white→filter→speaker audible; noise.cv→S&H
+clocked = bounded random staircase >95% flat; noise.cv→CVToAudio→
+speaker bridge path). Full suite **534 passing (+18 mido skipped)**, up
+from 508 — exactly +26.
+
+*Docs* (`docs/MODULES.md`). Sources index row + entry. Example
+`examples/noise_hat.json` — white → highpass filter → VCA, with the VCA
+opened by an ADSR clocked from an LFO→Schmitt: a self-playing hi-hat
+(first percussion example in the set). Renders ~1 s clean.
+
+**Hand-off to Matthew:** delivered as a git patch stacked on the trio +
+sample_hold — apply in order: `cv_utility_trio.patch`,
+`sample_hold.patch`, then `noise.patch` (all `git am`). To hear it:
+open `examples/noise_hat.json`, hit play — a ticking hi-hat at 8 Hz.
+Switch the noise `color` to `pink` for a softer, lower hat.
+
+**Next:** with noise in hand, the S&H could optionally *normal* its
+`in` to an internal/!patched noise source (revisits the design Matthew
+deferred). Otherwise filter slice 5/6, or an AD percussion envelope to
+pair with the noise drums.

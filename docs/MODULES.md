@@ -136,6 +136,7 @@ Every module type, its category, and its ports at a glance.
 | [`file_player`](#file_player) | Source | — → `left`,`right` (audio) |
 | [`mic_input`](#mic_input) | Source | — → `left`,`right` (audio) |
 | [`cv_to_frequency`](#cv_to_frequency) | Source | `cv` (cv) → `out` (audio) |
+| [`noise`](#noise) | Source | — → `out` (audio), `cv` (cv) |
 | [`filter`](#filter) | Processor | `in` (audio), `cutoff_cv` (cv) → `out` (audio) |
 | [`crossover`](#crossover) | Processor | `in` (audio) → `low`,`high` (audio) |
 | [`vca`](#vca) | Processor | `audio` (audio), `cv` (cv) → `out` (audio) |
@@ -263,6 +264,26 @@ _To document._ Self-contained CV-controlled oscillator: maps a `cv` input to
 Hz via a three-point curve (`f0`/`fm`/`f1`, `mode` log/linear), with an
 optional negative-side mirror. Outputs `out` (audio). See
 `examples/cvtofreq_blip.json`.
+
+---
+
+#### `noise`
+
+White or pink noise with no inputs and two output jacks carrying the
+*same* stream: `out` (audio) to drive filters/speakers directly (hats,
+snares, wind, breath) and `cv` to drive modulation directly — the
+textbook random-voltage source for `sample_hold`. Two jacks so neither
+use needs a bridge, the way Keyboard exposes `out` + `gate`.
+
+`color` selects `white` (flat spectrum; uniform ±1) or `pink`
+(−3 dB/oct, equal power per octave — the tilt of rain and rushing
+water). Pink is white filtered through a 3rd-order pinking IIR
+(`scipy.signal.lfilter`, state carried across blocks), RMS-normalised
+so `amp` means the same level for both colors. `amp` scales both jacks
+(white is hard-bounded to ±amp; pink's occasional peaks run slightly
+past it). Output is mono — a source has no voice context of its own and
+broadcasts cleanly to any per-voice consumer. See
+`examples/noise_hat.json`.
 
 ---
 

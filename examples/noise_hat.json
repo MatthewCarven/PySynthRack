@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "next_id": 8,
+  "modules": [
+    { "id": 1, "type": "noise", "name": "noise", "params": { "color": "white", "amp": 0.8 } },
+    { "id": 2, "type": "lfo", "name": "lfo (clock)", "params": { "waveform": "square", "rate": 8.0, "depth": 1.0, "bipolar": false } },
+    { "id": 3, "type": "schmitt", "name": "schmitt", "params": { "high": 0.6, "low": 0.4 } },
+    { "id": 4, "type": "adsr", "name": "adsr", "params": { "attack": 0.001, "decay": 0.05, "sustain": 0.0, "release": 0.03 } },
+    { "id": 5, "type": "filter", "name": "filter", "params": { "mode": "highpass", "cutoff": 7000.0, "resonance": 1.5 } },
+    { "id": 6, "type": "vca", "name": "vca", "params": {} },
+    { "id": 7, "type": "speaker_output", "name": "speaker_output", "params": { "gain": 0.8 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 5, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "out", "dst_module_id": 6, "dst_port": "audio" },
+    { "src_module_id": 2, "src_port": "cv", "dst_module_id": 3, "dst_port": "in" },
+    { "src_module_id": 3, "src_port": "gate", "dst_module_id": 4, "dst_port": "gate" },
+    { "src_module_id": 4, "src_port": "cv", "dst_module_id": 6, "dst_port": "cv" },
+    { "src_module_id": 6, "src_port": "out", "dst_module_id": 7, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 40],
+      "5": [320, 40],
+      "6": [600, 40],
+      "7": [880, 40],
+      "2": [40, 300],
+      "3": [320, 300],
+      "4": [600, 300]
+    }
+  }
+}
