@@ -661,6 +661,17 @@ class App:
                 )
                 return
 
+        if module.TYPE == "reverb":
+            # Stereo FDN reverb: four 0..1 macro controls (size, decay,
+            # damping, mix).
+            if param_name in ("size", "decay", "damping", "mix"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if param_name == "waveform":
             # LFO has its own waveform list (includes "random"); other
             # modules share the oscillator's list.

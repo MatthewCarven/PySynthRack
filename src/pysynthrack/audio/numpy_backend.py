@@ -718,6 +718,8 @@ class NumpyBackend(AudioBackend):
             return self._render_meter(module, frames, buffers, patch)
         if module.TYPE == "delay":
             return self._render_delay(module, frames, buffers, patch)
+        if module.TYPE == "reverb":
+            return self._render_reverb(module, frames, buffers, patch)
         if module.TYPE == "resampler":
             return self._render_resampler(module, frames, buffers, patch)
         if module.TYPE == "pitch_shifter":
@@ -3822,6 +3824,154 @@ class NumpyBackend(AudioBackend):
         return x.astype(np.float32)
 
     # ----- DiskWriter rendering -------------------------------------------
+
+    # ----- Reverb rendering -----------------------------------------------
+
+    # Eight delay-line lengths (samples at 44.1 kHz, near-prime so the
+    # modes don't line up and ring) for the largest "hall" size; `size`
+    # scales them down toward a small room. Time-scaled to the real
+    # sample rate at render time.
+    _REVERB_BASE = (1103, 1321, 1543, 1759, 1987, 2203, 2423, 2647)
+    _REVERB_OUT = 0.30   # wet output trim (tuned so wet ~ dry level)
+
+    def _render_reverb(self, module, frames: int, buffers, patch):
+        """Stereo FDN reverb: mono in -> decorrelated out_l / out_r.
+
+        Eight delay lines are cross-mixed every sample by an orthonormal
+        (Hadamard) feedback matrix and re-injected with a per-line decay
+        gain and a shared damping low-pass, so a mono input blooms into a
+        dense, decaying stereo tail. ``out_l`` and ``out_r`` tap the lines
+        through two orthogonal sign patterns, so the channels are
+        decorrelated (width). A polyphonic input is summed to mono first.
+
+        Block-size independent: a feedback delay only recirculates within
+        a block when a line is shorter than the block, so the network is
+        processed in hops no longer than the shortest line -- within a hop
+        every read predates the hop's writes, so it vectorizes, and the
+        damping one-pole runs via ``lfilter`` with its state carried.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in")
+        if src is None:
+            z = np.zeros(frames, dtype=np.float32)
+            return {"out_l": z, "out_r": z.copy()}
+
+        sr = self.sample_rate
+        size = float(module.params.get("size", 0.5))
+        decay = float(module.params.get("decay", 0.5))
+        damping = float(module.params.get("damping", 0.5))
+        mix = float(module.params.get("mix", 0.3))
+        size = min(max(size, 0.0), 1.0)
+        decay = min(max(decay, 0.0), 1.0)
+        damping = min(max(damping, 0.0), 1.0)
+        mix = min(max(mix, 0.0), 1.0)
+
+        base = np.array(self._REVERB_BASE, dtype=np.float64) * (sr / 44100.0)
+        N = base.shape[0]
+        Lmax = int(base.max()) + 2
+        scale = 0.25 + 0.75 * size
+        L = np.clip(np.round(base * scale).astype(np.int64), 32, Lmax - 2)
+
+        # Input diffusion: 4 series Schroeder allpasses smear the input
+        # into a dense burst before it enters the FDN, so the tail fills in
+        # smoothly instead of sounding like a handful of separate echoes.
+        DD = np.round(np.array([113.0, 167.0, 251.0, 337.0]) * (sr / 44100.0))
+        DD = np.maximum(DD.astype(np.int64), 8)
+        Ld = int(DD.max()) + 2
+        kd = 0.6
+
+        state = self._state.setdefault(module.id, {})
+        if (
+            "buf" not in state
+            or state["buf"].shape != (N, Lmax)
+            or state.get("dbuf") is None
+            or state["dbuf"].shape != (4, Ld)
+        ):
+            state.clear()
+            state["buf"] = np.zeros((N, Lmax), dtype=np.float64)
+            state["write_idx"] = 0
+            state["lpz"] = np.zeros(N, dtype=np.float64)
+            state["dbuf"] = np.zeros((4, Ld), dtype=np.float64)
+            state["dwp"] = 0
+
+        buf = state["buf"]
+        wp = int(state["write_idx"])
+        lpz = state["lpz"]
+
+        if frames == 0:
+            e = np.empty(0, dtype=np.float32)
+            return {"out_l": e, "out_r": e.copy()}
+
+        x = src.astype(np.float64)
+
+        # --- input diffusion: run x through 4 series allpasses ---
+        dbuf = state["dbuf"]
+        dwp = int(state["dwp"])
+        xd = np.empty(frames, dtype=np.float64)
+        hop_d = int(DD.min())
+        dpos = 0
+        while dpos < frames:
+            c = min(hop_d, frames - dpos)
+            u = x[dpos:dpos + c].copy()
+            j = np.arange(c)
+            wcols = (dwp + j) % Ld
+            for sidx in range(4):
+                wdel = dbuf[sidx, (dwp + j - DD[sidx]) % Ld]
+                w = u + kd * wdel
+                u = -kd * w + wdel
+                dbuf[sidx, wcols] = w
+            xd[dpos:dpos + c] = u
+            dwp += c
+            dpos += c
+        state["dwp"] = dwp % Ld
+
+        # Per-line decay gain so every line reaches the same RT60.
+        rt60 = 0.2 * (60.0 ** decay)             # 0.2 s .. 12 s
+        g = np.power(10.0, -3.0 * L / (rt60 * sr))
+        np.clip(g, 0.0, 0.9995, out=g)
+
+        # Shared damping one-pole: cutoff sweeps ~18 kHz (open) -> ~1 kHz.
+        fc = 18000.0 * (1000.0 / 18000.0) ** damping
+        a = 1.0 - float(np.exp(-2.0 * np.pi * fc / sr))
+
+        # Orthonormal feedback matrix (Sylvester-Hadamard) + two orthogonal
+        # output taps for the decorrelated L/R pair.
+        H2 = np.array([[1.0, 1.0], [1.0, -1.0]])
+        H8 = np.kron(H2, np.kron(H2, H2))        # (8, 8), +/-1
+        A = H8 / np.sqrt(float(N))
+        tap_l = H8[1]
+        tap_r = H8[2]
+        out_scale = self._REVERB_OUT / np.sqrt(float(N))
+
+        wet_l = np.empty(frames, dtype=np.float64)
+        wet_r = np.empty(frames, dtype=np.float64)
+        rows = np.arange(N)
+        hop = int(L.min())
+        pos = 0
+        while pos < frames:
+            c = min(hop, frames - pos)
+            idx = wp + np.arange(c)
+            readpos = (idx[np.newaxis, :] - L[:, np.newaxis]) % Lmax   # (N, c)
+            S = buf[rows[:, None], readpos]                            # (N, c)
+            wet_l[pos:pos + c] = (tap_l @ S) * out_scale
+            wet_r[pos:pos + c] = (tap_r @ S) * out_scale
+            Sd = lfilter(
+                [a], [1.0, -(1.0 - a)], S, axis=-1,
+                zi=(lpz * (1.0 - a))[:, np.newaxis],
+            )[0]
+            lpz = Sd[:, -1].copy()
+            fb = A @ (g[:, np.newaxis] * Sd)                          # (N, c)
+            xin = xd[pos:pos + c]
+            buf[rows[:, None], idx % Lmax] = xin[np.newaxis, :] + fb
+            wp += c
+            pos += c
+
+        state["write_idx"] = int(wp % Lmax)
+        state["lpz"] = lpz
+
+        dry = (1.0 - mix) * x
+        out_l = (dry + mix * wet_l).astype(np.float32)
+        out_r = (dry + mix * wet_r).astype(np.float32)
+        return {"out_l": out_l, "out_r": out_r}
 
     # ----- Delay rendering ------------------------------------------------
 

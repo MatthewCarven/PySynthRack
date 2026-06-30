@@ -4454,3 +4454,62 @@ goes stereo; optional saturation in the loop for a full tape voicing; a
 built-in mod LFO for one-knob chorus; a true sub-block flanger path; equal-power
 dry/wet. The fast/per-sample split is already done, so the perf follow-up that
 other effects still want is, for once, not on this list.
+
+---
+
+## 2026-07-01 — Reverb (stereo Feedback Delay Network)
+
+Matthew's "where to continue?" pick after the delay. Scoped via
+AskUserQuestion to an **FDN** (over plate/Schroeder). He first chose mono
+out, then mid-build switched to a **stereo pair** ("I like the signal path
+mono, give two channels of output… 2-player mode") — which is the better
+call anyway, since a reverb's spaciousness *is* L/R decorrelation, and the
+`left_speaker_output` / `right_speaker_output` modules already exist.
+
+*Architecture.* Mono in (voice sources summed) → `out_l` / `out_r`. Input
+**diffusion** (4 series Schroeder allpasses) smears the input, then an
+**8-line FDN**: eight near-prime delay lines cross-mixed every sample by an
+orthonormal Sylvester–Hadamard matrix, re-injected with a per-line decay
+gain (so all lines hit the same RT60) and a shared damping one-pole. Two
+*orthogonal* Hadamard rows tap the lines for the L/R outputs, so the
+channels are decorrelated (measured corr ≈ −0.01 = real width). Params:
+`size` (line lengths, room→hall), `decay` (RT60 ~0.2–12 s), `damping`
+(HF absorption), `mix`.
+
+*Why diffusion got added.* The bare 8-line FDN smoke-tested with a **56 %
+near-silent** tail — an audibly gappy, grainy "reverb". Adding the 4 input
+allpasses took that to **0.6 %** (a dense, smooth wash) without disturbing
+the other properties. That's the difference between sounding like a broken
+comb filter and sounding like a room.
+
+*Block-size independence (the correctness crux).* A feedback delay only
+recirculates within a block when a line is shorter than the block, so the
+whole network — diffusers and FDN — is processed in **hops no longer than
+the shortest line**; within a hop every read predates the hop's writes, so
+it vectorizes (Hadamard mix as a matmul, damping one-pole via `lfilter`
+with carried `zi`). Output is **bit-identical across block sizes**
+(verified 0.0 for L and R at 512 vs 4096 vs 333). `mix=0` is a bit-exact
+dry passthrough; orthonormal feedback + per-line gain < 1 + damping keep it
+stable (bounded/finite at max decay); wet/dry trimmed to ≈0.5.
+
+*Tests / example / docs.* `tests/test_reverb.py` — 19 tests (model, mix=0
+passthrough, impulse decays, more-decay-longer-tail, dense-not-gappy,
+damping rolls off the tail, stability at max decay, voice→mono,
+**block-size independence**, L/R decorrelation, osc→reverb→L/R-speakers
+integration). Suite **806** sandbox (+18 mido), +19 from 787. Example
+`examples/reverb_space.json` (self-playing triangle melody → big hall →
+left/right speakers, peak ~0.31, true L≠R). `docs/MODULES.md` index row +
+`#### reverb`. pyo silent-stub; UI sliders; headless DPG node-build check
+passed.
+
+**Hand-off to Matthew:** delivered as `reverb.patch`, **stacked on the
+delay** (base `da98582` = your post-zoom tree + delay). Apply order from
+your current mount HEAD `f854297` (zoom applied): `git am delay.patch`
+then `git am reverb.patch`. `git am`-verified clean on that stacked tree,
+full suite 806 green. To hear it: open `reverb_space.json` and play.
+
+**Next:** tail **modulation** (slowly chorus the delay-line lengths to kill
+the last metallic ring on pure sustained tones — the one quality gap left);
+16 lines / longer diffusion for even more density; `pre_delay`; a
+freeze/infinite-hold mode; `size`/`mix` CV; an early-reflections tap; true
+stereo *input* once the signal path itself goes stereo.

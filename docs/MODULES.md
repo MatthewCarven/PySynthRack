@@ -146,6 +146,7 @@ Every module type, its category, and its ports at a glance.
 | [`resampler`](#resampler) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`delay`](#delay) | Processor | `in` (audio), `time_cv` (cv) → `out` (audio) |
+| [`reverb`](#reverb) | Processor | `in` (audio) → `out_l`,`out_r` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
 | [`adsr`](#adsr) | Modulation | `gate` (gate) → `cv` (cv) |
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
@@ -607,6 +608,43 @@ fully vectorized block path; only short or heavily modulated delays
 with a little modulation for chorus / vibrato shading. See
 `examples/delay_dub_echo.json` (a self-playing sequencer melody through a
 dotted-eighth dub echo).
+
+#### `reverb`
+
+A **stereo Feedback Delay Network** reverb — it turns a mono sound into a
+sense of space. The input is diffused and fed through eight cross-coupled
+delay lines that bloom into a dense, decaying wash; two decorrelated taps
+give a **stereo** tail (`out_l` / `out_r`) from the mono input, which is
+what the ear reads as width.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to reverberate (voice sources summed to mono). Unpatched → silence. |
+| `out_l` | out | audio | Left channel (dry + decorrelated wet). |
+| `out_r` | out | audio | Right channel (dry + decorrelated wet). |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `size` | `0.5` | 0 … 1 | Delay-line lengths: small room → large hall. |
+| `decay` | `0.5` | 0 … 1 | Tail length (reverberation time), short → long. |
+| `damping` | `0.5` | 0 … 1 | High-frequency absorption in the tail, bright → dark. |
+| `mix` | `0.3` | 0 … 1 | Dry/wet balance. Dry is centred; wet is the stereo tail. |
+
+Patch the outputs into [`left_speaker_output`](#left_speaker_output) and
+[`right_speaker_output`](#right_speaker_output) for a wide tail. The
+network is **block-size independent** (processed in hops no longer than
+its shortest delay line, so the sound never depends on the audio block
+size). See `examples/reverb_space.json` (a self-playing triangle melody
+in a big hall, spread across both speakers).
+
+**Patching.** `… → vca → reverb → L/R speakers`. Long + dark (`decay` up,
+`damping` up) for an ambient wash behind a sparse line; short + bright for
+a subtle glue. Pure sustained tones can still ring a touch — v1 has no
+tail modulation yet.
 
 ---
 
