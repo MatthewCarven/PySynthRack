@@ -545,6 +545,12 @@ class NumpyBackend(AudioBackend):
             return self._render_combiner(module, frames, buffers, patch)
         if module.TYPE == "cv_combiner":
             return self._render_cv_combiner(module, frames, buffers, patch)
+        if module.TYPE == "constant":
+            return self._render_constant(module, frames, buffers, patch)
+        if module.TYPE == "cv_scale":
+            return self._render_cv_scale(module, frames, buffers, patch)
+        if module.TYPE == "cv_offset":
+            return self._render_cv_offset(module, frames, buffers, patch)
         if module.TYPE == "crossover":
             return self._render_crossover(module, frames, buffers, patch)
         if module.TYPE == "disk_writer":
@@ -2613,6 +2619,52 @@ class NumpyBackend(AudioBackend):
         if mode == "average" and count > 0:
             out /= float(count)
         return out
+
+    # ----- CV-utility trio (Constant / CVScale / CVOffset) ----------------
+
+    def _render_constant(self, module, frames: int, buffers=None, patch=None) -> np.ndarray:
+        """Emit a steady CV level -- a hand-dialed DC source.
+
+        No inputs; fills the block with the scalar ``value`` param.
+        Always mono ``(frames,)``: a constant has no voice context of
+        its own, and a 1D CV broadcasts cleanly against any per-voice
+        ``(V, frames)`` consumer downstream.
+        """
+        value = float(module.params.get("value", 1.0))
+        return np.full(frames, value, dtype=np.float32)
+
+    def _render_cv_scale(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Multiply a CV by a fixed factor: ``out = in * scale``.
+
+        Pure pointwise gain, so shape-polymorphic for free -- ``collapse=
+        False`` keeps a voice-aware ``(V, F)`` input intact and a mono
+        ``(F,)`` input stays mono. An unpatched input is treated as 0,
+        so the output is silence (``0 * scale == 0``).
+        """
+        scale = float(module.params.get("scale", 1.0))
+        cv_in = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
+        if cv_in is None:
+            return np.zeros(frames, dtype=np.float32)
+        return (cv_in * scale).astype(np.float32)
+
+    def _render_cv_offset(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Add a fixed DC level to a CV: ``out = in + offset``.
+
+        Pure pointwise shift, shape-polymorphic for free. An unpatched
+        input is treated as 0, so the output is a constant ``offset``
+        (mono) -- which makes an unpatched CVOffset a quick DC source.
+        A voice-aware ``(V, F)`` input keeps its shape, the scalar
+        ``offset`` broadcasting across the voice axis.
+        """
+        offset = float(module.params.get("offset", 0.0))
+        cv_in = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
+        if cv_in is None:
+            return np.full(frames, offset, dtype=np.float32)
+        return (cv_in + offset).astype(np.float32)
 
     # ----- Crossover rendering --------------------------------------------
 

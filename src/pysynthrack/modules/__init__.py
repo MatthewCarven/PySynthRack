@@ -10,8 +10,11 @@ exist should:
 from .adsr import ADSR
 from .audiotocv import AudioToCV
 from .combiner import Combiner
+from .constant import Constant
 from .crossover import Crossover
 from .cvcombiner import CVCombiner
+from .cvoffset import CVOffset
+from .cvscale import CVScale
 from .cvtoaudio import CVToAudio
 from .cvtofrequency import CVToFrequency
 from .diskwriter import DiskWriter
@@ -31,8 +34,11 @@ __all__ = [
     "ADSR",
     "AudioToCV",
     "Combiner",
+    "Constant",
     "Crossover",
     "CVCombiner",
+    "CVOffset",
+    "CVScale",
     "CVToAudio",
     "CVToFrequency",
     "DiskWriter",

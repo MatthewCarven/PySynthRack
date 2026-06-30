@@ -203,7 +203,23 @@ Living list of what's next. Edit freely.
       `examples/mic_beatbox_crossover.json`. Follow-ups: input level meter,
       a refresh-devices button (shared with MIDIInput’s same need),
       mono-out variant if the stereo dupling is ever unwanted.
-- [ ] CV utility modules: `Constant` (params: value; outputs a fixed CV — useful as a CVCombiner input to bias another modulator), `CVScale` (cv in × gain param → cv out), `CVOffset` (cv in + offset param → cv out). The MIDIInput's `bend_range` / `mod_scale` patterns hint at the need; these utilities let any source feed any destination with arbitrary scale/offset without baking the knob into the source module.
+- [x] **CV utility trio (Constant / CVScale / CVOffset)** — shipped 2026-06-30.
+      Three small, composable CV utilities. `constant` (no inputs → fixed `value`
+      on a `cv` output; default 1.0): a patchable DC level — manual knob, tuned
+      drone via `cv_to_frequency`, fixed VCA gain. `cv_scale` (`in` × `scale` →
+      `out`): the attenuverter — attenuate (<1), amplify (>1), invert (<0).
+      `cv_offset` (`in` + `offset` → `out`): slides a signal's centre; unpatched
+      it's a constant `offset` (DC source). Scale+offset compose into a full
+      affine map, kept as two orthogonal modules in the modular spirit.
+      CVScale/CVOffset are shape-polymorphic for free (pure pointwise ops, no
+      per-voice state): mono stays mono, `(V, F)` stays `(V, F)`. No new deps;
+      generic param widgets (soft ±10 drag for value/scale/offset) + auto CV
+      meters on the `out` jacks; pyo silent-stub. 26 tests in
+      `tests/test_cv_utilities.py`; suite 484 (+18 mido). Example:
+      `examples/cv_utility_demo.json` (LFO→scale→offset rhythmic cutoff sweep +
+      Constant→CVToFrequency drone). Follow-ups: CV-modulatable amounts
+      (`scale_cv` / `offset_cv`) if a mod-matrix ever wants them; a combined
+      affine node if the two-module chain proves common.
 - [ ] Sample-and-hold module
 - [ ] Noise generator (white / pink)
 - [ ] Drum-friendly env (AD instead of ADSR)

@@ -481,6 +481,23 @@ class App:
                     callback=self._on_param_changed,
                     user_data=user_data,
                 )
+            elif param_name in {"value", "scale", "offset"}:
+                # CV-utility trio amounts (Constant.value, CVScale.scale,
+                # CVOffset.offset). Fine-grained drag with soft +/-10
+                # bounds: covers +/-1 modulation depths and several
+                # octaves of 1V/oct pitch voltage alike.
+                dpg.add_drag_float(
+                    label=param_name,
+                    default_value=float(current),
+                    speed=0.01,
+                    min_value=-10.0,
+                    max_value=10.0,
+                    format="%.3f",
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
             else:
                 dpg.add_drag_float(
                     label=param_name,

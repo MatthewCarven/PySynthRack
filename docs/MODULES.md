@@ -147,6 +147,9 @@ Every module type, its category, and its ports at a glance.
 | [`mixer`](#mixer) | Routing | `in1`–`in4` (audio) → `out` (audio) |
 | [`combiner`](#combiner) | Routing | `in1`–`in4` (audio) → `out` (audio) |
 | [`cv_combiner`](#cv_combiner) | Routing | `in1`–`in4` (cv) → `out` (cv) |
+| [`constant`](#constant) | Utility | — → `out` (cv) |
+| [`cv_scale`](#cv_scale) | Utility | `in` (cv) → `out` (cv) |
+| [`cv_offset`](#cv_offset) | Utility | `in` (cv) → `out` (cv) |
 | [`speaker_output`](#speaker_output) | Sink | `in` (audio) → — |
 | [`left_speaker_output`](#left_speaker_output) | Sink | `in` (audio) → — |
 | [`right_speaker_output`](#right_speaker_output) | Sink | `in` (audio) → — |
@@ -420,6 +423,43 @@ Use to recombine crossover bands or sum voices.
 _To document._ Four `cv` inputs summed or averaged (param `mode`: `sum` /
 `average`) — lets an LFO and an ADSR modulate the same destination. See
 `examples/mod_matrix.json`.
+
+---
+
+### Utilities
+
+Small CV helpers that scale, offset, or generate control signals — the
+patch-cord glue that lets any source drive any destination.
+
+#### `constant`
+
+A fixed CV level: no inputs, one `cv` output holding the scalar `value`
+(default 1.0) every sample. A patchable DC source — the manual knob of a
+modular. Use it to bias a modulator (into a `cv_offset` or `cv_combiner`),
+to tune a fixed pitch (`constant → cv_to_frequency.cv`), or as a steady
+VCA gain. Output is always mono `(frames,)`, which broadcasts cleanly
+against any per-voice consumer. Param: `value` (not clamped — ±1 for
+modulation, larger for 1V/oct pitch).
+
+#### `cv_scale`
+
+Multiplies a CV by a fixed factor: `out = in * scale`. The classic
+*attenuverter* — attenuate when |scale| < 1, amplify when > 1, invert when
+negative. Tames a full-depth LFO, flips an envelope for ducking, or boosts
+a shy modulator. Shape-polymorphic (pure pointwise gain): a mono CV stays
+mono, a voice-aware `(V, F)` CV stays `(V, F)`. Unpatched input → silence.
+Param: `scale` (default 1.0).
+
+#### `cv_offset`
+
+Adds a fixed DC level to a CV: `out = in + offset`. Where `cv_scale`
+changes a modulator's depth, this changes its centre — slide a bipolar ±1
+LFO up by 1.0 to get a 0..2 unipolar signal, or bias a cutoff CV. With
+nothing patched the input is treated as 0, so an unpatched `cv_offset` is a
+constant `offset` (a quick stand-in for `constant`). Scale-then-offset
+composes into a full affine map. Shape-polymorphic; the scalar `offset`
+broadcasts across the voice axis. Param: `offset` (default 0.0). See
+`examples/cv_utility_demo.json`.
 
 ---
 

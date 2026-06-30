@@ -3454,3 +3454,81 @@ add a MicInput node, pick your input device, and beatbox through
 `mic_beatbox_crossover.json` (headphones!).
 
 **Next:** filter slice 5 (crossover→sosfilt) / slice 6, or CV-utility trio.
+
+
+## 2026-06-30 — CV-utility trio: Constant / CVScale / CVOffset
+
+The greenfield piece from the TODO that pairs naturally with the CV
+meters and the FilePlayer: three small, composable CV utilities so any
+source can feed any destination with arbitrary scale and offset,
+without baking the knob into the source module.
+
+*Modules* (`modules/constant.py`, `cvscale.py`, `cvoffset.py`). Pure
+model objects, mirroring the existing CV modules. `constant` (TYPE
+`constant`): no inputs, one `cv` `out`, param `value` (default 1.0 — a
+unity level is the most useful neutral; 0.0 is just silence, which you
+already get from an unpatched input). `cv_scale` (TYPE `cv_scale`):
+`in` cv → `out` cv, param `scale` (default 1.0) — the attenuverter
+(attenuate <1, amplify >1, invert <0). `cv_offset` (TYPE `cv_offset`):
+`in` cv → `out` cv, param `offset` (default 0.0) — slides the centre.
+Scale-then-offset composes into a full affine map; kept as two
+orthogonal one-job modules in the modular spirit rather than one
+combined node. Registered in `modules/__init__.py` (alphabetical).
+
+*Backend* (`audio/numpy_backend.py`). Three render methods + dispatch
+entries. `_render_constant` fills the block with the scalar `value`
+(`np.full`), always mono `(frames,)` — a constant has no voice context
+of its own, and 1D broadcasts cleanly against any per-voice `(V, F)`
+consumer downstream. `_render_cv_scale` / `_render_cv_offset` are pure
+pointwise (`in * scale` / `in + offset`), so they're **shape-
+polymorphic for free** with no per-voice state: they read the input
+with `collapse=False`, so a mono `(F,)` input stays mono and a voice-
+aware `(V, F)` input stays `(V, F)` (the scalar broadcasts across the
+voice axis). Unpatched-input convention: both treat an absent input as
+0, so CVScale → silence (`0 * scale`) and CVOffset → a constant
+`offset` (which usefully makes an unpatched CVOffset a quick DC
+source). Single-ndarray returns land under the `out` port via the
+existing legacy-single-output store, and the CV-meter pass auto-picks
+up the `cv` `out` jacks — so all three nodes get live meters with no
+extra wiring.
+
+*UI* (`ui/app.py`). No structural change — the generic param-widget
+builder already covers them. Added one branch so `value` / `scale` /
+`offset` render as a fine-grained drag-float (speed 0.01) with soft
+±10 bounds, which covers ±1 modulation depths and several octaves of
+1V/oct pitch voltage alike (the prior fallback was an unbounded coarse
+drag). Auto CV meters on the outputs come from the registry as usual.
+
+*Pyo* (`audio/pyo_backend.py`). Added the three types to the v0.3+
+silent-stub tuple — numpy is the real implementation; pyo stays a
+coherent v0.1 surface.
+
+*Tests* (`tests/test_cv_utilities.py`, 26). Model (registration,
+defaults, ports/signal kinds, JSON round-trip, unknown-param rejection,
+type walls: cv↔cv legal, audio→cv input illegal, cv→audio sink
+illegal); Constant (default/custom/negative values, mono shape, ignores
+stray buffers); CVScale (attenuate/amplify/invert, zero→silence,
+unpatched→silence, `(V, F)` preserved+scaled per row, mono stays mono);
+CVOffset (add/negative/transparent, unpatched→constant offset, `(V, F)`
+preserved + scalar broadcast, mono stays mono); integration (LFO ±1 →
+CVScale 0.5 → CVOffset 0.5 lands in 0..1 centred on 0.5 and drives an
+oscillator amp_cv to finite bounded audio; Constant 0.5 → CVToFrequency
+sings at its mid anchor). Full suite **484 passing (+18 mido skipped)**,
+up from 458 — exactly +26.
+
+*Docs* (`docs/MODULES.md`). New **Utilities** category: index rows +
+prose entries for all three. Example `examples/cv_utility_demo.json`
+(LFO → cv_scale → cv_offset → filter cutoff for a rhythmic one-octave
+sweep, plus Constant → cv_to_frequency for a dialed-in drone, both
+summed to the speaker); compiles + renders ~1 s clean, peak 0.71.
+
+**Hand-off to Matthew:** delivered as a git patch (`git am`). UI drag
+ranges are mine-untested in a live DPG window (no DPG in the sandbox)
+but reuse the existing generic-widget path. To hear it: open
+`examples/cv_utility_demo.json`, hit play — the filter pulses once
+every ~2.5 s under the LFO→scale→offset chain while the Constant-tuned
+triangle drones underneath.
+
+**Next:** unchanged backlog — filter slice 5 (crossover→sosfilt) /
+slice 6 (re-profile), or the next utility (sample-and-hold pairs
+naturally with these and the Schmitt clock; noise generator).

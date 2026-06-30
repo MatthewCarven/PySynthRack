@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "next_id": 10,
+  "modules": [
+    {
+      "id": 1,
+      "type": "oscillator",
+      "name": "oscillator",
+      "params": { "waveform": "saw_blep", "freq": 110.0, "amp": 0.5 }
+    },
+    {
+      "id": 2,
+      "type": "filter",
+      "name": "filter",
+      "params": { "mode": "lowpass", "cutoff": 300.0, "resonance": 6.0 }
+    },
+    {
+      "id": 3,
+      "type": "lfo",
+      "name": "lfo",
+      "params": { "waveform": "sine", "rate": 0.4, "depth": 1.0, "bipolar": true }
+    },
+    {
+      "id": 4,
+      "type": "cv_scale",
+      "name": "cv_scale",
+      "params": { "scale": 0.5 }
+    },
+    {
+      "id": 5,
+      "type": "cv_offset",
+      "name": "cv_offset",
+      "params": { "offset": 0.5 }
+    },
+    {
+      "id": 6,
+      "type": "constant",
+      "name": "constant",
+      "params": { "value": 0.5 }
+    },
+    {
+      "id": 7,
+      "type": "cv_to_frequency",
+      "name": "cv_to_frequency",
+      "params": { "f0": 110.0, "fm": 220.0, "f1": 880.0, "mode": "log", "waveform": "triangle" }
+    },
+    {
+      "id": 8,
+      "type": "mixer",
+      "name": "mixer",
+      "params": { "master": 0.6 }
+    },
+    {
+      "id": 9,
+      "type": "speaker_output",
+      "name": "speaker_output",
+      "params": { "gain": 0.8 }
+    }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "in" },
+    { "src_module_id": 2, "src_port": "out", "dst_module_id": 8, "dst_port": "in1" },
+    { "src_module_id": 3, "src_port": "cv", "dst_module_id": 4, "dst_port": "in" },
+    { "src_module_id": 4, "src_port": "out", "dst_module_id": 5, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "out", "dst_module_id": 2, "dst_port": "cutoff_cv" },
+    { "src_module_id": 6, "src_port": "out", "dst_module_id": 7, "dst_port": "cv" },
+    { "src_module_id": 7, "src_port": "out", "dst_module_id": 8, "dst_port": "in2" },
+    { "src_module_id": 8, "src_port": "out", "dst_module_id": 9, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "3": [40, 40],
+      "4": [320, 40],
+      "5": [600, 40],
+      "1": [40, 260],
+      "2": [600, 260],
+      "8": [880, 260],
+      "9": [1160, 260],
+      "6": [40, 480],
+      "7": [320, 480]
+    }
+  }
+}
