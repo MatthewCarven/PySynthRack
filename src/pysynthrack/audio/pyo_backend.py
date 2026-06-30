@@ -199,6 +199,7 @@ class PyoBackend(AudioBackend):
             "constant",
             "cv_scale",
             "cv_offset",
+            "sample_hold",
         ):
             # v0.3+ routing / bridge / CV-oscillator modules. The numpy
             # backend is the real implementation; pyo support arrives

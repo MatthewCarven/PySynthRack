@@ -3532,3 +3532,78 @@ triangle drones underneath.
 **Next:** unchanged backlog — filter slice 5 (crossover→sosfilt) /
 slice 6 (re-profile), or the next utility (sample-and-hold pairs
 naturally with these and the Schmitt clock; noise generator).
+
+
+## 2026-06-30 — Sample-and-hold (`sample_hold`)
+
+The next utility off the backlog, and a natural partner to the Schmitt
+clock and the CV trio. Pure stepped sample-and-hold: on each rising
+edge of a trigger it grabs the input's current value and holds it flat
+until the next edge — the classic staircase.
+
+*Design choices* (Matthew's call): **pure S&H, no internal noise** — an
+unpatched `in` samples 0 rather than being normalled to a white-noise
+source (the iconic random patch waits on the separate Noise generator;
+keeps this a clean single-job module). **Stepped now, slew later** — no
+`glide` param this pass, so the module is param-less (precedent:
+Combiner). The trigger is a `gate` input, so it composes with the
+existing gate emitters (Schmitt turns any LFO/CV into a clock;
+Keyboard/MIDI/ADSR gates work too) rather than re-implementing
+threshold detection.
+
+*Module* (`modules/samplehold.py`). TYPE `sample_hold`, no params,
+ports `in` (cv) + `trig` (gate) → `out` (cv). Registered in
+`modules/__init__.py` (alphabetical, after `output`).
+
+*Backend* (`audio/numpy_backend.py`). `_render_sample_hold` dispatches
+to mono / voice helpers. Vectorized rising-edge forward-fill, the same
+trick the Schmitt trigger uses: a rising edge is `gate high & previous
+sample low` (the first frame's "previous" is the gate state carried
+from the end of the last block); the held value at sample n is the
+input sampled at the most recent edge ≤ n, found with
+`np.maximum.accumulate` over edge positions, with pre-first-edge
+samples keeping the value carried from the previous block. No
+per-sample Python loop. Shape-polymorphic with `collapse=False`: mono
+`(F,)` in/trig → `(F,)` out (scalar `held` + `prev_gate` state); a
+`(V, F)` on *either* input → `(V, F)` out with per-voice `held_arr` +
+`gate_arr`, a mono partner broadcasting across the voice axis (so a
+shared clock can sample per-voice sources, or per-voice clocks can
+sample one shared source). Voice dimension is taken from whichever
+input carries the voice axis. Conventions: unpatched `in` → samples 0;
+unpatched `trig` → no edges, holds last value (0 at startup). The
+single-ndarray return lands under `out` and auto-gets a CV meter.
+
+*Pyo* (`audio/pyo_backend.py`). Added `sample_hold` to the v0.3+
+silent-stub tuple.
+
+*UI.* No change — param-less, so the generic widget loop renders just
+the ports + the auto CV meter on `out`.
+
+*Tests* (`tests/test_sample_hold.py`, 24). Model (registration, no
+params, ports/signal kinds, JSON round-trip, unknown-param rejection,
+type walls: cv→in legal, gate→trig legal, audio→in illegal, cv→trig
+illegal, cv→audio-sink illegal); mono (holds 0 pre-trigger, samples at
+the rising edge, holds flat between edges, only rising edges sample,
+state + no spurious seam edge across blocks, unpatched in→0, unpatched
+trig→hold); voice-aware ((V, F) per-voice sampling, mono-source/
+per-voice-clocks, shared-clock/per-voice-sources, per-voice state
+across blocks, mono stays 1D); integration (LFO→Schmitt→S&H is a
+piecewise-constant staircase at ~clock rate with >95% flat samples;
+the full LFO(random)→S&H→CVScale→CVOffset→CVToFrequency→speaker chain
+renders finite, audible audio). Full suite **508 passing (+18 mido
+skipped)**, up from 484 — exactly +24.
+
+*Docs* (`docs/MODULES.md`). Index row + a Utilities entry. Example
+`examples/sample_hold_arp.json` (random LFO sampled by an LFO→Schmitt
+clock, then CVScale→CVOffset→CVToFrequency: a self-playing stepped
+arp); compiles + renders ~1 s clean, peak 0.70.
+
+**Hand-off to Matthew:** delivered as a git patch stacked on the
+CV-utility trio — apply `cv_utility_trio.patch` first, then
+`sample_hold.patch` (both `git am`). To hear it: open
+`examples/sample_hold_arp.json`, hit play — a new random pitch every
+quarter-ish second (the 4 Hz clock), each held steady between steps.
+
+**Next:** Noise generator (white/pink) is the obvious follow-up — it
+turns this into the textbook random-voltage source and would let the
+S&H normal to it later. Filter slice 5/6 still open.

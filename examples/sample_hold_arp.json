@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "next_id": 9,
+  "modules": [
+    {
+      "id": 1,
+      "type": "lfo",
+      "name": "lfo (source)",
+      "params": { "waveform": "random", "rate": 12.0, "depth": 1.0, "bipolar": true }
+    },
+    {
+      "id": 2,
+      "type": "lfo",
+      "name": "lfo (clock)",
+      "params": { "waveform": "square", "rate": 4.0, "depth": 1.0, "bipolar": false }
+    },
+    {
+      "id": 3,
+      "type": "schmitt",
+      "name": "schmitt",
+      "params": { "high": 0.6, "low": 0.4 }
+    },
+    {
+      "id": 4,
+      "type": "sample_hold",
+      "name": "sample_hold",
+      "params": {}
+    },
+    {
+      "id": 5,
+      "type": "cv_scale",
+      "name": "cv_scale",
+      "params": { "scale": 0.5 }
+    },
+    {
+      "id": 6,
+      "type": "cv_offset",
+      "name": "cv_offset",
+      "params": { "offset": 0.5 }
+    },
+    {
+      "id": 7,
+      "type": "cv_to_frequency",
+      "name": "cv_to_frequency",
+      "params": { "f0": 110.0, "fm": 220.0, "f1": 880.0, "mode": "log", "waveform": "saw_blep" }
+    },
+    {
+      "id": 8,
+      "type": "speaker_output",
+      "name": "speaker_output",
+      "params": { "gain": 0.7 }
+    }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "cv", "dst_module_id": 4, "dst_port": "in" },
+    { "src_module_id": 2, "src_port": "cv", "dst_module_id": 3, "dst_port": "in" },
+    { "src_module_id": 3, "src_port": "gate", "dst_module_id": 4, "dst_port": "trig" },
+    { "src_module_id": 4, "src_port": "out", "dst_module_id": 5, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "out", "dst_module_id": 6, "dst_port": "in" },
+    { "src_module_id": 6, "src_port": "out", "dst_module_id": 7, "dst_port": "cv" },
+    { "src_module_id": 7, "src_port": "out", "dst_module_id": 8, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 40],
+      "4": [340, 40],
+      "5": [620, 40],
+      "6": [880, 40],
+      "7": [1140, 40],
+      "2": [40, 300],
+      "3": [340, 300],
+      "8": [1140, 300]
+    }
+  }
+}

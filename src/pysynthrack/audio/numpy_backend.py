@@ -551,6 +551,8 @@ class NumpyBackend(AudioBackend):
             return self._render_cv_scale(module, frames, buffers, patch)
         if module.TYPE == "cv_offset":
             return self._render_cv_offset(module, frames, buffers, patch)
+        if module.TYPE == "sample_hold":
+            return self._render_sample_hold(module, frames, buffers, patch)
         if module.TYPE == "crossover":
             return self._render_crossover(module, frames, buffers, patch)
         if module.TYPE == "disk_writer":
@@ -2665,6 +2667,130 @@ class NumpyBackend(AudioBackend):
         if cv_in is None:
             return np.full(frames, offset, dtype=np.float32)
         return (cv_in + offset).astype(np.float32)
+
+    # ----- SampleHold rendering -------------------------------------------
+
+    def _render_sample_hold(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Sample ``in`` on each rising edge of ``trig``; hold between edges.
+
+        Vectorized by forward-fill -- no per-sample loop, the same trick
+        the Schmitt trigger uses. A rising edge is ``gate high and the
+        previous sample low`` (the previous sample of the first frame is
+        the gate state carried from the end of the last block). The held
+        value at sample n is the input value sampled at the most recent
+        edge at or before n, found with ``np.maximum.accumulate`` over
+        edge positions; samples before the first edge keep the value
+        carried from the previous block.
+
+        Shape-polymorphic on the inputs (collapse=False keeps the voice
+        axis):
+
+          * mono ``(F,)`` in/trig -> ``(F,)`` out, scalar held value and
+            scalar held-gate carried across blocks.
+          * a ``(V, F)`` on either input -> ``(V, F)`` out, per-voice
+            held values and per-voice edge detection; a mono partner
+            broadcasts across the voice axis (shared clock + per-voice
+            sources, or per-voice clocks + one shared source).
+
+        Conventions: an unpatched ``in`` is treated as 0 (pure S&H, no
+        internal noise). An unpatched ``trig`` produces no edges, so the
+        output simply holds its last value (0 at startup).
+        """
+        in_buf = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        trig_buf = self._input_buffer(patch, buffers, module.id, "trig", collapse=False)
+
+        # Voice dimension is set by whichever input carries the voice axis.
+        v_in = in_buf.shape[0] if (in_buf is not None and in_buf.ndim == 2) else None
+        v_trig = trig_buf.shape[0] if (trig_buf is not None and trig_buf.ndim == 2) else None
+
+        if v_in is None and v_trig is None:
+            return self._render_sample_hold_mono(module, frames, in_buf, trig_buf)
+        V = v_in if v_in is not None else v_trig
+        return self._render_sample_hold_voice(module, frames, in_buf, trig_buf, V)
+
+    def _render_sample_hold_mono(self, module, frames, in_buf, trig_buf) -> np.ndarray:
+        """Mono path -- scalar held value + held-gate carried across blocks."""
+        state = self._state.setdefault(module.id, {"held": 0.0, "prev_gate": False})
+        # Drop voice-shaped state if it leaked from a previous voice call.
+        if "held_arr" in state:
+            state.clear()
+            state["held"] = 0.0
+            state["prev_gate"] = False
+
+        held = float(state["held"])
+
+        if trig_buf is None:
+            # No clock -> no edges -> hold the last value across the block.
+            return np.full(frames, held, dtype=np.float32)
+
+        in_arr = (
+            np.zeros(frames, dtype=np.float32)
+            if in_buf is None
+            else in_buf.astype(np.float32)
+        )
+
+        g = trig_buf > self._GATE_HIGH                 # (F,) bool
+        g_prev = np.empty(frames, dtype=bool)
+        g_prev[0] = bool(state["prev_gate"])
+        g_prev[1:] = g[:-1]
+        rising = g & ~g_prev                           # (F,) bool
+
+        idx = np.where(rising, np.arange(frames), -1)
+        last = np.maximum.accumulate(idx)              # (F,) most-recent edge, -1 before any
+        sampled = np.where(last >= 0, in_arr[np.maximum(last, 0)], held)
+
+        state["held"] = float(sampled[-1])
+        state["prev_gate"] = bool(g[-1])
+        return sampled.astype(np.float32)
+
+    def _render_sample_hold_voice(self, module, frames, in_buf, trig_buf, V) -> np.ndarray:
+        """Voice path -- per-voice held values + per-voice held-gate.
+
+        A mono input is broadcast across the V voice rows so a shared
+        clock can sample per-voice sources, or per-voice clocks can
+        sample one shared source.
+        """
+        state = self._state.setdefault(module.id, {})
+        needs_reinit = (
+            "held_arr" not in state or state["held_arr"].shape[0] != V
+        )
+        if needs_reinit:
+            state.clear()
+            state["held_arr"] = np.zeros(V, dtype=np.float64)
+            state["gate_arr"] = np.zeros(V, dtype=bool)
+
+        held_arr = state["held_arr"]                   # (V,)
+
+        if trig_buf is None:
+            return np.broadcast_to(
+                held_arr[:, None].astype(np.float32), (V, frames)
+            ).copy()
+
+        if trig_buf.ndim == 1:
+            trig_2d = np.broadcast_to(trig_buf, (V, frames))
+        else:
+            trig_2d = trig_buf
+
+        if in_buf is None:
+            in_2d = np.zeros((V, frames), dtype=np.float32)
+        elif in_buf.ndim == 1:
+            in_2d = np.broadcast_to(in_buf.astype(np.float32), (V, frames))
+        else:
+            in_2d = in_buf.astype(np.float32)
+
+        g = trig_2d > self._GATE_HIGH                  # (V, F) bool
+        prev_col = state["gate_arr"][:, None]          # (V, 1)
+        g_prev = np.concatenate([prev_col, g[:, :-1]], axis=1)
+        rising = g & ~g_prev                           # (V, F)
+
+        idx = np.where(rising, np.arange(frames)[None, :], -1)
+        last = np.maximum.accumulate(idx, axis=1)      # (V, F)
+        sampled_vals = np.take_along_axis(in_2d, np.maximum(last, 0), axis=1)
+        out = np.where(last >= 0, sampled_vals, held_arr[:, None])
+
+        state["held_arr"] = out[:, -1].copy()
+        state["gate_arr"] = g[:, -1].copy()
+        return out.astype(np.float32)
 
     # ----- Crossover rendering --------------------------------------------
 

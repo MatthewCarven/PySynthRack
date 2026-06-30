@@ -150,6 +150,7 @@ Every module type, its category, and its ports at a glance.
 | [`constant`](#constant) | Utility | — → `out` (cv) |
 | [`cv_scale`](#cv_scale) | Utility | `in` (cv) → `out` (cv) |
 | [`cv_offset`](#cv_offset) | Utility | `in` (cv) → `out` (cv) |
+| [`sample_hold`](#sample_hold) | Utility | `in` (cv), `trig` (gate) → `out` (cv) |
 | [`speaker_output`](#speaker_output) | Sink | `in` (audio) → — |
 | [`left_speaker_output`](#left_speaker_output) | Sink | `in` (audio) → — |
 | [`right_speaker_output`](#right_speaker_output) | Sink | `in` (audio) → — |
@@ -460,6 +461,21 @@ constant `offset` (a quick stand-in for `constant`). Scale-then-offset
 composes into a full affine map. Shape-polymorphic; the scalar `offset`
 broadcasts across the voice axis. Param: `offset` (default 0.0). See
 `examples/cv_utility_demo.json`.
+
+#### `sample_hold`
+
+Samples `in` on each **rising edge** of the `trig` gate and holds that
+value steady on `out` until the next trigger — the classic modular
+staircase. It discretises a signal in *time*: feed a wandering source
+(an LFO, or a fast `random` LFO as a noise stand-in) and a steady clock
+for stepped/random melodies, or sample a slow modulator to stair-step
+it. The trigger is a `gate`, so `schmitt` (turn any LFO/CV into a
+clock), a keyboard/MIDI gate, or an ADSR gate all drive it. Unpatched
+`in` samples 0 (pure S&H — no internal noise; that's the Noise
+generator's job); unpatched `trig` holds the last value. No params.
+Shape-polymorphic: mono `(F,)` or per-voice `(V, F)` with per-voice held
+values, a mono partner broadcasting across the voice axis. See
+`examples/sample_hold_arp.json`.
 
 ---
 

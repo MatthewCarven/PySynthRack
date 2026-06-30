@@ -220,7 +220,21 @@ Living list of what's next. Edit freely.
       Constant→CVToFrequency drone). Follow-ups: CV-modulatable amounts
       (`scale_cv` / `offset_cv`) if a mod-matrix ever wants them; a combined
       affine node if the two-module chain proves common.
-- [ ] Sample-and-hold module
+- [x] **Sample-and-hold (`sample_hold`)** — shipped 2026-06-30. Samples `in` (cv)
+      on each rising edge of `trig` (gate) and holds it until the next — the
+      classic staircase. No params (pure stepped S&H; `slew`/glide is an easy
+      follow-up). Unpatched `in` samples 0 (no internal noise — that's the
+      Noise generator's job); unpatched `trig` holds the last value. Trigger is
+      a `gate` input so Schmitt / Keyboard / MIDI / ADSR gates all clock it.
+      Vectorized rising-edge forward-fill (same trick as Schmitt); shape-
+      polymorphic — mono `(F,)` or per-voice `(V, F)` with per-voice held value
+      + held-gate carried across blocks, a mono partner broadcasting across the
+      voice axis. No new deps; no UI change (param-less, auto CV meter on `out`);
+      pyo silent-stub. 24 tests in `tests/test_sample_hold.py`; suite 508
+      (+18 mido). Example `examples/sample_hold_arp.json` (random LFO → S&H
+      clocked by an LFO→Schmitt → CVScale→CVOffset → CVToFrequency: a self-
+      playing stepped arp). Follow-ups: `slew` param; track-and-hold mode (hold
+      while gate high); pairs naturally with the Noise generator when it lands.
 - [ ] Noise generator (white / pink)
 - [ ] Drum-friendly env (AD instead of ADSR)
 - [ ] Stereo-aware speaker module (pan / width)
