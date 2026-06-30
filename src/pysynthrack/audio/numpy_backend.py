@@ -585,6 +585,8 @@ class NumpyBackend(AudioBackend):
             return self._render_parametric_eq(module, frames, buffers, patch)
         if module.TYPE == "meter":
             return self._render_meter(module, frames, buffers, patch)
+        if module.TYPE == "resampler":
+            return self._render_resampler(module, frames, buffers, patch)
         if module.TYPE == "disk_writer":
             return self._render_disk_writer(module, frames, buffers, patch)
         if module.TYPE == "file_player":
@@ -3430,6 +3432,178 @@ class NumpyBackend(AudioBackend):
         return x.astype(np.float32)
 
     # ----- DiskWriter rendering -------------------------------------------
+
+    # ----- Resampler rendering --------------------------------------------
+
+    # Looping-buffer window for the varispeed read head, in seconds. The
+    # read head trails the write head inside this window and wraps within
+    # it, so the module keeps sounding forever on a continuous signal.
+    # Longer = subtler loop texture but more latency; this latency is the
+    # unavoidable cost of varispeed on a live stream.
+    _RESAMP_WINDOW_SEC = 0.2
+    # The read head starts this fraction of the window behind the write
+    # head. Centred (1/2) gives symmetric runway for pitch up (delay
+    # shrinks) and pitch down (delay grows) before the first loop wrap.
+    _RESAMP_INIT_FRAC = 0.5
+    # Clamp the effective transpose so the playback ratio can't explode
+    # (+/-60 st = +/-5 octaves -> ratio in [1/32, 32]).
+    _RESAMP_MAX_ST = 60.0
+
+    def _render_resampler(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Varispeed pitch shifter: resample ``in`` at a pitch-derived rate.
+
+        Shape-polymorphic. Branches on the *audio* input's ndim (the
+        signal being resampled owns the looping buffer):
+
+          * 1D ``(F,)`` audio -> one looping buffer, output ``(F,)``.
+          * 2D ``(V, F)`` audio -> V looping buffers (one per voice slot)
+            with per-voice read heads, output ``(V, F)``.
+
+        A mono ``pitch_cv`` broadcasts across voices; a ``(V, F)``
+        ``pitch_cv`` drives each voice independently. Missing audio in ->
+        silence out, with the buffer/heads left as-is so reconnecting the
+        cable doesn't snap.
+        """
+        src = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
+        if src is None:
+            return np.zeros(frames, dtype=np.float32)
+
+        pitch_cv = self._input_buffer(
+            patch, buffers, module.id, "pitch_cv", collapse=False
+        )
+
+        if src.ndim == 2:
+            V = src.shape[0]
+            if pitch_cv is None:
+                cv = None
+            elif pitch_cv.ndim == 1:
+                cv = np.broadcast_to(pitch_cv, (V, pitch_cv.shape[0]))
+            elif pitch_cv.shape[0] == V:
+                cv = pitch_cv
+            elif pitch_cv.shape[0] == 1:
+                cv = np.broadcast_to(pitch_cv, (V, pitch_cv.shape[1]))
+            else:
+                # Voice-count mismatch -> one shared transpose for all.
+                cv = np.broadcast_to(
+                    pitch_cv.mean(axis=0), (V, pitch_cv.shape[1])
+                )
+            return self._render_resampler_core(module, frames, src, cv)
+
+        # Mono audio. A 2D pitch_cv collapses to a single shared transpose
+        # (mean over voices) -- summing pitch voltages would be nonsense.
+        if pitch_cv is not None and pitch_cv.ndim == 2:
+            pitch_cv = pitch_cv.mean(axis=0)
+        out = self._render_resampler_core(
+            module,
+            frames,
+            src[np.newaxis, :],
+            None if pitch_cv is None else pitch_cv[np.newaxis, :],
+        )
+        return out[0]
+
+    def _render_resampler_core(self, module, frames, src, cv):
+        """Shared ``(V, F)`` varispeed engine.
+
+        ``src`` is ``(V, F)`` audio; ``cv`` is ``(V, F)`` pitch CV or
+        None. The mono path calls this with ``V == 1``, so a single voice
+        row is bit-identical to the mono render -- the float ops are the
+        same per row regardless of V.
+
+        Per output sample the read head advances by the playback ratio
+        ``2 ** (st/12)`` (``st`` summed in semitone space and optionally
+        glided), reading the per-voice ring buffer with linear
+        interpolation and wrapping inside the loop window. The whole block
+        is vectorized: the read positions are the cumulative integral of
+        the per-sample ratio, wrapped with a single ``np.mod``.
+        """
+        V = src.shape[0]
+        sr = self.sample_rate
+        L = int(self._RESAMP_WINDOW_SEC * sr)
+        L = max(L, frames * 4, 8)   # always comfortably larger than a block
+        span = L - 1                # loop span; keeps both interp taps valid
+
+        state = self._state.setdefault(module.id, {})
+        needs_reinit = (
+            "buf" not in state or state["buf"].shape != (V, L)
+        )
+        if needs_reinit:
+            state.clear()
+            state["buf"] = np.zeros((V, L), dtype=np.float64)
+            state["write_idx"] = 0
+            init_delay = float(
+                max(1, min(L - 1, int(self._RESAMP_INIT_FRAC * L)))
+            )
+            state["delay"] = np.full(V, init_delay, dtype=np.float64)
+            state["last_st"] = np.zeros(V, dtype=np.float64)
+
+        buf = state["buf"]
+        write_idx = int(state["write_idx"])
+        delay = state["delay"]      # (V,) float, the read head's lag in (1, L)
+        last_st = state["last_st"]  # (V,) float, glide one-pole memory
+
+        if frames == 0:
+            return np.empty((V, 0), dtype=np.float32)
+
+        # --- write the incoming block into each voice's ring buffer ---
+        write_slots = (write_idx + np.arange(frames)) % L
+        buf[:, write_slots] = src.astype(np.float64)
+        # New write head; window_start (oldest readable) is congruent to it
+        # mod L, so absolute index (window_start + j) lives at (head + j) % L.
+        head = (write_idx + frames) % L
+
+        # --- per-sample transpose, summed in semitone space ---
+        semis = float(module.params.get("semitones", 0.0))
+        cents = float(module.params.get("cents", 0.0))
+        cv_depth = float(module.params.get("cv_depth", 12.0))
+        glide = float(module.params.get("glide", 0.0))
+
+        base_st = semis + cents / 100.0
+        target = np.full((V, frames), base_st, dtype=np.float64)
+        if cv is not None:
+            target += cv_depth * cv.astype(np.float64)
+
+        if glide > 0.0:
+            # One-pole glide: y[n] = coef*x[n] + (1-coef)*y[n-1].
+            coef = 1.0 - float(np.exp(-1.0 / (glide * sr)))
+            zi = ((1.0 - coef) * last_st)[:, np.newaxis]   # (V, 1)
+            smoothed = lfilter(
+                [coef], [1.0, -(1.0 - coef)], target, axis=-1, zi=zi
+            )[0]
+        else:
+            smoothed = target
+        last_st = smoothed[:, -1].copy()
+
+        np.clip(smoothed, -self._RESAMP_MAX_ST, self._RESAMP_MAX_ST, out=smoothed)
+        ratio = np.exp2(smoothed / 12.0)   # (V, F) playback rate per sample
+
+        # --- read positions: cumulative integral of ratio, wrapped ---
+        cum = np.cumsum(ratio, axis=-1)
+        excum = cum - ratio                 # exclusive cumsum (offset per sample)
+        offs = (L - delay)[:, np.newaxis] + excum
+        phase = np.mod(offs, span)          # in [0, span)
+        i0 = np.floor(phase).astype(np.int64)
+        frac = phase - i0
+
+        rows = np.arange(V)[:, np.newaxis]
+        s0 = buf[rows, (head + i0) % L]
+        s1 = buf[rows, (head + i0 + 1) % L]
+        out = (s0 * (1.0 - frac) + s1 * frac).astype(np.float32)
+
+        # --- carry the read head as a lag behind the (new) write head ---
+        # Over the block the head moved by `frames`, the read by sum(ratio),
+        # so the new lag is delay + frames - sum(ratio). Wrap into [1, L) by
+        # integer span steps (the loop) -- this preserves the fractional
+        # read phase, so unity ratio stays perfectly click-free.
+        sum_ratio = cum[:, -1]
+        new_delay = 1.0 + np.mod((delay + frames - sum_ratio) - 1.0, span)
+
+        state["buf"] = buf
+        state["write_idx"] = head
+        state["delay"] = new_delay
+        state["last_st"] = last_st
+        return out
 
     def _render_mic_input(self, module, frames: int, buffers=None, patch=None):
         """Publish the latest captured input block as stereo audio.

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    { "id": 1, "type": "oscillator", "name": "saw 165", "params": { "waveform": "saw_blep", "freq": 165.0, "amp": 0.7 } },
+    { "id": 2, "type": "lfo", "name": "wow/flutter", "params": { "waveform": "sine", "rate": 0.7, "depth": 1.0, "bipolar": true } },
+    { "id": 3, "type": "resampler", "name": "varispeed", "params": { "semitones": 0.0, "cents": 0.0, "cv_depth": 1.0, "glide": 0.0 } },
+    { "id": 4, "type": "speaker_output", "name": "speaker_output", "params": { "gain": 0.8 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 3, "dst_port": "in" },
+    { "src_module_id": 2, "src_port": "cv",  "dst_module_id": 3, "dst_port": "pitch_cv" },
+    { "src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 80], "2": [40, 320], "3": [360, 180], "4": [680, 180]
+    }
+  }
+}

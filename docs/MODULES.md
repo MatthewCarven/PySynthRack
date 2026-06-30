@@ -141,6 +141,7 @@ Every module type, its category, and its ports at a glance.
 | [`crossover`](#crossover) | Processor | `in` (audio) → `low`,`high` (audio) |
 | [`parametric_eq`](#parametric_eq) | Processor | `in` (audio) → `out` (audio) |
 | [`vca`](#vca) | Processor | `audio` (audio), `cv` (cv) → `out` (audio) |
+| [`resampler`](#resampler) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
 | [`adsr`](#adsr) | Modulation | `gate` (gate) → `cv` (cv) |
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
@@ -392,6 +393,60 @@ _To document._ Voltage-controlled amplifier: multiplies `audio` by `cv`
 (makes an ADSR audible). **Note the port names: `audio` and `cv`, not `in`.**
 Param: `gain`. See `examples/keyboard_adsr.json`.
 
+#### `resampler`
+
+A **varispeed pitch shifter** — it transposes audio by *resampling*,
+reading the signal back at a different rate. Like a turntable or tape
+machine, pitch and speed move together: pitch up and it plays faster,
+pitch down and it slows. It's the cheapest, cleanest way to shift
+pitch (no FFT, no phase vocoder) and is ideal for sample transposition
+and lo-fi tape effects.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to transpose. Unpatched → silence. |
+| `pitch_cv` | in | cv | Added to the transpose, scaled by `cv_depth` (summed in semitone space). |
+| `out` | out | audio | The resampled signal. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `semitones` | `0.0` | −24 … +24 st | Coarse transpose (C→D = +2). 0 = unity. |
+| `cents` | `0.0` | −100 … +100 ct | Fine-tune, added to `semitones`. |
+| `cv_depth` | `12.0` | 0 … 48 st/unit | Semitones per unit of `pitch_cv` (12 = one octave per unit, 1V/oct-style). |
+| `glide` | `0.0` | 0 … 5 s | Portamento time for pitch changes (0 = instant). |
+
+**How it works.** Pitch is summed in semitone space
+(`st = semitones + cents/100 + cv_depth · pitch_cv`), optionally glided
+with a one-pole, then exponentiated to a playback ratio
+`2^(st/12)`. The read head advances by that ratio per output sample
+with linear interpolation. Because a resampler reading at a different
+rate than it's fed can't stay in sync with a continuous stream
+forever, it runs a short **looping buffer** of recent audio: the read
+head wraps inside the window, so the module keeps sounding indefinitely
+on any live source (oscillator, mic, file player), at the cost of a
+faint granular-repeat texture on extreme shifts. That buffer also means
+a fixed latency (~90 ms) — the unavoidable price of varispeed on a live
+signal, and what lets you glide and modulate the pitch freely. The path
+is shape-polymorphic like [Filter](#filter) / [Crossover](#crossover):
+a mono input runs one buffer, a voice-aware `(V, F)` input runs V
+independent buffers with per-voice read heads (a single voice row is
+bit-identical to the mono render).
+
+For pitch shifting that keeps the *speed* fixed you'd want a granular
+or phase-vocoder engine — a heavier build for later. This one is
+deliberately the tape kind.
+
+**Patching.** `oscillator → resampler → speaker` to transpose a tone,
+or feed the [FilePlayer](#file_player) in to pitch a sample. Wire an
+[LFO](#lfo) into `pitch_cv` for vibrato/tape-wobble, or an
+[ADSR](#adsr)/[AD](#ad_envelope) for pitch dives; raise `glide` for
+portamento and tape-stop sweeps. See `examples/resampler_tape_wobble.json`
+(saw → varispeed with a slow LFO wobbling the pitch → speaker).
+
 ---
 
 ### Modulation
@@ -633,4 +688,5 @@ loads in the app. Notable ones referenced above:
 - `two_way_crossover.json` — the crossover splitting a keyboard.
 - `file_crossover_split.json` — a WAV track split and used as modulation.
 - `mic_beatbox_crossover.json` — live mic, beatbox-driven.
+- `resampler_tape_wobble.json` — varispeed pitch shift, LFO wobbling the pitch.
 - `stereo_hard_pan.json` — left/right speaker sinks.

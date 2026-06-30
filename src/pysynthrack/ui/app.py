@@ -396,6 +396,62 @@ class App:
                 )
                 return
 
+        if module.TYPE == "resampler":
+            # Varispeed transpose controls. Pitch is set in semitones
+            # (C->D = +2) with a cents fine-tune on top; cv_depth scales
+            # the pitch_cv input (semitones per unit, 12 = one octave);
+            # glide ramps pitch changes into portamento.
+            if param_name == "semitones":
+                dpg.add_slider_float(
+                    label=param_name,
+                    default_value=float(current),
+                    min_value=-24.0,
+                    max_value=24.0,
+                    format="%.2f st",
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name == "cents":
+                dpg.add_slider_float(
+                    label=param_name,
+                    default_value=float(current),
+                    min_value=-100.0,
+                    max_value=100.0,
+                    format="%.0f ct",
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name,
+                    default_value=float(current),
+                    speed=0.1,
+                    min_value=0.0,
+                    max_value=48.0,
+                    format="%.1f st/unit",
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name == "glide":
+                dpg.add_drag_float(
+                    label=param_name,
+                    default_value=float(current),
+                    speed=0.005,
+                    min_value=0.0,
+                    max_value=5.0,
+                    format="%.3f s",
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+
         if param_name == "waveform":
             # LFO has its own waveform list (includes "random"); other
             # modules share the oscillator's list.

@@ -3975,3 +3975,70 @@ for a hat.
 make it punchier; per-trigger velocity scaling once a velocity CV exists;
 pitch-envelope kicks once an env can hit `cv_to_frequency`. Run-based
 voice vectorization if envelopes ever dominate a profile.
+
+---
+
+## 2026-06-30 — Resampler (`resampler`): varispeed pitch shifter
+
+Matthew's dream module: "a bespoke audio resampler for pitch shifting,
+C→D or D→C, or just a slider." Scoped it together — he chose **varispeed**
+(pitch and speed coupled, tape/turntable style — the literal resampler),
+**slider + CV** control, **linear** interpolation, a **looping buffer** so
+it keeps sounding on a continuous signal, and an **optional glide**. The
+honest trade he signed off on: a varispeed device reading at a different
+rate than it's fed can't stay in sync with a live stream forever, so it
+loops a short window of recent audio (faint repeat texture on extreme
+shifts) and carries ~90 ms of latency — the unavoidable cost of varispeed
+on a continuous signal, and what makes the pitch freely glide-able.
+
+*Model* (`modules/resampler.py`). `in` (audio) + `pitch_cv` (cv) →
+`out` (audio). Params `semitones` (±24), `cents`, `cv_depth` (semitones
+per CV unit, default 12 = one octave/unit), `glide` (portamento seconds,
+0 = instant). Registered in `modules/__init__.py`; added to the pyo
+silent-stub tuple.
+
+*DSP* (`audio/numpy_backend.py`, `_render_resampler` + `_render_resampler_core`).
+Pitch summed in semitone space `st = semitones + cents/100 + cv_depth·cv`,
+optionally glided (one-pole via `lfilter`), clamped to ±60 st, then
+`ratio = 2^(st/12)`. Each block: write the incoming audio into a per-voice
+ring buffer; the read positions are the cumulative integral of the
+per-sample ratio, wrapped into the loop window with one `np.mod`, read
+with linear interpolation between the two bracketing samples. The read
+head is carried block-to-block as a lag behind the write head
+(`delay + frames − Σratio`), wrapped by integer span steps so unity ratio
+stays click-free. **Fully vectorized** (no per-sample Python loop) — the
+mono path runs the same `(V, F)` core with `V = 1`, so a single voice row
+is bit-identical to mono. Disconnected audio → silence (heads left as-is).
+
+*UI* (`ui/app.py`). `_add_param_widget` gains a `resampler` block:
+`semitones` (±24 st slider), `cents` (±100 ct slider), `cv_depth`
+(0–48 st/unit drag), `glide` (0–5 s drag). Node jacks/palette come from
+the registry automatically.
+
+*Tests* (`tests/test_resampler.py`, 22). Model/ports/round-trip/type-walls
+(audio→in, cv→pitch_cv legal; cv→in, audio→pitch_cv, audio-out→cv-sink
+illegal); mono (disconnected→silence; **unity is a bit-exact delayed
+passthrough**; octave up doubles / down halves the pitch; cents == semitones
+bit-for-bit; CV summed in semitone space — cv·depth == the same semitones;
+finite + bounded on sustained extremes ±60 st; **glide ramps through
+intermediate pitches**); voice (single row == mono bit-for-bit, per-voice
+CV transposes voices independently, mono↔voice reinit); integration
+(osc→resampler→speaker audible; LFO→pitch_cv vibrato). Full suite
+**637 passing (+18 mido skipped)**, up from 615 — exactly +22.
+
+*Docs.* `docs/MODULES.md` Processor index row + full entry. Example
+`examples/resampler_tape_wobble.json` — saw → varispeed with a slow
+bipolar LFO on `pitch_cv` → speaker (self-playing wow/flutter, peak ≈ 0.56).
+
+**Hand-off to Matthew:** delivered as a git patch on top of origin/main
+(HEAD `3a8f729`) — `git am` it. To hear it: open
+`examples/resampler_tape_wobble.json` and hit play (a saw warbling like a
+tape with a slipping capstan); set `cv_depth` to 0 and `semitones` to +7
+for a clean fifth-up, or raise `glide` and drag `semitones` down for a
+tape-stop.
+
+**Next:** a short equal-power crossfade at the loop seam would declick the
+repeat texture; a **pitch-only** sibling (granular or phase-vocoder) is the
+natural follow-up for shifting pitch while holding speed; a window-size /
+latency param and a dry/wet mix would round it out; an anti-alias lowpass
+before large up-shifts would tame the brightness.
