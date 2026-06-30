@@ -295,6 +295,48 @@ class App:
         current = module.params[param_name]
         user_data = (module.id, param_name)
 
+        if module.TYPE == "parametric_eq":
+            # Parametric EQ bands: ``band{i}_freq`` (Hz), ``band{i}_gain``
+            # (dB, 0 = flat), ``band{i}_q`` (width). Distinct ranges from
+            # the generic numeric fallbacks below.
+            if param_name.endswith("_freq"):
+                dpg.add_drag_float(
+                    label=param_name,
+                    default_value=float(current),
+                    speed=1.0,
+                    min_value=20.0,
+                    max_value=20000.0,
+                    format="%.0f Hz",
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name.endswith("_gain"):
+                dpg.add_slider_float(
+                    label=param_name,
+                    default_value=float(current),
+                    min_value=-24.0,
+                    max_value=24.0,
+                    format="%.1f dB",
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name.endswith("_q"):
+                dpg.add_slider_float(
+                    label=param_name,
+                    default_value=float(current),
+                    min_value=0.1,
+                    max_value=20.0,
+                    format="%.2f",
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+
         if param_name == "waveform":
             # LFO has its own waveform list (includes "random"); other
             # modules share the oscillator's list.

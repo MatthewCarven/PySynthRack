@@ -3677,3 +3677,68 @@ Switch the noise `color` to `pink` for a softer, lower hat.
 `in` to an internal/!patched noise source (revisits the design Matthew
 deferred). Otherwise filter slice 5/6, or an AD percussion envelope to
 pair with the noise drums.
+
+---
+
+## 2026-06-30 — ParametricEQ (`parametric_eq`): 4-band peaking EQ
+
+Started life as Matthew's "one input, 64-selector log/linear graphic EQ"
+question; scoped down in conversation to what he actually wanted — a
+small **parametric** EQ: a handful of bells with adjustable centre
+frequency, gain, and Q. Locked at 4 bands, all peaking, each centre
+fully sweepable across 20 Hz–20 kHz (defaults 25/50/100/250 Hz, his
+bass-shaping brief). That scoping erased the two hard parts of the
+graphic version — no vector/array param (12 plain scalars) and no
+custom slider-bank widget (ordinary knobs). A routine module add.
+
+*Model* (`modules/parametric_eq.py`). `TYPE = "parametric_eq"`, mono
+`in` (audio) → `out` (audio). `DEFAULT_PARAMS` is generated from a
+band list: `band{i}_freq/gain/Q` for i in 1..4. `EQ_BANDS = 4` is the
+single knob to change the band count — the backend and UI both derive
+the band list by walking `band{i}_freq`, so nothing else hardcodes 4.
+
+*DSP* (`numpy_backend.py`). Four RBJ **peaking** biquads cascaded.
+`_peq_coeffs` does the cookbook math vectorized over all bands at once
+(freq clamped to 20…0.45·sr, Q to 0.1…20); a band at 0 dB collapses to
+identity coefficients (`b == a`), i.e. exact passthrough, so unused
+bands are tonally free. State design copies the Filter module (slices
+3+4): persisted state is the coefficient-independent DF-I history
+`(x1,x2,y1,y2)`, one entry per band, converted to the transposed-DF-II
+`zi` each block — so editing a band's freq/gain/Q between blocks stays
+clean, unlike sosfilt's coefficient-bound `zi`. Shape-polymorphic like
+Filter/Crossover: a `(F,)` input runs one cascade via `lfilter`; a
+`(V, F)` voice input runs V parallel cascades, one `lfilter` call per
+stage with `zi` of shape `(V, 2)` (coeffs shared — no CV yet). pyo
+silent-stub added.
+
+*UI* (`ui/app.py`). Gated on `module.TYPE == "parametric_eq"`:
+`*_freq` → drag-float 20…20000 Hz, `*_gain` → slider −24…+24 dB,
+`*_q` → slider 0.1…20. (Note: with per-band adjustable freq the
+log/linear question from the original brief no longer applies — each
+centre is entered directly in Hz; the freq drag matches the existing
+`cutoff`/`frequency` controls.)
+
+*Verification.* Bench-measured before writing tests: flat (all 0 dB)
+is bit-exact transparent; +12/−12 dB at the band centre measure 12.00/
+−12.00 dB (RBJ peaking gain at f0 = design gain); block-stitch and the
+voice path are bit-identical to the reference; low-Q bell leaks 7.4 dB
+an octave away vs 0.3 dB for high-Q. 27 tests in
+`tests/test_parametric_eq.py` (model/ports/round-trip/type-walls;
+coeff math + 0 dB identity + clamping; mono boost/cut/Q/independence/
+stitch/silence; voice shape/row-match/stitch/reinit; noise→eq→speaker
+integration). Full suite **561 passing (+18 mido skipped)**, up from
+534 — exactly +27.
+
+*Docs.* `docs/MODULES.md` Processors index row + entry. Example
+`examples/parametric_eq_bass.json` — saw @ 55 Hz → EQ (50 Hz +9, 120 Hz
+−5, 250 Hz +2, 2.5 kHz +4) → speaker; loads and renders clean.
+
+**Hand-off to Matthew:** delivered as a standalone git patch on top of
+`origin/main` (HEAD `ae0961f`, the trio+S&H+noise already pushed) —
+`git am` it. To hear it: open `examples/parametric_eq_bass.json`, hit
+play — a saw with weighted sub, scooped low-mids, and a touch of edge.
+
+**Next:** per-band freq/gain CV inputs would make it an animated EQ
+(the obvious extension, deferred — Crossover has the same gap). Filter
+slice 5 (crossover on sosfilt) / slice 6 re-profile still open; AD perc
+envelope still the natural pairing for the noise drums.

@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "next_id": 4,
+  "modules": [
+    {
+      "id": 1,
+      "type": "oscillator",
+      "name": "oscillator",
+      "params": {
+        "waveform": "saw",
+        "freq": 55.0,
+        "amp": 0.5
+      }
+    },
+    {
+      "id": 2,
+      "type": "parametric_eq",
+      "name": "parametric_eq",
+      "params": {
+        "band1_freq": 50.0,
+        "band1_gain": 9.0,
+        "band1_q": 0.8,
+        "band2_freq": 120.0,
+        "band2_gain": -5.0,
+        "band2_q": 1.2,
+        "band3_freq": 250.0,
+        "band3_gain": 2.0,
+        "band3_q": 1.0,
+        "band4_freq": 2500.0,
+        "band4_gain": 4.0,
+        "band4_q": 1.5
+      }
+    },
+    {
+      "id": 3,
+      "type": "speaker_output",
+      "name": "speaker_output",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "in"
+    }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 200],
+      "2": [340, 200],
+      "3": [720, 200]
+    }
+  }
+}

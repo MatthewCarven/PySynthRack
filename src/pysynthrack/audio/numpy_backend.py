@@ -557,6 +557,8 @@ class NumpyBackend(AudioBackend):
             return self._render_noise(module, frames, buffers, patch)
         if module.TYPE == "crossover":
             return self._render_crossover(module, frames, buffers, patch)
+        if module.TYPE == "parametric_eq":
+            return self._render_parametric_eq(module, frames, buffers, patch)
         if module.TYPE == "disk_writer":
             return self._render_disk_writer(module, frames, buffers, patch)
         if module.TYPE == "file_player":
@@ -3077,6 +3079,188 @@ class NumpyBackend(AudioBackend):
         state["hp2_y1_arr"] = hp2_y1; state["hp2_y2_arr"] = hp2_y2
 
         return {"low": low, "high": high}
+
+    # ----- ParametricEQ rendering -----------------------------------------
+
+    def _peq_band_params(self, module):
+        """Read the per-band (freq, gain_dB, Q) lists off a ParametricEQ.
+
+        Band-count-agnostic: walks ``band{i}_freq`` until one is
+        missing, so the module can grow/shrink bands without touching
+        the renderer. Returns three equal-length Python lists.
+        """
+        freqs, gains, qs = [], [], []
+        i = 1
+        while f"band{i}_freq" in module.params:
+            freqs.append(float(module.params[f"band{i}_freq"]))
+            gains.append(float(module.params[f"band{i}_gain"]))
+            qs.append(float(module.params[f"band{i}_q"]))
+            i += 1
+        return freqs, gains, qs
+
+    def _peq_coeffs(self, freqs, gains_db, qs):
+        """RBJ peaking-EQ biquad coefficients for N bands at once.
+
+        Returns five ``(N,)`` float64 arrays ``(b0, b1, b2, a1n, a2n)``
+        already normalized by a0. freq is clamped to (20 Hz,
+        0.45*sample_rate) and Q to (0.1, 20). A band at 0 dB gain
+        yields identity coefficients (b == a), i.e. an exact
+        passthrough -- so unused bands are tonally free.
+        """
+        sr = self.sample_rate
+        f0 = np.clip(np.asarray(freqs, dtype=np.float64), 20.0, sr * 0.45)
+        q = np.clip(np.asarray(qs, dtype=np.float64), 0.1, 20.0)
+        A = np.power(10.0, np.asarray(gains_db, dtype=np.float64) / 40.0)
+
+        w0 = 2.0 * np.pi * f0 / sr
+        cos_w0 = np.cos(w0)
+        alpha = np.sin(w0) / (2.0 * q)
+
+        b0 = 1.0 + alpha * A
+        b1 = -2.0 * cos_w0
+        b2 = 1.0 - alpha * A
+        a0 = 1.0 + alpha / A
+        a1 = -2.0 * cos_w0
+        a2 = 1.0 - alpha / A
+        return b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0
+
+    def _render_parametric_eq(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Cascade of N peaking biquads applied to the upstream signal.
+
+        Shape-polymorphic, matching Filter/Crossover. A 1D ``(F,)``
+        input runs one cascade and emits ``(F,)``; a 2D ``(V, F)``
+        input runs V parallel cascades (one per voice slot, each with
+        its own biquad memory) and emits ``(V, F)``. Coefficients are
+        param-only (no CV yet) so the same set applies to every voice.
+        """
+        src = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
+        if src is None:
+            return np.zeros(frames, dtype=np.float32)
+        if src.ndim == 2:
+            return self._render_parametric_eq_voice(module, frames, src)
+        return self._render_parametric_eq_mono(module, frames, src)
+
+    def _render_parametric_eq_mono(self, module, frames, src):
+        """Mono path -- N cascaded peaking biquads via ``lfilter``.
+
+        Same state design as ``_render_filter_mono`` (filter
+        vectorization slices 3+4): persisted state is the raw DF-I
+        history ``(x1, x2, y1, y2)``, one entry per band, each a
+        ``(N,)`` float64 array. Raw history is coefficient-independent,
+        so editing a band's freq/gain/Q between blocks behaves
+        cleanly. At each stage the history is converted to the
+        transposed-DF-II ``zi`` (the lfiltic identity, inlined), the
+        biquad runs in C, and the new history is read off the
+        input/output tails. The output of stage k feeds stage k+1.
+        """
+        freqs, gains, qs = self._peq_band_params(module)
+        n_bands = len(freqs)
+        b0, b1, b2, a1n, a2n = self._peq_coeffs(freqs, gains, qs)
+
+        state = self._state.setdefault(module.id, {})
+        x1 = state.get("x1")
+        needs_reinit = (
+            x1 is None
+            or x1.ndim != 1
+            or x1.shape[0] != n_bands
+        )
+        if needs_reinit:
+            state.clear()
+            for k in ("x1", "x2", "y1", "y2"):
+                state[k] = np.zeros(n_bands, dtype=np.float64)
+
+        if frames == 0:
+            return np.empty(0, dtype=np.float32)
+
+        x1 = state["x1"]; x2 = state["x2"]
+        y1 = state["y1"]; y2 = state["y2"]
+
+        x = src.astype(np.float64)
+        for k in range(n_bands):
+            zi = np.array(
+                [
+                    b1[k] * x1[k] + b2[k] * x2[k] - a1n[k] * y1[k] - a2n[k] * y2[k],
+                    b2[k] * x1[k] - a2n[k] * y1[k],
+                ],
+                dtype=np.float64,
+            )
+            out = lfilter(
+                np.array([b0[k], b1[k], b2[k]]),
+                np.array([1.0, a1n[k], a2n[k]]),
+                x,
+                zi=zi,
+            )[0]
+            new_x1 = x[-1]
+            new_x2 = x[-2] if frames >= 2 else x1[k]
+            new_y1 = out[-1]
+            new_y2 = out[-2] if frames >= 2 else y1[k]
+            x1[k] = new_x1; x2[k] = new_x2
+            y1[k] = new_y1; y2[k] = new_y2
+            x = out
+
+        return x.astype(np.float32)
+
+    def _render_parametric_eq_voice(self, module, frames, src):
+        """Voice-aware path -- V parallel cascades, output ``(V, F)``.
+
+        The cascade is the mono path vectorized across voices. Because
+        coefficients are shared (no CV), each stage filters all V rows
+        in one ``lfilter`` call with ``zi`` of shape ``(V, 2)``. State
+        is the DF-I history per band per voice: four ``(N, V)`` float64
+        arrays. Each row holds one band's per-voice memory, kept
+        independent so a per-voice carrier upstream is EQ'd without
+        cross-talk.
+        """
+        V = src.shape[0]
+        freqs, gains, qs = self._peq_band_params(module)
+        n_bands = len(freqs)
+        b0, b1, b2, a1n, a2n = self._peq_coeffs(freqs, gains, qs)
+
+        state = self._state.setdefault(module.id, {})
+        x1 = state.get("x1")
+        needs_reinit = (
+            x1 is None
+            or x1.ndim != 2
+            or x1.shape != (n_bands, V)
+        )
+        if needs_reinit:
+            state.clear()
+            for k in ("x1", "x2", "y1", "y2"):
+                state[k] = np.zeros((n_bands, V), dtype=np.float64)
+
+        if frames == 0:
+            return np.empty((V, 0), dtype=np.float32)
+
+        x1 = state["x1"]; x2 = state["x2"]
+        y1 = state["y1"]; y2 = state["y2"]
+
+        x = src.astype(np.float64)  # (V, F)
+        for k in range(n_bands):
+            zi = np.stack(
+                [
+                    b1[k] * x1[k] + b2[k] * x2[k] - a1n[k] * y1[k] - a2n[k] * y2[k],
+                    b2[k] * x1[k] - a2n[k] * y1[k],
+                ],
+                axis=-1,
+            )  # (V, 2)
+            out = lfilter(
+                np.array([b0[k], b1[k], b2[k]]),
+                np.array([1.0, a1n[k], a2n[k]]),
+                x,
+                axis=-1,
+                zi=zi,
+            )[0]
+            new_x1 = x[:, -1].copy()
+            new_x2 = x[:, -2].copy() if frames >= 2 else x1[k].copy()
+            new_y1 = out[:, -1].copy()
+            new_y2 = out[:, -2].copy() if frames >= 2 else y1[k].copy()
+            x1[k] = new_x1; x2[k] = new_x2
+            y1[k] = new_y1; y2[k] = new_y2
+            x = out
+
+        return x.astype(np.float32)
 
     # ----- DiskWriter rendering -------------------------------------------
 

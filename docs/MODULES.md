@@ -139,6 +139,7 @@ Every module type, its category, and its ports at a glance.
 | [`noise`](#noise) | Source | — → `out` (audio), `cv` (cv) |
 | [`filter`](#filter) | Processor | `in` (audio), `cutoff_cv` (cv) → `out` (audio) |
 | [`crossover`](#crossover) | Processor | `in` (audio) → `low`,`high` (audio) |
+| [`parametric_eq`](#parametric_eq) | Processor | `in` (audio) → `out` (audio) |
 | [`vca`](#vca) | Processor | `audio` (audio), `cv` (cv) → `out` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
 | [`adsr`](#adsr) | Modulation | `gate` (gate) → `cv` (cv) |
@@ -339,6 +340,40 @@ Splits one audio input into **low** and **high** bands at a chosen frequency
 [AudioToCV](#audio_to_cv) to turn each band into a modulation source — see
 `examples/two_way_crossover.json`, `examples/file_crossover_split.json`,
 `examples/mic_beatbox_crossover.json`.
+
+#### `parametric_eq`
+
+A 4-band **parametric EQ** — four independent peaking ("bell") bands on
+one mono signal. Each band has its own centre frequency, gain, and Q, so
+the same module is a bass-shaping low EQ (the 25/50/100/250 Hz defaults)
+or a full-range four-point tone control.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to equalise. |
+| `out` | out | audio | Equalised signal. |
+
+**Parameters** (per band `i` in 1–4)
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `band{i}_freq` | 25 / 50 / 100 / 250 Hz | ~20 … 0.45·sample-rate Hz | Band centre frequency. |
+| `band{i}_gain` | `0.0` | −24 … +24 dB | Boost (+) / cut (−). `0` dB is exactly transparent. |
+| `band{i}_q` | `1.0` | ~0.1 … 20 | Bell width — low Q broad, high Q narrow. |
+
+**How it works.** Each band is an RBJ peaking biquad; the four run in
+series. A band left at 0 dB has identity coefficients, so unused bands
+are tonally free. Coefficients are param-only (no CV yet) and the path
+is shape-polymorphic like [Filter](#filter) / [Crossover](#crossover):
+a mono input runs one cascade, a voice-aware `(V, F)` input runs V
+independent cascades.
+
+**Patching.** Drop it anywhere in an audio chain: `oscillator →
+parametric_eq → vca → speaker`, or sculpt a drum/sub bus. See
+`examples/parametric_eq_bass.json` (saw → low-end boost + low-mid cut +
+a presence band → speaker).
 
 #### `vca`
 

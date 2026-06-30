@@ -27,6 +27,7 @@ from .midiinput import MIDIInput
 from .mixer import Mixer
 from .noise import Noise
 from .oscillator import Oscillator
+from .parametric_eq import ParametricEQ
 from .output import LeftSpeakerOutput, RightSpeakerOutput, SpeakerOutput
 from .samplehold import SampleHold
 from .schmitt import Schmitt
@@ -54,6 +55,7 @@ __all__ = [
     "Mixer",
     "Noise",
     "Oscillator",
+    "ParametricEQ",
     "RightSpeakerOutput",
     "SampleHold",
     "Schmitt",

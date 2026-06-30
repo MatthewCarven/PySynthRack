@@ -249,6 +249,7 @@ Living list of what's next. Edit freely.
       LFO→Schmitt: a self-playing hi-hat). Follow-ups: S&H could normal its
       `in` to a noise source now that one exists; a `seed` param for
       reproducible patches; brown/blue colors.
+- [x] **Parametric EQ (`parametric_eq`)** — shipped 2026-06-30. Four peaking (bell) bands on one mono signal, each with adjustable centre freq (full 20 Hz–20 kHz; defaults 25/50/100/250 Hz), gain (dB, 0 = transparent), and Q. RBJ peaking biquads cascaded; coefficient-independent DF-I state like the Filter module; shape-polymorphic (mono + voice). Started as a 64-band log/linear graphic EQ idea, scoped down to parametric — no array param, no custom slider bank. 27 tests in `tests/test_parametric_eq.py`; suite 561 (+18 mido). Example `examples/parametric_eq_bass.json`. Follow-ups: per-band freq/gain CV for an *animated* EQ (same gap as Crossover); shelf band types (low/high shelf on the ends) if a tilt control is wanted; an optional band-count selector now that the band list is data-driven.
 - [ ] Drum-friendly env (AD instead of ADSR)
 - [ ] Stereo-aware speaker module (pan / width)
 - [ ] Patch presets palette (factory + user banks)
