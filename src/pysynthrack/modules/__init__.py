@@ -7,6 +7,7 @@ exist should:
 
     import pysynthrack.modules  # noqa: F401
 """
+from .ad_envelope import ADEnvelope
 from .adsr import ADSR
 from .audiotocv import AudioToCV
 from .combiner import Combiner
@@ -35,6 +36,7 @@ from .schmitt import Schmitt
 from .vca import VCA
 
 __all__ = [
+    "ADEnvelope",
     "ADSR",
     "AudioToCV",
     "Combiner",

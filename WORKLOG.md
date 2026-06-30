@@ -3917,3 +3917,61 @@ hit play, watch the two bars.
 **Next:** if it gets heavy use, options worth offering — a peak-hold tick
 that lingers at the max; a switchable RMS mode; a stereo/2-channel meter;
 a clip indicator at 0 dBFS. All additive to this module.
+
+---
+
+## 2026-06-30 — AD envelope (`ad_envelope`): trigger Attack/Decay
+
+The percussion envelope flagged repeatedly as the natural pairing for
+the noise drums. A trigger-style Attack→Decay: a rising edge fires it
+and the A→D contour plays to completion **regardless of trigger length**
+— so a momentary clock pulse gives a full, consistent hit, with no
+sustain stage holding the tail open (that's ADSR's job).
+
+*New* (`modules/ad_envelope.py`). `ADEnvelope` — `TYPE="ad_envelope"`,
+`trig` (gate) in → `cv` out, params `attack`/`decay` (seconds). Port
+named `trig` (kind gate, like `sample_hold`'s) to signal "edge trigger,
+not held gate".
+
+*Backend* (`numpy_backend.py`). State machine idle→attack→decay→idle.
+Rising edge on `trig` (re)enters attack **from the current level** (a
+retrigger mid-decay picks up where it was — no click); attack ramps to
+1.0, decay ramps to 0.0, then idle. The trigger going low is ignored.
+Mono is a scalar per-sample loop (the reference); the voice path is a
+per-sample loop vectorized across V — deliberately written so each
+sample applies exactly one stage update per voice based on the phase at
+the *start* of the sample, so a voice crossing attack→decay still emits
+1.0 and decays the next sample, i.e. **bit-identical to the mono path**
+(asserted in tests). Chose the per-sample voice loop (like the Crossover
+voice path) over ADSR's run-splitting: simpler and plenty fast for an
+envelope; run-based vectorization is a later optimization if profiling
+flags it. pyo silent-stub extended.
+
+*UI.* None needed — `attack`/`decay` already hit the existing
+attack/decay/release drag-float branch (0…5 s), and the `cv` output gets
+the standard CV meter for free.
+
+*Tests* (`tests/test_ad_envelope.py`, 20). Model/ports/round-trip/
+type-walls; mono (silence without a trigger, reaches 1→0, **gate length
+ignored** = 1-sample pulse equals a 500-sample gate, attack length
+tracks the param, attack-then-decay monotone, instant attack, retrigger
+deep in decay climbs back up, disconnected→silence); voice (single-voice
+row == mono bit-for-bit, voices independent, mono↔voice reinit, block-
+stitch equivalence); integration (lfo→schmitt clock → AD → vca renders
+audible audio). Full suite **615 passing (+18 mido skipped)** with
+ffmpeg present, up from 595 — exactly +20.
+
+*Docs.* `docs/MODULES.md` Modulation index row + entry. Example
+`examples/ad_kick.json` — square LFO → Schmitt clock → AD → VCA on a
+55 Hz sine: a self-playing kick (peak ≈ 0.8).
+
+**Hand-off to Matthew:** delivered as a git patch on top of origin/main
+(HEAD `4e97e35` — all prior features already pushed) — `git am` it. To
+hear it: open `examples/ad_kick.json`, hit play (a kick every 0.5 s);
+drop the decay for a tighter click, or swap the sine for noise→highpass
+for a hat.
+
+**Next:** a curve/shape param (exponential vs linear segments) would
+make it punchier; per-trigger velocity scaling once a velocity CV exists;
+pitch-envelope kicks once an env can hit `cv_to_frequency`. Run-based
+voice vectorization if envelopes ever dominate a profile.

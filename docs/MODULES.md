@@ -143,6 +143,7 @@ Every module type, its category, and its ports at a glance.
 | [`vca`](#vca) | Processor | `audio` (audio), `cv` (cv) → `out` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
 | [`adsr`](#adsr) | Modulation | `gate` (gate) → `cv` (cv) |
+| [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
 | [`audio_to_cv`](#audio_to_cv) | Bridge | `in` (audio) → `cv` (cv) |
 | [`cv_to_audio`](#cv_to_audio) | Bridge | `cv` (cv) → `out` (audio) |
 | [`schmitt`](#schmitt) | Bridge | `in` (cv) → `gate` (gate) |
@@ -421,6 +422,28 @@ a [VCA](#vca)'s `cv` (for volume) or a [Filter](#filter)'s `cutoff_cv`.
 
 **Patching.** `keyboard.gate → adsr.gate`, then `adsr.cv → vca.cv`. See
 `examples/keyboard_adsr.json`, `examples/filter_envelope.json`.
+
+#### `ad_envelope`
+
+A trigger-style **Attack–Decay** envelope for percussion and plucks. A trigger fires it and it plays a full A→D contour on its own, **ignoring how long the trigger is held** — so a momentary clock pulse gives every hit the same snappy shape, with no sustain stage holding the tail open. For held notes with a sustain, use [adsr](#adsr) instead.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `trig` | in | gate | Trigger. A **rising edge** (re)starts the envelope; the trigger's length is ignored. |
+| `cv` | out | cv | The envelope, 0…1. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `attack` | `0.005` | 0…5 s | Time to rise from the current level to 1. |
+| `decay` | `0.20` | 0…5 s | Time to fall from 1 back to 0. |
+
+**How it works.** Rising edge → attack from the current level (a retrigger mid-decay picks up where it was, no click) → decay to 0 → idle. The trigger going low does nothing; the decay always completes. Shape-polymorphic like [adsr](#adsr): a `(V, F)` trigger drives V independent envelopes, bit-identical to the mono path per voice.
+
+**Patching.** `lfo → schmitt → ad_envelope.trig`, then `ad_envelope.cv → vca.cv` for a self-playing drum, or a keyboard/MIDI `gate → trig`. See `examples/ad_kick.json` (a clocked sine kick).
 
 #### `lfo`
 

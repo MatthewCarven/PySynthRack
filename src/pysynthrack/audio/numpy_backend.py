@@ -549,6 +549,8 @@ class NumpyBackend(AudioBackend):
             return self._render_filter(module, frames, buffers, patch)
         if module.TYPE == "adsr":
             return self._render_adsr(module, frames, buffers, patch)
+        if module.TYPE == "ad_envelope":
+            return self._render_ad(module, frames, buffers, patch)
         if module.TYPE == "vca":
             return self._render_vca(module, frames, buffers, patch)
         if module.TYPE == "audio_to_cv":
@@ -1633,6 +1635,10 @@ class NumpyBackend(AudioBackend):
     # fast path below still uses strings — we keep them separate so an
     # existing test that introspected the state (none do today, but they
     # could) sees unchanged behaviour.
+    # AD (trigger) envelope phases.
+    _AD_IDLE = 0
+    _AD_ATTACK = 1
+    _AD_DECAY = 2
     _ADSR_IDLE = 0
     _ADSR_ATTACK = 1
     _ADSR_DECAY = 2
@@ -1943,6 +1949,143 @@ class NumpyBackend(AudioBackend):
             seg[pos:end] = lvl
             pos = end
         return ph, lvl
+
+    def _render_ad(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Trigger-style Attack/Decay envelope (percussion).
+
+        State machine: idle -> attack -> decay -> idle. A rising edge on
+        ``trig`` (re)enters attack from the current level; attack ramps
+        to 1.0, decay ramps to 0.0, then it idles. The trigger going low
+        is ignored -- the decay always runs to completion, which is what
+        makes a momentary clock pulse produce a full hit.
+
+        Shape-polymorphic like ADSR: a 1D ``(F,)`` trigger drives one
+        envelope and emits ``(F,)``; a 2D ``(V, F)`` trigger maintains V
+        independent envelopes and emits ``(V, F)``. The mono and voice
+        paths share identical per-sample semantics (one stage update per
+        sample, transitions take effect the following sample), so a
+        voice row is bit-identical to the mono result for the same gate.
+        Durations clamp to a >= 1-sample minimum for stability.
+        """
+        gate_buf = self._input_buffer(
+            patch, buffers, module.id, "trig", collapse=False
+        )
+        sr = self.sample_rate
+        attack_s = max(0.0, float(module.params.get("attack", 0.005)))
+        decay_s = max(0.0, float(module.params.get("decay", 0.20)))
+        attack_step = 1.0 / max(1.0, attack_s * sr)
+        decay_step = 1.0 / max(1.0, decay_s * sr)
+
+        if gate_buf is not None and gate_buf.ndim == 2:
+            return self._render_ad_voice(
+                module, frames, gate_buf, attack_step, decay_step
+            )
+        return self._render_ad_mono(
+            module, frames, gate_buf, attack_step, decay_step
+        )
+
+    def _render_ad_mono(self, module, frames, gate_buf, attack_step, decay_step):
+        """Mono scalar reference: one envelope, output ``(F,)``."""
+        state = self._state.setdefault(
+            module.id, {"phase": self._AD_IDLE, "level": 0.0, "prev_gate": False}
+        )
+        if "phase_arr" in state:  # was the voice branch -> reinit to mono
+            state.clear()
+            state.update({"phase": self._AD_IDLE, "level": 0.0, "prev_gate": False})
+
+        out = np.empty(frames, dtype=np.float32)
+        phase = state["phase"]
+        level = state["level"]
+        prev = state["prev_gate"]
+
+        for n in range(frames):
+            g = bool(gate_buf[n] > self._GATE_HIGH) if gate_buf is not None else False
+            if g and not prev:
+                phase = self._AD_ATTACK  # retrigger from current level
+            prev = g
+
+            if phase == self._AD_ATTACK:
+                level += attack_step
+                if level >= 1.0:
+                    level = 1.0
+                    phase = self._AD_DECAY
+            elif phase == self._AD_DECAY:
+                level -= decay_step
+                if level <= 0.0:
+                    level = 0.0
+                    phase = self._AD_IDLE
+            # idle: level holds at 0.0
+            out[n] = level
+
+        state["phase"] = phase
+        state["level"] = level
+        state["prev_gate"] = prev
+        return out
+
+    def _render_ad_voice(self, module, frames, gate_buf, attack_step, decay_step):
+        """Voice path: V independent envelopes, output ``(V, F)``.
+
+        Per-sample loop over the block, vectorized across the V voices.
+        Each sample applies exactly one stage update per voice based on
+        the phase *at the start of the sample* (after the edge check), so
+        a voice that crosses attack->decay this sample still emits 1.0
+        and only begins decaying next sample -- identical to the mono
+        scalar path (asserted in the tests). A per-sample loop (like the
+        Crossover voice path) rather than ADSR's run-splitting: simpler
+        and plenty fast for the envelope; run-based vectorization is a
+        later optimization if profiling ever flags it.
+        """
+        V = gate_buf.shape[0]
+        state = self._state.setdefault(module.id, {})
+        needs_reinit = (
+            "phase_arr" not in state or state["phase_arr"].shape[0] != V
+        )
+        if needs_reinit:
+            state.clear()
+            state["phase_arr"] = np.full(V, self._AD_IDLE, dtype=np.int32)
+            state["level_arr"] = np.zeros(V, dtype=np.float64)
+            state["prev_gate_arr"] = np.zeros(V, dtype=bool)
+
+        phase = state["phase_arr"]
+        level = state["level_arr"]
+        prev = state["prev_gate_arr"]
+
+        gate_high = gate_buf > self._GATE_HIGH  # (V, F) bool
+        out = np.empty((V, frames), dtype=np.float64)
+
+        for n in range(frames):
+            g = gate_high[:, n]
+            rising = g & ~prev
+            if rising.any():
+                phase = np.where(rising, self._AD_ATTACK, phase)
+            prev = g
+
+            phase_now = phase  # stage to apply this sample (pre-transition)
+            att = phase_now == self._AD_ATTACK
+            dec = phase_now == self._AD_DECAY
+
+            if att.any():
+                lv = level[att] + attack_step
+                top = lv >= 1.0
+                lv = np.where(top, 1.0, lv)
+                level[att] = lv
+                # mark voices that topped out -> decay next sample
+                idx = np.flatnonzero(att)
+                phase[idx[top]] = self._AD_DECAY
+            if dec.any():
+                lv = level[dec] - decay_step
+                bot = lv <= 0.0
+                lv = np.where(bot, 0.0, lv)
+                level[dec] = lv
+                idx = np.flatnonzero(dec)
+                phase[idx[bot]] = self._AD_IDLE
+
+            out[:, n] = level
+
+        state["phase_arr"] = phase
+        state["level_arr"] = level
+        state["prev_gate_arr"] = prev
+        return out.astype(np.float32)
 
     # ----- LFO rendering --------------------------------------------------
 
