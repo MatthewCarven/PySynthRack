@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Rosetta Pitch — Eastern ⇄ Western note calculator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0b0e17; --bg2:#0e1220; --panel:#141a2b; --panel2:#0f1424;
+    --line:#242c42; --line2:#1a2036;
+    --ink:#e9edf8; --muted:#8b93ab; --muted2:#5f6883;
+    --focus:#9db4ff;
+    /* one hue per tradition — the palette IS a spectrum, on purpose */
+    --c-west:#eef1fb; --c-just:#78c2ff; --c-sargam:#ff9066; --c-china:#ffce5a;
+    --c-japan:#f478b6; --c-slendro:#48e0bd; --c-pelog:#bd8dff; --c-maqam:#ff6b86;
+    --c-thai:#b6e34d; --c-turk:#7f8dff;
+    --radius:14px;
+    --gut:96px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:
+     radial-gradient(1200px 700px at 78% -8%, #16203c 0%, rgba(22,32,60,0) 60%),
+     radial-gradient(900px 600px at 5% 4%, #1a1430 0%, rgba(26,20,48,0) 55%),
+     var(--bg);
+    color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;}
+  .wrap{max-width:1120px;margin:0 auto;padding:30px 22px 90px;}
+
+  /* ---------- header ---------- */
+  header{margin-bottom:22px}
+  .eyebrow{font-family:"IBM Plex Mono";font-size:11.5px;letter-spacing:.28em;text-transform:uppercase;
+    color:var(--muted2);display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .eyebrow::after{content:"";height:1px;flex:1;background:linear-gradient(90deg,var(--line),transparent)}
+  h1{font-family:"Syne";font-weight:800;font-size:clamp(34px,6vw,60px);line-height:.98;margin:0;
+    letter-spacing:-.01em;
+    background:linear-gradient(92deg,#fff 0%,#cfe0ff 34%,#ff9f7d 66%,#ffd36b 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;}
+  .thesis{margin:14px 0 0;max-width:66ch;color:var(--muted);font-size:15px;line-height:1.55}
+  .thesis b{color:var(--ink);font-weight:600}
+
+  /* ---------- panels ---------- */
+  .panel{background:linear-gradient(180deg,var(--panel) 0%,var(--panel2) 100%);
+    border:1px solid var(--line);border-radius:var(--radius);}
+  .pad{padding:16px 18px}
+  .stack{display:flex;flex-direction:column;gap:16px;margin-top:22px}
+
+  /* ---------- control bar ---------- */
+  .controls{display:flex;flex-wrap:wrap;gap:18px 26px;align-items:flex-end}
+  .field{display:flex;flex-direction:column;gap:6px}
+  .field label{font-family:"IBM Plex Mono";font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted2)}
+  input[type=number],select{background:var(--bg2);color:var(--ink);border:1px solid var(--line);
+    border-radius:9px;padding:8px 10px;font-family:"IBM Plex Mono";font-size:14px;min-width:78px}
+  input[type=number]{width:96px}
+  select{cursor:pointer}
+  input:focus-visible,select:focus-visible,button:focus-visible,.tab:focus-visible,.chip:focus-visible{
+    outline:2px solid var(--focus);outline-offset:2px}
+  input[type=range]{accent-color:#7fa0ff;width:120px}
+  .switch{display:inline-flex;align-items:center;gap:9px;cursor:pointer;user-select:none;
+    font-size:13px;color:var(--muted)}
+  .switch input{appearance:none;width:38px;height:22px;background:var(--line);border-radius:20px;position:relative;cursor:pointer;transition:background .18s}
+  .switch input::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#cfd6ea;transition:transform .18s}
+  .switch input:checked{background:#3a6dff}
+  .switch input:checked::after{transform:translateX(16px)}
+
+  /* ---------- legend / row toggles ---------- */
+  .legend{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+  .chip{display:inline-flex;align-items:center;gap:7px;background:var(--bg2);border:1px solid var(--line);
+    color:var(--muted);border-radius:999px;padding:5px 11px 5px 8px;font-size:12.5px;cursor:pointer;transition:.15s}
+  .chip .dot{width:10px;height:10px;border-radius:50%;background:var(--hue);box-shadow:0 0 8px -1px var(--hue)}
+  .chip[aria-pressed=true]{color:var(--ink);border-color:color-mix(in srgb,var(--hue) 55%,var(--line))}
+  .chip[aria-pressed=false]{opacity:.5}
+  .chip[aria-pressed=false] .dot{box-shadow:none;background:var(--muted2)}
+
+  /* ---------- the ruler (hero / signature) ---------- */
+  .rulerhead{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px;gap:12px;flex-wrap:wrap}
+  .rulerhead h2{font-family:"Syne";font-weight:700;font-size:17px;margin:0;letter-spacing:.01em}
+  .rulerhead .hint{font-family:"IBM Plex Mono";font-size:11px;color:var(--muted2)}
+  .ruler{position:relative;user-select:none;touch-action:none}
+  .axis{position:relative;height:26px;border-bottom:1px solid var(--line);margin-left:var(--gut)}
+  .axis .g{position:absolute;top:0;bottom:0;width:1px;background:var(--line2)}
+  .axis .g.strong{background:var(--line)}
+  .axis .glab{position:absolute;top:6px;transform:translateX(-50%);font-family:"IBM Plex Mono";font-size:10px;color:var(--muted2)}
+  .row{position:relative;display:flex;align-items:stretch;border-bottom:1px solid var(--line2)}
+  .row:last-child{border-bottom:0}
+  .rlabel{width:var(--gut);flex:0 0 var(--gut);display:flex;flex-direction:column;justify-content:center;
+    padding:9px 10px 9px 2px;gap:2px}
+  .rlabel .nm{font-size:12px;font-weight:600;color:var(--hue);line-height:1.1}
+  .rlabel .badge{font-family:"IBM Plex Mono";font-size:8.5px;letter-spacing:.04em;color:var(--muted2);text-transform:uppercase}
+  .track{position:relative;flex:1;min-height:52px}
+  .tick{position:absolute;bottom:0;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:3px;cursor:default}
+  .tick .bar{width:2px;height:24px;background:var(--hue);border-radius:2px;opacity:.85;transition:height .12s,opacity .12s,box-shadow .12s}
+  .tick.quarter .bar{height:15px;opacity:.5}
+  .tick .tok{font-family:"IBM Plex Mono";font-size:10px;color:var(--muted);white-space:nowrap;transition:color .12s}
+  .tick.near .bar{height:34px;opacity:1;box-shadow:0 0 10px -1px var(--hue),0 0 2px var(--hue)}
+  .tick.near .tok{color:var(--ink)}
+  .playhead{position:absolute;top:0;bottom:0;left:0;width:0;pointer-events:none;z-index:6}
+  .playhead::before{content:"";position:absolute;top:0;bottom:0;left:-1px;width:2px;
+    background:linear-gradient(180deg,#fff,rgba(255,255,255,.25));box-shadow:0 0 12px 1px rgba(180,200,255,.5)}
+  .playhead .hd{position:absolute;top:-9px;left:-6px;width:12px;height:12px;border-radius:50%;
+    background:#fff;box-shadow:0 0 10px 1px rgba(180,200,255,.7)}
+  .scrubzone{position:absolute;left:var(--gut);right:0;top:26px;bottom:0;cursor:ew-resize;z-index:5}
+  /* tooltip */
+  #tip{position:fixed;z-index:50;pointer-events:none;background:#05070e;border:1px solid var(--line);
+    border-radius:9px;padding:7px 9px;font-family:"IBM Plex Mono";font-size:11px;color:var(--ink);
+    box-shadow:0 8px 24px rgba(0,0,0,.5);opacity:0;transition:opacity .1s;max-width:230px;line-height:1.5}
+  #tip b{color:var(--c-just);font-weight:500}
+
+  /* ---------- tabs ---------- */
+  .tabs{display:flex;gap:6px;margin-bottom:14px;border-bottom:1px solid var(--line);padding-bottom:0}
+  .tab{background:none;border:0;color:var(--muted);font-family:"Syne";font-weight:700;font-size:15px;
+    padding:8px 4px 12px;margin-right:18px;cursor:pointer;position:relative}
+  .tab[aria-selected=true]{color:var(--ink)}
+  .tab[aria-selected=true]::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;
+    background:linear-gradient(90deg,#8fb0ff,#ff9f7d);border-radius:2px}
+
+  /* ---------- explore ---------- */
+  .expgrid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px}
+  .pick{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px}
+  .notes{display:flex;flex-wrap:wrap;gap:8px}
+  .note{background:var(--bg2);border:1px solid color-mix(in srgb,var(--hue) 30%,var(--line));
+    color:var(--ink);border-radius:10px;padding:9px 12px;cursor:pointer;transition:.12s;
+    display:flex;flex-direction:column;align-items:center;gap:2px;min-width:52px}
+  .note:hover{border-color:var(--hue);background:color-mix(in srgb,var(--hue) 10%,var(--bg2))}
+  .note.sel{background:color-mix(in srgb,var(--hue) 20%,var(--bg2));border-color:var(--hue);box-shadow:0 0 0 1px var(--hue)}
+  .note .t{font-size:15px;font-weight:600;line-height:1}
+  .note .c{font-family:"IBM Plex Mono";font-size:9.5px;color:var(--muted2)}
+
+  .readout{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:18px;position:sticky;top:16px}
+  .readout .big{font-family:"Syne";font-weight:800;font-size:40px;line-height:1;color:var(--hue,var(--ink));margin-bottom:2px}
+  .readout .sub{color:var(--muted);font-size:12.5px;margin-bottom:16px}
+  .dl{display:grid;grid-template-columns:auto 1fr;gap:7px 14px;font-family:"IBM Plex Mono";font-size:13px}
+  .dl dt{color:var(--muted2);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;align-self:center}
+  .dl dd{margin:0;text-align:right}
+  .dl dd .off{color:var(--muted)}
+  .playbtn{margin-top:16px;width:100%;background:linear-gradient(180deg,#2c3c74,#1d2953);border:1px solid #3a56a8;
+    color:#eaf0ff;border-radius:10px;padding:11px;font-family:"Syne";font-weight:700;font-size:14px;cursor:pointer}
+  .playbtn:hover{background:linear-gradient(180deg,#33468a,#233264)}
+
+  /* ---------- translate ---------- */
+  .tsummary{display:flex;flex-wrap:wrap;gap:14px 24px;align-items:flex-end;margin-bottom:8px}
+  .bignum{font-family:"IBM Plex Mono";font-size:15px;color:var(--ink)}
+  table{width:100%;border-collapse:collapse;margin-top:6px}
+  th,td{text-align:left;padding:9px 10px;font-size:13px;border-bottom:1px solid var(--line2)}
+  th{font-family:"IBM Plex Mono";font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted2);font-weight:400}
+  td.mono,th.mono{font-family:"IBM Plex Mono"}
+  tr.sysrow{cursor:pointer;transition:background .12s}
+  tr.sysrow:hover{background:var(--panel2)}
+  .sysname{display:flex;align-items:center;gap:9px}
+  .sysname .dot{width:9px;height:9px;border-radius:50%;background:var(--hue);box-shadow:0 0 7px -1px var(--hue)}
+  .delta{font-family:"IBM Plex Mono"}
+  .delta.intune{color:var(--c-slendro)}
+  .delta.sharp{color:#ff9f7d}
+  .delta.flat{color:#78c2ff}
+  .meter{height:6px;background:var(--line2);border-radius:4px;position:relative;overflow:hidden;min-width:80px}
+  .meter i{position:absolute;top:0;bottom:0;left:50%;width:2px;background:var(--muted2)}
+  .meter b{position:absolute;top:0;bottom:0;width:2px;background:var(--hue);border-radius:2px}
+
+  /* ---------- footer ---------- */
+  footer{margin-top:26px;color:var(--muted2);font-size:12px;line-height:1.65}
+  footer h3{font-family:"IBM Plex Mono";font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+  footer b{color:var(--muted)}
+  .sig{margin-top:18px;font-family:"IBM Plex Mono";font-size:11px;color:var(--muted2)}
+
+  @media (max-width:760px){
+    :root{--gut:70px}
+    .expgrid{grid-template-columns:1fr}
+    .readout{position:static}
+    .tick .tok{display:none}
+    .rlabel .nm{font-size:11px}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{transition:none!important;animation:none!important}
+  }
+  /* load-in for ruler rows */
+  @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .row{animation:rise .4s cubic-bezier(.2,.7,.2,1) both}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">frequency is the only universal note</div>
+    <h1>Rosetta&nbsp;Pitch</h1>
+    <p class="thesis">Ten tuning traditions, one axis. Everything gets converted to <b>cents</b> (1200 to an octave) and stacked on the same ruler, so you can see exactly where a piano, a sitar, a gamelan and a maqam <b>agree</b> — and where they live in the cracks between each other's notes. Drag across the ruler to hear the whole octave; nothing is quantised to twelve tones unless the tradition actually is.</p>
+  </header>
+
+  <!-- CONTROL BAR -->
+  <section class="panel pad">
+    <div class="controls">
+      <div class="field">
+        <label for="a4">Concert A₄ (Hz)</label>
+        <input type="number" id="a4" value="440" min="380" max="500" step="0.5">
+      </div>
+      <div class="field">
+        <label for="tonic">Tonic / Sa / 宮</label>
+        <select id="tonic"></select>
+      </div>
+      <div class="field">
+        <label for="wave">Timbre</label>
+        <select id="wave">
+          <option value="sine">sine — pure</option>
+          <option value="triangle" selected>triangle — soft</option>
+          <option value="sawtooth">sawtooth — reedy</option>
+          <option value="square">square — hollow</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="vol">Volume</label>
+        <input type="range" id="vol" min="0" max="1" step="0.01" value="0.5">
+      </div>
+      <label class="switch"><input type="checkbox" id="drone"><span>Drone tonic <span class="mono" style="color:var(--muted2)">(hear the beats)</span></span></label>
+      <label class="switch"><input type="checkbox" id="snap"><span>Snap ruler to notes</span></label>
+    </div>
+  </section>
+
+  <div class="stack">
+
+    <!-- THE RULER -->
+    <section class="panel pad">
+      <div class="rulerhead">
+        <h2>One octave, every tradition</h2>
+        <span class="hint">drag anywhere on the ruler ↔ &nbsp;·&nbsp; hover a tick for detail &nbsp;·&nbsp; click a chip to hide a row</span>
+      </div>
+      <div class="legend" id="legend"></div>
+      <div class="ruler" id="ruler">
+        <div class="axis" id="axis"></div>
+        <div id="rows"></div>
+        <div class="scrubzone" id="scrub"></div>
+        <div class="playhead" id="playhead" style="display:none"><div class="hd"></div></div>
+      </div>
+    </section>
+
+    <!-- TABS -->
+    <section class="panel pad">
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" aria-selected="true" id="tab-explore" aria-controls="p-explore">Explore a system</button>
+        <button class="tab" role="tab" aria-selected="false" id="tab-translate" aria-controls="p-translate">Translate a pitch</button>
+      </div>
+
+      <!-- EXPLORE -->
+      <div id="p-explore" role="tabpanel" aria-labelledby="tab-explore">
+        <div class="expgrid">
+          <div>
+            <div class="pick">
+              <div class="field">
+                <label for="expsys">System</label>
+                <select id="expsys"></select>
+              </div>
+              <div class="field" id="modewrap" style="display:none">
+                <label for="expmode">Tuning / mode</label>
+                <select id="expmode"></select>
+              </div>
+            </div>
+            <div class="notes" id="notes"></div>
+          </div>
+          <div class="readout" id="readout" style="--hue:var(--c-west)">
+            <div class="big" id="ro-big">Sa</div>
+            <div class="sub" id="ro-sub">tap a note to hear it</div>
+            <dl class="dl">
+              <dt>Cents ↑tonic</dt><dd id="ro-cents">0.0¢</dd>
+              <dt>Frequency</dt><dd id="ro-hz">261.63 Hz</dd>
+              <dt>Ratio</dt><dd id="ro-ratio">1 : 1</dd>
+              <dt>Nearest 12-TET</dt><dd id="ro-west">C4</dd>
+              <dt>MIDI</dt><dd id="ro-midi">60</dd>
+            </dl>
+            <button class="playbtn" id="ro-play">▶ Play note</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- TRANSLATE -->
+      <div id="p-translate" role="tabpanel" aria-labelledby="tab-translate" hidden>
+        <div class="tsummary">
+          <div class="field">
+            <label for="tfreq">Frequency to translate (Hz)</label>
+            <input type="number" id="tfreq" value="261.63" min="20" max="12000" step="0.01" style="width:130px">
+          </div>
+          <div class="field" style="flex:1;min-width:200px">
+            <label for="tslider">…or slide across the octave</label>
+            <input type="range" id="tslider" min="0" max="1200" step="0.5" value="0" style="width:100%">
+          </div>
+          <button class="playbtn" id="tplay" style="width:auto;padding:10px 18px">▶ Play</button>
+        </div>
+        <div class="bignum mono" id="tinfo" style="color:var(--muted);margin:4px 0 2px"></div>
+        <table>
+          <thead><tr>
+            <th>Tradition</th><th class="mono">Nearest note</th><th class="mono">Its cents</th>
+            <th class="mono">Its Hz</th><th class="mono">Off by</th><th>&nbsp;</th>
+          </tr></thead>
+          <tbody id="ttable"></tbody>
+        </table>
+        <p style="color:var(--muted2);font-size:11.5px;margin-top:10px">Rows show the closest pitch in each tradition to your target, folded into one octave. Click a row to hear that tradition's nearest note.</p>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <h3>Honest footnotes</h3>
+    <p>Cents are exact; culture is not. The <b>12-TET</b>, <b>Just</b>, <b>Sargam</b> and <b>Chinese lülü</b> grids are well defined. But <b>slendro</b> and <b>pelog</b> are genuinely different on every gamelan — the numbers here are one representative averaging, easily off by ±40¢ from any real ensemble. <b>Maqam</b> is drawn on the 24-tone quarter-tone grid that the theory/notation uses, but performed neutral intervals drift (a neutral third often sits near 355¢, not a clean 350¢). <b>Thai</b> is idealised as 7 equal steps; real instruments vary. <b>Turkish</b> is the 53-comma (Holdrian) theoretical grid. The <b>Just</b> and <b>Sargam</b> ratios shown are common choices, not the only ones — classical shruti practice is raga-dependent. Treat this as a map, not the territory.</p>
+    <p class="sig" id="sig"></p>
+  </footer>
+</div>
+
+<div id="tip"></div>
+
+<script>
+"use strict";
+/* ============================================================
+   Rosetta Pitch — cross-cultural pitch engine
+   Core idea: everything → frequency → cents-from-tonic. Compare honestly.
+   ============================================================ */
+
+const NOTE_NAMES = ["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"];
+const log2 = x => Math.log(x)/Math.LN2;
+const centsBetween = (f, ref) => 1200*log2(f/ref);
+const fFromCents   = (c, ref) => ref*Math.pow(2, c/1200);
+const midiToFreq   = (m, a4)  => a4*Math.pow(2,(m-69)/12);
+const ratioCents   = (n,d)    => 1200*log2(n/d);
+const fmt = (x,p=2)=> x.toFixed(p);
+
+function nearestWestern(f, a4){
+  const mf = 69 + 12*log2(f/a4);
+  const m  = Math.round(mf);
+  const cents = (mf - m)*100;               // signed offset from equal-tempered note
+  const name = NOTE_NAMES[((m%12)+12)%12];
+  const octave = Math.floor(m/12) - 1;
+  return {name, octave, cents, midi:m};
+}
+
+/* ---- tuning-system definitions ----
+   each returns an array of {cents, tok, ratio?} within one octave [0,1200) */
+function pyth12(){
+  const set=[];
+  for(let k=-5;k<=6;k++){ let r=Math.pow(3,k)/Math.pow(2,k); while(r>=2)r/=2; while(r<1)r*=2; set.push(r); }
+  set.sort((a,b)=>a-b);
+  return set.map(r=>ratioCents(r,1));
+}
+const eqSteps = (n)=> Array.from({length:n},(_,k)=> k*1200/n);
+
+const LULU=["黄钟","大吕","太簇","夹钟","姑洗","仲吕","蕤宾","林钟","夷则","南吕","无射","应钟"];
+const LULU_PENT={0:"宮",2:"商",4:"角",7:"徵",9:"羽"};        // gong shang jue zhi yu
+
+const SYSTEMS = [
+  { id:"west", name:"Western 12-TET", cvar:"--c-west", badge:"equal",
+    pitches:()=>Array.from({length:12},(_,k)=>({cents:k*100, tok:"west"})) , westTok:true },
+
+  { id:"just", name:"Just intonation", cvar:"--c-just", badge:"5-limit",
+    pitches:()=>[[1,1],[16,15],[9,8],[6,5],[5,4],[4,3],[45,32],[3,2],[8,5],[5,3],[9,5],[15,8]]
+       .map(([n,d])=>({cents:ratioCents(n,d), tok:n+":"+d, ratio:[n,d]})) },
+
+  { id:"sargam", name:"Indian sargam", cvar:"--c-sargam", badge:"swara",
+    modes:[
+      {id:"12", name:"12-TET positions"},
+      {id:"just", name:"just intonation"} ],
+    pitches:(mode)=>{
+      const toks=["Sa","r","R","g","G","m","M","P","d","D","n","N"];
+      if(mode==="just"){
+        const R=[[1,1],[16,15],[9,8],[6,5],[5,4],[4,3],[45,32],[3,2],[8,5],[5,3],[16,9],[15,8]];
+        return R.map(([n,d],i)=>({cents:ratioCents(n,d),tok:toks[i],ratio:[n,d]}));
+      }
+      return toks.map((t,i)=>({cents:i*100,tok:t}));
+  }},
+
+  { id:"china", name:"Chinese lülü", cvar:"--c-china", badge:"十二律",
+    modes:[
+      {id:"12", name:"12-TET mapping"},
+      {id:"pyth", name:"三分損益 (Pythagorean)"} ],
+    pitches:(mode)=>{
+      const cents = mode==="pyth" ? pyth12() : eqSteps(12);
+      return cents.map((c,i)=>({cents:c, tok:LULU[i] + (LULU_PENT[i]?"·"+LULU_PENT[i]:"")}));
+  }},
+
+  { id:"japan", name:"Japanese", cvar:"--c-japan", badge:"pentatonic",
+    modes:[
+      {id:"hira", name:"Hirajōshi (koto)"},
+      {id:"in",   name:"In / Miyako-bushi"},
+      {id:"yo",   name:"Yō"} ],
+    pitches:(mode)=>{
+      const M={ hira:[[0,"1"],[200,"2"],[300,"♭3"],[700,"5"],[800,"♭6"]],
+                in:  [[0,"1"],[100,"♭2"],[500,"4"],[700,"5"],[800,"♭6"]],
+                yo:  [[0,"1"],[200,"2"],[500,"4"],[700,"5"],[900,"6"]] };
+      return M[mode].map(([c,t])=>({cents:c,tok:t}));
+  }},
+
+  { id:"slendro", name:"Slendro", cvar:"--c-slendro", badge:"≈5 equal",
+    pitches:()=>[0,240,480,720,960].map((c,i)=>({cents:c,tok:["1","2","3","5","6"][i]})) },
+
+  { id:"pelog", name:"Pelog", cvar:"--c-pelog", badge:"≈ varies",
+    pitches:()=>[0,120,270,540,670,785,945].map((c,i)=>({cents:c,tok:String(i+1)})) },
+
+  { id:"maqam", name:"Arabic maqam", cvar:"--c-maqam", badge:"24-TET",
+    pitches:()=>Array.from({length:24},(_,k)=>{
+      const c=k*50, quarter=(k%2===1);
+      return {cents:c, tok: quarter ? "◗" : "west", quarter, westTok:!quarter};
+    }) },
+
+  { id:"thai", name:"Thai", cvar:"--c-thai", badge:"≈7 equal",
+    pitches:()=>eqSteps(7).map((c,i)=>({cents:c,tok:String(i+1)})) },
+
+  { id:"turk", name:"Turkish comma", cvar:"--c-turk", badge:"53-comma", off:true,
+    pitches:()=>eqSteps(53).map((c,i)=>({cents:c, tok: (i%9===0? String(i):""), faint:true})) },
+];
+
+/* ---------- state ---------- */
+const state = {
+  a4:440, f0:0, tonicMidi:60,
+  enabled:new Set(SYSTEMS.filter(s=>!s.off).map(s=>s.id)),
+  curFreq:0, curCents:0,
+  expSysId:"sargam", expMode:null, expSel:0,
+};
+
+/* ---------- audio ---------- */
+let AC=null, master=null, droneOsc=null, droneGain=null, scrubOsc=null, scrubGain=null;
+function ensureAudio(){
+  if(AC) { if(AC.state==="suspended") AC.resume(); return; }
+  AC = new (window.AudioContext||window.webkitAudioContext)();
+  master = AC.createGain(); master.gain.value = +vol.value*0.9; master.connect(AC.destination);
+  const lp=AC.createBiquadFilter(); lp.type="lowpass"; lp.frequency.value=6500; lp.connect(master);
+  master._pre=lp;
+  if(AC.state==="suspended") AC.resume();
+}
+function pluck(freq, dur=0.55){
+  ensureAudio();
+  const o=AC.createOscillator(), g=AC.createGain();
+  o.type=wave.value; o.frequency.value=freq;
+  const t=AC.currentTime;
+  g.gain.setValueAtTime(0,t);
+  g.gain.linearRampToValueAtTime(0.9,t+0.008);
+  g.gain.exponentialRampToValueAtTime(0.0008,t+dur);
+  o.connect(g); g.connect(master._pre);
+  o.start(t); o.stop(t+dur+0.05);
+}
+function startScrub(freq){
+  ensureAudio();
+  scrubOsc=AC.createOscillator(); scrubGain=AC.createGain();
+  scrubOsc.type=wave.value; scrubOsc.frequency.value=freq;
+  scrubGain.gain.setValueAtTime(0,AC.currentTime);
+  scrubGain.gain.linearRampToValueAtTime(0.85,AC.currentTime+0.02);
+  scrubOsc.connect(scrubGain); scrubGain.connect(master._pre); scrubOsc.start();
+}
+function glideScrub(freq){ if(scrubOsc) scrubOsc.frequency.setTargetAtTime(freq,AC.currentTime,0.015); }
+function stopScrub(){
+  if(!scrubOsc) return;
+  const t=AC.currentTime; scrubGain.gain.setTargetAtTime(0,t,0.03);
+  scrubOsc.stop(t+0.2); scrubOsc=null; scrubGain=null;
+}
+function setDrone(on){
+  ensureAudio();
+  if(on){
+    if(droneOsc) return;
+    droneOsc=AC.createOscillator(); droneGain=AC.createGain();
+    droneOsc.type="sine"; droneOsc.frequency.value=state.f0;
+    droneGain.gain.setValueAtTime(0,AC.currentTime);
+    droneGain.gain.linearRampToValueAtTime(0.28,AC.currentTime+0.1);
+    droneOsc.connect(droneGain); droneGain.connect(master._pre); droneOsc.start();
+  } else if(droneOsc){
+    const t=AC.currentTime; droneGain.gain.setTargetAtTime(0,t,0.08);
+    droneOsc.stop(t+0.4); droneOsc=null;
+  }
+}
+
+/* ---------- element refs ---------- */
+const $=id=>document.getElementById(id);
+const a4=$("a4"), tonic=$("tonic"), wave=$("wave"), vol=$("vol"),
+  drone=$("drone"), snap=$("snap"),
+  legend=$("legend"), rowsEl=$("rows"), axisEl=$("axis"),
+  scrub=$("scrub"), playhead=$("playhead"), tip=$("tip"),
+  expsys=$("expsys"), modewrap=$("modewrap"), expmode=$("expmode"), notesEl=$("notes"),
+  readout=$("readout"),
+  tfreq=$("tfreq"), tslider=$("tslider"), ttable=$("ttable"), tinfo=$("tinfo");
+
+/* ---------- setup: tonic dropdown ---------- */
+(function(){
+  let html="";
+  for(let m=48;m<=72;m++){
+    const nm=NOTE_NAMES[m%12], oct=Math.floor(m/12)-1;
+    html+=`<option value="${m}" ${m===60?"selected":""}>${nm}${oct}</option>`;
+  }
+  tonic.innerHTML=html;
+})();
+
+/* ---------- setup: system + legend selectors ---------- */
+SYSTEMS.forEach(s=>{
+  // legend chip
+  const chip=document.createElement("button");
+  chip.className="chip"; chip.style.setProperty("--hue",`var(${s.cvar})`);
+  chip.setAttribute("aria-pressed", state.enabled.has(s.id));
+  chip.innerHTML=`<span class="dot"></span>${s.name}`;
+  chip.onclick=()=>{
+    if(state.enabled.has(s.id)) state.enabled.delete(s.id); else state.enabled.add(s.id);
+    chip.setAttribute("aria-pressed", state.enabled.has(s.id));
+    renderRuler(); renderTranslate();
+  };
+  legend.appendChild(chip);
+  // explore <option>
+  const o=document.createElement("option"); o.value=s.id; o.textContent=s.name;
+  if(s.id===state.expSysId) o.selected=true;
+  expsys.appendChild(o);
+});
+
+/* ---------- helpers ---------- */
+function tokenFor(p, absFreq){
+  if(p.westTok || p.tok==="west"){ const w=nearestWestern(absFreq,state.a4); return w.name; }
+  return p.tok;
+}
+function sysPitches(s){
+  const mode = s.modes ? (s.__mode || s.modes[0].id) : null;
+  return s.pitches(mode);
+}
+
+/* ---------- render: axis ---------- */
+function renderAxis(){
+  let h="";
+  for(let c=0;c<=1200;c+=100){
+    const strong = (c%600===0);
+    h+=`<div class="g${strong?" strong":""}" style="left:${c/1200*100}%"></div>`;
+    if(c===0||c===600||c===1200) h+=`<div class="glab" style="left:${c/1200*100}%">${c}¢</div>`;
+  }
+  axisEl.innerHTML=h;
+}
+
+/* ---------- render: ruler rows ---------- */
+function renderRuler(){
+  rowsEl.innerHTML="";
+  SYSTEMS.filter(s=>state.enabled.has(s.id)).forEach(s=>{
+    const row=document.createElement("div"); row.className="row";
+    row.style.setProperty("--hue",`var(${s.cvar})`);
+    const pitches=sysPitches(s);
+    const badge = s.badge ? `<span class="badge">${s.badge}</span>`:"";
+    let ticks="";
+    pitches.forEach(p=>{
+      const abs=fFromCents(p.cents,state.f0);
+      const tok=tokenFor(p,abs);
+      const cls="tick"+(p.quarter?" quarter":"");
+      const barStyle = p.faint? "opacity:.35;height:12px":"";
+      ticks+=`<div class="${cls}" data-c="${p.cents}" data-sys="${s.id}">
+        <span class="tok">${p.faint&&!tok?"":tok}</span>
+        <span class="bar" style="${barStyle}"></span></div>`;
+    });
+    row.innerHTML=`<div class="rlabel"><span class="nm">${s.name}</span>${badge}</div>
+      <div class="track">${ticks}</div>`;
+    rowsEl.appendChild(row);
+  });
+  // position ticks (they are absolutely placed by left%)
+  rowsEl.querySelectorAll(".tick").forEach(t=>{
+    t.style.left = (parseFloat(t.dataset.c)/1200*100)+"%";
+  });
+  bindTickTips();
+  positionPlayhead();
+  highlightNearest();
+}
+
+/* tooltips on ticks */
+function bindTickTips(){
+  rowsEl.querySelectorAll(".tick").forEach(t=>{
+    t.addEventListener("mouseenter",e=>{
+      const c=parseFloat(t.dataset.c), abs=fFromCents(c,state.f0);
+      const w=nearestWestern(abs,state.a4);
+      const sys=SYSTEMS.find(s=>s.id===t.dataset.sys);
+      const off=(w.cents>=0?"+":"")+fmt(w.cents,0)+"¢";
+      tip.innerHTML=`<b>${sys.name}</b><br>${fmt(c,1)}¢ from tonic<br>${fmt(abs,2)} Hz<br>≈ ${w.name}${w.octave} ${off}`;
+      tip.style.opacity="1";
+    });
+    t.addEventListener("mousemove",e=>{
+      tip.style.left=Math.min(e.clientX+14, innerWidth-240)+"px";
+      tip.style.top=(e.clientY+16)+"px";
+    });
+    t.addEventListener("mouseleave",()=>tip.style.opacity="0");
+  });
+}
+
+/* ---------- nearest-pitch highlight across rows ---------- */
+function highlightNearest(){
+  SYSTEMS.filter(s=>state.enabled.has(s.id)).forEach(s=>{
+    const pitches=sysPitches(s);
+    let best=1e9,bc=null;
+    pitches.forEach(p=>{ const d=Math.abs(((p.cents-state.curCents+600)%1200)-600); if(d<best){best=d;bc=p.cents;} });
+    rowsEl.querySelectorAll(`.tick[data-sys="${s.id}"]`).forEach(t=>{
+      t.classList.toggle("near", Math.abs(parseFloat(t.dataset.c)-bc)<0.01);
+    });
+  });
+}
+
+/* ---------- playhead ---------- */
+function positionPlayhead(){
+  if(state.curFreq===0){ playhead.style.display="none"; return; }
+  const zone=scrub.getBoundingClientRect();
+  const trackW=zone.width;
+  playhead.style.display="block";
+  playhead.style.left = `calc(var(--gut) + ${state.curCents/1200*trackW}px)`;
+}
+
+/* set the "current" pitch everywhere */
+function setCurrent(absFreq, sourceOctaveCents){
+  state.curFreq=absFreq;
+  const c = sourceOctaveCents!=null ? sourceOctaveCents
+          : ((centsBetween(absFreq,state.f0)%1200)+1200)%1200;
+  state.curCents=c;
+  positionPlayhead(); highlightNearest();
+  renderTranslate(absFreq);
+}
+
+/* ---------- ruler scrub interaction ---------- */
+function xToCents(clientX){
+  const r=scrub.getBoundingClientRect();
+  let f=(clientX-r.left)/r.width; f=Math.max(0,Math.min(1,f));
+  return f*1200;
+}
+function nearestEnabledCents(c){
+  let best=1e9,bc=c;
+  SYSTEMS.filter(s=>state.enabled.has(s.id)).forEach(s=>{
+    sysPitches(s).forEach(p=>{ const d=Math.abs(p.cents-c); if(d<best){best=d;bc=p.cents;} });
+  });
+  return bc;
+}
+let scrubbing=false;
+function scrubAt(clientX, glide){
+  let c=xToCents(clientX);
+  if(snap.checked) c=nearestEnabledCents(c);
+  const f=fFromCents(c,state.f0);
+  setCurrent(f,c);
+  if(glide) glideScrub(f); else startScrub(f);
+}
+scrub.addEventListener("pointerdown",e=>{
+  ensureAudio(); scrubbing=true; scrub.setPointerCapture(e.pointerId);
+  scrubAt(e.clientX,false);
+});
+scrub.addEventListener("pointermove",e=>{ if(scrubbing) scrubAt(e.clientX,true); });
+const endScrub=()=>{ if(scrubbing){scrubbing=false; stopScrub();} };
+scrub.addEventListener("pointerup",endScrub);
+scrub.addEventListener("pointercancel",endScrub);
+
+/* ---------- explore panel ---------- */
+function currentExpSys(){ return SYSTEMS.find(s=>s.id===state.expSysId); }
+function renderModeSelector(){
+  const s=currentExpSys();
+  if(s.modes){
+    modewrap.style.display="";
+    expmode.innerHTML=s.modes.map(m=>`<option value="${m.id}">${m.name}</option>`).join("");
+    state.expMode = s.__mode || s.modes[0].id;
+    s.__mode=state.expMode; expmode.value=state.expMode;
+  } else { modewrap.style.display="none"; state.expMode=null; }
+}
+function renderNotes(){
+  const s=currentExpSys();
+  readout.style.setProperty("--hue",`var(${s.cvar})`);
+  notesEl.style.setProperty("--hue",`var(${s.cvar})`);
+  const pitches=sysPitches(s);
+  notesEl.innerHTML="";
+  pitches.forEach((p,i)=>{
+    const abs=fFromCents(p.cents,state.f0);
+    const tok=tokenFor(p,abs);
+    const b=document.createElement("button");
+    b.className="note"+(i===state.expSel?" sel":"");
+    b.style.setProperty("--hue",`var(${s.cvar})`);
+    b.innerHTML=`<span class="t">${tok}</span><span class="c">${fmt(p.cents,0)}¢</span>`;
+    b.onclick=()=>{ state.expSel=i; selectExpNote(i); renderNotes(); };
+    notesEl.appendChild(b);
+  });
+}
+function selectExpNote(i){
+  const s=currentExpSys(), p=sysPitches(s)[i];
+  const abs=fFromCents(p.cents,state.f0);
+  const tok=tokenFor(p,abs);
+  const w=nearestWestern(abs,state.a4);
+  const off=(w.cents>=0?"+":"")+fmt(w.cents,0)+"¢";
+  $("ro-big").textContent=tok;
+  $("ro-big").style.color=`var(${s.cvar})`;
+  $("ro-sub").textContent=s.name + (state.expMode? " · "+s.modes.find(m=>m.id===state.expMode).name : "");
+  $("ro-cents").textContent=fmt(p.cents,1)+"¢";
+  $("ro-hz").textContent=fmt(abs,2)+" Hz";
+  $("ro-ratio").textContent = p.ratio ? p.ratio[0]+" : "+p.ratio[1] : "—";
+  $("ro-west").innerHTML=`${w.name}${w.octave} <span class="off">${off}</span>`;
+  $("ro-midi").textContent = Math.abs(w.cents)<0.5 ? w.midi : "≈"+w.midi;
+  pluck(abs);
+  setCurrent(abs,p.cents);
+}
+$("ro-play").onclick=()=>{ const s=currentExpSys(),p=sysPitches(s)[state.expSel];
+  pluck(fFromCents(p.cents,state.f0)); };
+expsys.onchange=()=>{ state.expSysId=expsys.value; state.expSel=0; renderModeSelector(); renderNotes(); selectExpNote(0); };
+expmode.onchange=()=>{ currentExpSys().__mode=expmode.value; state.expMode=expmode.value; state.expSel=0;
+  renderNotes(); selectExpNote(0); renderRuler(); };
+
+/* ---------- translate panel ---------- */
+function renderTranslate(absFreq){
+  const f = absFreq!=null ? absFreq : state.curFreq || state.f0;
+  const cAbs = centsBetween(f,state.f0);
+  const cOct = ((cAbs%1200)+1200)%1200;
+  const w=nearestWestern(f,state.a4);
+  tinfo.textContent=`${fmt(f,2)} Hz  ·  ${fmt(cAbs,1)}¢ from tonic  ·  nearest concert pitch ${w.name}${w.octave} ${(w.cents>=0?"+":"")+fmt(w.cents,0)}¢`;
+  // keep inputs in sync (without feedback loops)
+  if(document.activeElement!==tfreq) tfreq.value=fmt(f,2);
+  if(document.activeElement!==tslider) tslider.value=fmt(cOct,1);
+
+  let rows="";
+  SYSTEMS.filter(s=>state.enabled.has(s.id)).forEach(s=>{
+    const pitches=sysPitches(s);
+    let best=1e9,bp=null;
+    pitches.forEach(p=>{ const d=((p.cents-cOct+600)%1200)-600; if(Math.abs(d)<Math.abs(best)){best=d;bp=p;} });
+    const abs=fFromCents(bp.cents,state.f0);
+    const tok=tokenFor(bp,abs);
+    const dv=best; // signed: +ve means the pitch is sharp of target
+    const cls = Math.abs(dv)<3?"intune":(dv>0?"sharp":"flat");
+    const sign = Math.abs(dv)<0.5?"in tune":(dv>0?"+"+fmt(dv,0)+"¢":fmt(dv,0)+"¢");
+    const meterPos = 50 + Math.max(-50,Math.min(50, dv/50*50)); // ±50¢ full scale
+    rows+=`<tr class="sysrow" style="--hue:var(${s.cvar})" data-cents="${bp.cents}">
+      <td><span class="sysname"><span class="dot"></span>${s.name}</span></td>
+      <td class="mono">${tok}${bp.ratio?` <span style="color:var(--muted2)">(${bp.ratio[0]}:${bp.ratio[1]})</span>`:""}</td>
+      <td class="mono">${fmt(bp.cents,1)}¢</td>
+      <td class="mono">${fmt(abs,2)}</td>
+      <td class="mono delta ${cls}">${sign}</td>
+      <td><div class="meter"><i></i><b style="left:${meterPos}%"></b></div></td>
+    </tr>`;
+  });
+  ttable.innerHTML=rows;
+  ttable.querySelectorAll(".sysrow").forEach(r=>{
+    r.onclick=()=> pluck(fFromCents(parseFloat(r.dataset.cents),state.f0));
+  });
+}
+tfreq.oninput=()=>{ const f=parseFloat(tfreq.value); if(f>0){ setCurrent(f); } };
+tslider.oninput=()=>{ const c=parseFloat(tslider.value); const f=fFromCents(c,state.f0); setCurrent(f,c); };
+$("tplay").onclick=()=>{ pluck(state.curFreq||state.f0); };
+
+/* ---------- tabs ---------- */
+function selectTab(which){
+  const ex=which==="explore";
+  $("tab-explore").setAttribute("aria-selected",ex);
+  $("tab-translate").setAttribute("aria-selected",!ex);
+  $("p-explore").hidden=!ex; $("p-translate").hidden=ex;
+}
+$("tab-explore").onclick=()=>selectTab("explore");
+$("tab-translate").onclick=()=>selectTab("translate");
+
+/* ---------- global controls ---------- */
+function recompute(){
+  state.a4=parseFloat(a4.value)||440;
+  state.tonicMidi=parseInt(tonic.value);
+  state.f0=midiToFreq(state.tonicMidi,state.a4);
+  if(droneOsc) droneOsc.frequency.setTargetAtTime(state.f0,AC.currentTime,0.02);
+  renderRuler(); renderNotes();
+  // refresh readout numbers for current selection
+  selectExpNoteSilent();
+  renderTranslate(state.curFreq||state.f0);
+}
+function selectExpNoteSilent(){
+  const s=currentExpSys(), p=sysPitches(s)[state.expSel]; if(!p) return;
+  const abs=fFromCents(p.cents,state.f0), tok=tokenFor(p,abs), w=nearestWestern(abs,state.a4);
+  const off=(w.cents>=0?"+":"")+fmt(w.cents,0)+"¢";
+  $("ro-hz").textContent=fmt(abs,2)+" Hz";
+  $("ro-west").innerHTML=`${w.name}${w.octave} <span class="off">${off}</span>`;
+  $("ro-midi").textContent = Math.abs(w.cents)<0.5 ? w.midi : "≈"+w.midi;
+}
+a4.oninput=recompute;
+tonic.onchange=recompute;
+vol.oninput=()=>{ if(master) master.gain.value=parseFloat(vol.value)*0.9; };
+wave.onchange=()=>{}; // applied at note creation
+drone.onchange=()=>setDrone(drone.checked);
+
+/* ---------- reposition playhead on resize ---------- */
+addEventListener("resize",()=>{ positionPlayhead(); });
+
+/* ---------- signature line ---------- */
+$("sig").textContent="Rosetta Pitch · cents = 1200·log₂(f/tonic) · built to be extended — the tuning tables live at the top of the script.";
+
+/* ---------- boot ---------- */
+renderAxis();
+recompute();
+renderModeSelector();
+renderNotes();
+selectExpNote(0);         // seed readout + current pitch (silent-safe: gesture needed for sound, but sets state)
+setCurrent(fFromCents(sysPitches(currentExpSys())[0].cents,state.f0), 0);
+</script>
+</body>
+</html>

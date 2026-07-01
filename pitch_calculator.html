@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PySynthRack — Pitch Calculator</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#171c24; --panel2:#1f2630; --ink:#e7edf5; --dim:#8a97a8;
+    --accent:#33d6c2; --accent2:#ffd479; --line:#2a323d; --white:#eef3f8; --black:#11161d;
+    --hot:#ffb454;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 50% -10%,#16202b,#0e1116);
+       color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       padding:28px 16px 56px;}
+  .wrap{max-width:880px;margin:0 auto}
+  h1{font-size:22px;font-weight:650;letter-spacing:.2px;margin:0 0 2px}
+  .sub{color:var(--dim);font-size:13px;margin:0 0 22px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 18px;margin-bottom:18px}
+  .controls{display:flex;flex-wrap:wrap;gap:18px;align-items:flex-end}
+  .ctl{display:flex;flex-direction:column;gap:6px}
+  label{font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--dim)}
+  select,input[type=number]{background:var(--panel2);color:var(--ink);border:1px solid var(--line);
+       border-radius:9px;padding:9px 11px;font-size:14px;min-width:120px}
+  select:disabled{opacity:.4}
+  .seg{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .seg button{background:var(--panel2);color:var(--ink);border:0;padding:9px 12px;font-size:13px;cursor:pointer}
+  .seg button.on{background:var(--accent);color:#06201c;font-weight:650}
+  .oct{display:flex;align-items:center;gap:0}
+  .oct button{width:38px;height:38px;font-size:20px;background:var(--panel2);color:var(--ink);
+       border:1px solid var(--line);cursor:pointer;border-radius:9px}
+  .oct .val{min-width:46px;text-align:center;font-size:18px;font-variant-numeric:tabular-nums}
+  .a4row{display:flex;gap:6px;align-items:center}
+  .chip{background:var(--panel2);border:1px solid var(--line);color:var(--dim);border-radius:7px;
+       padding:7px 9px;font-size:12px;cursor:pointer}
+  .chip:hover{color:var(--ink)}
+  /* readout */
+  .read{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+  .note-big{font-size:40px;font-weight:700}
+  .hz{font-size:40px;font-weight:300;font-variant-numeric:tabular-nums;color:var(--accent)}
+  .hz small{font-size:20px;color:var(--dim);margin-left:4px}
+  .cents{font-size:14px;color:var(--hot);font-variant-numeric:tabular-nums}
+  .midi{color:var(--dim);font-size:13px}
+  /* piano */
+  .piano{position:relative;height:150px;margin:6px 2px 2px;user-select:none}
+  .white{position:absolute;top:0;height:150px;border:1px solid #050709;border-radius:0 0 7px 7px;
+       background:linear-gradient(#fbfdff,#dde6ef);cursor:pointer;display:flex;align-items:flex-end;
+       justify-content:center;padding-bottom:8px;color:#27313d;font-size:12px;font-weight:600}
+  .white:active,.white.play{background:linear-gradient(#bfeee8,#7fd8cc)}
+  .white.sel{box-shadow:inset 0 0 0 3px var(--accent)}
+  .black{position:absolute;top:0;height:96px;width:26px;border-radius:0 0 6px 6px;
+       background:linear-gradient(#2a333d,#0c1015);cursor:pointer;z-index:2;display:flex;align-items:flex-end;
+       justify-content:center;padding-bottom:6px;color:#aeb9c6;font-size:10px}
+  .black:active,.black.play{background:linear-gradient(#1d8f83,#0c4a43)}
+  .black.sel{box-shadow:inset 0 0 0 2px var(--accent),0 0 0 1px var(--accent)}
+  /* table */
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:right;padding:7px 10px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+  th{color:var(--dim);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.6px}
+  td.name{text-align:left;font-weight:600}
+  tr.sel td{background:rgba(51,214,194,.12)}
+  tr.acc td.name{color:var(--dim)}
+  .hint{color:var(--dim);font-size:12.5px;margin-top:10px}
+  .foot{color:var(--dim);font-size:12px;text-align:center;margin-top:24px;line-height:1.7}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Pitch Calculator</h1>
+  <p class="sub">Note &amp; octave → frequency, across tuning systems. Click any key to hear it. Part of PySynthRack.</p>
+
+  <div class="panel">
+    <div class="controls">
+      <div class="ctl">
+        <label>Tuning</label>
+        <select id="tuning">
+          <option value="et">12-TET (equal)</option>
+          <option value="ji">Just intonation (5-limit)</option>
+          <option value="py">Pythagorean</option>
+        </select>
+      </div>
+      <div class="ctl">
+        <label>Key / tonic</label>
+        <select id="tonic" title="Reference tonic for Just / Pythagorean"></select>
+      </div>
+      <div class="ctl">
+        <label>A4 reference</label>
+        <div class="a4row">
+          <input type="number" id="a4" value="440" min="380" max="500" step="0.1" style="min-width:92px">
+          <span class="chip" data-a4="432">432</span>
+          <span class="chip" data-a4="440">440</span>
+          <span class="chip" data-a4="415">415</span>
+        </div>
+      </div>
+      <div class="ctl">
+        <label>Octave</label>
+        <div class="oct">
+          <button id="octd">−</button><div class="val" id="octv">4</div><button id="octu">+</button>
+        </div>
+      </div>
+      <div class="ctl">
+        <label>Wave</label>
+        <select id="wave">
+          <option value="sine">sine</option><option value="triangle">triangle</option>
+          <option value="sawtooth">saw</option><option value="square">square</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="read">
+      <span class="note-big" id="rNote">A4</span>
+      <span class="hz" id="rHz">440.00<small>Hz</small></span>
+      <span class="cents" id="rCents"></span>
+    </div>
+    <div class="midi" id="rMidi"></div>
+    <div class="piano" id="piano"></div>
+    <div class="hint" id="hint"></div>
+  </div>
+
+  <div class="panel">
+    <table>
+      <thead><tr><th class="name" style="text-align:left">Note</th><th>Frequency</th><th>vs 12-TET</th><th>MIDI</th><th>Ratio</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="foot">
+    12-TET = equal temperament (every semitone = 2<sup>1/12</sup>). Just &amp; Pythagorean are built as
+    exact frequency ratios above the chosen tonic, with that tonic anchored to its equal-tempered pitch.<br>
+    Made for PySynthRack — patch these into <code>oscillator.freq</code> or a <code>constant</code> → <code>cv_to_frequency</code>.
+  </div>
+</div>
+
+<script>
+const NOTES=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const WHITE=[0,2,4,5,7,9,11], BLACK={1:0,3:1,6:3,8:4,10:5}; // black pc -> index of white it sits after
+const JI =[1,16/15,9/8,6/5,5/4,4/3,45/32,3/2,8/5,5/3,9/5,15/8];
+const PY3=[1,256/243,9/8,32/27,81/64,4/3,729/512,3/2,128/81,27/16,16/9,243/128];
+const JI_S=["1/1","16/15","9/8","6/5","5/4","4/3","45/32","3/2","8/5","5/3","9/5","15/8"];
+const PY_S=["1/1","256/243","9/8","32/27","81/64","4/3","729/512","3/2","128/81","27/16","16/9","243/128"];
+
+const st={tuning:"et",tonic:0,a4:440,octave:4,sel:9,wave:"sine"};
+
+const midi=(pc,oct)=>(oct+1)*12+pc;
+const etFreq=(pc,oct,a4)=>a4*Math.pow(2,(midi(pc,oct)-69)/12);
+function tunedFreq(pc,oct,tonic,table,a4){
+  const tonicMidi=midi(tonic,4);
+  const d=midi(pc,oct)-tonicMidi;
+  const octs=Math.floor(d/12), within=d-12*octs;
+  const tonicF=a4*Math.pow(2,(tonicMidi-69)/12);
+  return tonicF*table[within]*Math.pow(2,octs);
+}
+function freqFor(pc,oct){
+  if(st.tuning==="et") return etFreq(pc,oct,st.a4);
+  return tunedFreq(pc,oct,st.tonic,st.tuning==="ji"?JI:PY3,st.a4);
+}
+function ratioFor(pc){
+  if(st.tuning==="et") return "—";
+  const within=((pc-st.tonic)%12+12)%12;
+  return (st.tuning==="ji"?JI_S:PY_S)[within];
+}
+const centsVsEt=(pc,oct)=>1200*Math.log2(freqFor(pc,oct)/etFreq(pc,oct,st.a4));
+
+// audio
+let ac=null;
+function play(pc,oct){
+  ac=ac||new (window.AudioContext||window.webkitAudioContext)();
+  const f=freqFor(pc,oct), o=ac.createOscillator(), g=ac.createGain(), t=ac.currentTime;
+  o.type=st.wave; o.frequency.value=f;
+  g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(.32,t+.012);
+  g.gain.exponentialRampToValueAtTime(.0008,t+.9);
+  o.connect(g).connect(ac.destination); o.start(t); o.stop(t+.95);
+}
+
+function buildPiano(){
+  const p=document.getElementById("piano"); p.innerHTML="";
+  const ww=100/7;
+  WHITE.forEach((pc,i)=>{
+    const k=document.createElement("div"); k.className="white"; k.dataset.pc=pc;
+    k.style.left=(i*ww)+"%"; k.style.width=ww+"%";
+    k.textContent=NOTES[pc]+st.octave;
+    k.onclick=()=>select(pc);
+    p.appendChild(k);
+  });
+  Object.entries(BLACK).forEach(([pc,wi])=>{
+    const k=document.createElement("div"); k.className="black"; k.dataset.pc=pc;
+    k.style.left="calc("+((wi+1)*ww)+"% - 13px)";
+    k.title=NOTES[pc]+st.octave;
+    k.onclick=(e)=>{e.stopPropagation();select(+pc);};
+    p.appendChild(k);
+  });
+}
+
+function select(pc){ st.sel=pc; play(pc,st.octave); render(); }
+
+function fmt(f){ return f>=1000? f.toFixed(1): f.toFixed(2); }
+
+function render(){
+  document.getElementById("tonic").disabled = (st.tuning==="et");
+  // readout
+  const pc=st.sel, oct=st.octave, f=freqFor(pc,oct);
+  document.getElementById("rNote").textContent=NOTES[pc]+oct;
+  document.getElementById("rHz").innerHTML=fmt(f)+'<small>Hz</small>';
+  const c=centsVsEt(pc,oct);
+  document.getElementById("rCents").textContent = st.tuning==="et" ? "" :
+      (c>=0?"+":"")+c.toFixed(1)+"¢ vs equal";
+  document.getElementById("rMidi").textContent="MIDI note "+midi(pc,oct)+
+      "   ·   period "+(1000/f).toFixed(3)+" ms"+
+      (st.tuning!=="et" ? "   ·   ratio "+ratioFor(pc)+" from "+NOTES[st.tonic] : "");
+  // piano highlight
+  document.querySelectorAll(".white,.black").forEach(k=>{
+    k.classList.toggle("sel",+k.dataset.pc===pc);
+    const lab=NOTES[+k.dataset.pc]+st.octave;
+    if(k.classList.contains("white")) k.textContent=lab;
+  });
+  // table
+  const tb=document.getElementById("tbody"); tb.innerHTML="";
+  for(let p=0;p<12;p++){
+    const ff=freqFor(p,oct), cc=centsVsEt(p,oct), acc=!WHITE.includes(p);
+    const tr=document.createElement("tr");
+    if(p===pc) tr.className="sel"; else if(acc) tr.className="acc";
+    tr.innerHTML=`<td class="name">${NOTES[p]}${oct}</td><td>${fmt(ff)} Hz</td>`+
+      `<td>${st.tuning==="et"?"—":(cc>=0?"+":"")+cc.toFixed(1)+"¢"}</td>`+
+      `<td>${midi(p,oct)}</td><td>${ratioFor(p)}</td>`;
+    tr.style.cursor="pointer"; tr.onclick=()=>select(p);
+    tb.appendChild(tr);
+  }
+  document.getElementById("hint").textContent =
+    st.tuning==="et" ? "Equal temperament — key has no effect; every note is an exact 2^(n/12) step from A4."
+    : (st.tuning==="ji"?"Just intonation":"Pythagorean")+" in the key of "+NOTES[st.tonic]+
+      " — pure ratios from the tonic. Switch key to re-anchor.";
+}
+
+// wire controls
+const tonicSel=document.getElementById("tonic");
+NOTES.forEach((n,i)=>{const o=document.createElement("option");o.value=i;o.textContent=n;tonicSel.appendChild(o);});
+tonicSel.value=0;
+document.getElementById("tuning").onchange=e=>{st.tuning=e.target.value;render();};
+tonicSel.onchange=e=>{st.tonic=+e.target.value;render();};
+document.getElementById("wave").onchange=e=>{st.wave=e.target.value;};
+const a4in=document.getElementById("a4");
+a4in.oninput=e=>{const v=parseFloat(e.target.value);if(v>0){st.a4=v;render();}};
+document.querySelectorAll(".chip").forEach(c=>c.onclick=()=>{st.a4=+c.dataset.a4;a4in.value=c.dataset.a4;render();});
+function setOct(v){st.octave=Math.max(0,Math.min(8,v));document.getElementById("octv").textContent=st.octave;buildPiano();render();}
+document.getElementById("octu").onclick=()=>setOct(st.octave+1);
+document.getElementById("octd").onclick=()=>setOct(st.octave-1);
+window.addEventListener("keydown",e=>{
+  const map={a:0,w:1,s:2,e:3,d:4,f:5,t:6,g:7,y:8,h:9,u:10,j:11};
+  if(e.key in map){select(map[e.key]);}
+  if(e.key==="ArrowUp")setOct(st.octave+1);
+  if(e.key==="ArrowDown")setOct(st.octave-1);
+});
+
+buildPiano(); render();
+</script>
+</body>
+</html>
