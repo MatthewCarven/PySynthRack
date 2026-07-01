@@ -272,3 +272,65 @@ Living list of what's next. Edit freely.
 - [ ] Refresh-devices button on the MIDIInput node — today the device combo snapshots `available_devices()` at widget creation; installing `[midi]` after the app is open leaves the dropdown stale until the patch is reopened.
 - [ ] App icon for the packaged `.exe` -- add a `.ico` and reference it from `pysynthrack.spec` (EXE(icon=...))
 - [ ] Code-signed build -- removes the SmartScreen "unrecognized publisher" prompt; only worth it if the synth ever leaves the hobby circle
+
+## CV coverage — filling the "uneven CV coverage" gap (captured 2026-07-02)
+
+Audit finding: most processors take CV (filter `cutoff_cv`, delay `time_cv`,
+chorus/flanger/phaser `rate_cv`, loudness `level_cv`, resampler/pitch_shifter
+`pitch_cv`, vca `cv`, oscillator `freq_cv`/`amp_cv`), but `parametric_eq`,
+`crossover`, `reverb` and `mixer` are static. Plan below. No implementation
+yet — spec capture only. Module names are Claude's call (Matthew deferred);
+open to a better scheme if one turns up.
+
+- [ ] **Animated-EQ trio — three CV-controllable EQ modules.** Matthew's call:
+      offer a *module per take* rather than one mega-EQ. All three are new
+      modules; the existing `parametric_eq` stays exactly as-is (the static
+      one). Each follows the house CV convention (`<target>_cv` input +
+      `cv_depth`). The trio:
+
+  - [ ] **`motion_eq`** — *the "4 CV inputs" variation.* A full 4-band
+        parametric EQ with **four CV inputs**, `band1_freq_cv` … `band4_freq_cv`
+        (one per band), each sweeping **that band's centre frequency** — four
+        independently movable peaks/notches, the full "animated EQ". Band
+        `gain`/`q` stay static params (the 12 existing `band{i}_*` params carry
+        over); a **shared `cv_depth`** (octaves per unit, 1 V/oct) scales the
+        sweep. *Alternative to weigh at build time:* per-band `band{i}_cv_depth`
+        for independent sensitivity, and/or offering gain-CV instead of/along
+        with freq-CV. Ports: `in` (audio) + `band1_freq_cv`…`band4_freq_cv`
+        (cv) → `out` (audio). Reuse `parametric_eq`'s RBJ peaking cascade;
+        make the per-band centre freq per-block CV-summed like the mod FX.
+
+  - [ ] **`sweep_eq`** — *spin-off #1, the single-swept-band take (auto-wah).*
+        ONE resonant band whose **centre frequency** a single `freq_cv` sweeps.
+        Default **high `q`** for a vocal wah voicing (this is what distinguishes
+        it from "just one of `motion_eq`'s bands" — it's tuned to sound like a
+        wah, not a gentle EQ bump). Params: `freq`, `gain`, `q` (high default),
+        `cv_depth` (oct/unit), `mix`. Ports: `in` + `freq_cv` (cv) → `out`.
+        The focused, cheap node for the classic auto-wah / envelope-wah.
+
+  - [ ] **`tilt_eq`** — *spin-off #2, the global-tilt take.* One `tilt_cv`
+        **tilts the spectral balance** about a pivot frequency: as the CV rises,
+        lows boost + highs cut (and vice versa) — a bass↔treble seesaw, i.e.
+        one-knob voltage-controlled brightness/darkness. Implement as two
+        opposed shelves about `pivot` (like the `loudness` shelving pair).
+        Params: `pivot` (Hz), `tilt` (static base tilt, dB), `cv_depth`. Ports:
+        `in` + `tilt_cv` (cv) → `out`.
+
+- [ ] **Crossover `freq_cv`** — the easy CV-coverage win. Give `crossover` a
+      `freq_cv` input + `cv_depth`, mirroring the filter's `cutoff_cv`, so the
+      split point can be swept (dynamic band-splitting). Near copy-paste of the
+      filter's CV handling; the crossover already renamed `frequency`→`freq`.
+
+- [ ] **CV-depth convention standardisation** — the subtler half of "uneven CV
+      coverage": among modules that *do* take CV, the pattern drifted. The older
+      CV modules (`oscillator`, `filter`) bake in a fixed depth with **no**
+      `cv_depth` knob; everything from the delay onward added one — and
+      `cv_depth` means **octaves** (mod FX), **ms** (delay) or **semitones**
+      (resampler) depending on the module. Decide a house rule (document the
+      per-domain unit, or unify), and optionally retrofit a `cv_depth` onto
+      oscillator/filter — the new `PARAM_ALIASES` layer makes that painless.
+
+- [ ] **Reverb / mixer CV (lowest priority).** The other two static processors.
+      Reverb `mix`/`size`/`decay` CV for swelling or morphing spaces could be
+      nice; a voltage-controlled `mixer` (per-channel gain CV) is largely
+      redundant with putting a `vca` on each channel, so likely skip it.
