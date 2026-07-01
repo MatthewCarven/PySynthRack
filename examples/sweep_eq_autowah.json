@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    { "id": 1, "type": "oscillator", "name": "saw 110", "params": { "waveform": "saw_blep", "freq": 110.0, "amp": 0.3 } },
+    { "id": 2, "type": "lfo", "name": "wah LFO", "params": { "waveform": "sine", "rate": 1.2, "depth": 1.0, "bipolar": true } },
+    { "id": 3, "type": "sweep_eq", "name": "auto-wah", "params": { "mode": "bandpass", "freq": 500.0, "gain": 12.0, "q": 3.5, "cv_depth": 1.6, "mix": 1.0 } },
+    { "id": 4, "type": "speaker_output", "name": "speaker_output", "params": { "gain": 0.5 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 3, "dst_port": "in" },
+    { "src_module_id": 2, "src_port": "cv",  "dst_module_id": 3, "dst_port": "freq_cv" },
+    { "src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": { "1": [40, 80], "2": [40, 320], "3": [360, 180], "4": [680, 180] }
+  }
+}

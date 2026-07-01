@@ -203,6 +203,7 @@ class PyoBackend(AudioBackend):
             "sample_hold",
             "noise",
             "parametric_eq",
+            "sweep_eq",
             "meter",
             "ad_envelope",
             "chorus",

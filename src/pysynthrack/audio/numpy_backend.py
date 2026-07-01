@@ -714,6 +714,8 @@ class NumpyBackend(AudioBackend):
             return self._render_crossover(module, frames, buffers, patch)
         if module.TYPE == "parametric_eq":
             return self._render_parametric_eq(module, frames, buffers, patch)
+        if module.TYPE == "sweep_eq":
+            return self._render_sweep_eq(module, frames, buffers, patch)
         if module.TYPE == "meter":
             return self._render_meter(module, frames, buffers, patch)
         if module.TYPE == "chorus":
@@ -3841,6 +3843,133 @@ class NumpyBackend(AudioBackend):
             x = out
 
         return x.astype(np.float32)
+
+    # ----- SweepEQ rendering ----------------------------------------------
+
+    def _sweep_eq_coeffs(self, mode, freq, gain_db, q):
+        """One RBJ biquad's coefficients for the SweepEQ's current mode.
+
+        ``peak`` borrows ParametricEQ's peaking bell (``gain`` in dB);
+        ``bandpass``/``lowpass`` borrow the Filter's cookbook. Returns
+        ``(b0, b1, b2, a1n, a2n)`` scalars normalized by a0, or ``None``
+        for an unknown mode (the caller treats that as a dry
+        passthrough). freq/Q clamping happens inside the borrowed
+        helpers, so the sweep is as stable as the modules it reuses.
+        """
+        if mode == "peak":
+            b0, b1, b2, a1n, a2n = self._peq_coeffs([freq], [gain_db], [q])
+            return (float(b0[0]), float(b1[0]), float(b2[0]),
+                    float(a1n[0]), float(a2n[0]))
+        if mode in ("bandpass", "lowpass"):
+            return self._filter_coeffs(mode, freq, q)
+        return None
+
+    def _render_sweep_eq(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """A single CV-swept resonant biquad with a dry/wet mix.
+
+        Shape-polymorphic like Filter/ParametricEQ. ``freq_cv`` sweeps
+        the centre frequency 1 V/oct (block-mean * ``cv_depth``), one
+        coefficient set per block shared across voices -- the Crossover's
+        macro-sweep policy. ``mode`` picks the voicing (bandpass/lowpass
+        filter, or a peaking EQ bell); ``mix`` blends the result against
+        the dry input.
+        """
+        src = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
+        if src is None:
+            return np.zeros(frames, dtype=np.float32)
+
+        freq = float(module.params.get("freq", 800.0))
+        freq_cv = self._input_buffer(patch, buffers, module.id, "freq_cv")
+        if freq_cv is not None and freq_cv.size > 0:
+            cv_depth = float(module.params.get("cv_depth", 1.0))
+            freq = freq * float(2.0 ** (cv_depth * float(np.mean(freq_cv))))
+
+        mode = str(module.params.get("mode", "bandpass"))
+        gain = float(module.params.get("gain", 0.0))
+        q = float(module.params.get("q", 4.0))
+        mix = min(max(float(module.params.get("mix", 1.0)), 0.0), 1.0)
+
+        coeffs = self._sweep_eq_coeffs(mode, freq, gain, q)
+        if coeffs is None:
+            return src.astype(np.float32)  # unknown mode -> dry passthrough
+
+        if src.ndim == 2:
+            return self._render_sweep_eq_voice(module, frames, src, coeffs, mix)
+        return self._render_sweep_eq_mono(module, frames, src, coeffs, mix)
+
+    def _render_sweep_eq_mono(self, module, frames, src, coeffs, mix):
+        """Mono path -- one biquad via ``lfilter``, then blend with dry.
+
+        Raw DF-I history state (x1, x2, y1, y2), coefficient-independent
+        so a swept ``freq_cv`` changing coefficients between blocks stays
+        clean -- the same discipline as ``_render_filter_mono``. ``mix``
+        blends wet/dry: 0.0 is a bit-exact dry bypass, and a ``peak`` band
+        at 0 dB gain is a bit-exact passthrough at mix 1.0.
+        """
+        b0, b1, b2, a1n, a2n = coeffs
+        state = self._state.setdefault(
+            module.id, {"x1": 0.0, "x2": 0.0, "y1": 0.0, "y2": 0.0}
+        )
+        if "x1_arr" in state:  # was voice-shaped -> reinit to mono
+            state.clear()
+            state.update({"x1": 0.0, "x2": 0.0, "y1": 0.0, "y2": 0.0})
+
+        if frames == 0:
+            return np.empty(0, dtype=np.float32)
+
+        x1 = state["x1"]; x2 = state["x2"]
+        y1 = state["y1"]; y2 = state["y2"]
+        zi = np.array(
+            [b1 * x1 + b2 * x2 - a1n * y1 - a2n * y2, b2 * x1 - a2n * y1],
+            dtype=np.float64,
+        )
+        x = src.astype(np.float64)
+        wet, _zf = lfilter(
+            np.array([b0, b1, b2]), np.array([1.0, a1n, a2n]), x, zi=zi
+        )
+        state["x1"] = float(x[-1])
+        state["x2"] = float(x[-2]) if frames >= 2 else x1
+        state["y1"] = float(wet[-1])
+        state["y2"] = float(wet[-2]) if frames >= 2 else y1
+
+        out = mix * wet + (1.0 - mix) * x
+        return out.astype(np.float32)
+
+    def _render_sweep_eq_voice(self, module, frames, src, coeffs, mix):
+        """Voice path -- V parallel biquads (shared coeffs, one lfilter
+        over all rows), then blend with dry. Per-voice raw-history state;
+        a single voice row is bit-identical to the mono path.
+        """
+        b0, b1, b2, a1n, a2n = coeffs
+        V = src.shape[0]
+        state = self._state.setdefault(module.id, {})
+        needs_reinit = "x1_arr" not in state or state["x1_arr"].shape[0] != V
+        if needs_reinit:
+            state.clear()
+            for k in ("x1_arr", "x2_arr", "y1_arr", "y2_arr"):
+                state[k] = np.zeros(V, dtype=np.float64)
+
+        if frames == 0:
+            return np.empty((V, 0), dtype=np.float32)
+
+        x1 = state["x1_arr"]; x2 = state["x2_arr"]
+        y1 = state["y1_arr"]; y2 = state["y2_arr"]
+        zi1 = b1 * x1 + b2 * x2 - a1n * y1 - a2n * y2  # (V,)
+        zi2 = b2 * x1 - a2n * y1                        # (V,)
+        x = src.astype(np.float64)                      # (V, F)
+        wet, _zf = lfilter(
+            np.array([b0, b1, b2]), np.array([1.0, a1n, a2n]),
+            x, axis=1, zi=np.stack([zi1, zi2], axis=1),
+        )
+        state["x1_arr"] = x[:, -1].copy()
+        state["x2_arr"] = x[:, -2].copy() if frames >= 2 else x1
+        state["y1_arr"] = wet[:, -1].copy()
+        state["y2_arr"] = wet[:, -2].copy() if frames >= 2 else y1
+
+        out = mix * wet + (1.0 - mix) * x
+        return out.astype(np.float32)
 
     # ----- DiskWriter rendering -------------------------------------------
 

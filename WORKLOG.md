@@ -4776,3 +4776,51 @@ crossover node now shows a `freq` (Hz) drag and a `cv_depth` (oct/unit) drag.
 **Next on the CV-coverage plan.** The animated-EQ trio (`motion_eq`,
 `sweep_eq`, `tilt_eq`) and the `cv_depth`-convention standardisation remain;
 reverb/mixer CV stays lowest priority.
+
+---
+
+## 2026-07-02 — SweepEQ (`sweep_eq`): CV-swept resonant band / auto-wah
+
+Second item off the CV-coverage plan, and the first of the animated-EQ trio.
+Matthew picked `sweep_eq` alone this session, with a **switchable voicing**
+(over the plan's peak-only spec) — because the plain Filter + `cutoff_cv`
+already covers a true bandpass wah (`examples/wah.json`), so a one-trick node
+would have overlapped it.
+
+**What shipped.** A single CV-swept resonant band. `in` + `freq_cv` → `out`;
+params `mode` / `freq` / `gain` / `q` / `cv_depth` / `mix`. Three voicings:
+`bandpass` (default — the classic auto-wah), `lowpass` (resonant corner sweep),
+and `peak` (a swept EQ *bell* that boosts the moving band but passes the rest —
+the one thing the Filter can't do, since it keeps the full-range signal).
+`freq_cv` sweeps the centre 1 V/oct × `cv_depth`, block-meaned to one
+coefficient set per block shared across voices (the crossover's macro-sweep
+policy). `mix` blends dry/wet.
+
+**Cheap by reuse.** One RBJ biquad. `peak` borrows ParametricEQ's
+`_peq_coeffs`; `bandpass`/`lowpass` borrow the Filter's `_filter_coeffs` — so
+clamping, stability and the sweep all match the modules it borrows from. State
+is the coefficient-independent DF-I history (x1,x2,y1,y2), same discipline as
+the Filter, so a swept `freq_cv` changing coefficients per block stays clean.
+Shape-polymorphic; the voice path is one `lfilter` over all rows (shared
+coeffs) and a single voice row is bit-identical to the mono path.
+
+**Nice properties (tested).** `mix=0` is a bit-exact dry bypass; a `peak` band
+at 0 dB with `mix=1` is a bit-exact passthrough; `mix=0.5` reconstructs from
+the wet+dry renders. Behavioural: bandpass resonates at the centre (peak gain
+≈ Q) and rejects far tones; lowpass passes below / cuts above; peak boosts the
+band but leaves off-band at ~unity. `freq_cv` math: unit +CV at unit depth
+doubles the centre to a static-match, `cv_depth` scales the exponent, depth 0
+disables. Voice==mono bit-identical across all three modes. Block-size
+independent. **19 tests → suite 949 (931 passed + 18 mido-skips).**
+
+**Example.** `sweep_eq_autowah.json` — a 110 Hz saw through a `bandpass`
+sweep_eq (q 3.5), a 1.2 Hz LFO into `freq_cv` at `cv_depth` 1.6 (≈ 165–1500 Hz
+sweep); source amp backed to 0.3 and speaker to 0.5 for headroom (a resonant
+bandpass boosts ~Q× at the peak — [[feedback_gain_headroom]]). Post-gain peak
+0.31, RMS breathes ~2.85× over the sweep. UI: `mode` combo (bandpass/lowpass/
+peak) + freq/gain/q/cv_depth/mix widgets; pyo silent-stub extended.
+
+**Next on the CV-coverage plan.** `motion_eq` (4-band, four independent
+`freq_cv` inputs) and `tilt_eq` (one `tilt_cv` seesaws bass↔treble) remain of
+the trio; then the `cv_depth`-convention standardisation. Reverb/mixer CV stays
+lowest priority.

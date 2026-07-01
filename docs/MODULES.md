@@ -142,6 +142,7 @@ Every module type, its category, and its ports at a glance.
 | [`filter`](#filter) | Processor | `in` (audio), `cutoff_cv` (cv) → `out` (audio) |
 | [`crossover`](#crossover) | Processor | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
 | [`parametric_eq`](#parametric_eq) | Processor | `in` (audio) → `out` (audio) |
+| [`sweep_eq`](#sweep_eq) | Processor | `in` (audio), `freq_cv` (cv) → `out` (audio) |
 | [`vca`](#vca) | Processor | `audio` (audio), `cv` (cv) → `out` (audio) |
 | [`resampler`](#resampler) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
@@ -465,6 +466,41 @@ independent cascades.
 parametric_eq → vca → speaker`, or sculpt a drum/sub bus. See
 `examples/parametric_eq_bass.json` (saw → low-end boost + low-mid cut +
 a presence band → speaker).
+
+#### `sweep_eq`
+
+A single **CV-swept resonant band** — the focused auto-wah / envelope-filter
+node. Where [parametric_eq](#parametric_eq) gives four *static* bells,
+`sweep_eq` is one band tuned to *move*: patch an LFO, an envelope (via
+[AudioToCV](#audio_to_cv)), a [Sequencer](#sequencer) or a keyboard into
+`freq_cv` and the centre frequency sweeps 1 V/oct — the classic wah "wow".
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to filter. |
+| `freq_cv` | in | cv | Sweeps the centre frequency 1 V/oct × `cv_depth`; optional. |
+| `out` | out | audio | Processed (mixed) signal. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `mode` | `bandpass` | bandpass / lowpass / peak | Voicing. `bandpass` = classic wah; `lowpass` = resonant corner sweep; `peak` = a swept EQ *bell* that lifts the moving band but passes the rest (the one voicing the plain [Filter](#filter) can't do). |
+| `freq` | `800.0` | ~20 … 0.45·sample-rate Hz | Centre/corner frequency. |
+| `gain` | `12.0` | −24 … +24 dB | Peak boost/cut — **`peak` mode only**, ignored by the filters. |
+| `q` | `4.0` | 0.1 … 20 | Resonance / band width. High = a biting wah. |
+| `cv_depth` | `1.0` | octaves / CV unit | How far `freq_cv` sweeps the centre (1 V/oct). |
+| `mix` | `1.0` | 0 … 1 | Dry/wet. 1.0 = fully wet (the effect); 0.0 = bit-exact bypass. |
+
+**Patching.** The drop-in auto-wah: `oscillator → sweep_eq → speaker` with an
+LFO or an [AudioToCV](#audio_to_cv) envelope into `freq_cv`. A resonant
+`bandpass`/`lowpass` boosts at the peak (peak gain ≈ `q`), so back off the
+source level. DSP reuses the same RBJ biquads as
+[parametric_eq](#parametric_eq) (peak) and [filter](#filter) (bandpass/lowpass);
+shape-polymorphic and block-size independent like both. See
+`examples/sweep_eq_autowah.json` (a 110 Hz saw wah-swept by a 1.2 Hz LFO).
 
 #### `vca`
 

@@ -33,6 +33,7 @@ from ..modules.midiinput import AUTO_DEVICE, available_devices as midi_available
 from ..modules.micinput import available_input_devices as mic_available_devices
 from ..modules.noise import NOISE_COLORS
 from ..modules.oscillator import WAVEFORMS
+from ..modules.sweep_eq import SWEEP_EQ_MODES
 from .zoom import (
     ZOOM_DEFAULT,
     ZOOM_MAX,
@@ -620,6 +621,47 @@ class App:
                 )
                 return
 
+        if module.TYPE == "sweep_eq":
+            # A single CV-swept resonant band (auto-wah / envelope filter).
+            # ``mode`` (bandpass/lowpass/peak) is handled by the shared mode
+            # combo below; ``gain`` only bites in peak mode. ``cv_depth``
+            # scales freq_cv (octaves per unit, 1 V/oct).
+            if param_name == "freq":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=20.0, max_value=20000.0, format="%.1f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "gain":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-24.0, max_value=24.0, format="%.1f dB",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "q":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.1, max_value=20.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f oct/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "mix":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "crossover":
             # LR4 two-way split. ``freq`` is the corner (Hz); ``cv_depth``
             # scales freq_cv (octaves per unit, 1 V/oct) to sweep the
@@ -913,6 +955,8 @@ class App:
                 items = list(CVCOMBINER_MODES)
             elif module.TYPE == "cv_to_frequency":
                 items = list(CVTOFREQ_MODES)
+            elif module.TYPE == "sweep_eq":
+                items = list(SWEEP_EQ_MODES)
             else:
                 items = list(FILTER_MODES)
             dpg.add_combo(

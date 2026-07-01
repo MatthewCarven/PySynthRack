@@ -300,13 +300,18 @@ open to a better scheme if one turns up.
         (cv) → `out` (audio). Reuse `parametric_eq`'s RBJ peaking cascade;
         make the per-band centre freq per-block CV-summed like the mod FX.
 
-  - [ ] **`sweep_eq`** — *spin-off #1, the single-swept-band take (auto-wah).*
-        ONE resonant band whose **centre frequency** a single `freq_cv` sweeps.
-        Default **high `q`** for a vocal wah voicing (this is what distinguishes
-        it from "just one of `motion_eq`'s bands" — it's tuned to sound like a
-        wah, not a gentle EQ bump). Params: `freq`, `gain`, `q` (high default),
-        `cv_depth` (oct/unit), `mix`. Ports: `in` + `freq_cv` (cv) → `out`.
-        The focused, cheap node for the classic auto-wah / envelope-wah.
+  - [x] **`sweep_eq`** — DONE 2026-07-02. Shipped with a **switchable
+        `mode`** (Matthew's call): `bandpass` (default, classic wah),
+        `lowpass` (resonant corner sweep), and `peak` (a swept EQ bell that
+        lifts the band but passes the rest — the voicing the plain Filter
+        can't do). One RBJ biquad reusing `_peq_coeffs` (peak) / `_filter_coeffs`
+        (bandpass/lowpass); `freq_cv` sweeps the centre 1 V/oct × `cv_depth`
+        (block-mean, shared-coeff macro sweep like the crossover); `mix`
+        dry/wet (0 = bit-exact bypass, 0 dB peak @ mix 1 = bit-exact
+        passthrough). Params `mode`/`freq`/`gain`(peak only)/`q`(4.0 default,
+        wah bite)/`cv_depth`/`mix`. Shape-polymorphic, voice==mono bit-identical,
+        block-size independent. 19 tests, suite 949. Example
+        `sweep_eq_autowah.json`. Delivered as `sweep_eq.patch`.
 
   - [ ] **`tilt_eq`** — *spin-off #2, the global-tilt take.* One `tilt_cv`
         **tilts the spectral balance** about a pivot frequency: as the CV rises,

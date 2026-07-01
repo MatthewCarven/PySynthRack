@@ -45,6 +45,7 @@ from .output import LeftSpeakerOutput, RightSpeakerOutput, SpeakerOutput
 from .samplehold import SampleHold
 from .schmitt import Schmitt
 from .sequencer import Sequencer
+from .sweep_eq import SweepEQ
 from .vca import VCA
 
 __all__ = [
@@ -87,6 +88,7 @@ __all__ = [
     "SampleHold",
     "Schmitt",
     "Sequencer",
+    "SweepEQ",
     "SpeakerOutput",
     "VCA",
 ]
