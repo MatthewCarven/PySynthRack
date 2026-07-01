@@ -708,6 +708,19 @@ class App:
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
+            if param_name == "through_zero":
+                dpg.add_checkbox(
+                    label=param_name, default_value=bool(current),
+                    callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "polarity":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-1.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
 
         if module.TYPE == "phaser":
             # Swept allpass notch phaser. ``rate`` is the LFO speed (Hz);

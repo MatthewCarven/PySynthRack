@@ -762,6 +762,8 @@ R LFOs a quarter-cycle apart, for a wide, rotating image.
 | `feedback` | `0.5` | −0.95 … 0.95 | Regeneration, **bipolar**. `0` = plain comb; `+` = ringing; `−` = hollow/metallic. |
 | `mix` | `0.5` | 0 … 1 | Dry/wet. The comb is deepest near `0.5`; `0` is a bit-exact dry passthrough on both channels. |
 | `cv_depth` | `1.0` | 0 … 4 oct/unit | Octaves of LFO-rate shift per unit of `rate_cv`. |
+| `through_zero` | `false` | off / on | Off = the standard positive-delay flanger. On = **through-zero**: a fixed reference tap plus a moving tap swept through it for the dramatic tape "jet". |
+| `polarity` | `1.0` | −1 … 1 | Through-zero only. `+1` = additive **bloom** (bright at the crossing); `−1` = subtractive **null** (cancellation hole); blended between. |
 
 Patch the outputs into [`left_speaker_output`](#left_speaker_output) and
 [`right_speaker_output`](#right_speaker_output). Unlike the chorus, the
@@ -769,10 +771,15 @@ flanger's feedback makes each output sample depend on one just written, so
 the comb runs **per-sample** (the delay's short-time path) — but the LFO
 phase and ring state carry across blocks, so the render is still exactly
 **block-size independent** (bit-identical at 512 / 4096 / 333). This is a
-**standard** (positive-delay) flanger; the delay never crosses zero, so
-through-zero "tape" flanging is a planned extension. See
-`examples/flanger_jet_sweep.json` (a self-playing saw riff swept by the
-flanger, with a slow LFO drifting the sweep rate through `rate_cv`).
+**standard** (positive-delay) flanger. Switch on **`through_zero`** and it
+becomes a tape-style *through-zero* flanger: a fixed reference tap plus a
+moving tap swept around it, so their relative delay passes through zero
+(and goes negative) each LFO crossing — the notches sweep out to infinity
+and the comb flips there. The `polarity` knob picks the crossing character
+(`+1` additive bloom, `−1` subtractive null). Through-zero keeps the same
+block-size independence, and `mix = 0` is still a bit-exact dry passthrough.
+See `examples/flanger_jet_sweep.json` (standard sweep) and
+`examples/flanger_through_zero.json` (the tape jet through zero).
 
 **Patching.** `… → vca → flanger → L/R speakers`. Try positive feedback for
 a bright, ringing sweep, negative for a hollow one; feed a slow envelope or

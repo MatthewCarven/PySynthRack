@@ -4229,6 +4229,13 @@ class NumpyBackend(AudioBackend):
     # strictly behind the write head (never reads the sample being written),
     # so the delay stays positive -- a *standard* flanger, not through-zero.
     _FLANGER_MIN_SAMP = 2.0
+    # Through-zero mode sizes its line from a larger bound: the moving
+    # tap sweeps out to ~2x the centre delay (2 * manual_max + margin).
+    _FLANGER_TZ_MAX_MS = 22.0
+    # Floor (samples) for the through-zero moving tap, keeping the
+    # fed-back read a few samples behind the write head so regeneration
+    # stays stable when the sweep runs the tap right up to "now".
+    _FLANGER_TZ_MOVE_MIN = 4.0
 
     def _render_flanger(self, module, frames: int, buffers, patch):
         """Swept resonant comb flanger: mono in -> out_l / out_r.
@@ -4243,6 +4250,14 @@ class NumpyBackend(AudioBackend):
         per-sample (the delay's short-time path); the LFO phase and the
         ring state carry across blocks, so the render is still exactly
         block-size independent. A polyphonic input is summed to mono first.
+
+        With ``through_zero`` enabled the module instead keeps a fixed
+        reference tap at the centre delay and sweeps a second moving tap
+        around it, so their relative delay passes through zero (and goes
+        negative) each time the LFO crosses zero -- the tape "jet". The
+        ``polarity`` knob picks the crossing character (+1 additive bloom,
+        -1 subtractive null). ``mix == 0`` stays a bit-exact dry copy in
+        either mode, and the standard path is left byte-for-byte unchanged.
         """
         src = self._input_buffer(patch, buffers, module.id, "in")
         if src is None:
@@ -4256,10 +4271,13 @@ class NumpyBackend(AudioBackend):
         feedback = float(module.params.get("feedback", 0.5))
         mix = float(module.params.get("mix", 0.5))
         cv_depth = float(module.params.get("cv_depth", 1.0))
+        tz_on = float(module.params.get("through_zero", 0.0)) >= 0.5
+        polarity = float(module.params.get("polarity", 1.0))
         depth = min(max(depth, 0.0), 1.0)
         mix = min(max(mix, 0.0), 1.0)
         feedback = min(max(feedback, -0.95), 0.95)   # bipolar, below runaway
         manual_ms = min(max(manual_ms, 0.1), 10.0)
+        polarity = min(max(polarity, -1.0), 1.0)
 
         # rate_cv: 1 V/oct on the LFO rate, block-mean -- a sub-audio LFO,
         # so one rate per block is the right cost/quality trade-off (the
@@ -4269,15 +4287,23 @@ class NumpyBackend(AudioBackend):
             rate = rate * float(2.0 ** (cv_depth * float(np.mean(rate_cv))))
         rate = min(max(rate, 0.01), 20.0)
 
-        max_ms = self._FLANGER_MAX_MS
+        # Through-zero sweeps the moving tap out to ~2x the centre delay, so
+        # its line is longer; standard mode keeps the original length so its
+        # state and output stay byte-for-byte unchanged.
+        max_ms = self._FLANGER_TZ_MAX_MS if tz_on else self._FLANGER_MAX_MS
         L = int(max_ms * sr / 1000.0) + frames + 4
 
         state = self._state.setdefault(module.id, {})
-        if "buf" not in state or state["buf"].shape != (2, L):
+        if (
+            "buf" not in state
+            or state["buf"].shape != (2, L)
+            or state.get("tz") != tz_on
+        ):
             state.clear()
             state["buf"] = np.zeros((2, L), dtype=np.float64)
             state["write_idx"] = 0
             state["phase"] = 0.0
+            state["tz"] = tz_on
 
         buf = state["buf"]
         wp = int(state["write_idx"])
@@ -4298,32 +4324,65 @@ class NumpyBackend(AudioBackend):
         lfo = np.sin(2.0 * np.pi * ph)                            # (2, F)
         new_phase = (phase0 + frames * inc) % 1.0
 
-        manual_samp = manual_ms * sr / 1000.0
-        sweep_samp = (self._FLANGER_SWEEP_MS * depth) * sr / 1000.0
-        delay = manual_samp + sweep_samp * lfo                    # (2, F)
-        np.clip(delay, self._FLANGER_MIN_SAMP, float(L - 2), out=delay)
-
-        # Per-sample recirculation: read the line ``delay`` back with linear
-        # interpolation, mix that (wet) with the dry sample, and write
-        # ``in + feedback * read`` into the line so the comb regenerates.
-        # Both channels share the write clock but keep their own line and
-        # feedback path. mix == 0 leaves ``out`` a bit-exact dry copy.
         out = np.empty((2, frames), dtype=np.float64)
         rows = np.arange(2)
         dry_gain = 1.0 - mix
-        for i in range(frames):
-            rp = wp - delay[:, i]                          # (2,)
-            i0 = np.floor(rp).astype(np.int64)
-            frac = rp - i0
-            d = (
-                buf[rows, i0 % L] * (1.0 - frac)
-                + buf[rows, (i0 + 1) % L] * frac
-            )                                              # (2,)
-            buf[rows, wp % L] = x[i] + feedback * d
-            out[:, i] = x[i] * dry_gain + d * mix
-            wp += 1
-        wp = wp % L
 
+        if not tz_on:
+            # ---- Standard positive-delay flanger (unchanged path) --------
+            manual_samp = manual_ms * sr / 1000.0
+            sweep_samp = (self._FLANGER_SWEEP_MS * depth) * sr / 1000.0
+            delay = manual_samp + sweep_samp * lfo                    # (2, F)
+            np.clip(delay, self._FLANGER_MIN_SAMP, float(L - 2), out=delay)
+            for i in range(frames):
+                rp = wp - delay[:, i]                          # (2,)
+                i0 = np.floor(rp).astype(np.int64)
+                frac = rp - i0
+                d = (
+                    buf[rows, i0 % L] * (1.0 - frac)
+                    + buf[rows, (i0 + 1) % L] * frac
+                )                                              # (2,)
+                buf[rows, wp % L] = x[i] + feedback * d
+                out[:, i] = x[i] * dry_gain + d * mix
+                wp += 1
+        else:
+            # ---- Through-zero (tape) flanger -----------------------------
+            # Fixed reference tap at D0 = manual, plus a moving tap swept
+            # +/- around it. The relative delay (moving - reference) crosses
+            # zero as the LFO crosses zero, so the comb notches sweep to
+            # infinity and the comb flips polarity there -- the tape jet.
+            # ``polarity`` blends the crossing: +1 additive bloom, -1 null.
+            # Feedback taps the moving read (floored at _FLANGER_TZ_MOVE_MIN
+            # so it stays stable when the tap nears the write head).
+            D0 = manual_ms * sr / 1000.0
+            move_min = self._FLANGER_TZ_MOVE_MIN
+            d_ref = min(max(D0, self._FLANGER_MIN_SAMP), float(L - 2))
+            sweep_samp = depth * max(D0 - move_min, 0.0)
+            dm = D0 + sweep_samp * lfo                                # (2, F)
+            np.clip(dm, move_min, float(L - 2), out=dm)
+            for i in range(frames):
+                # fixed reference tap (same delay both channels, own rows)
+                rpa = wp - d_ref
+                ja = int(np.floor(rpa))
+                fa = rpa - ja
+                a = (
+                    buf[rows, ja % L] * (1.0 - fa)
+                    + buf[rows, (ja + 1) % L] * fa
+                )                                              # (2,)
+                # swept moving tap (per channel)
+                rp = wp - dm[:, i]                             # (2,)
+                i0 = np.floor(rp).astype(np.int64)
+                frac = rp - i0
+                b = (
+                    buf[rows, i0 % L] * (1.0 - frac)
+                    + buf[rows, (i0 + 1) % L] * frac
+                )                                              # (2,)
+                wet = 0.5 * (a + polarity * b)                 # (2,)
+                buf[rows, wp % L] = x[i] + feedback * b
+                out[:, i] = x[i] * dry_gain + wet * mix
+                wp += 1
+
+        wp = wp % L
         state["write_idx"] = int(wp)
         state["phase"] = new_phase
 

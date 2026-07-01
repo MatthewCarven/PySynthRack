@@ -24,18 +24,39 @@ quarter-cycle apart, so the notches sweep out of step between the
 channels for a wide, rotating image. Patch ``out_l`` / ``out_r`` into the
 ``left_speaker_output`` / ``right_speaker_output`` modules.
 
+**Through-zero mode.** With ``through_zero`` enabled the flanger becomes a
+*through-zero* (tape) flanger. Instead of summing the dry signal with a
+single positive-delayed copy, it delays a fixed **reference** tap and
+sweeps a second **moving** tap around it, so the *relative* delay between
+the two passes through zero — and goes negative — twice per LFO cycle. At
+each crossing the comb notches sweep out to infinity and the comb flips
+polarity: the dramatic "jet through zero" whoosh two tape decks make as
+their delays coincide. The ``polarity`` knob sets what happens at the
+crossing — ``+1`` is the bright additive **bloom** (the classic tape
+sound), ``−1`` the subtractive **null** (a momentary cancellation hole),
+and values between blend the two. Feedback still works here (the moving
+tap is floored a few samples behind the write head so regeneration stays
+stable across the crossing). With ``through_zero`` off the module is the
+plain positive-delay flanger, byte-for-byte unchanged.
+
 Controls:
   * ``rate`` — LFO sweep speed in Hz. Slow (~0.2 Hz) is a long, ocean-
     liner sweep; faster shades toward a warble.
   * ``depth`` — how far the delay is swept, 0..1. Higher sweeps the comb
-    across more of the spectrum.
+    across more of the spectrum (and, in through-zero mode, how far the
+    moving tap travels either side of the reference).
   * ``manual`` — the centre delay in **milliseconds** (the "manual" knob).
     Short (~0.5 ms) is a tight, high whoosh; longer (~5 ms) is a lower,
-    hollower sweep. The sweep moves around this centre.
+    hollower sweep. The sweep moves around this centre; in through-zero
+    mode it is also the reference-tap delay the moving tap sweeps through.
   * ``feedback`` — regeneration, **bipolar** (−0.95..0.95). 0 is a plain
     moving comb; toward +1 rings brightly; toward −1 goes hollow/metallic.
   * ``mix`` — dry/wet balance. The comb is deepest at ~0.5 (equal dry and
     wet). At 0 the output is a bit-exact dry passthrough on both channels.
+  * ``through_zero`` — off: the standard positive-delay flanger. On: the
+    tape-style through-zero flanger described above.
+  * ``polarity`` — through-zero only: ``+1`` additive bloom (bright),
+    ``−1`` subtractive null (cancellation), blended in between.
 
 A ``rate_cv`` input modulates the LFO rate (1 V/oct, scaled by
 ``cv_depth`` in octaves per unit), so an envelope or a second LFO can
@@ -47,6 +68,8 @@ Use cases:
     tone.
   * A slow envelope into ``rate_cv`` for a sweep that accelerates through
     a build.
+  * ``through_zero`` on with a slow ``rate`` for the dramatic tape "jet"
+    sweep that thins through zero and blooms back.
 
 Ports:
   * ``in`` (audio): the signal to flange. A polyphonic (voice-aware)
@@ -72,11 +95,18 @@ class Flanger(Module):
         depth: Sweep amount, 0 (static comb) .. 1 (wide sweep).
         manual: Centre delay in milliseconds (0.1 .. 10). The comb sweeps
             around this delay; shorter = higher/tighter, longer = lower.
+            In through-zero mode this is also the reference-tap delay.
         feedback: Regeneration, bipolar (−0.95 .. 0.95). 0 = plain comb;
             positive = ringing; negative = hollow/metallic.
         mix: Dry/wet balance, dry (0) -> wet (1). The comb is deepest near
             0.5; 0 is a bit-exact dry passthrough on both channels.
         cv_depth: Octaves of LFO-rate shift per unit of ``rate_cv``.
+        through_zero: False = standard positive-delay flanger (unchanged).
+            True = tape-style through-zero flanger (reference + moving tap
+            whose relative delay sweeps through zero).
+        polarity: Through-zero only, −1 .. +1. +1 = additive bloom (bright
+            tape sound at the crossing); −1 = subtractive null (a momentary
+            cancellation hole); values between blend the two.
 
     Ports:
         in (in, audio): signal to flange (voice sources summed to mono).
@@ -94,6 +124,8 @@ class Flanger(Module):
         "feedback": 0.5,
         "mix": 0.5,
         "cv_depth": 1.0,
+        "through_zero": False,
+        "polarity": 1.0,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),

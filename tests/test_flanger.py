@@ -102,6 +102,8 @@ class TestModel:
             "feedback": 0.5,
             "mix": 0.5,
             "cv_depth": 1.0,
+            "through_zero": False,
+            "polarity": 1.0,
         }
 
     def test_ports_and_kinds(self):
@@ -354,3 +356,100 @@ class TestIntegration:
             assert blk is not None and np.all(np.isfinite(blk))
             peak = max(peak, float(np.abs(blk).max()))
         assert peak > 0.0
+
+
+# ----- Through-zero (tape) mode ---------------------------------------------
+
+
+class TestThroughZero:
+    def test_defaults_present(self):
+        fl = Patch().add_module("flanger")
+        assert fl.params["through_zero"] is False
+        assert fl.params["polarity"] == 1.0
+
+    def test_off_matches_unspecified(self):
+        # Explicit through_zero=False is byte-identical to not passing it:
+        # the standard positive-delay path is untouched.
+        rng = np.random.default_rng(4)
+        sig = rng.standard_normal(F * 6).astype(np.float32)
+        a = _run(*_rig({"manual": 2.0, "feedback": 0.6}), sig)
+        b = _run(*_rig({"manual": 2.0, "feedback": 0.6, "through_zero": False}), sig)
+        assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+
+    def test_on_differs_from_standard(self):
+        rng = np.random.default_rng(5)
+        sig = rng.standard_normal(F * 6).astype(np.float32)
+        std = _run(*_rig({"manual": 6.0, "depth": 0.9}), sig)
+        tz = _run(*_rig({"manual": 6.0, "depth": 0.9, "through_zero": True}), sig)
+        assert not np.allclose(std[0], tz[0])
+
+    def test_mix0_bit_exact_dry(self):
+        rng = np.random.default_rng(6)
+        sig = rng.standard_normal(F * 6).astype(np.float32)
+        l, r = _run(
+            *_rig({"through_zero": True, "mix": 0.0, "feedback": 0.8,
+                   "depth": 0.9, "manual": 5.0}),
+            sig,
+        )
+        dry = sig[: l.shape[0]]
+        assert np.array_equal(l, dry) and np.array_equal(r, dry)
+
+    def test_polarity_identity(self):
+        # The polarity knob is exactly the additive/subtractive tap blend:
+        # add(+1) + sub(-1) == 2 * ref(0).
+        rng = np.random.default_rng(11)
+        sig = (rng.standard_normal(F * 8) * 0.4).astype(np.float32)
+        common = {"through_zero": True, "rate": 0.5, "depth": 1.0,
+                  "manual": 8.0, "feedback": 0.0, "mix": 1.0}
+        add = _run(*_rig({**common, "polarity": 1.0}), sig)[0]
+        sub = _run(*_rig({**common, "polarity": -1.0}), sig)[0]
+        ref = _run(*_rig({**common, "polarity": 0.0}), sig)[0]
+        assert np.max(np.abs((add + sub) - 2.0 * ref)) < 1e-5
+
+    def test_additive_subtractive_antiphase(self):
+        # Additive and subtractive combs are inverted (interleaved notches):
+        # as the sweep moves, when one notches a probe tone the other passes
+        # it, so the two output envelopes strongly anti-correlate.
+        t = np.arange(SR * 2) / SR
+        tone = (0.6 * np.sin(2 * np.pi * 2000 * t)).astype(np.float32)
+        common = {"through_zero": True, "rate": 1.0, "depth": 1.0,
+                  "manual": 8.0, "feedback": 0.0, "mix": 1.0}
+        ya = _run(*_rig({**common, "polarity": 1.0}), tone)[0]
+        ys = _run(*_rig({**common, "polarity": -1.0}), tone)[0]
+        W, H = 1024, 256
+
+        def env(y):
+            fr = (len(y) - W) // H
+            e = np.array([np.sqrt(np.mean(y[i * H:i * H + W] ** 2)) for i in range(fr)])
+            return e[SR // H:]
+
+        assert np.corrcoef(env(ya), env(ys))[0, 1] < -0.5
+
+    def test_feedback_bounded(self):
+        # Feedback taps the moving read floored a few samples behind the
+        # write head, so even fb=0.9 through the sweep extreme stays stable.
+        imp = np.zeros(F * 40, dtype=np.float32)
+        imp[0] = 1.0
+        l, r = _run(
+            *_rig({"through_zero": True, "feedback": 0.9, "depth": 1.0,
+                   "manual": 6.0, "rate": 2.0, "mix": 0.6}),
+            imp,
+        )
+        assert np.all(np.isfinite(l)) and float(np.abs(l).max()) < 50.0
+
+    def test_voice_equals_mono(self):
+        rng = np.random.default_rng(8)
+        sig = rng.standard_normal(F * 6).astype(np.float32)
+        prm = {"through_zero": True, "depth": 0.8, "manual": 4.0, "feedback": 0.4}
+        lm, rm = _run(*_rig(prm), sig)
+        lv, rv = _run(*_rig(prm), sig[None, :])
+        assert np.array_equal(lm, lv) and np.array_equal(rm, rv)
+
+    def test_block_independent(self):
+        rng = np.random.default_rng(9)
+        sig = rng.standard_normal(F * 8).astype(np.float32)
+        prm = {"through_zero": True, "depth": 0.9, "manual": 4.0, "feedback": 0.4}
+        a = _run(*_rig(prm, block=512), sig, block=512)[0]
+        c = _run(*_rig(prm, block=333), sig, block=333)[0]
+        m = min(a.shape[0], c.shape[0])
+        assert np.max(np.abs(a[:m] - c[:m])) == 0.0
