@@ -3440,10 +3440,10 @@ class NumpyBackend(AudioBackend):
         standard RBJ cookbook coefficients; running them in series
         gives the LR4 magnitude response (-24 dB/oct, -6 dB at corner)
         and the phase relationship that lets low+high sum back to a
-        flat magnitude. Coefficients are scalars (no frequency_cv yet
-        on Crossover) so the voice branch shares one coeff set across
-        all V parallel biquads -- only the per-voice (x1, x2, y1, y2)
-        memory differs.
+        flat magnitude. Coefficients come from one block-mean freq (a
+        static param or a block-meaned ``freq_cv``) so the voice branch
+        shares one coeff set across all V parallel biquads -- only the
+        per-voice (x1, x2, y1, y2) memory differs.
         """
         # collapse=False so a voice-aware (V, F) audio input reaches us
         # with the voice axis intact.
@@ -3454,9 +3454,22 @@ class NumpyBackend(AudioBackend):
             zero = np.zeros(frames, dtype=np.float32)
             return {"low": zero, "high": zero.copy()}
 
+        # freq_cv sweeps the split point 1 V/oct, scaled by cv_depth
+        # (octaves per unit) and block-meaned -- the same cadence as the
+        # Filter's cutoff_cv and the modulation FX' rate_cv. A single mean
+        # over all axes yields one coefficient set shared across voices:
+        # the crossover keeps scalar coefficients by design (the voice
+        # branch broadcasts them), so a voice-aware freq_cv drives one
+        # macro sweep rather than per-voice split points.
+        freq = float(module.params.get("freq", 1000.0))
+        freq_cv = self._input_buffer(patch, buffers, module.id, "freq_cv")
+        if freq_cv is not None and freq_cv.size > 0:
+            cv_depth = float(module.params.get("cv_depth", 1.0))
+            freq = freq * float(2.0 ** (cv_depth * float(np.mean(freq_cv))))
+
         if src.ndim == 2:
-            return self._render_crossover_voice(module, frames, src)
-        return self._render_crossover_mono(module, frames, src)
+            return self._render_crossover_voice(module, frames, src, freq)
+        return self._render_crossover_mono(module, frames, src, freq)
 
     def _crossover_coeffs(self, freq):
         """Compute the LR4 building-block biquad coefficients.
@@ -3485,7 +3498,7 @@ class NumpyBackend(AudioBackend):
         hp_b2 = ((1.0 + cos_w0) / 2.0) / a0
         return lp_b0, lp_b1, lp_b2, hp_b0, hp_b1, hp_b2, a1n, a2n
 
-    def _render_crossover_mono(self, module, frames, src):
+    def _render_crossover_mono(self, module, frames, src, freq):
         """Mono fast path -- scalar state, output 1D low + high.
 
         Functionally unchanged from the pre-slice-3b.2 implementation;
@@ -3514,7 +3527,6 @@ class NumpyBackend(AudioBackend):
                 }
             )
 
-        freq = float(module.params.get("freq", 1000.0))
         lp_b0, lp_b1, lp_b2, hp_b0, hp_b1, hp_b2, a1n, a2n = (
             self._crossover_coeffs(freq)
         )
@@ -3563,7 +3575,7 @@ class NumpyBackend(AudioBackend):
 
         return {"low": low, "high": high}
 
-    def _render_crossover_voice(self, module, frames, src):
+    def _render_crossover_voice(self, module, frames, src, freq):
         """Voice-aware path -- V parallel cascaded biquads, output (V, F).
 
         Inner per-sample loop is still serial in time (cascaded biquads
@@ -3572,8 +3584,8 @@ class NumpyBackend(AudioBackend):
         is identical to the mono path -- the only difference is that
         ``x``, the intermediate stage outputs, and the (x1, x2, y1, y2)
         memories are ``(V,)`` arrays. Coefficients stay scalar because
-        Crossover has no frequency_cv yet, so the same numbers apply to
-        every voice; broadcast handles it.
+        the (block-mean) crossover freq is one number per block, so the
+        same coefficients apply to every voice; broadcast handles it.
 
         For V=16 and frames=512 the per-iteration cost is essentially
         identical to the mono path -- numpy makes a (V,)-wide multiply-
@@ -3600,7 +3612,6 @@ class NumpyBackend(AudioBackend):
             ):
                 state[k] = np.zeros(V, dtype=np.float64)
 
-        freq = float(module.params.get("freq", 1000.0))
         lp_b0, lp_b1, lp_b2, hp_b0, hp_b1, hp_b2, a1n, a2n = (
             self._crossover_coeffs(freq)
         )

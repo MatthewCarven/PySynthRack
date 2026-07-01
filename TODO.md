@@ -316,10 +316,16 @@ open to a better scheme if one turns up.
         Params: `pivot` (Hz), `tilt` (static base tilt, dB), `cv_depth`. Ports:
         `in` + `tilt_cv` (cv) → `out`.
 
-- [ ] **Crossover `freq_cv`** — the easy CV-coverage win. Give `crossover` a
-      `freq_cv` input + `cv_depth`, mirroring the filter's `cutoff_cv`, so the
-      split point can be swept (dynamic band-splitting). Near copy-paste of the
-      filter's CV handling; the crossover already renamed `frequency`→`freq`.
+- [x] **Crossover `freq_cv`** — DONE 2026-07-02. `crossover` gained a
+      `freq_cv` input + `cv_depth` param (octaves/unit, 1 V/oct), block-mean
+      like the filter's `cutoff_cv` and the mod-FX' `rate_cv`; the split point
+      now sweeps (dynamic band-splitting). Deviation from "copy the filter":
+      the filter's voice path gives each voice its own coefficients from a
+      (V, F) `cutoff_cv`, but the crossover keeps ONE coefficient set shared
+      across voices by design (its voice branch broadcasts scalar coeffs), so
+      a voice-aware `freq_cv` is averaged to a single macro sweep. Per-voice
+      split points would be a larger rewrite of the broadcast voice path —
+      deferred as an unlikely use case. Example `crossover_sweep.json`; 9 tests.
 
 - [ ] **CV-depth convention standardisation** — the subtler half of "uneven CV
       coverage": among modules that *do* take CV, the pattern drifted. The older

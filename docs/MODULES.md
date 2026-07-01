@@ -140,7 +140,7 @@ Every module type, its category, and its ports at a glance.
 | [`cv_to_frequency`](#cv_to_frequency) | Source | `cv` (cv) → `out` (audio) |
 | [`noise`](#noise) | Source | — → `out` (audio), `cv` (cv) |
 | [`filter`](#filter) | Processor | `in` (audio), `cutoff_cv` (cv) → `out` (audio) |
-| [`crossover`](#crossover) | Processor | `in` (audio) → `low`,`high` (audio) |
+| [`crossover`](#crossover) | Processor | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
 | [`parametric_eq`](#parametric_eq) | Processor | `in` (audio) → `out` (audio) |
 | [`vca`](#vca) | Processor | `audio` (audio), `cv` (cv) → `out` (audio) |
 | [`resampler`](#resampler) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
@@ -412,20 +412,25 @@ Splits one audio input into **low** and **high** bands at a chosen frequency
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to split. |
-| `low` | out | audio | Everything below `freq`. |
-| `high` | out | audio | Everything above `freq`. |
+| `freq_cv` | in | cv | Sweeps the corner 1 V/oct × `cv_depth`; optional. |
+| `low` | out | audio | Everything below the (possibly CV-swept) corner. |
+| `high` | out | audio | Everything above it. |
 
 **Parameters**
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
 | `freq` | `1000.0` | ~20 … 0.45·sample-rate Hz | Crossover corner. |
+| `cv_depth` | `1.0` | octaves / CV unit | How far `freq_cv` sweeps the corner (1 V/oct). Ignored when `freq_cv` is unpatched. |
 
 **Patching.** Feed `low`/`high` into separate chains, or back into a
 [Combiner](#combiner) to reconstruct the input. Pairs beautifully with
 [AudioToCV](#audio_to_cv) to turn each band into a modulation source — see
 `examples/two_way_crossover.json`, `examples/file_crossover_split.json`,
-`examples/mic_beatbox_crossover.json`.
+`examples/mic_beatbox_crossover.json`. Patch an LFO/envelope into
+`freq_cv` to sweep the split point (1 V/oct × `cv_depth`, block-mean like
+the [Filter](#filter)'s `cutoff_cv`) for dynamic band-splitting — see
+`examples/crossover_sweep.json`.
 
 #### `parametric_eq`
 

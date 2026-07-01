@@ -4736,3 +4736,43 @@ phaser).
 item (the flanger's dramatic tape jet); then `depth_cv` on any of the trio;
 tempo-syncing the sweep rate to the Clock; a per-stage frequency spread for
 the phaser; and optional feedback-path damping for a darker sweep.
+
+---
+
+## 2026-07-02 — Crossover `freq_cv` (CV-swept split point)
+
+First item off the **CV-coverage plan** (the "uneven CV coverage" audit): the
+`crossover` split point is now voltage-controllable. Matthew picked this — the
+easy win — over the animated-EQ trio for this session.
+
+**What shipped.** `crossover` gained a `freq_cv` input (cv) and a `cv_depth`
+param (octaves per CV unit, default 1.0 = the standard 1 V/oct). The corner is
+`freq * 2 ** (cv_depth * mean(freq_cv))`, block-meaned — the same cadence and
+idiom as the Filter's `cutoff_cv` and the modulation FX' `rate_cv`. Leave
+`freq_cv` unpatched and the corner is the static `freq` param, bit-identically.
+
+**Design note / deviation.** The plan said "near copy-paste of the filter's CV
+handling." The filter's *voice* path can give every voice its own coefficients
+from a `(V, F)` `cutoff_cv`; the crossover deliberately keeps ONE scalar
+coefficient set that its voice branch broadcasts across all slots. Rather than
+rewrite that broadcast path, `freq_cv` is meaned over **all** axes → a single
+macro sweep shared by every voice. Per-voice split points would be a much
+larger change for an exotic use case, so I scoped it out (flagged in TODO). The
+computation lives once in `_render_crossover`; the mono/voice branches now take
+the effective `freq` as an argument (no more reading the param themselves).
+
+**Tests (+9 → suite 930: 912 passed + 18 mido-skips).** Math equivalence
+(unit +CV doubles the corner to a static-2 kHz match; −CV halves it; `cv_depth`
+scales the exponent; depth 0 disables); zero-CV and unpatched are exact no-ops;
+behavioral split-direction flips (a 1500 Hz tone crosses from the high band to
+the low as the corner sweeps up, and the 700 Hz mirror); LR4 flat-sum survives
+the sweep; and the voice==mono bit-identical invariant under a shared `freq_cv`.
+
+**Example.** `crossover_sweep.json` — a 110 Hz saw split with only the **high**
+band monitored while a 0.3 Hz LFO sweeps the corner ±2 octaves (`cv_depth` 2.0);
+the high output's RMS breathes ~5× as harmonics cross the moving split. UI: the
+crossover node now shows a `freq` (Hz) drag and a `cv_depth` (oct/unit) drag.
+
+**Next on the CV-coverage plan.** The animated-EQ trio (`motion_eq`,
+`sweep_eq`, `tilt_eq`) and the `cv_depth`-convention standardisation remain;
+reverb/mixer CV stays lowest priority.

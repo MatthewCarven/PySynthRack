@@ -620,6 +620,25 @@ class App:
                 )
                 return
 
+        if module.TYPE == "crossover":
+            # LR4 two-way split. ``freq`` is the corner (Hz); ``cv_depth``
+            # scales freq_cv (octaves per unit, 1 V/oct) to sweep the
+            # split point.
+            if param_name == "freq":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=20.0, max_value=20000.0, format="%.1f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f oct/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "chorus":
             # Stereo chorus: rate is the LFO speed (Hz); depth is the
             # sweep amount (0..1); voices sets how many detuned copies;

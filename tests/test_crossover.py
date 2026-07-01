@@ -42,9 +42,10 @@ class TestCrossoverModel:
         patch = Patch()
         xo = patch.add_module("crossover")
         assert isinstance(xo, Crossover)
-        assert xo.params == {"freq": 1000.0}
-        assert [p.name for p in xo.input_ports] == ["in"]
+        assert xo.params == {"freq": 1000.0, "cv_depth": 1.0}
+        assert [p.name for p in xo.input_ports] == ["in", "freq_cv"]
         assert xo.input_ports[0].signal_kind == "audio"
+        assert xo.input_ports[1].signal_kind == "cv"
         assert [p.name for p in xo.output_ports] == ["low", "high"]
         assert all(p.signal_kind == "audio" for p in xo.output_ports)
 
@@ -147,3 +148,191 @@ class TestCrossoverBehavior:
         low, high = _capture_xo_outputs(patch, xo, backend, frames=512)
         assert np.all(np.isfinite(low))
         assert np.all(np.isfinite(high))
+
+
+# --------------------------------------------------------------------------
+# freq_cv: CV-swept split point (added 2026-07-02)
+# --------------------------------------------------------------------------
+
+def _rms(x) -> float:
+    return float(np.sqrt(np.mean(np.asarray(x, dtype=np.float64) ** 2)))
+
+
+def _build_swept(tone: float, corner: float, cv_value=None,
+                 cv_depth: float = 1.0, amp: float = 0.5):
+    """osc(tone) → crossover(corner, cv_depth); optional constant → freq_cv.
+
+    Returns (patch, xo). When ``cv_value`` is None the freq_cv jack is
+    left unpatched (the static-corner path).
+    """
+    patch = Patch()
+    osc = patch.add_module(
+        "oscillator", params={"waveform": "sine", "freq": tone, "amp": amp},
+    )
+    xo = patch.add_module(
+        "crossover", params={"freq": corner, "cv_depth": cv_depth},
+    )
+    patch.connect(osc.id, "out", xo.id, "in")
+    if cv_value is not None:
+        c = patch.add_module("constant", params={"value": float(cv_value)})
+        patch.connect(c.id, "out", xo.id, "freq_cv")
+    return patch, xo
+
+
+def _run(patch, xo, frames=4096, warm=True):
+    """Compile, optionally warm one block, return the steady low/high."""
+    backend = NumpyBackend(sample_rate=SR, block_size=frames)
+    backend.compile(patch)
+    if warm:
+        _capture_xo_outputs(patch, xo, backend, frames)
+    return _capture_xo_outputs(patch, xo, backend, frames)
+
+
+class TestCrossoverFreqCVWiring:
+    def test_zero_cv_is_a_noop(self):
+        """A constant 0.0 into freq_cv leaves the corner exactly at the
+        static ``freq`` — bit-identical to an unpatched crossover."""
+        base_low, base_high = _run(*_build_swept(1500.0, 1000.0), warm=False)
+        cv_low, cv_high = _run(
+            *_build_swept(1500.0, 1000.0, cv_value=0.0), warm=False
+        )
+        assert np.allclose(base_low, cv_low, atol=1e-6)
+        assert np.allclose(base_high, cv_high, atol=1e-6)
+
+    def test_unpatched_matches_plain_param(self):
+        """No freq_cv connection at all → identical to the historical
+        param-only crossover (regression guard for the static path)."""
+        low_a, high_a = _run(*_build_swept(800.0, 1000.0), warm=False)
+        # A second, independent build must be deterministic + identical.
+        low_b, high_b = _run(*_build_swept(800.0, 1000.0), warm=False)
+        assert np.array_equal(low_a, low_b)
+        assert np.array_equal(high_a, high_b)
+
+
+class TestCrossoverFreqCVMath:
+    def test_positive_unit_cv_doubles_corner(self):
+        """freq=1000, cv_depth=1.0, CV=+1.0 → 1000·2^(1·1) = 2000 Hz.
+        Must equal a static crossover pinned at 2000 Hz."""
+        swept_low, swept_high = _run(
+            *_build_swept(1500.0, 1000.0, cv_value=1.0, cv_depth=1.0),
+            warm=False,
+        )
+        static_low, static_high = _run(
+            *_build_swept(1500.0, 2000.0), warm=False
+        )
+        assert np.allclose(swept_low, static_low, atol=1e-6)
+        assert np.allclose(swept_high, static_high, atol=1e-6)
+
+    def test_negative_unit_cv_halves_corner(self):
+        """CV=-1.0 at unit depth → 1000·2^(-1) = 500 Hz == static 500."""
+        swept_low, swept_high = _run(
+            *_build_swept(700.0, 1000.0, cv_value=-1.0, cv_depth=1.0),
+            warm=False,
+        )
+        static_low, static_high = _run(
+            *_build_swept(700.0, 500.0), warm=False
+        )
+        assert np.allclose(swept_low, static_low, atol=1e-6)
+        assert np.allclose(swept_high, static_high, atol=1e-6)
+
+    def test_cv_depth_scales_the_sweep(self):
+        """cv_depth multiplies the exponent: depth=2, CV=+0.5 → 2^(1) =
+        2000 Hz; depth=0 disables the CV entirely (stays 1000 Hz)."""
+        deep_low, deep_high = _run(
+            *_build_swept(1500.0, 1000.0, cv_value=0.5, cv_depth=2.0),
+            warm=False,
+        )
+        at2k_low, at2k_high = _run(*_build_swept(1500.0, 2000.0), warm=False)
+        assert np.allclose(deep_low, at2k_low, atol=1e-6)
+        assert np.allclose(deep_high, at2k_high, atol=1e-6)
+
+        zero_depth_low, zero_depth_high = _run(
+            *_build_swept(1500.0, 1000.0, cv_value=1.0, cv_depth=0.0),
+            warm=False,
+        )
+        at1k_low, at1k_high = _run(*_build_swept(1500.0, 1000.0), warm=False)
+        assert np.allclose(zero_depth_low, at1k_low, atol=1e-6)
+        assert np.allclose(zero_depth_high, at1k_high, atol=1e-6)
+
+
+class TestCrossoverFreqCVBehavior:
+    def test_positive_cv_moves_tone_into_low_band(self):
+        """A 1500 Hz tone sits ABOVE a 1000 Hz corner (high branch wins).
+        Sweep the corner up to 2000 Hz with +1.0 CV and the tone is now
+        BELOW it — the low branch takes over."""
+        low0, high0 = _run(*_build_swept(1500.0, 1000.0))
+        assert _rms(high0) > _rms(low0)  # baseline: high dominates
+
+        low1, high1 = _run(
+            *_build_swept(1500.0, 1000.0, cv_value=1.0, cv_depth=1.0)
+        )
+        assert _rms(low1) > _rms(high1)  # swept up: low dominates now
+
+    def test_negative_cv_moves_tone_into_high_band(self):
+        """A 700 Hz tone sits BELOW a 1000 Hz corner (low wins). Sweep the
+        corner down to 500 Hz with -1.0 CV and the tone is now above it."""
+        low0, high0 = _run(*_build_swept(700.0, 1000.0))
+        assert _rms(low0) > _rms(high0)  # baseline: low dominates
+
+        low1, high1 = _run(
+            *_build_swept(700.0, 1000.0, cv_value=-1.0, cv_depth=1.0)
+        )
+        assert _rms(high1) > _rms(low1)  # swept down: high dominates now
+
+    def test_low_plus_high_still_recombine_flat_under_cv(self):
+        """LR4 flat-sum property must survive the swept corner: at the
+        CV-shifted frequency the two branches still reconstruct the input
+        magnitude (RMS of low+high ≈ RMS of the source)."""
+        patch, xo = _build_swept(1200.0, 1000.0, cv_value=1.0, cv_depth=1.0)
+        low, high = _run(patch, xo)
+        recombined = low + high
+        # Source: 0.5-amp sine → RMS ≈ 0.3536.
+        assert abs(_rms(recombined) - 0.3536) < 0.02
+
+
+class TestCrossoverFreqCVVoice:
+    def test_voice_row_matches_mono_under_cv(self):
+        """The house invariant: a (V, F) input split under a shared
+        block-mean freq_cv must give, on each active voice row, exactly
+        the mono result for that row's signal at the same corner."""
+        from pysynthrack.core.patch import Cable
+        frames = 512
+        c = 1.0  # → corner doubles to 2000 Hz at unit depth
+        t = np.arange(frames) / SR
+        tone = (np.sin(2 * np.pi * 1500.0 * t) * 0.5).astype(np.float32)
+        cv = np.full(frames, c, dtype=np.float32)
+
+        AUDIO_SRC, CV_SRC = 9401, 9402
+
+        def render(audio):
+            patch = Patch()
+            xo = patch.add_module(
+                "crossover", params={"freq": 1000.0, "cv_depth": 1.0}
+            )
+            patch.cables.append(Cable(
+                src_module_id=AUDIO_SRC, src_port="out",
+                dst_module_id=xo.id, dst_port="in",
+            ))
+            patch.cables.append(Cable(
+                src_module_id=CV_SRC, src_port="out",
+                dst_module_id=xo.id, dst_port="freq_cv",
+            ))
+            backend = NumpyBackend(sample_rate=SR, block_size=frames)
+            backend.compile(patch)
+            buffers = {(AUDIO_SRC, "out"): audio, (CV_SRC, "out"): cv}
+            return backend._render_crossover(xo, frames, buffers, patch)
+
+        mono = render(tone)                        # (F,) low/high
+        voice_audio = np.zeros((16, frames), dtype=np.float32)
+        voice_audio[5] = tone
+        voice = render(voice_audio)                # (V, F) low/high
+
+        assert voice["low"].shape == (16, frames)
+        assert np.allclose(voice["low"][5], mono["low"], atol=1e-6)
+        assert np.allclose(voice["high"][5], mono["high"], atol=1e-6)
+        # Every other slot stayed silent.
+        for i in range(16):
+            if i == 5:
+                continue
+            assert float(np.max(np.abs(voice["low"][i]))) == 0.0
+            assert float(np.max(np.abs(voice["high"][i]))) == 0.0
