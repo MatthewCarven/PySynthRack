@@ -672,6 +672,31 @@ class App:
                 )
                 return
 
+        if module.TYPE == "loudness":
+            # Equal-loudness contour: level drives the auto curve; bass/
+            # treble are manual dB trims; cv_depth scales level_cv.
+            if param_name == "level":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("bass", "treble"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-12.0, max_value=12.0, format="%.1f dB",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=2.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if param_name == "waveform":
             # LFO has its own waveform list (includes "random"); other
             # modules share the oscillator's list.

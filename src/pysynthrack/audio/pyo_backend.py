@@ -207,6 +207,7 @@ class PyoBackend(AudioBackend):
             "ad_envelope",
             "delay",
             "reverb",
+            "loudness",
             "resampler",
             "pitch_shifter",
             "cv_gates",

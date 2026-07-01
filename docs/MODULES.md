@@ -147,6 +147,7 @@ Every module type, its category, and its ports at a glance.
 | [`pitch_shifter`](#pitch_shifter) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`delay`](#delay) | Processor | `in` (audio), `time_cv` (cv) → `out` (audio) |
 | [`reverb`](#reverb) | Processor | `in` (audio) → `out_l`,`out_r` (audio) |
+| [`loudness`](#loudness) | Processor | `in` (audio), `level_cv` (cv) → `out` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
 | [`adsr`](#adsr) | Modulation | `gate` (gate) → `cv` (cv) |
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
@@ -645,6 +646,42 @@ in a big hall, spread across both speakers).
 `damping` up) for an ambient wash behind a sparse line; short + bright for
 a subtle glue. Pure sustained tones can still ring a touch — v1 has no
 tail modulation yet.
+
+#### `loudness`
+
+An **equal-loudness contour** (loudness compensation). The ear hears less
+bass and treble as things get quieter (the Fletcher–Munson / equal-loudness
+curves), so this boosts the low and high ends as you turn `level` down — a
+hi-fi "loudness" button — with manual `bass` / `treble` trims on top. It
+reshapes the *frequency balance* (a static, level-dependent EQ), unlike an
+envelope sweeping a filter over time.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to shape. Unpatched → silence. |
+| `level_cv` | in | cv | Added to `level`, scaled by `cv_depth`. Optional. |
+| `out` | out | audio | The contoured signal. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `level` | `0.5` | 0 … 1 | Listening level. 1 = flat; lower = more bass/treble boost. |
+| `bass` | `0.0` | −12 … +12 dB | Manual low-shelf trim, added on top of the auto curve. |
+| `treble` | `0.0` | −12 … +12 dB | Manual high-shelf trim, added on top. |
+| `cv_depth` | `1.0` | 0 … 2 | Level change per unit of `level_cv`. |
+
+Two RBJ shelving biquads (low ~120 Hz, high ~8 kHz); the auto curve boosts
+bass more than treble as the level drops. At `level` = 1 with no trims it is
+a **bit-exact passthrough**. Shape-polymorphic like [`parametric_eq`](#parametric_eq);
+the contour is one global control (a voice-aware `level_cv` is averaged). See
+`examples/loudness_demo.json` (a quiet bassline kept full by the contour).
+
+**Patching.** Drop it on the output bus as a master "loudness", or fatten a
+thin oscillator / the mic. Automate `level_cv` from an envelope for a sound
+that warms as it fades.
 
 ---
 

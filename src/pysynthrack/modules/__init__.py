@@ -27,6 +27,7 @@ from .fileplayer import FilePlayer
 from .filter import Filter
 from .keyboard import Keyboard
 from .lfo import LFO
+from .loudness import Loudness
 from .micinput import MicInput
 from .meter import Meter
 from .midiinput import MIDIInput
@@ -65,6 +66,7 @@ __all__ = [
     "Keyboard",
     "LeftSpeakerOutput",
     "LFO",
+    "Loudness",
     "MicInput",
     "Meter",
     "MIDIInput",

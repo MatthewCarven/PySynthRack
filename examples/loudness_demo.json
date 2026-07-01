@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "next_id": 8,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "Clock (110 BPM)", "params": { "bpm": 110.0, "division": 2.0, "pulse_width": 0.5 } },
+    { "id": 2, "type": "sequencer", "name": "Bassline",
+      "params": { "steps": 8,
+        "step1_pitch": -12.0,"step1_on": true, "step2_pitch": 0.0,  "step2_on": true,
+        "step3_pitch": -12.0,"step3_on": true, "step4_pitch": 3.0,  "step4_on": true,
+        "step5_pitch": -12.0,"step5_on": true, "step6_pitch": 7.0,  "step6_on": true,
+        "step7_pitch": -5.0, "step7_on": true, "step8_pitch": 0.0,  "step8_on": true } },
+    { "id": 3, "type": "oscillator", "name": "Osc", "params": { "waveform": "saw", "freq": 130.8128, "amp": 0.5 } },
+    { "id": 4, "type": "adsr", "name": "Env", "params": { "attack": 0.005, "decay": 0.2, "sustain": 0.4, "release": 0.1 } },
+    { "id": 5, "type": "vca", "name": "VCA (quiet)", "params": { "gain": 0.4 } },
+    { "id": 6, "type": "loudness", "name": "Loudness (level 0.3)", "params": { "level": 0.3, "bass": 0.0, "treble": 2.0, "cv_depth": 1.0 } },
+    { "id": 7, "type": "speaker_output", "name": "Output", "params": { "gain": 0.9 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "cv",   "dst_module_id": 3, "dst_port": "freq_cv" },
+    { "src_module_id": 3, "src_port": "out",  "dst_module_id": 5, "dst_port": "audio" },
+    { "src_module_id": 2, "src_port": "gate", "dst_module_id": 4, "dst_port": "gate" },
+    { "src_module_id": 4, "src_port": "cv",   "dst_module_id": 5, "dst_port": "cv" },
+    { "src_module_id": 5, "src_port": "out",  "dst_module_id": 6, "dst_port": "in" },
+    { "src_module_id": 6, "src_port": "out",  "dst_module_id": 7, "dst_port": "in" }
+  ]
+}

@@ -4513,3 +4513,57 @@ the last metallic ring on pure sustained tones — the one quality gap left);
 16 lines / longer diffusion for even more density; `pre_delay`; a
 freeze/infinite-hold mode; `size`/`mix` CV; an early-reflections tap; true
 stereo *input* once the signal path itself goes stereo.
+
+---
+
+## 2026-07-01 — Loudness (equal-loudness contour)
+
+Matthew asked "what's a sound contouring filter?" — I gave the two senses
+(a synth envelope sweeping a filter over time vs. a hi-fi loudness/EQ
+contour reshaping the frequency balance); he picked the **loudness**
+sense, "both in one": an automatic equal-loudness curve on a `level` knob
+plus manual bass/treble trims.
+
+*What it is.* `loudness`: `in` + `level_cv` → `out`. The ear loses bass and
+treble as things get quieter (equal-loudness / Fletcher–Munson), so as
+`level` drops from 1 the module blooms a low shelf and a high shelf, bass
+faster than treble, tracking that curve; `bass`/`treble` add fixed dB trims
+on top; `level_cv` (averaged to a scalar) modulates the level. It reshapes
+frequency balance — not an envelope sweeping a filter (that's ADSR →
+Filter `cutoff_cv`).
+
+*DSP.* Two RBJ shelving biquads (low ~120 Hz, high ~8 kHz), gains =
+`BASS_MAX(12)`/`TREBLE_MAX(7)` × (1 − level) + the manual trims (clamped
+±18 dB). Cascade + coefficient-independent DF-I state **mirrors
+`parametric_eq`** (shape-polymorphic; a `(V, F)` input runs V parallel
+cascades with the *shared* global curve; a single voice row is bit-
+identical to mono). At `level` = 1 with no trims every shelf is 0 dB →
+identity → **bit-exact passthrough**.
+
+*Measured response* (bass 60 Hz / mid 1 kHz / treble 12 kHz): level 1.0 →
++0.0 / +0.0 / +0.0; level 0.5 → +5.6 / 0.0 / +3.2; level 0.0 → +11.1 / 0.0
+/ +6.3. Manual +6 bass and +6 treble trims land on the right shelf with the
+mid untouched; a −1 `level_cv` (cv_depth 1) drives the effective level to 0
+(full bass boost). Mid stays flat throughout.
+
+*Tests / example / docs.* `tests/test_loudness.py` — 18 tests (model,
+flat bit-exact passthrough, bass blooms monotonically as level drops,
+treble blooms but less than bass, mid untouched, manual trims, `level_cv`
+lowers effective level, mono == voice, integration). Suite **824** sandbox
+(+18 mido), +18 from 806. Example `examples/loudness_demo.json` (a quiet
+saw bassline kept full by the contour). `docs/MODULES.md` index row +
+`#### loudness`. pyo silent-stub; UI (level/bass/treble sliders, cv_depth
+drag).
+
+**Hand-off to Matthew:** delivered as `loudness.patch`, **stacked** on the
+delay+reverb (base `5a55f80`). Full apply order from your current mount
+HEAD `f854297`: `git am delay.patch`, `git am reverb.patch`, `git am
+loudness.patch`. `git am`-verified clean on that stacked tree, suite 824
+green. Hear it: open `loudness_demo.json`, then pull the Loudness `level`
+up toward 1 to hear the low/high end thin out.
+
+**Next:** exposed curve depth / corner frequencies; a mid-scoop "contour"
+option (the bass-amp / distortion-pedal sense of the word); per-voice CV
+(the curve is global today); an ISO 226-accurate curve fit; an envelope-
+follower that reads the actual signal level to drive the compensation
+automatically (true dynamic loudness).

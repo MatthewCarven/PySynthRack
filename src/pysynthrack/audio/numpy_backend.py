@@ -720,6 +720,8 @@ class NumpyBackend(AudioBackend):
             return self._render_delay(module, frames, buffers, patch)
         if module.TYPE == "reverb":
             return self._render_reverb(module, frames, buffers, patch)
+        if module.TYPE == "loudness":
+            return self._render_loudness(module, frames, buffers, patch)
         if module.TYPE == "resampler":
             return self._render_resampler(module, frames, buffers, patch)
         if module.TYPE == "pitch_shifter":
@@ -3824,6 +3826,135 @@ class NumpyBackend(AudioBackend):
         return x.astype(np.float32)
 
     # ----- DiskWriter rendering -------------------------------------------
+
+    # ----- Loudness (equal-loudness contour) rendering --------------------
+
+    _LOUD_F_LOW = 120.0      # low-shelf corner (Hz)
+    _LOUD_F_HIGH = 8000.0    # high-shelf corner (Hz)
+    _LOUD_BASS_MAX = 12.0    # auto bass boost (dB) at level -> 0
+    _LOUD_TREBLE_MAX = 7.0   # auto treble boost (dB) at level -> 0
+
+    def _loud_shelf(self, f0, gain_db, low):
+        """One RBJ shelving biquad (normalised). 0 dB -> identity."""
+        sr = self.sample_rate
+        A = 10.0 ** (gain_db / 40.0)
+        w0 = 2.0 * np.pi * min(max(f0, 20.0), sr * 0.45) / sr
+        cw = np.cos(w0)
+        alpha = np.sin(w0) / 2.0 * np.sqrt(2.0)   # shelf slope S = 1
+        tsa = 2.0 * np.sqrt(A) * alpha
+        Am1 = A - 1.0
+        Ap1 = A + 1.0
+        if low:
+            b0 = A * (Ap1 - Am1 * cw + tsa)
+            b1 = 2.0 * A * (Am1 - Ap1 * cw)
+            b2 = A * (Ap1 - Am1 * cw - tsa)
+            a0 = Ap1 + Am1 * cw + tsa
+            a1 = -2.0 * (Am1 + Ap1 * cw)
+            a2 = Ap1 + Am1 * cw - tsa
+        else:
+            b0 = A * (Ap1 + Am1 * cw + tsa)
+            b1 = -2.0 * A * (Am1 + Ap1 * cw)
+            b2 = A * (Ap1 + Am1 * cw - tsa)
+            a0 = Ap1 - Am1 * cw + tsa
+            a1 = 2.0 * (Am1 - Ap1 * cw)
+            a2 = Ap1 - Am1 * cw - tsa
+        return b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0
+
+    def _loudness_coeffs(self, level_eff, bass_db, treble_db):
+        """Two shelves (low, high). Auto equal-loudness boost from the level
+        (bass rises faster than treble) plus the manual dB trims."""
+        inv = 1.0 - level_eff
+        bass_total = float(np.clip(self._LOUD_BASS_MAX * inv + bass_db, -18.0, 18.0))
+        treb_total = float(np.clip(self._LOUD_TREBLE_MAX * inv + treble_db, -18.0, 18.0))
+        lo = self._loud_shelf(self._LOUD_F_LOW, bass_total, True)
+        hi = self._loud_shelf(self._LOUD_F_HIGH, treb_total, False)
+        return tuple(np.array([lo[k], hi[k]], dtype=np.float64) for k in range(5))
+
+    def _render_loudness(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Low + high shelving cascade with a level-driven auto curve.
+
+        Shape-polymorphic like ParametricEQ. The contour is one global
+        control: a ``(V, F)`` ``level_cv`` is averaged to a single scalar so
+        every voice shares the same shelves; a single voice row is
+        bit-identical to mono.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        if src is None:
+            return np.zeros(frames, dtype=np.float32)
+
+        level_cv = self._input_buffer(
+            patch, buffers, module.id, "level_cv", collapse=False
+        )
+        level = float(module.params.get("level", 0.5))
+        bass = float(module.params.get("bass", 0.0))
+        treble = float(module.params.get("treble", 0.0))
+        cv_depth = float(module.params.get("cv_depth", 1.0))
+        cvs = float(np.mean(level_cv)) if level_cv is not None and level_cv.size else 0.0
+        level_eff = min(max(level + cv_depth * cvs, 0.0), 1.0)
+        coeffs = self._loudness_coeffs(level_eff, bass, treble)
+
+        if src.ndim == 2:
+            return self._render_loudness_voice(module, frames, src, coeffs)
+        return self._render_loudness_mono(module, frames, src, coeffs)
+
+    def _render_loudness_mono(self, module, frames, src, coeffs):
+        b0, b1, b2, a1n, a2n = coeffs
+        n_bands = b0.shape[0]
+        state = self._state.setdefault(module.id, {})
+        x1 = state.get("x1")
+        if x1 is None or x1.ndim != 1 or x1.shape[0] != n_bands:
+            state.clear()
+            for k in ("x1", "x2", "y1", "y2"):
+                state[k] = np.zeros(n_bands, dtype=np.float64)
+        if frames == 0:
+            return np.empty(0, dtype=np.float32)
+        x1 = state["x1"]; x2 = state["x2"]; y1 = state["y1"]; y2 = state["y2"]
+        x = src.astype(np.float64)
+        for k in range(n_bands):
+            zi = np.array(
+                [b1[k] * x1[k] + b2[k] * x2[k] - a1n[k] * y1[k] - a2n[k] * y2[k],
+                 b2[k] * x1[k] - a2n[k] * y1[k]],
+                dtype=np.float64,
+            )
+            out = lfilter(
+                np.array([b0[k], b1[k], b2[k]]),
+                np.array([1.0, a1n[k], a2n[k]]), x, zi=zi,
+            )[0]
+            nx1 = x[-1]; nx2 = x[-2] if frames >= 2 else x1[k]
+            ny1 = out[-1]; ny2 = out[-2] if frames >= 2 else y1[k]
+            x1[k] = nx1; x2[k] = nx2; y1[k] = ny1; y2[k] = ny2
+            x = out
+        return x.astype(np.float32)
+
+    def _render_loudness_voice(self, module, frames, src, coeffs):
+        V = src.shape[0]
+        b0, b1, b2, a1n, a2n = coeffs
+        n_bands = b0.shape[0]
+        state = self._state.setdefault(module.id, {})
+        x1 = state.get("x1")
+        if x1 is None or x1.ndim != 2 or x1.shape != (n_bands, V):
+            state.clear()
+            for k in ("x1", "x2", "y1", "y2"):
+                state[k] = np.zeros((n_bands, V), dtype=np.float64)
+        if frames == 0:
+            return np.empty((V, 0), dtype=np.float32)
+        x1 = state["x1"]; x2 = state["x2"]; y1 = state["y1"]; y2 = state["y2"]
+        x = src.astype(np.float64)
+        for k in range(n_bands):
+            zi = np.stack(
+                [b1[k] * x1[k] + b2[k] * x2[k] - a1n[k] * y1[k] - a2n[k] * y2[k],
+                 b2[k] * x1[k] - a2n[k] * y1[k]],
+                axis=-1,
+            )
+            out = lfilter(
+                np.array([b0[k], b1[k], b2[k]]),
+                np.array([1.0, a1n[k], a2n[k]]), x, axis=-1, zi=zi,
+            )[0]
+            nx1 = x[:, -1].copy(); nx2 = x[:, -2].copy() if frames >= 2 else x1[k].copy()
+            ny1 = out[:, -1].copy(); ny2 = out[:, -2].copy() if frames >= 2 else y1[k].copy()
+            x1[k] = nx1; x2[k] = nx2; y1[k] = ny1; y2[k] = ny2
+            x = out
+        return x.astype(np.float32)
 
     # ----- Reverb rendering -----------------------------------------------
 
