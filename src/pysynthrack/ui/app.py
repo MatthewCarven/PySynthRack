@@ -660,6 +660,17 @@ class App:
                 )
                 return
 
+        if module.TYPE == "meter":
+            # Level meter: ``release`` sets the peak bar fall time in
+            # seconds (small = snappier / more reactive).
+            if param_name == "release":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.02, max_value=2.0, format="%.2f s",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "flanger":
             # Swept comb flanger. ``rate`` is the LFO speed (Hz); ``depth``
             # is the sweep width (0..1); ``manual`` is the centre delay in

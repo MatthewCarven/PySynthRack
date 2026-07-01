@@ -5041,7 +5041,13 @@ class NumpyBackend(AudioBackend):
     # Per-block decay of the peak envelope (slow release). ~0.985 per
     # block at 512/44100 falls roughly 0 -> -20 dB in ~1.8 s: a gentle
     # VU-style fall that still reads 'recent maximum' at a glance.
-    _METER_DECAY = 0.985
+    # Meter fall time: seconds for the peak bar to drop ~20 dB (a factor of
+    # ten). The per-meter ``release`` param overrides this default. The fall
+    # is derived from the block duration, so its wall-clock rate is the same
+    # at any block size. Smaller = snappier / more reactive.
+    _METER_RELEASE_DEFAULT = 0.4
+    _METER_RELEASE_MIN = 0.02
+    _METER_RELEASE_MAX = 4.0
 
     def _render_meter(self, module, frames: int, buffers, patch):
         """Level-meter tap: pass audio through, track a peak envelope.
@@ -5065,12 +5071,17 @@ class NumpyBackend(AudioBackend):
             peak = float(np.max(np.abs(src)))
             out = src  # pass-through (read-only downstream, like any fan-out)
 
+        release = float(module.params.get("release", self._METER_RELEASE_DEFAULT))
+        release = min(max(release, self._METER_RELEASE_MIN), self._METER_RELEASE_MAX)
         state = self._state.setdefault(module.id, {"env": 0.0})
         env = state["env"]
         if peak >= env:
             env = peak  # instant attack
         else:
-            env = peak + (env - peak) * self._METER_DECAY  # slow release
+            # Time-based release: fall a factor of ten (~20 dB) every
+            # ``release`` seconds, independent of the block size.
+            coeff = 0.1 ** (frames / self.sample_rate / release)
+            env = peak + (env - peak) * coeff
         state["env"] = env
         self._audio_levels[module.id] = env
 

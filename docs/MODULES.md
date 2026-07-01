@@ -1080,11 +1080,15 @@ against a FilePlayer before they hit a mixer).
 | `in` | in | audio | Signal to measure. |
 | `out` | out | audio | The input, passed through unchanged. |
 
-**Parameters.** None — it only observes.
+**Parameters**
 
-**How it works.** The reading is a fast-attack / slow-decay peak
-envelope (max |sample| over the block, instant rise, gentle fall)
-computed on the audio thread, so a short transient registers even
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `release` | `0.4` | 0.02 … 2 s | Fall time — roughly how long the bar takes to drop ~20 dB after a peak. Small = snappy/reactive (catches transients and clipping); large = holds peaks longer for an easier read. Attack is always instant. |
+
+**How it works.** The reading is a fast-attack / adjustable-release
+peak envelope (max |sample| over the block, instant rise, with the
+fall rate set by `release`) computed on the audio thread, so a short transient registers even
 between UI repaints and the meter latency is block-rate, not
 frame-rate. Shape-polymorphic: a voice-aware `(V, F)` input shows the
 loudest voice. See `examples/meter_levels.json` (a loud saw and a

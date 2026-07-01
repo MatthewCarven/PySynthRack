@@ -6,10 +6,12 @@ Coverage:
     illegal, out→cv illegal).
   - Pass-through: out is the input untouched (mono + voice), shape
     preserved; disconnected input → silence.
-  - Envelope: peak read after a block (instant attack), slow decay on
-    silence (falls by ~_METER_DECAY per block, stays > 0), attack jumps
-    instantly to a louder block, silence from start → 0; compile
-    pre-creates the snapshot key at 0.0.
+  - Envelope: peak read after a block (instant attack), release decay on
+    silence (falls per the time-based ``release`` coefficient, stays > 0),
+    attack jumps instantly to a louder block, silence from start → 0;
+    compile pre-creates the snapshot key at 0.0.
+  - Release: smaller ``release`` falls further per second; the fall is
+    block-size independent (same wall-clock rate); ``release`` is clamped.
   - Integration: oscillator → meter → speaker renders audible audio
     (the meter is transparent) and the level snapshot reads nonzero.
 """
@@ -54,7 +56,7 @@ class TestModel:
         patch = Patch()
         m = patch.add_module("meter")
         assert isinstance(m, Meter)
-        assert m.params == {}
+        assert m.params == {"release": 0.4}
 
     def test_ports_and_signal_kinds(self):
         m = Patch().add_module("meter")
@@ -151,7 +153,8 @@ class TestEnvelope:
         after = b.snapshot_audio_levels()[m.id]
         # Falls, but not to zero — a gentle release.
         assert 0.0 < after < before
-        assert after == pytest.approx(before * NumpyBackend._METER_DECAY, rel=1e-6)
+        coeff = 0.1 ** (F / SR / Meter.DEFAULT_PARAMS["release"])
+        assert after == pytest.approx(before * coeff, rel=1e-6)
 
     def test_attack_overrides_decayed_level(self):
         patch, src, m, b = _meter_rig()
@@ -171,6 +174,53 @@ class TestEnvelope:
         block[1, :] = 0.5  # only the middle voice carries signal
         _drive(b, patch, src, m, block)
         assert b.snapshot_audio_levels()[m.id] == pytest.approx(0.5, abs=1e-6)
+
+    def test_release_controls_decay(self):
+        # Smaller release => faster fall => lower level after the same silence.
+        def after_one_silent(release):
+            patch = Patch()
+            src = patch.add_module("oscillator")
+            m = patch.add_module("meter", params={"release": release})
+            patch.connect(src.id, "out", m.id, "in")
+            b = _backend()
+            b.compile(patch)
+            _drive(b, patch, src, m, np.full(F, 0.8, dtype=np.float32))
+            _drive(b, patch, src, m, np.zeros(F, dtype=np.float32))
+            return b.snapshot_audio_levels()[m.id]
+
+        assert after_one_silent(0.1) < after_one_silent(1.5)
+
+    def test_release_block_size_independent(self):
+        # Same wall-clock fall rate at any block size: one 1024-sample silent
+        # block == two 512-sample silent blocks (equal total silence time).
+        def run(bf, n):
+            patch = Patch()
+            src = patch.add_module("oscillator")
+            m = patch.add_module("meter", params={"release": 0.3})
+            patch.connect(src.id, "out", m.id, "in")
+            b = NumpyBackend(sample_rate=SR, block_size=bf)
+            b.compile(patch)
+            _drive(b, patch, src, m, np.full(bf, 0.8, dtype=np.float32))
+            for _ in range(n):
+                _drive(b, patch, src, m, np.zeros(bf, dtype=np.float32))
+            return b.snapshot_audio_levels()[m.id]
+
+        assert run(1024, 1) == pytest.approx(run(512, 2), rel=1e-6)
+
+    def test_release_clamped(self):
+        # release below the min clamps to a fast but finite, safe fall
+        # (no divide-by-zero, no instant wipe to exactly the block peak).
+        patch = Patch()
+        src = patch.add_module("oscillator")
+        m = patch.add_module("meter", params={"release": 0.0})
+        patch.connect(src.id, "out", m.id, "in")
+        b = _backend()
+        b.compile(patch)
+        _drive(b, patch, src, m, np.full(F, 0.8, dtype=np.float32))
+        before = b.snapshot_audio_levels()[m.id]
+        _drive(b, patch, src, m, np.zeros(F, dtype=np.float32))
+        after = b.snapshot_audio_levels()[m.id]
+        assert np.isfinite(after) and 0.0 <= after < before
 
 
 # ----- Integration -----------------------------------------------------------
