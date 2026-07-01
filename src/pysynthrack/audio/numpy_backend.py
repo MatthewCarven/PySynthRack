@@ -720,6 +720,8 @@ class NumpyBackend(AudioBackend):
             return self._render_chorus(module, frames, buffers, patch)
         if module.TYPE == "flanger":
             return self._render_flanger(module, frames, buffers, patch)
+        if module.TYPE == "phaser":
+            return self._render_phaser(module, frames, buffers, patch)
         if module.TYPE == "delay":
             return self._render_delay(module, frames, buffers, patch)
         if module.TYPE == "reverb":
@@ -4327,6 +4329,123 @@ class NumpyBackend(AudioBackend):
 
         out_l = out[0].astype(np.float32)
         out_r = out[1].astype(np.float32)
+        return {"out_l": out_l, "out_r": out_r}
+
+
+    # ----- Phaser rendering -----------------------------------------------
+
+    # Centre-frequency sweep limits (Hz). ``center`` is clamped to this
+    # band; the swept break frequency is additionally clamped below Nyquist
+    # so the allpass coefficient never degenerates.
+    _PHASER_CENTER_MIN = 100.0
+    _PHASER_CENTER_MAX = 6000.0
+    # Sweep width at depth == 1, in octaves each side of ``center``.
+    _PHASER_MAX_OCT = 2.0
+    # Allowed allpass stage counts (two, three or four notches).
+    _PHASER_STAGES = (4, 6, 8)
+
+    def _render_phaser(self, module, frames: int, buffers, patch):
+        """Swept allpass-notch phaser: mono in -> out_l / out_r.
+
+        The mono-summed input runs through a chain of first-order allpass
+        stages whose break frequency an internal sine LFO sweeps (L and R
+        phases a quarter-cycle apart for stereo width). Each allpass leaves
+        magnitude flat and only rotates phase; summing the chain output back
+        with the dry signal is what carves the moving notches (one notch per
+        stage pair). A fraction of the last stage's output is fed back to
+        the chain input (bipolar resonance); that one-sample feedback makes
+        a read depend on the sample just written, so the cascade runs
+        per-sample -- but the LFO phase, the allpass state and the feedback
+        memory carry across blocks, so the render is exactly block-size
+        independent. A polyphonic input is summed to mono first, and
+        ``mix == 0`` is a bit-exact dry passthrough on both channels.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in")
+        if src is None:
+            z = np.zeros(frames, dtype=np.float32)
+            return {"out_l": z, "out_r": z.copy()}
+
+        sr = self.sample_rate
+        rate = float(module.params.get("rate", 0.5))
+        depth = float(module.params.get("depth", 0.6))
+        center = float(module.params.get("center", 800.0))
+        feedback = float(module.params.get("feedback", 0.4))
+        mix = float(module.params.get("mix", 0.5))
+        cv_depth = float(module.params.get("cv_depth", 1.0))
+        stages = int(round(float(module.params.get("stages", 6))))
+        if stages not in self._PHASER_STAGES:
+            stages = min(self._PHASER_STAGES, key=lambda v: abs(v - stages))
+        depth = min(max(depth, 0.0), 1.0)
+        mix = min(max(mix, 0.0), 1.0)
+        feedback = min(max(feedback, -0.95), 0.95)   # bipolar, below runaway
+        center = min(max(center, self._PHASER_CENTER_MIN), self._PHASER_CENTER_MAX)
+
+        # rate_cv: 1 V/oct on the LFO rate, block-mean -- a sub-audio LFO,
+        # so one rate per block is the right cost/quality trade-off (the
+        # same cadence the chorus and flanger use for their rate_cv).
+        rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
+        if rate_cv is not None and rate_cv.size > 0:
+            rate = rate * float(2.0 ** (cv_depth * float(np.mean(rate_cv))))
+        rate = min(max(rate, 0.01), 20.0)
+
+        state = self._state.setdefault(module.id, {})
+        if "s" not in state or state["s"].shape != (2, stages):
+            state.clear()
+            state["s"] = np.zeros((2, stages), dtype=np.float64)   # allpass memory
+            state["yprev"] = np.zeros(2, dtype=np.float64)         # feedback memory
+            state["phase"] = 0.0
+
+        s = state["s"]
+        yprev = state["yprev"]
+        phase0 = float(state["phase"])
+
+        if frames == 0:
+            e = np.empty(0, dtype=np.float32)
+            return {"out_l": e, "out_r": e.copy()}
+
+        x = src.astype(np.float64)                        # (F,)
+
+        # One sine LFO, L and R a quarter-cycle apart, so the two notch
+        # chains sweep out of step (stereo width).
+        inc = rate / sr
+        n = np.arange(frames, dtype=np.float64)
+        offs = np.array([0.0, 0.25])                      # quadrature L / R
+        ph = (phase0 + offs[:, None] + n[None, :] * inc) % 1.0    # (2, F)
+        lfo = np.sin(2.0 * np.pi * ph)                            # (2, F)
+        new_phase = (phase0 + frames * inc) % 1.0
+
+        # Exponential (musical) sweep of the break frequency: +/- depth*2
+        # octaves around ``center``, clamped well inside Nyquist so the
+        # allpass coefficient stays finite.
+        octs = self._PHASER_MAX_OCT * depth
+        fc = center * (2.0 ** (octs * lfo))                       # (2, F)
+        np.clip(fc, 20.0, sr * 0.45, out=fc)
+        tanv = np.tan(np.pi * fc / sr)
+        a = (tanv - 1.0) / (tanv + 1.0)                          # (2, F) in (-1, 1)
+
+        # Per-sample allpass cascade with one-sample feedback. Both channels
+        # advance together as a length-2 vector; the inner loop is the
+        # cascade. ``s`` holds each stage's memory, ``yprev`` the last chain
+        # output fed back. Writing wet, then mixing with dry, gives the
+        # notches; mix == 0 leaves ``out`` a bit-exact dry copy.
+        wet = np.empty((2, frames), dtype=np.float64)
+        for i in range(frames):
+            ai = a[:, i]                                   # (2,)
+            v = x[i] + feedback * yprev                    # (2,)
+            for k in range(stages):
+                y = ai * v + s[:, k]
+                s[:, k] = v - ai * y
+                v = y
+            yprev = v
+            wet[:, i] = v
+
+        state["s"] = s
+        state["yprev"] = yprev
+        state["phase"] = new_phase
+
+        dry = (1.0 - mix) * x
+        out_l = (dry + mix * wet[0]).astype(np.float32)
+        out_r = (dry + mix * wet[1]).astype(np.float32)
         return {"out_l": out_l, "out_r": out_r}
 
 

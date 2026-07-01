@@ -37,6 +37,7 @@ from .mixer import Mixer
 from .noise import Noise
 from .oscillator import Oscillator
 from .parametric_eq import ParametricEQ
+from .phaser import Phaser
 from .resampler import Resampler
 from .reverb import Reverb
 from .pitch_shifter import PitchShifter
@@ -78,6 +79,7 @@ __all__ = [
     "Noise",
     "Oscillator",
     "ParametricEQ",
+    "Phaser",
     "Resampler",
     "Reverb",
     "PitchShifter",

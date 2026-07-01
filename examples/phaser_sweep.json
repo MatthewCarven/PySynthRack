@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "next_id": 9,
+  "modules": [
+    { "id": 1, "type": "oscillator", "name": "Saw root",  "params": { "waveform": "saw", "freq": 110.0,  "amp": 0.5 } },
+    { "id": 2, "type": "oscillator", "name": "Saw fifth", "params": { "waveform": "saw", "freq": 164.81, "amp": 0.4 } },
+    { "id": 3, "type": "oscillator", "name": "Saw octave","params": { "waveform": "saw", "freq": 220.0,  "amp": 0.35 } },
+    { "id": 4, "type": "mixer", "name": "Chord", "params": { "gain1": 1.0, "gain2": 1.0, "gain3": 1.0, "gain4": 1.0, "master": 0.5 } },
+    { "id": 5, "type": "phaser", "name": "Phaser",
+      "params": { "rate": 0.3, "depth": 0.8, "center": 700.0, "feedback": 0.55, "stages": 6, "mix": 0.5, "cv_depth": 1.0 } },
+    { "id": 6, "type": "lfo", "name": "Sweep drift", "params": { "waveform": "sine", "rate": 0.05, "depth": 0.6, "bipolar": true } },
+    { "id": 7, "type": "left_speaker_output",  "name": "Left",  "params": { "gain": 0.7 } },
+    { "id": 8, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.7 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",   "dst_module_id": 4, "dst_port": "in1" },
+    { "src_module_id": 2, "src_port": "out",   "dst_module_id": 4, "dst_port": "in2" },
+    { "src_module_id": 3, "src_port": "out",   "dst_module_id": 4, "dst_port": "in3" },
+    { "src_module_id": 4, "src_port": "out",   "dst_module_id": 5, "dst_port": "in" },
+    { "src_module_id": 6, "src_port": "cv",    "dst_module_id": 5, "dst_port": "rate_cv" },
+    { "src_module_id": 5, "src_port": "out_l", "dst_module_id": 7, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "out_r", "dst_module_id": 8, "dst_port": "in" }
+  ]
+}

@@ -4688,3 +4688,51 @@ stages; the reverb's allpass diffusers are the building block). Then
 **through-zero** flanging (a second delayed dry path so the sweep can cross
 zero — the dramatic tape jet); `depth_cv`; tempo-sync the rate to the
 Clock; a stereo-offset param; and optional feedback-path damping.
+
+## 2026-07-01 — Phaser (`phaser`): swept allpass-notch (modulation trio complete)
+
+The last of the modulation trio, after the chorus and flanger. Where the
+chorus thickens with delay and the flanger rings with a short *fed-back*
+delay, the phaser sweeps **notches** carved by a cascade of **allpass**
+stages — the softer, rounder, less metallic cousin. Scoped with Matthew via
+AskUserQuestion: **selectable 4 / 6 / 8 stages** (two / three / four
+notches, as a combo), **bipolar** feedback (matching the flanger), and a
+**stereo** pair out (quadrature LFO, matching the whole trio).
+
+**DSP.** Mono-summed input runs through N first-order allpass sections
+(transposed direct-form II: `y = a·v + s`, `s = v − a·y`, one state per
+stage). Each allpass leaves magnitude flat and only rotates phase; summing
+the chain output back with the dry signal cancels wherever a frequency has
+been turned a half-cycle out of phase, carving a notch — one per stage
+*pair*, so 4/6/8 stages give 2/3/4 notches. An internal sine LFO sweeps the
+allpass break frequency exponentially (±`depth`·2 octaves around `center`),
+giving the coefficient `a = (tan(π·fc/sr) − 1)/(tan(π·fc/sr) + 1)`. A
+one-sample feedback of the last stage back into the chain input (bipolar,
+±0.95) sharpens the notches into resonant, vocal peaks. Two chains run with
+the L and R LFOs a quarter-cycle apart for stereo width. The feedback makes
+each output sample depend on one just written, so the cascade runs
+**per-sample** (both channels advanced together as a length-2 vector) — but
+the LFO phase, the allpass state and the feedback memory all carry across
+blocks, so the render is exactly **block-size independent** (bit-identical
+at 512 / 4096 / 333). `mix = 0` is a bit-exact dry passthrough on both
+channels even under strong feedback.
+
+**Validated offline before wiring:** the notch count scales with the stage
+count (4 / 6 / 8 stages → ≈ 2 / 5 / 8 smoothed spectral dips over noise); a
+fixed 800 Hz tone is amplitude-modulated ≈ 8× as the notch sweeps through
+it (a moving notch); an impulse rings ≈ 110× longer at feedback 0.9 vs 0.1
+(resonance); mix = 0 bit-exact; block-size independence; single voice row
+bit-identical to mono. 29 tests in `tests/test_phaser.py`; full suite **904**
+(886 passed + 18 mido-skips), +29 from the flanger's 875.
+
+**Hand-off to Matthew**: delivered as `phaser.patch`, `git am`-verified
+clean on `22fcdd2` (your current `origin/main`, which has the flanger),
+full suite green in the am'd tree. Hear it: open `examples/phaser_sweep.json`
+— a three-saw power chord breathing through the notch sweep, the slow LFO
+drifting the rate. That completes the **modulation trio** (chorus, flanger,
+phaser).
+
+**Next**: **through-zero** flanging is still the biggest open modulation
+item (the flanger's dramatic tape jet); then `depth_cv` on any of the trio;
+tempo-syncing the sweep rate to the Clock; a per-stage frequency spread for
+the phaser; and optional feedback-path damping for a darker sweep.

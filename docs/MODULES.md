@@ -780,6 +780,61 @@ LFO into `rate_cv` for an auto-flanger that breathes.
 
 ---
 
+#### `phaser`
+
+A **swept notch filter** — the whooshing, vocal sweep. The input runs
+through a chain of **allpass** stages, which leave every frequency's level
+untouched but rotate its phase (more toward the top of the spectrum);
+summing that phase-shifted signal back with the dry input carves **notches**
+wherever a frequency has been turned a half-cycle out of phase. An internal
+LFO sweeps the allpass break frequency, so the notches glide up and down —
+that gliding, hollow sweep is the phaser. Each *pair* of allpass stages
+makes one notch, so `stages` of 4 / 6 / 8 give two / three / four notches. A
+fraction of the last stage is fed back (**feedback**, bipolar) to sharpen
+the notches into ringing, vocal peaks. Where the [`flanger`](#flanger)'s
+notches come from a short *delay* (evenly, harmonically spaced and metallic),
+the phaser's come from *allpass phase* (spread unevenly, softer and rounder)
+— it is the third of the modulation trio. The sweep is spread across a
+**stereo pair** (`out_l` / `out_r`) with the L and R LFOs a quarter-cycle
+apart, for a wide, rotating image.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to phase (voice sources summed to mono). Unpatched → silence. |
+| `rate_cv` | in | cv | Modulates the LFO rate (1 V/oct × `cv_depth`). Optional. |
+| `out_l` | out | audio | Left channel (dry + swept notch chain). |
+| `out_r` | out | audio | Right channel (dry + swept notch chain). |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `rate` | `0.5` | 0.05 … 10 Hz | LFO sweep speed. Slow = a long breathing sweep; faster = warble. |
+| `depth` | `0.6` | 0 … 1 | Sweep width, in octaves around `center` (±2 octaves at `1`). |
+| `center` | `800` | 100 … 6000 Hz | Centre frequency of the notch sweep. Low = throaty; high = airy. |
+| `feedback` | `0.4` | −0.95 … 0.95 | Resonance, **bipolar**. `0` = plain notches; `+` = ringing/vocal; `−` = hollow. |
+| `stages` | `6` | 4 / 6 / 8 | Allpass stages = two / three / four notches. More = deeper, busier. |
+| `mix` | `0.5` | 0 … 1 | Dry/wet. The notches are deepest near `0.5`; `0` is a bit-exact dry passthrough on both channels. |
+| `cv_depth` | `1.0` | 0 … 4 oct/unit | Octaves of LFO-rate shift per unit of `rate_cv`. |
+
+Patch the outputs into [`left_speaker_output`](#left_speaker_output) and
+[`right_speaker_output`](#right_speaker_output). Like the flanger, the
+phaser's feedback makes each output sample depend on one just written, so
+the allpass cascade runs **per-sample** — but the LFO phase, the allpass
+state and the feedback memory carry across blocks, so the render is still
+exactly **block-size independent** (bit-identical at 512 / 4096 / 333). See
+`examples/phaser_sweep.json` (a self-playing chord swept by the phaser, with
+a slow LFO drifting the sweep rate through `rate_cv`).
+
+**Patching.** `… → vca → phaser → L/R speakers`. Raise `feedback` for a
+resonant, vocal sweep and `stages` for a deeper one; feed a slow envelope or
+LFO into `rate_cv` for an auto-phaser that breathes. For the harder,
+metallic jet-sweep reach for its sibling the [`flanger`](#flanger).
+
+---
+
 ### Modulation
 
 Sources of control voltage that shape other modules over time.
