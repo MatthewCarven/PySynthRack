@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "next_id": 6,
+  "modules": [
+    { "id": 1, "type": "noise", "name": "white noise", "params": { "color": "white", "amp": 0.15 } },
+    { "id": 2, "type": "lfo", "name": "sweep A", "params": { "waveform": "sine", "rate": 0.15, "depth": 1.0, "bipolar": true } },
+    { "id": 3, "type": "lfo", "name": "sweep B", "params": { "waveform": "triangle", "rate": 0.23, "depth": 1.0, "bipolar": true } },
+    { "id": 4, "type": "motion_eq", "name": "animated EQ", "params": {
+        "band1_freq": 120.0, "band1_gain": 0.0, "band1_q": 1.5,
+        "band2_freq": 500.0, "band2_gain": 10.0, "band2_q": 2.5,
+        "band3_freq": 2000.0, "band3_gain": 10.0, "band3_q": 2.5,
+        "band4_freq": 6000.0, "band4_gain": 0.0, "band4_q": 1.2,
+        "cv_depth": 1.5 } },
+    { "id": 5, "type": "speaker_output", "name": "speaker_output", "params": { "gain": 0.5 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 4, "dst_port": "in" },
+    { "src_module_id": 2, "src_port": "cv",  "dst_module_id": 4, "dst_port": "band2_freq_cv" },
+    { "src_module_id": 3, "src_port": "cv",  "dst_module_id": 4, "dst_port": "band3_freq_cv" },
+    { "src_module_id": 4, "src_port": "out", "dst_module_id": 5, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 80], "2": [40, 300], "3": [40, 470], "4": [380, 200], "5": [720, 200]
+    }
+  }
+}

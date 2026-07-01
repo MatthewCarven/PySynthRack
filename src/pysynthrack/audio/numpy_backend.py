@@ -714,6 +714,8 @@ class NumpyBackend(AudioBackend):
             return self._render_crossover(module, frames, buffers, patch)
         if module.TYPE == "parametric_eq":
             return self._render_parametric_eq(module, frames, buffers, patch)
+        if module.TYPE == "motion_eq":
+            return self._render_motion_eq(module, frames, buffers, patch)
         if module.TYPE == "sweep_eq":
             return self._render_sweep_eq(module, frames, buffers, patch)
         if module.TYPE == "meter":
@@ -3724,7 +3726,7 @@ class NumpyBackend(AudioBackend):
             return self._render_parametric_eq_voice(module, frames, src)
         return self._render_parametric_eq_mono(module, frames, src)
 
-    def _render_parametric_eq_mono(self, module, frames, src):
+    def _render_parametric_eq_mono(self, module, frames, src, freqs_override=None):
         """Mono path -- N cascaded peaking biquads via ``lfilter``.
 
         Same state design as ``_render_filter_mono`` (filter
@@ -3738,6 +3740,8 @@ class NumpyBackend(AudioBackend):
         input/output tails. The output of stage k feeds stage k+1.
         """
         freqs, gains, qs = self._peq_band_params(module)
+        if freqs_override is not None:
+            freqs = freqs_override  # MotionEQ: per-band CV-swept centres
         n_bands = len(freqs)
         b0, b1, b2, a1n, a2n = self._peq_coeffs(freqs, gains, qs)
 
@@ -3784,7 +3788,7 @@ class NumpyBackend(AudioBackend):
 
         return x.astype(np.float32)
 
-    def _render_parametric_eq_voice(self, module, frames, src):
+    def _render_parametric_eq_voice(self, module, frames, src, freqs_override=None):
         """Voice-aware path -- V parallel cascades, output ``(V, F)``.
 
         The cascade is the mono path vectorized across voices. Because
@@ -3797,6 +3801,8 @@ class NumpyBackend(AudioBackend):
         """
         V = src.shape[0]
         freqs, gains, qs = self._peq_band_params(module)
+        if freqs_override is not None:
+            freqs = freqs_override  # MotionEQ: per-band CV-swept centres
         n_bands = len(freqs)
         b0, b1, b2, a1n, a2n = self._peq_coeffs(freqs, gains, qs)
 
@@ -3843,6 +3849,46 @@ class NumpyBackend(AudioBackend):
             x = out
 
         return x.astype(np.float32)
+
+    # ----- MotionEQ rendering ---------------------------------------------
+
+    def _render_motion_eq(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """4-band peaking EQ with a per-band centre-frequency CV sweep.
+
+        Reuses ParametricEQ's cascade wholesale: the only difference is
+        that each band's centre is CV-swept before the coefficients are
+        built. For band ``i`` the centre is
+        ``band{i}_freq * 2 ** (cv_depth * mean(band{i}_freq_cv))``,
+        block-meaned (one coefficient set per block, shared across
+        voices -- the Crossover's macro-sweep policy). Gain and Q stay
+        static. An unpatched ``band{i}_freq_cv`` leaves that band at its
+        static centre, so with nothing patched MotionEQ is bit-identical
+        to a ParametricEQ with the same params.
+        """
+        src = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
+        if src is None:
+            return np.zeros(frames, dtype=np.float32)
+
+        cv_depth = float(module.params.get("cv_depth", 1.0))
+        base_freqs, _gains, _qs = self._peq_band_params(module)
+        mod_freqs = []
+        for i, base in enumerate(base_freqs, start=1):
+            cv = self._input_buffer(
+                patch, buffers, module.id, f"band{i}_freq_cv"
+            )
+            if cv is not None and cv.size > 0:
+                base = base * float(2.0 ** (cv_depth * float(np.mean(cv))))
+            mod_freqs.append(base)
+
+        if src.ndim == 2:
+            return self._render_parametric_eq_voice(
+                module, frames, src, freqs_override=mod_freqs
+            )
+        return self._render_parametric_eq_mono(
+            module, frames, src, freqs_override=mod_freqs
+        )
 
     # ----- SweepEQ rendering ----------------------------------------------
 

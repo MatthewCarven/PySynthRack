@@ -143,6 +143,7 @@ Every module type, its category, and its ports at a glance.
 | [`crossover`](#crossover) | Processor | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
 | [`parametric_eq`](#parametric_eq) | Processor | `in` (audio) → `out` (audio) |
 | [`sweep_eq`](#sweep_eq) | Processor | `in` (audio), `freq_cv` (cv) → `out` (audio) |
+| [`motion_eq`](#motion_eq) | Processor | `in` (audio), `band1_freq_cv`…`band4_freq_cv` (cv) → `out` (audio) |
 | [`vca`](#vca) | Processor | `audio` (audio), `cv` (cv) → `out` (audio) |
 | [`resampler`](#resampler) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
@@ -501,6 +502,39 @@ source level. DSP reuses the same RBJ biquads as
 [parametric_eq](#parametric_eq) (peak) and [filter](#filter) (bandpass/lowpass);
 shape-polymorphic and block-size independent like both. See
 `examples/sweep_eq_autowah.json` (a 110 Hz saw wah-swept by a 1.2 Hz LFO).
+
+#### `motion_eq`
+
+A **4-band parametric EQ whose band centres you sweep with CV** — the full
+"animated EQ". Four peaking bells like [parametric_eq](#parametric_eq), but
+each band has its own CV input (`band1_freq_cv` … `band4_freq_cv`) that slides
+*that band's* centre frequency. Patch four LFOs/envelopes in and four
+peaks/notches glide independently around the spectrum.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to EQ. |
+| `band1_freq_cv` … `band4_freq_cv` | in | cv | Each sweeps its band's centre 1 V/oct × `cv_depth`; optional per band. |
+| `out` | out | audio | Equalised signal. |
+
+**Parameters** (per band `i` in 1..4, plus one shared `cv_depth`)
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `band{i}_freq` | 120 / 500 / 1800 / 6000 Hz | ~20 … 0.45·sr Hz | Band centre — the static value and the base the CV sweeps around. |
+| `band{i}_gain` | `0.0` | −24 … +24 dB | Boost/cut (0 = transparent; negative = a notch). |
+| `band{i}_q` | `1.0` | 0.1 … 20 | Band width. |
+| `cv_depth` | `1.0` | octaves / CV unit | **Shared** — octaves each `band{i}_freq_cv` sweeps its band (1 V/oct). Per-band sensitivity is reachable with a [CVScale](#cv_scale) on any input. |
+
+**Patching.** Gain/Q are static; frequency is the animated dimension. With
+nothing patched, `motion_eq` is bit-identical to a [parametric_eq](#parametric_eq)
+of the same params (an unpatched band stays at its static centre). Reuses
+ParametricEQ's exact peaking cascade, so a 0 dB band is exactly transparent and
+shape-polymorphic/block-size behaviour matches. See
+`examples/motion_eq_animated.json` (two boosted bands swept through white noise
+by a pair of slow LFOs).
 
 #### `vca`
 

@@ -288,17 +288,20 @@ open to a better scheme if one turns up.
       one). Each follows the house CV convention (`<target>_cv` input +
       `cv_depth`). The trio:
 
-  - [ ] **`motion_eq`** — *the "4 CV inputs" variation.* A full 4-band
-        parametric EQ with **four CV inputs**, `band1_freq_cv` … `band4_freq_cv`
-        (one per band), each sweeping **that band's centre frequency** — four
-        independently movable peaks/notches, the full "animated EQ". Band
-        `gain`/`q` stay static params (the 12 existing `band{i}_*` params carry
-        over); a **shared `cv_depth`** (octaves per unit, 1 V/oct) scales the
-        sweep. *Alternative to weigh at build time:* per-band `band{i}_cv_depth`
-        for independent sensitivity, and/or offering gain-CV instead of/along
-        with freq-CV. Ports: `in` (audio) + `band1_freq_cv`…`band4_freq_cv`
-        (cv) → `out` (audio). Reuse `parametric_eq`'s RBJ peaking cascade;
-        make the per-band centre freq per-block CV-summed like the mod FX.
+  - [x] **`motion_eq`** — DONE 2026-07-02. 4-band peaking EQ with four
+        `band{i}_freq_cv` inputs (one per band's centre), **shared `cv_depth`**
+        (Matthew's call over per-band — per-band sensitivity is reachable via a
+        CVScale on any input). Reuses ParametricEQ's cascade wholesale: a small
+        backward-compatible `freqs_override` was added to
+        `_render_parametric_eq_mono/_voice` (bit-identical when None, all 27 peq
+        tests still green), and `_render_motion_eq` block-mean-sweeps each
+        band's centre (`freq_i * 2**(cv_depth*mean(band{i}_freq_cv))`) then runs
+        that cascade. Gain/Q static (freq is the animated dimension); unpatched
+        = bit-identical to ParametricEQ; 0 dB band exactly transparent even
+        under CV. Shape-polymorphic, voice==mono, block-size independent. UI
+        reuses the parametric_eq band block + a cv_depth drag. 12 tests, suite
+        961. Example `motion_eq_animated.json`. Delivered as `motion_eq.patch`.
+        (Gain-CV per band remains a possible future add.)
 
   - [x] **`sweep_eq`** — DONE 2026-07-02. Shipped with a **switchable
         `mode`** (Matthew's call): `bandpass` (default, classic wah),

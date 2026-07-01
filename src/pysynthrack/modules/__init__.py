@@ -34,6 +34,7 @@ from .micinput import MicInput
 from .meter import Meter
 from .midiinput import MIDIInput
 from .mixer import Mixer
+from .motion_eq import MotionEQ
 from .noise import Noise
 from .oscillator import Oscillator
 from .parametric_eq import ParametricEQ
@@ -77,6 +78,7 @@ __all__ = [
     "Meter",
     "MIDIInput",
     "Mixer",
+    "MotionEQ",
     "Noise",
     "Oscillator",
     "ParametricEQ",

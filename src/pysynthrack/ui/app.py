@@ -476,10 +476,12 @@ class App:
                 )
                 return
 
-        if module.TYPE == "parametric_eq":
-            # Parametric EQ bands: ``band{i}_freq`` (Hz), ``band{i}_gain``
-            # (dB, 0 = flat), ``band{i}_q`` (width). Distinct ranges from
-            # the generic numeric fallbacks below.
+        if module.TYPE in ("parametric_eq", "motion_eq"):
+            # (Parametric/Motion) EQ bands: ``band{i}_freq`` (Hz),
+            # ``band{i}_gain`` (dB, 0 = flat), ``band{i}_q`` (width);
+            # MotionEQ adds a shared ``cv_depth`` (oct/unit) that scales
+            # its per-band ``freq_cv`` sweeps. Distinct ranges from the
+            # generic numeric fallbacks below.
             if param_name.endswith("_freq"):
                 dpg.add_drag_float(
                     label=param_name,
@@ -515,6 +517,13 @@ class App:
                     width=140,
                     callback=self._on_param_changed,
                     user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f oct/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
 

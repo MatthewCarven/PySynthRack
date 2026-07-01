@@ -4824,3 +4824,48 @@ peak) + freq/gain/q/cv_depth/mix widgets; pyo silent-stub extended.
 `freq_cv` inputs) and `tilt_eq` (one `tilt_cv` seesaws bass↔treble) remain of
 the trio; then the `cv_depth`-convention standardisation. Reverb/mixer CV stays
 lowest priority.
+
+---
+
+## 2026-07-02 — MotionEQ (`motion_eq`): the four-CV-input animated EQ
+
+Third CV-coverage item and the second of the animated-EQ trio. A 4-band
+parametric EQ where each band's centre frequency has its own CV input —
+`band1_freq_cv` … `band4_freq_cv` — so four peaks/notches glide
+independently. Matthew picked **shared `cv_depth`** over per-band (per-band
+sensitivity is still reachable by dropping a CVScale on any input).
+
+**Built by reuse, not duplication.** MotionEQ *is* ParametricEQ's cascade with
+CV-swept centres. I added a small backward-compatible `freqs_override=None`
+argument to `_render_parametric_eq_mono/_voice`: when None (every existing
+call) the behaviour is bit-identical — all 27 ParametricEQ tests stay green —
+and when provided it uses those centres with the module's static gains/Qs. The
+new `_render_motion_eq` just computes the swept centres
+(`band{i}_freq * 2**(cv_depth * mean(band{i}_freq_cv))`, block-mean, one coeff
+set per block shared across voices like the Crossover) and delegates. So the
+peaking math, DF-I state discipline, shape-polymorphism and block-size
+independence are literally the same code ParametricEQ uses.
+
+**Tested invariants (+12 → suite 961: 943 passed + 18 mido-skips).** With
+nothing patched, `motion_eq` is bit-identical to a `parametric_eq` of the same
+params. A +1.0 CV at unit depth on band 2 moves *only* band 2's centre 500→1000
+Hz (bit-identical to a static band2_freq=1000, and provably different from the
+no-CV render). Two bands with different CVs move independently. The shared
+`cv_depth` scales every band's sweep together; depth 0 disables. All-flat (0 dB)
+is a bit-exact passthrough *even while the CV sweeps the centres* (a 0 dB peak
+is identity). A boost band tracks a tone as its centre is swept onto it.
+voice==mono bit-identical (per-band CV, two bands checked); block-size
+independent.
+
+**Example.** `motion_eq_animated.json` — white noise through two +10 dB bands
+(500 Hz Q2.5 and 2 kHz Q2.5) swept by a 0.15 Hz sine and a 0.23 Hz triangle at
+`cv_depth` 1.5; two resonant peaks glide through the noise. Noise amp backed to
+0.15, speaker 0.5 — post-gain peak 0.18 ([[feedback_gain_headroom]]). UI reuses
+the ParametricEQ band widgets (`band{i}_freq`/`_gain`/`_q`) with a `cv_depth`
+drag added to the shared block; pyo silent-stub extended.
+
+**Next on the CV-coverage plan.** Only `tilt_eq` (one `tilt_cv` seesaws
+bass↔treble about a pivot via opposed shelves) remains to complete the trio;
+then the `cv_depth`-convention standardisation. Reverb/mixer CV stays lowest
+priority. Possible motion_eq follow-up: per-band gain-CV (the other animated
+dimension).
