@@ -1,0 +1,344 @@
+{
+  "version": 1,
+  "next_id": 21,
+  "modules": [
+    {
+      "id": 3,
+      "type": "file_player",
+      "name": "file_player",
+      "params": {
+        "path": "",
+        "gain": 0.3,
+        "loop": false,
+        "armed": true
+      }
+    },
+    {
+      "id": 4,
+      "type": "right_speaker_output",
+      "name": "right_speaker_output",
+      "params": {
+        "gain": 0.855
+      }
+    },
+    {
+      "id": 5,
+      "type": "left_speaker_output",
+      "name": "left_speaker_output",
+      "params": {
+        "gain": 0.855
+      }
+    },
+    {
+      "id": 6,
+      "type": "parametric_eq",
+      "name": "parametric_eq",
+      "params": {
+        "band1_freq": 25.0,
+        "band1_gain": 24.0,
+        "band1_q": 2.12,
+        "band2_freq": 50.0,
+        "band2_gain": 0.0,
+        "band2_q": 1.0,
+        "band3_freq": 100.0,
+        "band3_gain": 0.0,
+        "band3_q": 1.0,
+        "band4_freq": 250.0,
+        "band4_gain": 0.0,
+        "band4_q": 1.0
+      }
+    },
+    {
+      "id": 7,
+      "type": "parametric_eq",
+      "name": "parametric_eq",
+      "params": {
+        "band1_freq": 25.0,
+        "band1_gain": 24.0,
+        "band1_q": 2.12,
+        "band2_freq": 50.0,
+        "band2_gain": 0.0,
+        "band2_q": 1.0,
+        "band3_freq": 100.0,
+        "band3_gain": 0.0,
+        "band3_q": 1.0,
+        "band4_freq": 250.0,
+        "band4_gain": 0.0,
+        "band4_q": 1.0
+      }
+    },
+    {
+      "id": 8,
+      "type": "disk_writer",
+      "name": "disk_writer",
+      "params": {
+        "path": "recordingleft.wav",
+        "armed": true
+      }
+    },
+    {
+      "id": 9,
+      "type": "disk_writer",
+      "name": "disk_writer",
+      "params": {
+        "path": "recordingright.wav",
+        "armed": true
+      }
+    },
+    {
+      "id": 10,
+      "type": "mic_input",
+      "name": "mic_input",
+      "params": {
+        "device": "",
+        "gain": 1.0
+      }
+    },
+    {
+      "id": 11,
+      "type": "combiner",
+      "name": "combiner",
+      "params": {}
+    },
+    {
+      "id": 12,
+      "type": "combiner",
+      "name": "combiner",
+      "params": {}
+    },
+    {
+      "id": 13,
+      "type": "meter",
+      "name": "meter",
+      "params": {}
+    },
+    {
+      "id": 14,
+      "type": "meter",
+      "name": "meter",
+      "params": {}
+    },
+    {
+      "id": 15,
+      "type": "meter",
+      "name": "meter",
+      "params": {}
+    },
+    {
+      "id": 16,
+      "type": "meter",
+      "name": "meter",
+      "params": {}
+    },
+    {
+      "id": 17,
+      "type": "meter",
+      "name": "meter",
+      "params": {}
+    },
+    {
+      "id": 18,
+      "type": "meter",
+      "name": "meter",
+      "params": {}
+    },
+    {
+      "id": 19,
+      "type": "meter",
+      "name": "meter",
+      "params": {}
+    },
+    {
+      "id": 20,
+      "type": "meter",
+      "name": "meter",
+      "params": {}
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 11,
+      "src_port": "out",
+      "dst_module_id": 8,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 12,
+      "src_port": "out",
+      "dst_module_id": 9,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "left",
+      "dst_module_id": 13,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 13,
+      "src_port": "out",
+      "dst_module_id": 6,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "right",
+      "dst_module_id": 14,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 14,
+      "src_port": "out",
+      "dst_module_id": 7,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 10,
+      "src_port": "left",
+      "dst_module_id": 15,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 10,
+      "src_port": "right",
+      "dst_module_id": 16,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 16,
+      "src_port": "out",
+      "dst_module_id": 12,
+      "dst_port": "in2"
+    },
+    {
+      "src_module_id": 15,
+      "src_port": "out",
+      "dst_module_id": 11,
+      "dst_port": "in2"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "out",
+      "dst_module_id": 17,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 17,
+      "src_port": "out",
+      "dst_module_id": 11,
+      "dst_port": "in1"
+    },
+    {
+      "src_module_id": 7,
+      "src_port": "out",
+      "dst_module_id": 18,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 18,
+      "src_port": "out",
+      "dst_module_id": 12,
+      "dst_port": "in1"
+    },
+    {
+      "src_module_id": 19,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 11,
+      "src_port": "out",
+      "dst_module_id": 19,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 12,
+      "src_port": "out",
+      "dst_module_id": 20,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 20,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "in"
+    }
+  ],
+  "ui": {
+    "node_positions": {
+      "3": [
+        -75,
+        135
+      ],
+      "4": [
+        976,
+        474
+      ],
+      "5": [
+        973,
+        136
+      ],
+      "6": [
+        425,
+        22
+      ],
+      "7": [
+        426,
+        336
+      ],
+      "8": [
+        974,
+        -9
+      ],
+      "9": [
+        977,
+        555
+      ],
+      "10": [
+        -74,
+        333
+      ],
+      "11": [
+        742,
+        63
+      ],
+      "12": [
+        727,
+        474
+      ],
+      "13": [
+        207,
+        151
+      ],
+      "14": [
+        203,
+        266
+      ],
+      "15": [
+        215,
+        394
+      ],
+      "16": [
+        213,
+        501
+      ],
+      "17": [
+        679,
+        231
+      ],
+      "18": [
+        678,
+        337
+      ],
+      "19": [
+        910,
+        234
+      ],
+      "20": [
+        911,
+        346
+      ]
+    }
+  }
+}
