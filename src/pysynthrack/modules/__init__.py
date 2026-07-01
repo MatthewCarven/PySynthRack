@@ -10,6 +10,7 @@ exist should:
 from .ad_envelope import ADEnvelope
 from .adsr import ADSR
 from .audiotocv import AudioToCV
+from .chorus import Chorus
 from .clock import Clock
 from .combiner import Combiner
 from .constant import Constant
@@ -48,6 +49,7 @@ __all__ = [
     "ADEnvelope",
     "ADSR",
     "AudioToCV",
+    "Chorus",
     "Clock",
     "Combiner",
     "Constant",

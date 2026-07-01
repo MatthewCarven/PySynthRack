@@ -205,6 +205,7 @@ class PyoBackend(AudioBackend):
             "parametric_eq",
             "meter",
             "ad_envelope",
+            "chorus",
             "delay",
             "reverb",
             "loudness",

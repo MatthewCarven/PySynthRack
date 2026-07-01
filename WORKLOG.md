@@ -4567,3 +4567,62 @@ option (the bass-amp / distortion-pedal sense of the word); per-voice CV
 (the curve is global today); an ISO 226-accurate curve fit; an envelope-
 follower that reads the actual signal level to drive the compensation
 automatically (true dynamic loudness).
+
+## 2026-07-01 — Chorus (`chorus`): detuned multi-voice stereo thickener
+
+The synth's first **modulation effect**, and Matthew's pick after the
+loudness contour. Offered chorus / flanger / phaser; he chose **chorus
+first** (its modulated-delay core is what the flanger will build on) and,
+in the design pass, a **stereo** pair out (like Reverb) with a `rate_cv`
+input — and no feedback knob, since a fed-back chorus *is* a flanger and
+those stay separate modules.
+
+*What it is.* Mono in (a voice-aware input is summed to mono first, the
+Reverb convention) → a bank of short delay lines, each read back a little
+behind the write head with linear interpolation. One internal sine LFO is
+sliced into `voices` evenly-spaced phase offsets, and each voice's read
+delay is `base + depth·sweep·lfo` — base delays spread ~12–24 ms, the
+sweep up to ±8 ms scaled by `depth`. A moving delay is a moving pitch, so
+each copy drifts a few cents around the original; that shifting detune
+between the copies is the chorus. The voices are panned across the stereo
+field (equal-power, per-channel normalised) so `out_l` / `out_r` are
+decorrelated — the width half of the sound.
+
+*Why it's simple and exact.* There is **no feedback** (that's the
+flanger's job), so no read this block depends on a sample written this
+block: the render writes the whole block, then reads every tap in one
+vectorized pass. That also makes it **exactly block-size independent** —
+bit-identical output at 512 / 4096 / 333 (diff 0.0), the same correctness
+bar the reverb holds to. `mix=0` is a bit-exact dry passthrough on both
+channels.
+
+*Params.* `rate` (LFO Hz, 0.05–10), `depth` (0–1 sweep), `voices` (1–6
+detuned copies), `mix`, and `cv_depth` (octaves of LFO-rate shift per
+`rate_cv` unit, 1 V/oct, block-mean — the LFO module's own cadence). One
+voice sits dead-centre, so the two channels collapse together; two or
+more spread and decorrelate.
+
+*Tests / example / docs.* `tests/test_chorus.py` — 25 tests (model +
+type walls; silence; `mix=0` bit-exact both channels; impulse taps;
+`depth=0` static-comb vs modulated; voice-count changes texture;
+finite/bounded at extremes; 2D → mono; block-size independence; stereo
+decorrelation + single-voice collapse; `rate_cv` alters the sweep and an
+all-zero `rate_cv` is a noop; osc → chorus → L/R integration). Suite
+**849** sandbox (+18 mido), +25 from 824. Example
+`examples/chorus_lush.json` (a self-playing saw pad widened into a
+four-voice ensemble, a slow LFO drifting the rate through `rate_cv`).
+`docs/MODULES.md` index row + `#### chorus`. pyo silent-stub; UI
+(rate / cv_depth drags, depth / mix sliders, voices int).
+
+**Hand-off to Matthew:** delivered as `chorus.patch`, `git am`-verified
+clean on `d22dea8` (your current `origin/main`), full suite 849 green in
+the am'd tree. Hear it: open `chorus_lush.json` — the saw pad thickens
+into an ensemble across both speakers, and the shimmer slowly speeds up
+and slows down as the LFO drifts the rate.
+
+**Next:** the other two of the trio — a **flanger** (add feedback + a
+shorter delay for the through-zero jet sweep; the modulated-delay core is
+already here) and a **phaser** (swept allpass stages, the reverb-allpass
+sibling). Plus a `depth_cv`; a stereo-width param; a slight per-voice
+rate detune for an even creamier ensemble; and tempo-syncing the rate to
+the Clock.

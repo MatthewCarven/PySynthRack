@@ -148,6 +148,7 @@ Every module type, its category, and its ports at a glance.
 | [`delay`](#delay) | Processor | `in` (audio), `time_cv` (cv) → `out` (audio) |
 | [`reverb`](#reverb) | Processor | `in` (audio) → `out_l`,`out_r` (audio) |
 | [`loudness`](#loudness) | Processor | `in` (audio), `level_cv` (cv) → `out` (audio) |
+| [`chorus`](#chorus) | Processor | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
 | [`adsr`](#adsr) | Modulation | `gate` (gate) → `cv` (cv) |
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
@@ -683,6 +684,48 @@ the contour is one global control (a voice-aware `level_cv` is averaged). See
 thin oscillator / the mic. Automate `level_cv` from an envelope for a sound
 that warms as it fades.
 
+#### `chorus`
+
+A **detuned multi-voice stereo chorus** — it thickens a sound into an
+ensemble. The input feeds a small bank of short delay lines that an
+internal LFO sweeps; a moving delay is a moving pitch, so each copy
+drifts a few cents around the original, and that shifting detune is what
+the ear reads as one sound *thickened*. The voices are panned across a
+**stereo pair** (`out_l` / `out_r`) for width. There is deliberately no
+feedback — a fed-back chorus is a flanger, which is its own module.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to thicken (voice sources summed to mono). Unpatched → silence. |
+| `rate_cv` | in | cv | Modulates the LFO rate (1 V/oct × `cv_depth`). Optional. |
+| `out_l` | out | audio | Left channel (dry + panned wet). |
+| `out_r` | out | audio | Right channel (dry + panned wet). |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `rate` | `0.6` | 0.05 … 10 Hz | LFO sweep speed. Slow = gentle drift; fast → vibrato/Leslie. |
+| `depth` | `0.5` | 0 … 1 | Sweep amount. Low = subtle thickening; high = wide, warbly detune. |
+| `voices` | `3` | 1 … 6 | Number of detuned copies. More = a denser, wider ensemble. |
+| `mix` | `0.5` | 0 … 1 | Dry/wet balance. `0` is a bit-exact dry passthrough on both channels. |
+| `cv_depth` | `1.0` | 0 … 4 oct/unit | Octaves of LFO-rate shift per unit of `rate_cv`. |
+
+Patch the outputs into [`left_speaker_output`](#left_speaker_output) and
+[`right_speaker_output`](#right_speaker_output) for a wide ensemble. The
+chorus is **block-size independent** (no feedback, so the whole render
+vectorizes and never depends on the audio block size). See
+`examples/chorus_lush.json` (a self-playing saw pad widened into a four-
+voice ensemble, with a slow LFO drifting the chorus rate through
+`rate_cv`).
+
+**Patching.** `… → vca → chorus → L/R speakers`. Widen a mono pad or
+ensemble a saw lead; feed a slow envelope or LFO into `rate_cv` for a
+shimmer that breathes. For the through-zero jet-sweep sound, reach for a
+flanger (feedback + a shorter delay) — a planned sibling module.
+
 ---
 
 ### Modulation
@@ -975,5 +1018,6 @@ loads in the app. Notable ones referenced above:
 - `mic_beatbox_crossover.json` — live mic, beatbox-driven.
 - `resampler_tape_wobble.json` — varispeed pitch shift, LFO wobbling the pitch.
 - `pitch_shifter_harmony.json` — time-preserving shift; +7 st at 50% mix = a fifth harmony.
+- `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `stereo_hard_pan.json` — left/right speaker sinks.

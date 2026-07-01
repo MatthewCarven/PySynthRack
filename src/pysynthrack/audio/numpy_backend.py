@@ -716,6 +716,8 @@ class NumpyBackend(AudioBackend):
             return self._render_parametric_eq(module, frames, buffers, patch)
         if module.TYPE == "meter":
             return self._render_meter(module, frames, buffers, patch)
+        if module.TYPE == "chorus":
+            return self._render_chorus(module, frames, buffers, patch)
         if module.TYPE == "delay":
             return self._render_delay(module, frames, buffers, patch)
         if module.TYPE == "reverb":
@@ -3964,6 +3966,7 @@ class NumpyBackend(AudioBackend):
     # sample rate at render time.
     _REVERB_BASE = (1103, 1321, 1543, 1759, 1987, 2203, 2423, 2647)
     _REVERB_OUT = 0.30   # wet output trim (tuned so wet ~ dry level)
+    _CHORUS_MAX_MS = 40.0  # longest chorus delay (ms); sizes the ring
 
     def _render_reverb(self, module, frames: int, buffers, patch):
         """Stereo FDN reverb: mono in -> decorrelated out_l / out_r.
@@ -4098,6 +4101,112 @@ class NumpyBackend(AudioBackend):
 
         state["write_idx"] = int(wp % Lmax)
         state["lpz"] = lpz
+
+        dry = (1.0 - mix) * x
+        out_l = (dry + mix * wet_l).astype(np.float32)
+        out_r = (dry + mix * wet_r).astype(np.float32)
+        return {"out_l": out_l, "out_r": out_r}
+
+    def _render_chorus(self, module, frames: int, buffers, patch):
+        """Detuned multi-voice stereo chorus: mono in -> out_l / out_r.
+
+        A bank of short delay lines is swept by an internal sine LFO (one
+        evenly-spaced phase slice per voice) and read back with linear
+        interpolation; the moving delay detunes each copy, and the copies
+        are panned across the stereo field so the two channels decorrelate
+        (width). There is no feedback -- a fed-back chorus is a flanger --
+        so no read this block depends on a sample written this block, the
+        whole render vectorizes, and it is exactly block-size independent.
+        A polyphonic input is summed to mono first.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in")
+        if src is None:
+            z = np.zeros(frames, dtype=np.float32)
+            return {"out_l": z, "out_r": z.copy()}
+
+        sr = self.sample_rate
+        rate = float(module.params.get("rate", 0.6))
+        depth = float(module.params.get("depth", 0.5))
+        voices = int(round(float(module.params.get("voices", 3))))
+        mix = float(module.params.get("mix", 0.5))
+        cv_depth = float(module.params.get("cv_depth", 1.0))
+        depth = min(max(depth, 0.0), 1.0)
+        mix = min(max(mix, 0.0), 1.0)
+        voices = min(max(voices, 1), 6)
+
+        # rate_cv: 1 V/oct on the LFO rate, block-mean (a sub-audio LFO, so
+        # one rate per block is the right cost/quality trade-off -- the same
+        # cadence the LFO module uses for its own rate_cv).
+        rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
+        if rate_cv is not None and rate_cv.size > 0:
+            rate = rate * float(2.0 ** (cv_depth * float(np.mean(rate_cv))))
+        rate = min(max(rate, 0.01), 20.0)
+
+        max_ms = self._CHORUS_MAX_MS
+        L = int(max_ms * sr / 1000.0) + frames + 4
+
+        state = self._state.setdefault(module.id, {})
+        if "buf" not in state or state["buf"].shape != (L,):
+            state.clear()
+            state["buf"] = np.zeros(L, dtype=np.float64)
+            state["write_idx"] = 0
+            state["phase"] = 0.0
+
+        buf = state["buf"]
+        wp = int(state["write_idx"])
+        phase0 = float(state["phase"])
+
+        if frames == 0:
+            e = np.empty(0, dtype=np.float32)
+            return {"out_l": e, "out_r": e.copy()}
+
+        x = src.astype(np.float64)                        # (F,)
+
+        # Per-voice base delays spread across ~12..24 ms, plus a shared
+        # sweep of up to +/-8 ms scaled by depth. The minimum stays well
+        # positive so a read never crosses the write head.
+        if voices > 1:
+            base_ms = np.linspace(12.0, 24.0, voices)
+        else:
+            base_ms = np.array([18.0])
+        base_samp = base_ms * sr / 1000.0                 # (V,)
+        sweep_samp = (8.0 * depth) * sr / 1000.0          # scalar
+
+        # One sine LFO sliced into V evenly-spaced phase offsets, so the
+        # voices detune against each other (and the channels decorrelate).
+        inc = rate / sr
+        n = np.arange(frames, dtype=np.float64)
+        offs = np.arange(voices, dtype=np.float64) / voices           # (V,)
+        ph = (phase0 + offs[:, None] + n[None, :] * inc) % 1.0         # (V, F)
+        lfo = np.sin(2.0 * np.pi * ph)                                # (V, F)
+        new_phase = (phase0 + frames * inc) % 1.0
+
+        delay = base_samp[:, None] + sweep_samp * lfo                 # (V, F)
+        np.clip(delay, 2.0, float(L - 2), out=delay)
+
+        # Write the whole block, then read the taps. With no feedback a tap
+        # that lands inside this block just reads an input sample already
+        # written -- correct, and identical at any block size.
+        absidx = wp + np.arange(frames)
+        buf[absidx % L] = x
+        rp = absidx[None, :] - delay                                 # (V, F)
+        i0 = np.floor(rp).astype(np.int64)
+        frac = rp - i0
+        tap = buf[i0 % L] * (1.0 - frac) + buf[(i0 + 1) % L] * frac  # (V, F)
+
+        # Equal-power pan spread; per-channel normalisation keeps the wet
+        # level ~ the dry level for any voice count.
+        pos = (np.arange(voices, dtype=np.float64) + 0.5) / voices
+        ang = pos * (np.pi / 2.0)
+        gl = np.cos(ang)
+        gr = np.sin(ang)
+        nl = 1.0 / np.sqrt(float(np.sum(gl * gl)))
+        nr = 1.0 / np.sqrt(float(np.sum(gr * gr)))
+        wet_l = (gl @ tap) * nl                                      # (F,)
+        wet_r = (gr @ tap) * nr
+
+        state["write_idx"] = int((wp + frames) % L)
+        state["phase"] = new_phase
 
         dry = (1.0 - mix) * x
         out_l = (dry + mix * wet_l).astype(np.float32)
