@@ -998,7 +998,7 @@ class App:
 
         if isinstance(default, (int, float)):
             # Pick a sane range per param. Tweak as more module types arrive.
-            if param_name in {"freq", "cutoff", "frequency"}:
+            if param_name in {"freq", "cutoff"}:
                 dpg.add_drag_float(
                     label=param_name,
                     default_value=float(current),
@@ -1036,7 +1036,7 @@ class App:
                 )
             elif (
                 param_name
-                in {"amp", "gain", "volume", "sustain", "depth", "master", "high", "low"}
+                in {"amp", "gain", "sustain", "depth", "master", "high", "low"}
                 or param_name.startswith("gain")
             ):
                 # Mixer channel trims (gain1..gain4) and master live in

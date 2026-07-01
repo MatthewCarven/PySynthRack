@@ -18,7 +18,7 @@ def _build_patch_with_test_tone(freq: float, amp: float = 0.5):
     osc = patch.add_module(
         "oscillator", params={"waveform": "sine", "freq": freq, "amp": amp},
     )
-    xo = patch.add_module("crossover", params={"frequency": 1000.0})
+    xo = patch.add_module("crossover", params={"freq": 1000.0})
     patch.connect(osc.id, "out", xo.id, "in")
     return patch, osc, xo
 
@@ -42,7 +42,7 @@ class TestCrossoverModel:
         patch = Patch()
         xo = patch.add_module("crossover")
         assert isinstance(xo, Crossover)
-        assert xo.params == {"frequency": 1000.0}
+        assert xo.params == {"freq": 1000.0}
         assert [p.name for p in xo.input_ports] == ["in"]
         assert xo.input_ports[0].signal_kind == "audio"
         assert [p.name for p in xo.output_ports] == ["low", "high"]
@@ -114,7 +114,7 @@ class TestCrossoverBehavior:
         osc = patch.add_module(
             "oscillator", params={"waveform": "sine", "freq": 1500.0, "amp": 0.5},
         )
-        xo = patch.add_module("crossover", params={"frequency": 1000.0})
+        xo = patch.add_module("crossover", params={"freq": 1000.0})
         comb = patch.add_module("combiner")
         spk = patch.add_module("speaker_output", params={"gain": 1.0})
         patch.connect(osc.id, "out", xo.id, "in")
@@ -136,13 +136,13 @@ class TestCrossoverBehavior:
     def test_extreme_frequency_clamps_safely(self):
         patch, _, xo = _build_patch_with_test_tone(freq=440.0)
         # Crank to absurd values; renderer should clamp without NaN/inf.
-        xo.set_param("frequency", 1e9)
+        xo.set_param("freq", 1e9)
         backend = NumpyBackend(sample_rate=SR, block_size=512)
         backend.compile(patch)
         low, high = _capture_xo_outputs(patch, xo, backend, frames=512)
         assert np.all(np.isfinite(low))
         assert np.all(np.isfinite(high))
-        xo.set_param("frequency", 0.0001)
+        xo.set_param("freq", 0.0001)
         backend.compile(patch)
         low, high = _capture_xo_outputs(patch, xo, backend, frames=512)
         assert np.all(np.isfinite(low))

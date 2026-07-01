@@ -6,7 +6,7 @@
       "id": 1,
       "type": "keyboard",
       "name": "Trigger",
-      "params": {"waveform": "sine", "volume": 0.0}
+      "params": {"waveform": "sine", "amp": 0.0}
     },
     {
       "id": 2,

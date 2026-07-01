@@ -50,7 +50,7 @@ class TestMIDIInputMetadata:
         assert m.params["octave_shift"] == 0
         assert m.params["velocity_sensitive"] is True
         assert m.params["waveform"] == "sine"
-        assert m.params["volume"] == 0.5
+        assert m.params["amp"] == 0.5
 
     def test_no_input_ports(self):
         m = MIDIInput(module_id=1)
@@ -594,7 +594,7 @@ class TestRendering:
 
     def test_audio_when_note_held(self):
         patch, midi = _build_simple_patch()
-        midi.params["volume"] = 0.7
+        midi.params["amp"] = 0.7
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         backend.compile(patch)
         midi.note_on(69, 1.0)  # A4 at full velocity
@@ -605,7 +605,7 @@ class TestRendering:
 
     def test_velocity_scales_amplitude(self):
         patch, midi = _build_simple_patch()
-        midi.params["volume"] = 1.0
+        midi.params["amp"] = 1.0
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         backend.compile(patch)
 
@@ -625,7 +625,7 @@ class TestRendering:
 
     def test_velocity_sensitive_off_ignores_velocity(self):
         patch, midi = _build_simple_patch()
-        midi.params["volume"] = 1.0
+        midi.params["amp"] = 1.0
         midi.params["velocity_sensitive"] = False
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         backend.compile(patch)
@@ -704,7 +704,7 @@ class TestRendering:
         # via zero-crossing rate: higher freq -> more zero crossings.
         patch, midi = _build_simple_patch()
         midi.params["waveform"] = "sine"
-        midi.params["volume"] = 0.7
+        midi.params["amp"] = 0.7
         midi.params["bend_range"] = 12.0  # exaggerate so the test is robust
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         backend.compile(patch)
@@ -762,7 +762,7 @@ class TestRendering:
         # audio peak doesn't change beyond rendering noise.
         patch, midi = _build_simple_patch()
         midi.params["waveform"] = "sine"
-        midi.params["volume"] = 0.7
+        midi.params["amp"] = 0.7
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         backend.compile(patch)
         midi.note_on(60, 1.0)
@@ -807,7 +807,7 @@ class TestRendering:
         # the internal voice frequencies or volumes.
         patch, midi = _build_simple_patch()
         midi.params["waveform"] = "sine"
-        midi.params["volume"] = 0.7
+        midi.params["amp"] = 0.7
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         backend.compile(patch)
         midi.note_on(60, 1.0)
@@ -868,7 +868,7 @@ class TestPolyphonicRendering:
         # A triad uses slots 0..2; the rest stay silent. Tests that
         # the renderer addresses by slot index, not by note number.
         _, midi = _build_simple_patch()
-        midi.params["volume"] = 1.0
+        midi.params["amp"] = 1.0
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         for n in (60, 64, 67):
             midi.note_on(n, 1.0)
@@ -887,7 +887,7 @@ class TestPolyphonicRendering:
         # bigger peak amplitude than a single note (the voice axis
         # sums into mono at the speaker).
         patch, midi = _build_simple_patch()
-        midi.params["volume"] = 0.3  # leave headroom for summing
+        midi.params["amp"] = 0.3  # leave headroom for summing
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         backend.compile(patch)
 
@@ -919,7 +919,7 @@ class TestPolyphonicRendering:
         # the two blocks should not have a discontinuity at the seam.
         _, midi = _build_simple_patch()
         midi.params["waveform"] = "sine"
-        midi.params["volume"] = 1.0
+        midi.params["amp"] = 1.0
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         midi.note_on(69, 1.0)  # A4, 440 Hz
         # Let attack settle.
@@ -942,7 +942,7 @@ class TestPolyphonicRendering:
         # so the new voice starts cleanly rather than mid-cycle.
         _, midi = _build_simple_patch()
         midi.params["waveform"] = "saw"  # easy to see phase via value
-        midi.params["volume"] = 1.0
+        midi.params["amp"] = 1.0
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         # Fill all 16 slots.
         for n in range(60, 76):
@@ -966,7 +966,7 @@ class TestPolyphonicRendering:
         # Press, hold pedal, release key. The voice should still be
         # audible at the speaker because its slot is gating.
         patch, midi = _build_simple_patch()
-        midi.params["volume"] = 0.7
+        midi.params["amp"] = 0.7
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         backend.compile(patch)
         midi.note_on(60, 1.0)

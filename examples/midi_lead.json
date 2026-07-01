@@ -12,7 +12,7 @@
         "octave_shift": 0,
         "velocity_sensitive": true,
         "waveform": "saw",
-        "volume": 0.35
+        "amp": 0.35
       }
     },
     {

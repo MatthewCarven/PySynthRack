@@ -205,7 +205,7 @@ with an `adsr` driving the VCA's `cv`. See `examples/hello_sine.json` and
 #### `keyboard`
 
 _To document._ Computer-keyboard note source (polyphonic). Outputs `out`
-(audio) and `gate`. Params: `octave`, `waveform`, `volume`. See
+(audio) and `gate`. Params: `octave`, `waveform`, `amp`. See
 `examples/keyboard_play.json`, `examples/keyboard_adsr.json`.
 
 #### `cv_keyboard`
@@ -412,14 +412,14 @@ Splits one audio input into **low** and **high** bands at a chosen frequency
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to split. |
-| `low` | out | audio | Everything below `frequency`. |
-| `high` | out | audio | Everything above `frequency`. |
+| `low` | out | audio | Everything below `freq`. |
+| `high` | out | audio | Everything above `freq`. |
 
 **Parameters**
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
-| `frequency` | `1000.0` | ~20 … 0.45·sample-rate Hz | Crossover corner. |
+| `freq` | `1000.0` | ~20 … 0.45·sample-rate Hz | Crossover corner. |
 
 **Patching.** Feed `low`/`high` into separate chains, or back into a
 [Combiner](#combiner) to reconstruct the input. Pairs beautifully with

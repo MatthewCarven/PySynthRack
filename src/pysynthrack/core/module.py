@@ -71,6 +71,10 @@ class Module:
 
     TYPE: ClassVar[str] = ""
     DEFAULT_PARAMS: ClassVar[dict[str, Any]] = {}
+    # Legacy/alternate param names -> canonical, applied whenever params are
+    # set or loaded so older saved patches keep working after a rename.
+    # Subclasses override, e.g. {"volume": "amp"}.
+    PARAM_ALIASES: ClassVar[dict[str, str]] = {}
     INPUT_PORTS: ClassVar[list[Port]] = []
     OUTPUT_PORTS: ClassVar[list[Port]] = []
 
@@ -91,6 +95,7 @@ class Module:
         self.params: dict[str, Any] = dict(self.DEFAULT_PARAMS)
         if params:
             for key, value in params.items():
+                key = self.PARAM_ALIASES.get(key, key)
                 if key not in self.DEFAULT_PARAMS:
                     raise KeyError(
                         f"{self.TYPE!r} has no parameter {key!r}. "
@@ -122,6 +127,7 @@ class Module:
     # ----- params ----------------------------------------------------------
 
     def set_param(self, name: str, value: Any) -> None:
+        name = self.PARAM_ALIASES.get(name, name)
         if name not in self.DEFAULT_PARAMS:
             raise KeyError(
                 f"{self.TYPE!r} has no parameter {name!r}. "

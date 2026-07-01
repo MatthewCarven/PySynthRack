@@ -128,3 +128,28 @@ class TestParamValidation:
         patch = Patch()
         osc = patch.add_module("oscillator", params={"freq": 123.4})
         assert osc.params["freq"] == 123.4
+
+
+class TestParamAliases:
+    """Legacy param names (renamed for consistency) still load via aliases."""
+
+    def test_legacy_name_maps_on_load(self):
+        kb = Patch().add_module("keyboard", params={"volume": 0.7})
+        assert kb.params["amp"] == 0.7 and "volume" not in kb.params
+
+    def test_legacy_name_maps_on_set_param(self):
+        kb = Patch().add_module("keyboard")
+        kb.set_param("volume", 0.2)
+        assert kb.params["amp"] == 0.2
+
+    def test_crossover_frequency_alias(self):
+        xo = Patch().add_module("crossover", params={"frequency": 800.0})
+        assert xo.params["freq"] == 800.0
+
+    def test_to_dict_uses_canonical_name(self):
+        d = Patch().add_module("keyboard", params={"volume": 0.9}).to_dict()
+        assert "amp" in d["params"] and "volume" not in d["params"]
+
+    def test_unknown_param_still_rejected(self):
+        with pytest.raises(KeyError):
+            Patch().add_module("keyboard", params={"loudness": 1.0})

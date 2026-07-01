@@ -18,7 +18,7 @@
       "type": "crossover",
       "name": "Crossover @ 800 Hz",
       "params": {
-        "frequency": 800.0
+        "freq": 800.0
       }
     },
     {

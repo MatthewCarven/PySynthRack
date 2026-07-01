@@ -35,13 +35,14 @@ class Crossover(Module):
     """LR4 two-way audio crossover.
 
     Parameters:
-        frequency: Crossover corner in Hz. Clamped to (20 Hz,
+        freq: Crossover corner in Hz. Clamped to (20 Hz,
             0.45 * sample_rate) by the renderer to keep the biquads
             numerically stable.
     """
 
     TYPE = "crossover"
-    DEFAULT_PARAMS = {"frequency": 1000.0}
+    PARAM_ALIASES = {"frequency": "freq"}  # legacy name
+    DEFAULT_PARAMS = {"freq": 1000.0}
     INPUT_PORTS = [Port("in", "in", "audio")]
     OUTPUT_PORTS = [
         Port("low", "out", "audio"),

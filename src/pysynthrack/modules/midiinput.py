@@ -122,7 +122,7 @@ class MIDIInput(Module):
         waveform: naive ``"sine"`` / ``"saw"`` / ``"square"`` /
             ``"triangle"``, PolyBLEP/PolyBLAMP ``*_blep``, or
             wavetable ``*_wt`` (see ``oscillator.WAVEFORMS``).
-        volume: Master output level applied after voice summing, in [0, 1].
+        amp: Master output level applied after voice summing, in [0, 1].
         bend_range: Pitch-wheel range in semitones. +-1.0 of normalized
             wheel deflection maps to +-``bend_range`` semitones, applied
             as a 1V/octave CV value of ``bend_normalized * bend_range /
@@ -158,13 +158,14 @@ class MIDIInput(Module):
     """
 
     TYPE = "midi_input"
+    PARAM_ALIASES = {"volume": "amp"}  # legacy name
     DEFAULT_PARAMS = {
         "device": AUTO_DEVICE,
         "channel": 0,
         "octave_shift": 0,
         "velocity_sensitive": True,
         "waveform": "sine",
-        "volume": 0.5,
+        "amp": 0.5,
         "bend_range": 2.0,
         "mod_scale": 1.0,
         "pressure_scale": 1.0,

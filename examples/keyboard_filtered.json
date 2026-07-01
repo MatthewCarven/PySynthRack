@@ -9,7 +9,7 @@
       "params": {
         "octave": 3,
         "waveform": "saw",
-        "volume": 0.4
+        "amp": 0.4
       }
     },
     {

@@ -1188,7 +1188,7 @@ class NumpyBackend(AudioBackend):
 
         sr = self.sample_rate
         waveform = str(module.params.get("waveform", "sine"))
-        volume = float(module.params.get("volume", 0.5))
+        amp = float(module.params.get("amp", 0.5))
 
         slots = module.snapshot_voice_slots()  # length _MAX_VOICES
 
@@ -1269,7 +1269,7 @@ class NumpyBackend(AudioBackend):
             # pre-slice keyboard's per-block gate granularity.
             gate[i] = 1.0 if gating else 0.0
 
-        audio *= volume
+        audio *= amp
 
         return {"out": audio, "gate": gate}
 
@@ -1583,7 +1583,7 @@ class NumpyBackend(AudioBackend):
 
         sr = self.sample_rate
         waveform = str(module.params.get("waveform", "sine"))
-        volume = float(module.params.get("volume", 0.5))
+        amp = float(module.params.get("amp", 0.5))
         velocity_sensitive = bool(module.params.get("velocity_sensitive", True))
 
         slots = module.snapshot_voice_slots()  # length _MAX_VOICES
@@ -1694,7 +1694,7 @@ class NumpyBackend(AudioBackend):
             # had (the global gate was also block-constant).
             gate[i] = 1.0 if gating else 0.0
 
-        audio *= volume
+        audio *= amp
 
         # Channel-wide CV: stay 1D since they apply identically to
         # every voice.
@@ -3514,7 +3514,7 @@ class NumpyBackend(AudioBackend):
                 }
             )
 
-        freq = float(module.params.get("frequency", 1000.0))
+        freq = float(module.params.get("freq", 1000.0))
         lp_b0, lp_b1, lp_b2, hp_b0, hp_b1, hp_b2, a1n, a2n = (
             self._crossover_coeffs(freq)
         )
@@ -3600,7 +3600,7 @@ class NumpyBackend(AudioBackend):
             ):
                 state[k] = np.zeros(V, dtype=np.float64)
 
-        freq = float(module.params.get("frequency", 1000.0))
+        freq = float(module.params.get("freq", 1000.0))
         lp_b0, lp_b1, lp_b2, hp_b0, hp_b1, hp_b2, a1n, a2n = (
             self._crossover_coeffs(freq)
         )

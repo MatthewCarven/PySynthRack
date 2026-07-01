@@ -51,7 +51,7 @@ class TestKeyboardModel:
         patch = Patch()
         kb = patch.add_module("keyboard")
         assert isinstance(kb, Keyboard)
-        assert kb.params == {"octave": 4, "waveform": "sine", "volume": 0.5}
+        assert kb.params == {"octave": 4, "waveform": "sine", "amp": 0.5}
         assert kb.input_ports == []
         # v0.2 (post-ADSR): keyboard exposes both audio out and gate out.
         out_port_names = [p.name for p in kb.output_ports]
@@ -107,7 +107,7 @@ class TestKeyboardModel:
 class TestKeyboardRendering:
     def _make_patch_with_keyboard(self) -> tuple[Patch, Keyboard]:
         patch = Patch()
-        kb = patch.add_module("keyboard", params={"volume": 0.5})
+        kb = patch.add_module("keyboard", params={"amp": 0.5})
         out = patch.add_module("speaker_output")
         patch.connect(kb.id, "out", out.id, "in")
         return patch, kb

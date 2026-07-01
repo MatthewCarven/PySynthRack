@@ -64,7 +64,7 @@ class Keyboard(Module):
         waveform: Voice waveform. Naive sine / saw / square /
             triangle, PolyBLEP/PolyBLAMP *_blep, or wavetable *_wt
             (see oscillator.WAVEFORMS).
-        volume: Master output level in [0, 1].
+        amp: Master output level in [0, 1].
 
     Runtime state (not serialized):
         voices: :class:`VoiceSlots` allocator backing the held-note
@@ -75,6 +75,7 @@ class Keyboard(Module):
     """
 
     TYPE = "keyboard"
+    PARAM_ALIASES = {"volume": "amp"}  # legacy name
     # Marks this as a module the UI feeds physical key events to.
     # CVKeyboard sets the same flag; the UI routes by this flag rather
     # than by concrete type (see ui/app.py key handlers).
@@ -82,7 +83,7 @@ class Keyboard(Module):
     DEFAULT_PARAMS = {
         "octave": 4,
         "waveform": "sine",
-        "volume": 0.5,
+        "amp": 0.5,
     }
     INPUT_PORTS: list[Port] = []
     # Voice-aware outputs (slice 4): the renderer emits per-slot
