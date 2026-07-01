@@ -206,6 +206,7 @@ class PyoBackend(AudioBackend):
             "meter",
             "ad_envelope",
             "chorus",
+            "flanger",
             "delay",
             "reverb",
             "loudness",

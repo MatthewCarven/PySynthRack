@@ -4626,3 +4626,65 @@ already here) and a **phaser** (swept allpass stages, the reverb-allpass
 sibling). Plus a `depth_cv`; a stereo-width param; a slight per-voice
 rate detune for an even creamier ensemble; and tempo-syncing the rate to
 the Clock.
+
+## 2026-07-01 — Flanger (`flanger`): swept resonant comb (bipolar feedback)
+
+The second of the modulation trio, after the chorus — and the fed-back
+sibling the chorus docs kept pointing at. A flanger mixes the input with a
+*very short* delayed copy of itself (a comb filter), sweeps that delay with
+an internal LFO so the comb's notches slide across the spectrum, and feeds
+part of the delayed signal back to sharpen the comb into ringing
+resonances. That regeneration — the feedback the chorus deliberately
+omitted — is the flanger's signature.
+
+**Scoped with Matthew** (AskUserQuestion, as with chorus/resampler):
+**stereo** out (`out_l`/`out_r`, matching the chorus as a sibling),
+**standard** positive-delay flanging (the delay stays just above zero;
+through-zero "tape" flanging is a follow-up), and **bipolar** feedback
+(positive rings bright, negative goes hollow/metallic).
+
+**DSP** (`_render_flanger` in `numpy_backend.py`): the mono-summed input
+feeds two short delay lines (one per channel). One internal sine LFO drives
+both, L and R phases a quarter-cycle apart so the two combs sweep out of
+step (stereo width). The delay is `manual` ± `depth`·sweep, clamped to a
+positive floor (≥ 2 samples) so it never crosses the write head — the
+"standard, not through-zero" choice. Because a musical flange delay
+(~0.1–6 ms) is always far shorter than a block, a read this sample can
+depend on a sample written this sample, so the feedback recirculation runs
+**per-sample** — the same short-time path the delay module already uses.
+The LFO phase and ring contents carry across blocks, so despite the
+per-sample loop the render is exactly **block-size independent**
+(bit-identical at 512 / 4096 / 333). `mix=0` is a bit-exact dry passthrough
+on both channels *even with strong feedback* (dry term `x·(1−mix)`, wet
+gated to zero). A single-voice `(1,F)` input is bit-identical to the mono
+path. Feedback clamps to ±0.95, so the comb stays bounded.
+
+**Wiring**: registered in `modules/__init__.py`; `flanger` dispatch in the
+backend; pyo silent-stub; UI param block (`rate`/`manual`/`cv_depth` drags,
+`depth`/`mix` sliders, and a **bipolar** `feedback` slider from −0.95 to
+0.95). `docs/MODULES.md` gets an index row and a `#### flanger` entry, and
+the chorus entry's "planned sibling" note now links to it.
+
+**Tests**: 26 in `tests/test_flanger.py` (model/ports/type-walls; mix=0
+bit-exact dry with feedback; impulse tap at `manual`; depth=0 static comb ≠
+dry; block independence; bipolar sign + longer ring with more feedback +
+bounded at ±0.95; stereo decorrelation; rate_cv). Full suite green — 875
+with the UI zoom tests (+26 from the chorus's 849); 852 in this headless
+sandbox where dearpygui isn't installable so the 23 zoom tests don't
+collect (834 passed + 18 mido-skips).
+
+**Hand-off to Matthew**: delivered as `flanger.patch`, `git am`-verified
+clean on `d34471d` (your current `origin/main`, which has the chorus), full
+suite green in the am'd tree. Hear it: open `flanger_jet_sweep.json` — a saw
+riff sweeps through the jet whoosh, wider and narrower as the slow LFO
+drifts the rate. Note: the project **mount is healthy for reads** this
+session (my earlier "corrupted" call was a wrong-path check on my part);
+the one real snag is a stale zero-byte `.git/index.lock` the sandbox can't
+remove — clear it in PowerShell (`Remove-Item .git\index.lock`) before
+`git am` if git complains.
+
+**Next**: the last of the trio — a **phaser** (a cascade of swept allpass
+stages; the reverb's allpass diffusers are the building block). Then
+**through-zero** flanging (a second delayed dry path so the sweep can cross
+zero — the dramatic tape jet); `depth_cv`; tempo-sync the rate to the
+Clock; a stereo-offset param; and optional feedback-path damping.

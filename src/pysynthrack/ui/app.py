@@ -660,6 +660,55 @@ class App:
                 )
                 return
 
+        if module.TYPE == "flanger":
+            # Swept comb flanger. ``rate`` is the LFO speed (Hz); ``depth``
+            # is the sweep width (0..1); ``manual`` is the centre delay in
+            # ms; ``feedback`` is bipolar regeneration (-0.95..0.95, hollow
+            # <-> ringing); ``mix`` is dry/wet; ``cv_depth`` scales rate_cv
+            # (octaves per unit).
+            if param_name == "rate":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.01,
+                    min_value=0.05, max_value=10.0, format="%.2f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "depth":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "manual":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.1, max_value=10.0, format="%.2f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "feedback":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-0.95, max_value=0.95, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "mix":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f oct/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "delay":
             # Echo controls. ``time`` is the delay in ms; ``feedback`` sets
             # how many repeats; ``tone`` damps the feedback path (dark <->

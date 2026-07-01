@@ -718,6 +718,8 @@ class NumpyBackend(AudioBackend):
             return self._render_meter(module, frames, buffers, patch)
         if module.TYPE == "chorus":
             return self._render_chorus(module, frames, buffers, patch)
+        if module.TYPE == "flanger":
+            return self._render_flanger(module, frames, buffers, patch)
         if module.TYPE == "delay":
             return self._render_delay(module, frames, buffers, patch)
         if module.TYPE == "reverb":
@@ -4212,6 +4214,121 @@ class NumpyBackend(AudioBackend):
         out_l = (dry + mix * wet_l).astype(np.float32)
         out_r = (dry + mix * wet_r).astype(np.float32)
         return {"out_l": out_l, "out_r": out_r}
+
+    # ----- Flanger rendering ----------------------------------------------
+
+    # Longest delay the flanger line can address, in milliseconds. The comb
+    # is a *short* modulated delay, so this ring is tiny; it sizes the
+    # buffer and caps the swept delay.
+    _FLANGER_MAX_MS = 12.0
+    # Largest sweep amplitude (ms) at depth == 1, added around ``manual``.
+    _FLANGER_SWEEP_MS = 4.0
+    # Shortest delay, in samples. >= 2 keeps both linear-interpolation taps
+    # strictly behind the write head (never reads the sample being written),
+    # so the delay stays positive -- a *standard* flanger, not through-zero.
+    _FLANGER_MIN_SAMP = 2.0
+
+    def _render_flanger(self, module, frames: int, buffers, patch):
+        """Swept resonant comb flanger: mono in -> out_l / out_r.
+
+        Two short delay lines (one per channel) are swept by an internal
+        sine LFO whose L and R phases sit a quarter-cycle apart, and each
+        line feeds a fraction of its own output back in (bipolar
+        regeneration). Summing the swept, fed-back delay with the dry
+        signal is the moving, ringing comb -- the flanger. Because the
+        delay is always far shorter than a block, a read this sample can
+        depend on a sample written this sample, so the recirculation runs
+        per-sample (the delay's short-time path); the LFO phase and the
+        ring state carry across blocks, so the render is still exactly
+        block-size independent. A polyphonic input is summed to mono first.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in")
+        if src is None:
+            z = np.zeros(frames, dtype=np.float32)
+            return {"out_l": z, "out_r": z.copy()}
+
+        sr = self.sample_rate
+        rate = float(module.params.get("rate", 0.3))
+        depth = float(module.params.get("depth", 0.7))
+        manual_ms = float(module.params.get("manual", 1.5))
+        feedback = float(module.params.get("feedback", 0.5))
+        mix = float(module.params.get("mix", 0.5))
+        cv_depth = float(module.params.get("cv_depth", 1.0))
+        depth = min(max(depth, 0.0), 1.0)
+        mix = min(max(mix, 0.0), 1.0)
+        feedback = min(max(feedback, -0.95), 0.95)   # bipolar, below runaway
+        manual_ms = min(max(manual_ms, 0.1), 10.0)
+
+        # rate_cv: 1 V/oct on the LFO rate, block-mean -- a sub-audio LFO,
+        # so one rate per block is the right cost/quality trade-off (the
+        # same cadence the chorus and LFO modules use for their rate_cv).
+        rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
+        if rate_cv is not None and rate_cv.size > 0:
+            rate = rate * float(2.0 ** (cv_depth * float(np.mean(rate_cv))))
+        rate = min(max(rate, 0.01), 20.0)
+
+        max_ms = self._FLANGER_MAX_MS
+        L = int(max_ms * sr / 1000.0) + frames + 4
+
+        state = self._state.setdefault(module.id, {})
+        if "buf" not in state or state["buf"].shape != (2, L):
+            state.clear()
+            state["buf"] = np.zeros((2, L), dtype=np.float64)
+            state["write_idx"] = 0
+            state["phase"] = 0.0
+
+        buf = state["buf"]
+        wp = int(state["write_idx"])
+        phase0 = float(state["phase"])
+
+        if frames == 0:
+            e = np.empty(0, dtype=np.float32)
+            return {"out_l": e, "out_r": e.copy()}
+
+        x = src.astype(np.float64)                        # (F,)
+
+        # One sine LFO, L and R a quarter-cycle apart, so the two combs
+        # sweep out of step (stereo width).
+        inc = rate / sr
+        n = np.arange(frames, dtype=np.float64)
+        offs = np.array([0.0, 0.25])                      # quadrature L / R
+        ph = (phase0 + offs[:, None] + n[None, :] * inc) % 1.0    # (2, F)
+        lfo = np.sin(2.0 * np.pi * ph)                            # (2, F)
+        new_phase = (phase0 + frames * inc) % 1.0
+
+        manual_samp = manual_ms * sr / 1000.0
+        sweep_samp = (self._FLANGER_SWEEP_MS * depth) * sr / 1000.0
+        delay = manual_samp + sweep_samp * lfo                    # (2, F)
+        np.clip(delay, self._FLANGER_MIN_SAMP, float(L - 2), out=delay)
+
+        # Per-sample recirculation: read the line ``delay`` back with linear
+        # interpolation, mix that (wet) with the dry sample, and write
+        # ``in + feedback * read`` into the line so the comb regenerates.
+        # Both channels share the write clock but keep their own line and
+        # feedback path. mix == 0 leaves ``out`` a bit-exact dry copy.
+        out = np.empty((2, frames), dtype=np.float64)
+        rows = np.arange(2)
+        dry_gain = 1.0 - mix
+        for i in range(frames):
+            rp = wp - delay[:, i]                          # (2,)
+            i0 = np.floor(rp).astype(np.int64)
+            frac = rp - i0
+            d = (
+                buf[rows, i0 % L] * (1.0 - frac)
+                + buf[rows, (i0 + 1) % L] * frac
+            )                                              # (2,)
+            buf[rows, wp % L] = x[i] + feedback * d
+            out[:, i] = x[i] * dry_gain + d * mix
+            wp += 1
+        wp = wp % L
+
+        state["write_idx"] = int(wp)
+        state["phase"] = new_phase
+
+        out_l = out[0].astype(np.float32)
+        out_r = out[1].astype(np.float32)
+        return {"out_l": out_l, "out_r": out_r}
+
 
     # ----- Delay rendering ------------------------------------------------
 

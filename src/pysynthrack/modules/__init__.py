@@ -26,6 +26,7 @@ from .delay import Delay
 from .diskwriter import DiskWriter
 from .fileplayer import FilePlayer
 from .filter import Filter
+from .flanger import Flanger
 from .keyboard import Keyboard
 from .lfo import LFO
 from .loudness import Loudness
@@ -65,6 +66,7 @@ __all__ = [
     "DiskWriter",
     "FilePlayer",
     "Filter",
+    "Flanger",
     "Keyboard",
     "LeftSpeakerOutput",
     "LFO",

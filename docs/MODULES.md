@@ -149,6 +149,7 @@ Every module type, its category, and its ports at a glance.
 | [`reverb`](#reverb) | Processor | `in` (audio) → `out_l`,`out_r` (audio) |
 | [`loudness`](#loudness) | Processor | `in` (audio), `level_cv` (cv) → `out` (audio) |
 | [`chorus`](#chorus) | Processor | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
+| [`flanger`](#flanger) | Processor | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
 | [`adsr`](#adsr) | Modulation | `gate` (gate) → `cv` (cv) |
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
@@ -723,8 +724,59 @@ voice ensemble, with a slow LFO drifting the chorus rate through
 
 **Patching.** `… → vca → chorus → L/R speakers`. Widen a mono pad or
 ensemble a saw lead; feed a slow envelope or LFO into `rate_cv` for a
-shimmer that breathes. For the through-zero jet-sweep sound, reach for a
-flanger (feedback + a shorter delay) — a planned sibling module.
+shimmer that breathes. For the resonant jet-sweep sound, reach for its
+sibling the [`flanger`](#flanger) (feedback + a shorter delay).
+
+---
+
+#### `flanger`
+
+A **swept, resonant comb** — the jet-plane whoosh. The input is mixed with
+a *very short* delayed copy of itself (a comb filter: a stack of evenly-
+spaced notches), and an internal LFO sweeps that delay so the notches slide
+up and down the spectrum. A fraction of the delayed signal is fed back into
+the line (**feedback**, or regeneration), sharpening the comb into ringing
+resonances. The feedback is **bipolar**: positive rings brightly, negative
+goes hollow and metallic. Where the [`chorus`](#chorus) uses a longer delay
+and *no* feedback to thicken a sound, the flanger uses a shorter delay
+*with* feedback for that resonant sweep — the two are close cousins. The
+sweep is spread across a **stereo pair** (`out_l` / `out_r`) with the L and
+R LFOs a quarter-cycle apart, for a wide, rotating image.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to flange (voice sources summed to mono). Unpatched → silence. |
+| `rate_cv` | in | cv | Modulates the LFO rate (1 V/oct × `cv_depth`). Optional. |
+| `out_l` | out | audio | Left channel (dry + swept comb). |
+| `out_r` | out | audio | Right channel (dry + swept comb). |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `rate` | `0.3` | 0.05 … 10 Hz | LFO sweep speed. Slow = a long ocean-liner sweep; faster = warble. |
+| `depth` | `0.7` | 0 … 1 | Sweep width — how far the comb slides across the spectrum. |
+| `manual` | `1.5` | 0.1 … 10 ms | Centre delay. Short = high/tight whoosh; long = low, hollow sweep. |
+| `feedback` | `0.5` | −0.95 … 0.95 | Regeneration, **bipolar**. `0` = plain comb; `+` = ringing; `−` = hollow/metallic. |
+| `mix` | `0.5` | 0 … 1 | Dry/wet. The comb is deepest near `0.5`; `0` is a bit-exact dry passthrough on both channels. |
+| `cv_depth` | `1.0` | 0 … 4 oct/unit | Octaves of LFO-rate shift per unit of `rate_cv`. |
+
+Patch the outputs into [`left_speaker_output`](#left_speaker_output) and
+[`right_speaker_output`](#right_speaker_output). Unlike the chorus, the
+flanger's feedback makes each output sample depend on one just written, so
+the comb runs **per-sample** (the delay's short-time path) — but the LFO
+phase and ring state carry across blocks, so the render is still exactly
+**block-size independent** (bit-identical at 512 / 4096 / 333). This is a
+**standard** (positive-delay) flanger; the delay never crosses zero, so
+through-zero "tape" flanging is a planned extension. See
+`examples/flanger_jet_sweep.json` (a self-playing saw riff swept by the
+flanger, with a slow LFO drifting the sweep rate through `rate_cv`).
+
+**Patching.** `… → vca → flanger → L/R speakers`. Try positive feedback for
+a bright, ringing sweep, negative for a hollow one; feed a slow envelope or
+LFO into `rate_cv` for an auto-flanger that breathes.
 
 ---
 
