@@ -35,6 +35,7 @@ Keyboard / MIDIInput note sources) route through.
 """
 from __future__ import annotations
 
+import math
 import queue
 import threading
 import wave
@@ -237,6 +238,12 @@ class NumpyBackend(AudioBackend):
         # created in compile() (GUI thread) so the audio thread only ever
         # updates values -- snapshot_audio_levels can copy without a lock.
         self._audio_levels: dict[int, float] = {}
+        # Latest per-Meter channel triples ``(level, hold, clip)`` --
+        # bar level (in the module's mode), peak-hold tick, clip lamp --
+        # as ``(left, right)`` with ``right`` None while ``in_r`` is
+        # unpatched. Same no-lock discipline as ``_audio_levels``: keys
+        # made in compile(), the audio thread swaps immutable tuples.
+        self._audio_meter_state: dict[int, tuple] = {}
         # Latest captured input block (frames, channels) from the
         # duplex stream's callback, or None on an output-only stream.
         # MicInput's renderer reads it; reset on stop so a stale block
@@ -265,6 +272,17 @@ class NumpyBackend(AudioBackend):
             self._meter_levels = {}
             self._audio_levels = {
                 mid: 0.0
+                for mid, m in patch.modules.items()
+                if m.TYPE == "meter"
+            }
+            zero_ch = (0.0, 0.0, False)
+            self._audio_meter_state = {
+                mid: (
+                    zero_ch,
+                    zero_ch
+                    if any(c.dst_port == "in_r" for c in patch.cables_into(mid))
+                    else None,
+                )
                 for mid, m in patch.modules.items()
                 if m.TYPE == "meter"
             }
@@ -629,6 +647,20 @@ class NumpyBackend(AudioBackend):
         copy never races the audio thread's value writes.
         """
         return dict(self._audio_levels)
+
+    def snapshot_audio_meters(self) -> dict[int, tuple]:
+        """GUI hook: latest per-Meter channel meter triples.
+
+        Keyed by module_id; each value is ``(left, right)`` where a
+        channel is ``(level, hold, clip)`` -- the bar level in the
+        module's ``mode``, the peak-hold tick level (both linear amps;
+        the GUI converts to dBFS) and whether the clip lamp is lit --
+        and ``right`` is None while ``in_r`` is unpatched (the GUI hides
+        the second bar). Keys are stable between compiles (created on
+        the GUI thread) and the audio thread swaps whole immutable
+        tuples, so this copy never races the writes.
+        """
+        return dict(self._audio_meter_state)
 
     def snapshot_file_positions(self) -> dict[int, tuple[float, float]]:
         """GUI hook: each ``file_player``'s playhead as ``(elapsed, total)``
@@ -5298,9 +5330,6 @@ class NumpyBackend(AudioBackend):
             right *= gain
         return {"left": left, "right": right}
 
-    # Per-block decay of the peak envelope (slow release). ~0.985 per
-    # block at 512/44100 falls roughly 0 -> -20 dB in ~1.8 s: a gentle
-    # VU-style fall that still reads 'recent maximum' at a glance.
     # Meter fall time: seconds for the peak bar to drop ~20 dB (a factor of
     # ten). The per-meter ``release`` param overrides this default. The fall
     # is derived from the block duration, so its wall-clock rate is the same
@@ -5308,44 +5337,159 @@ class NumpyBackend(AudioBackend):
     _METER_RELEASE_DEFAULT = 0.4
     _METER_RELEASE_MIN = 0.02
     _METER_RELEASE_MAX = 4.0
+    # Peak-hold tick: how long the tick sits at the most recent peak
+    # before it starts to fall (at the ``release`` rate). DAW-style.
+    _METER_HOLD_SEC = 1.5
+    # Clip lamp: stays lit this long after any sample reaches 0 dBFS.
+    _METER_CLIP_SEC = 2.0
+    # RMS mode: EMA time constant of the mean-square average. ~300 ms
+    # gives a VU-ish loudness ballistics.
+    _METER_RMS_SEC = 0.3
 
-    def _render_meter(self, module, frames: int, buffers, patch):
-        """Level-meter tap: pass audio through, track a peak envelope.
+    def _meter_channel(self, state, suffix, src, frames, release, mode):
+        """Advance one meter channel's indicators by one block.
 
-        The input is forwarded to ``out`` untouched (same array, same
-        shape -- mono or voice-aware), so a Meter is transparent inline.
-        Alongside, the block's peak (max |sample| over all samples and
-        voices) drives a fast-attack / slow-decay envelope kept in
-        module state; the latest value is published to ``_audio_levels``
-        for the GUI. Computing it here on the audio thread means a short
-        transient registers even between UI frames -- the meter latency
-        is block-rate, not frame-rate.
+        ``src`` is the channel's input buffer (1D mono or 2D
+        voice-aware) or None for a silent block. State lives in
+        ``state`` under ``env/hold/hold_age/clip_age/rms_sq`` keys with
+        ``suffix`` appended, so the L and R channels are fully
+        independent. Returns the published ``(level, hold, clip)``
+        triple: linear amps for the bar and the peak-hold tick, plus
+        whether the clip lamp is lit.
+
+        The bar (``level``): in ``peak`` mode it is the historical
+        fast-attack / time-based-release peak envelope -- bit-identical
+        to the pre-``mode`` Meter. In ``rms`` mode it is
+        ``sqrt(EMA(mean(x^2)))`` with a ~300 ms time constant; on a 2D
+        voice buffer the mean-square is taken per voice and the loudest
+        voice wins (mirroring peak's max-over-voices -- a plain mean
+        would be diluted ~16x by the zero-padded slots).
+
+        The peak-hold tick: instant attack to the block peak, holds for
+        ``_METER_HOLD_SEC``, then falls exactly like the peak envelope
+        (so it always reads >= the peak bar). It is driven by the
+        *peak* in both modes -- that is the point: read a transient's
+        true level even while the bar shows the RMS average.
+
+        The clip lamp: any sample at or above 0 dBFS (|x| >= 1.0)
+        lights it for ``_METER_CLIP_SEC``. Hold and clip ages are
+        counted in samples, so their wall-clock timing is block-size
+        independent.
         """
-        src = self._input_buffer(
-            patch, buffers, module.id, "in", collapse=False
-        )
-        if src is None or src.size == 0:
-            peak = 0.0
-            out = np.zeros(frames, dtype=np.float32)
-        else:
-            peak = float(np.max(np.abs(src)))
-            out = src  # pass-through (read-only downstream, like any fan-out)
+        peak = 0.0 if src is None or src.size == 0 else float(np.max(np.abs(src)))
+        coeff = 0.1 ** (frames / self.sample_rate / release)
 
-        release = float(module.params.get("release", self._METER_RELEASE_DEFAULT))
-        release = min(max(release, self._METER_RELEASE_MIN), self._METER_RELEASE_MAX)
-        state = self._state.setdefault(module.id, {"env": 0.0})
-        env = state["env"]
+        # Peak envelope (the bar in ``peak`` mode; kept warm in ``rms``
+        # mode too so switching modes never restarts from silence).
+        env = state["env" + suffix]
         if peak >= env:
             env = peak  # instant attack
         else:
             # Time-based release: fall a factor of ten (~20 dB) every
             # ``release`` seconds, independent of the block size.
-            coeff = 0.1 ** (frames / self.sample_rate / release)
             env = peak + (env - peak) * coeff
-        state["env"] = env
-        self._audio_levels[module.id] = env
+        state["env" + suffix] = env
 
-        return {"out": out}
+        if mode == "rms":
+            if src is None or src.size == 0:
+                mean_sq = 0.0
+            else:
+                sq = np.square(src.astype(np.float64, copy=False))
+                if sq.ndim == 2:
+                    mean_sq = float(np.max(np.mean(sq, axis=-1)))
+                else:
+                    mean_sq = float(np.mean(sq))
+            k = math.exp(-frames / (self.sample_rate * self._METER_RMS_SEC))
+            rms_sq = mean_sq + (state["rms_sq" + suffix] - mean_sq) * k
+            state["rms_sq" + suffix] = rms_sq
+            level = math.sqrt(rms_sq)
+        else:
+            level = env
+
+        # Peak-hold tick.
+        hold = state["hold" + suffix]
+        hold_age = state["hold_age" + suffix]
+        if peak >= hold:
+            hold = peak
+            hold_age = 0
+        else:
+            hold_age += frames
+            if hold_age > int(self.sample_rate * self._METER_HOLD_SEC):
+                hold = peak + (hold - peak) * coeff
+        state["hold" + suffix] = hold
+        state["hold_age" + suffix] = hold_age
+
+        # Clip lamp.
+        clip_age = 0 if peak >= 1.0 else state["clip_age" + suffix] + frames
+        state["clip_age" + suffix] = clip_age
+        clip = clip_age < int(self.sample_rate * self._METER_CLIP_SEC)
+
+        return (level, hold, clip)
+
+    def _render_meter(self, module, frames: int, buffers, patch):
+        """Level-meter tap: pass audio through, track level indicators.
+
+        Both inputs are forwarded untouched (``in`` -> ``out``, ``in_r``
+        -> ``out_r``; same array, same shape -- mono or voice-aware), so
+        a Meter is transparent inline. Alongside, each patched channel
+        runs the indicator bundle in ``_meter_channel`` (bar level in
+        the module's ``mode``, peak-hold tick, clip lamp); the latest
+        triples are published to ``_audio_meter_state`` -- and the first
+        channel's bar to ``_audio_levels``, the historical scalar hook
+        -- for the GUI. Computing here on the audio thread means a short
+        transient registers even between UI frames: the meter latency is
+        block-rate, not frame-rate.
+
+        ``in_r`` is optional. Unpatched, the right slot publishes None
+        (the GUI hides the second bar), ``out_r`` renders silence and no
+        R state advances -- a mono Meter behaves exactly as it always
+        did.
+        """
+        src = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
+        if src is None or src.size == 0:
+            out = np.zeros(frames, dtype=np.float32)
+            src = None
+        else:
+            out = src  # pass-through (read-only downstream, like any fan-out)
+
+        release = float(module.params.get("release", self._METER_RELEASE_DEFAULT))
+        release = min(max(release, self._METER_RELEASE_MIN), self._METER_RELEASE_MAX)
+        mode = str(module.params.get("mode", "peak"))
+        if mode != "rms":
+            mode = "peak"  # unknown values fall back to the default
+
+        state = self._state.setdefault(module.id, {})
+        for suffix in ("_l", "_r"):
+            if "env" + suffix not in state:
+                state["env" + suffix] = 0.0
+                state["hold" + suffix] = 0.0
+                state["hold_age" + suffix] = 0
+                # Start far past the lamp window so a fresh meter is unlit.
+                state["clip_age" + suffix] = 1 << 62
+                state["rms_sq" + suffix] = 0.0
+
+        left = self._meter_channel(state, "_l", src, frames, release, mode)
+
+        if any(c.dst_port == "in_r" for c in patch.cables_into(module.id)):
+            src_r = self._input_buffer(
+                patch, buffers, module.id, "in_r", collapse=False
+            )
+            if src_r is None or src_r.size == 0:
+                out_r = np.zeros(frames, dtype=np.float32)
+                src_r = None
+            else:
+                out_r = src_r
+            right = self._meter_channel(state, "_r", src_r, frames, release, mode)
+        else:
+            out_r = np.zeros(frames, dtype=np.float32)
+            right = None
+
+        self._audio_levels[module.id] = left[0]
+        self._audio_meter_state[module.id] = (left, right)
+
+        return {"out": out, "out_r": out_r}
 
     def _decode_audio(self, path, target_sr):
         """Decode any supported media file to ``(2, N)`` float32 or None.

@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "next_id": 10,
+  "modules": [
+    {
+      "id": 1,
+      "type": "lfo",
+      "name": "Pulse clock",
+      "params": {
+        "waveform": "square",
+        "rate": 2.0,
+        "depth": 1.0,
+        "bipolar": false
+      }
+    },
+    {
+      "id": 2,
+      "type": "schmitt",
+      "name": "To gate",
+      "params": {
+        "high": 0.6,
+        "low": 0.4
+      }
+    },
+    {
+      "id": 3,
+      "type": "ad_envelope",
+      "name": "Pluck env",
+      "params": {
+        "attack": 0.003,
+        "decay": 0.4
+      }
+    },
+    {
+      "id": 4,
+      "type": "oscillator",
+      "name": "Saw pluck",
+      "params": {
+        "waveform": "saw",
+        "freq": 110.0,
+        "amp": 0.5
+      }
+    },
+    {
+      "id": 5,
+      "type": "vca",
+      "name": "VCA",
+      "params": {}
+    },
+    {
+      "id": 6,
+      "type": "chorus",
+      "name": "Stereo spread",
+      "params": {
+        "rate": 0.6,
+        "depth": 0.6,
+        "voices": 3,
+        "mix": 0.5,
+        "cv_depth": 1.0
+      }
+    },
+    {
+      "id": 7,
+      "type": "meter",
+      "name": "Master meter",
+      "params": {
+        "release": 0.4,
+        "mode": "peak"
+      }
+    },
+    {
+      "id": 8,
+      "type": "left_speaker_output",
+      "name": "Left",
+      "params": {}
+    },
+    {
+      "id": 9,
+      "type": "right_speaker_output",
+      "name": "Right",
+      "params": {}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "cv", "dst_module_id": 2, "dst_port": "in"},
+    {"src_module_id": 2, "src_port": "gate", "dst_module_id": 3, "dst_port": "trig"},
+    {"src_module_id": 4, "src_port": "out", "dst_module_id": 5, "dst_port": "audio"},
+    {"src_module_id": 3, "src_port": "cv", "dst_module_id": 5, "dst_port": "cv"},
+    {"src_module_id": 5, "src_port": "out", "dst_module_id": 6, "dst_port": "in"},
+    {"src_module_id": 6, "src_port": "out_l", "dst_module_id": 7, "dst_port": "in"},
+    {"src_module_id": 6, "src_port": "out_r", "dst_module_id": 7, "dst_port": "in_r"},
+    {"src_module_id": 7, "src_port": "out", "dst_module_id": 8, "dst_port": "in"},
+    {"src_module_id": 7, "src_port": "out_r", "dst_module_id": 9, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 60],
+      "2": [280, 60],
+      "3": [500, 60],
+      "4": [40, 280],
+      "5": [500, 260],
+      "6": [740, 160],
+      "7": [1000, 160],
+      "8": [1260, 100],
+      "9": [1260, 260]
+    }
+  }
+}

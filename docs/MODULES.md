@@ -217,7 +217,7 @@ Every module type, its category, and its ports at a glance.
 | [`cv_scale`](#cv_scale) | Utility | `in` (cv) → `out` (cv) |
 | [`cv_offset`](#cv_offset) | Utility | `in` (cv) → `out` (cv) |
 | [`sample_hold`](#sample_hold) | Utility | `in` (cv), `trig` (gate) → `out` (cv) |
-| [`meter`](#meter) | Utility | `in` (audio) → `out` (audio) |
+| [`meter`](#meter) | Utility | `in`, `in_r` (audio) → `out`, `out_r` (audio) |
 | [`speaker_output`](#speaker_output) | Sink | `in` (audio) → — |
 | [`left_speaker_output`](#left_speaker_output) | Sink | `in` (audio) → — |
 | [`right_speaker_output`](#right_speaker_output) | Sink | `in` (audio) → — |
@@ -1253,32 +1253,61 @@ values, a mono partner broadcasting across the voice axis. See
 A **level indicator** you patch any audio signal into — `in` passes
 straight through to `out` untouched, so a Meter can sit inline
 (`source → meter → speaker`) or hang off a fan-out cable purely to
-watch a level. The node shows the signal's **recent peak in dBFS**
+watch a level. The node shows the signal's **recent level in dBFS**
 (a fixed −90 → 0 scale, so two meters read on the same reference and
 are directly comparable — handy for eyeballing, say, a MicInput
-against a FilePlayer before they hit a mixer).
+against a FilePlayer before they hit a mixer). Patch the optional
+`in_r` and the node grows a second bar for a **stereo pair**
+(`in_r` → `out_r`, e.g. straight off a chorus/reverb's `out_l`/`out_r`
+on the way to the two speaker sinks); leave it unpatched and the
+Meter is exactly the single-channel meter it always was.
+
+Each channel's display is three indicators drawn together:
+
+- the **bar** — `mode="peak"` (default) is the classic fast-attack /
+  adjustable-release recent-maximum reading; `mode="rms"` is a ~300 ms
+  RMS average that reads closer to perceived loudness (a sine reads
+  its amplitude −3 dB, and it sits lower than peak on transient
+  material);
+- the **peak-hold tick** — a marker that sits at the most recent peak
+  for ~1.5 s before falling at the `release` rate (DAW-style), so a
+  transient's true level can be read after the bar has fallen. It is
+  peak-driven in *both* modes;
+- the **clip lamp** — the small lamp past the bar lights the moment
+  any sample reaches 0 dBFS (|sample| ≥ 1.0) and stays lit for ~2 s,
+  so a momentary overload can't slip past between glances.
 
 **Ports**
 
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
-| `in` | in | audio | Signal to measure. |
-| `out` | out | audio | The input, passed through unchanged. |
+| `in` | in | audio | Signal to measure (left / only channel). |
+| `in_r` | in | audio | Optional right channel; patching it adds the second bar. |
+| `out` | out | audio | `in`, passed through unchanged. |
+| `out_r` | out | audio | `in_r` passed through unchanged (silence while `in_r` is unpatched). |
 
 **Parameters**
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
-| `release` | `0.4` | 0.02 … 2 s | Fall time — roughly how long the bar takes to drop ~20 dB after a peak. Small = snappy/reactive (catches transients and clipping); large = holds peaks longer for an easier read. Attack is always instant. |
+| `release` | `0.4` | 0.02 … 2 s | Fall time — roughly how long the bar takes to drop ~20 dB after a peak, and how fast the peak-hold tick falls once its ~1.5 s hold expires. Small = snappy/reactive; large = holds peaks longer for an easier read. Attack is always instant. |
+| `mode` | `"peak"` | peak / rms | What the bar shows: recent maximum (peak) or ~300 ms average level (rms). The tick and lamp are peak-driven either way. |
 
-**How it works.** The reading is a fast-attack / adjustable-release
-peak envelope (max |sample| over the block, instant rise, with the
-fall rate set by `release`) computed on the audio thread, so a short transient registers even
-between UI repaints and the meter latency is block-rate, not
-frame-rate. Shape-polymorphic: a voice-aware `(V, F)` input shows the
-loudest voice. See `examples/meter_levels.json` (a loud saw and a
-quiet square, each through its own meter — the bars read clearly
-different levels).
+**How it works.** Everything is computed on the audio thread, so a
+short transient registers even between UI repaints and the meter
+latency is block-rate, not frame-rate. The peak path is the same
+fast-attack / time-based-release envelope as ever (bit-identical in
+the default mode); RMS is `sqrt` of an exponential moving average of
+the block mean-square (~300 ms time constant); hold and clip windows
+are counted in samples, so their wall-clock timing is block-size
+independent. Shape-polymorphic: a voice-aware `(V, F)` input shows the
+loudest voice (per-voice RMS too — a plain average would be diluted
+~16× by the zero-padded slots), and a clip on *any* voice lights the
+lamp. See `examples/meter_levels.json` (a loud saw and a quiet square,
+each through its own meter) and `examples/meter_stereo_master.json`
+(a plucked saw through a chorus, the stereo pair metered inline on the
+way to the L/R speakers — the tick rides above the falling bar on
+every pluck).
 
 ---
 

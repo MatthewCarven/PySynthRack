@@ -5014,3 +5014,55 @@ crossover freq_cv → animated-EQ trio (sweep/motion/tilt) → cv_depth
 convention standardisation → reverb/mixer CV. Open follow-ups live with
 their modules (damping_cv, master_cv, pivot_cv, per-band gain-CV, tilt
 slope options).
+
+## 2026-07-02 — Meter follow-ups ×4: stereo, RMS, peak-hold tick, clip lamp
+
+All four follow-ups flagged when the Meter shipped (2026-06-30) landed in
+one pass, scoped with Matthew up front: **optional `in_r` on the existing
+module** (over a separate stereo_meter), **`mode` combo peak/rms** (over an
+always-both display, keeping the default bit-identical), **auto-clear ~2 s
+clip lamp** (over click-to-reset latching), and a **~1.5 s hold-then-fall
+tick** (over infinite hold).
+
+**Backend.** `_render_meter` now runs a per-channel indicator bundle,
+`_meter_channel`, with L/R-suffixed state keys so the channels are fully
+independent. The peak bar is the exact historical envelope — the new
+bit-identical guard test recomputes the old formula by hand and asserts
+`==` over 50 random blocks. RMS is `sqrt(EMA(mean(x²)))` with a ~300 ms
+time constant; on 2D voice buffers the mean-square is per-voice and the
+loudest voice wins (a plain mean would read −12 dB low against 16
+zero-padded slots — mirrors peak's max-over-voices). The tick has instant
+attack, a sample-counted 1.5 s hold, then falls by the same `release`
+coefficient as the bar (so it can never read below it); it stays
+peak-driven in RMS mode — that's the point of it. The clip lamp lights at
+|sample| ≥ 1.0 on any voice and clears after a sample-counted 2 s, so both
+windows are block-size independent (tested at 512 vs 4096). `in_r` is
+optional: unpatched, no R state advances, `out_r` renders silence, and the
+snapshot's right slot is None — the mono Meter is untouched. New GUI hook
+`snapshot_audio_meters()` publishes per-channel `(level, hold, clip)`
+triples (immutable tuples swapped atomically, keys pre-created in
+compile() — same no-lock discipline); `snapshot_audio_levels()` stays for
+back-compat and still feeds anything that only wants the bar.
+
+**UI.** Each channel is now a 172×16 drawlist — bar fill, 2 px hold tick,
+clip lamp rect, dB text — replacing the progress bar (a bar widget can't
+draw a tick over its own fill). Both drawlists are built up front; the R
+one shows/hides by tracking whether the snapshot's right slot is None, so
+patching/unpatching `in_r` just works. Fill stays on the fixed −90..0 dBFS
+scale (two meters, and L/R of one pair, stay directly comparable). `mode`
+got an arm in the shared mode-combo dispatch. Verified headlessly under a
+real DPG context (fill/tick x-positions, lamp colours, R-bar show/hide,
+overlay text).
+
+**Tests.** +27 → 48 in `tests/test_meter.py`; the two spec asserts
+(ports/params) updated, every behavioural test passed unchanged before the
+new ones were added. Suite: full run below.
+
+**Example.** `examples/meter_stereo_master.json` — LFO→Schmitt→AD-plucked
+saw through a chorus, the stereo pair metered inline on the way to the L/R
+speaker sinks. Post-master peak ≈ 0.50 (headroom per the house rule); the
+tick rides above the falling bar on every pluck; the lamp stays dark —
+push the osc amp up to see it fire.
+
+**Follow-ups (new).** Stereo-link option (both bars share one peak scale);
+K-weighted/LUFS-ish mode; clip counter; numeric hold readout on hover.

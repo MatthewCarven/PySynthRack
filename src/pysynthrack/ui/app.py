@@ -31,6 +31,7 @@ from ..modules.cvtofrequency import MODES as CVTOFREQ_MODES
 from ..modules.lfo import LFO_WAVEFORMS
 from ..modules.midiinput import AUTO_DEVICE, available_devices as midi_available_devices
 from ..modules.micinput import available_input_devices as mic_available_devices
+from ..modules.meter import METER_MODES
 from ..modules.noise import NOISE_COLORS
 from ..modules.oscillator import WAVEFORMS
 from ..modules.sweep_eq import SWEEP_EQ_MODES
@@ -123,8 +124,12 @@ class App:
         # holds the per-port auto-range state [lo, hi] used to normalise
         # the fill (instant-attack / slow-release; see _auto_range_fill).
         self._cv_meter_bars: dict[tuple[int, str], int] = {}
-        # Meter-module level bars: module_id -> progress-bar tag.
-        self._audio_meter_bars: dict[int, int] = {}
+        # Meter-module level displays: module_id -> a bundle dict with
+        # the L and R channel drawlists' item tags ("l"/"r", each a dict
+        # of dl/fill/tick/lamp/text) plus "r_shown" (whether the R bar
+        # is currently visible; it exists from creation but stays hidden
+        # until the snapshot reports a patched ``in_r``).
+        self._audio_meter_bars: dict[int, dict] = {}
         self._meter_bounds: dict[tuple[int, str], list[float]] = {}
         # FilePlayer playhead readouts. Maps module_id -> the dpg text
         # tag showing 'elapsed / total'; refreshed each frame in
@@ -348,14 +353,19 @@ class App:
                     label = dpg.add_text("0:00 / 0:00")
                     self._file_pos_labels[module.id] = label
 
-            # Meter: a dBFS level bar (-90..0), driven each frame from
-            # the backend's peak envelope.
+            # Meter: one dBFS level display (-90..0) per channel, driven
+            # each frame from the backend's indicator triples. Each is a
+            # drawlist (bar fill + peak-hold tick + clip lamp + dB text)
+            # rather than a progress bar, so the tick and lamp can be
+            # drawn on top of the fill. The R display exists up front
+            # but stays hidden until ``in_r`` is patched.
             if module.TYPE == "meter":
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                    bar = dpg.add_progress_bar(
-                        default_value=0.0, overlay="-inf dB", width=160
-                    )
-                    self._audio_meter_bars[module.id] = bar
+                    self._audio_meter_bars[module.id] = {
+                        "l": self._build_meter_display(show=True),
+                        "r": self._build_meter_display(show=False),
+                        "r_shown": False,
+                    }
 
             # Outputs (right)
             for port in module.output_ports:
@@ -758,8 +768,9 @@ class App:
                 return
 
         if module.TYPE == "meter":
-            # Level meter: ``release`` sets the peak bar fall time in
-            # seconds (small = snappier / more reactive).
+            # Level meter: ``release`` sets the bar fall time in seconds
+            # (small = snappier / more reactive) and how fast the
+            # peak-hold tick falls once its ~1.5 s hold expires.
             if param_name == "release":
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
@@ -1002,6 +1013,8 @@ class App:
                 items = list(CVTOFREQ_MODES)
             elif module.TYPE == "sweep_eq":
                 items = list(SWEEP_EQ_MODES)
+            elif module.TYPE == "meter":
+                items = list(METER_MODES)
             else:
                 items = list(FILTER_MODES)
             dpg.add_combo(
@@ -1729,35 +1742,116 @@ class App:
     # Meter floor in dB; the bar spans [_METER_FLOOR_DB, 0] dBFS.
     _METER_FLOOR_DB = -90.0
 
-    def _update_audio_meters(self) -> None:
-        """Push Meter-module peak levels into their dBFS bars.
+    # Meter display geometry (pixels inside each channel drawlist).
+    _AMETER_BAR_W = 146.0
+    _AMETER_H = 16.0
+    _AMETER_LAMP = ((152.0, 2.0), (166.0, 14.0))
+    _AMETER_FILL_RGBA = (90, 190, 120, 255)
+    _AMETER_TICK_RGBA = (235, 235, 235, 255)
+    _AMETER_LAMP_ON = (235, 64, 52, 255)
+    _AMETER_LAMP_OFF = (60, 34, 34, 255)
 
-        Reads a snapshot of the backend's per-meter linear peak
-        envelopes and maps each to a fixed -90..0 dBFS bar (fixed, not
-        auto-ranged, so two meters are directly comparable). Cheap: a
-        handful of meters, one log10 each.
+    def _build_meter_display(self, show: bool = True) -> dict:
+        """One meter channel: a drawlist with bar, tick, lamp and text.
+
+        Layout (172x16): the level bar spans x 0..146 with its fill
+        rect growing from the left; the peak-hold tick is a 2 px
+        vertical line over the bar; the clip lamp is the small rect at
+        x 152..166 (dim red normally, bright red while lit); the dB
+        readout is drawn over the bar's left edge. Returns the tag dict
+        ``_update_audio_meters`` reconfigures each frame.
+        """
+        with dpg.drawlist(width=172, height=int(self._AMETER_H), show=show) as dl:
+            dpg.draw_rectangle(
+                (0, 0), (self._AMETER_BAR_W, self._AMETER_H - 1),
+                fill=(28, 30, 34, 255), color=(70, 72, 78, 255),
+            )
+            fill = dpg.draw_rectangle(
+                (1, 1), (1, self._AMETER_H - 2),
+                fill=self._AMETER_FILL_RGBA, color=(0, 0, 0, 0),
+            )
+            tick = dpg.draw_line(
+                (1, 1), (1, self._AMETER_H - 2),
+                color=self._AMETER_TICK_RGBA, thickness=2,
+            )
+            lamp = dpg.draw_rectangle(
+                self._AMETER_LAMP[0], self._AMETER_LAMP[1],
+                fill=self._AMETER_LAMP_OFF, color=(110, 60, 60, 255),
+            )
+            text = dpg.draw_text(
+                (4, 1), "-inf dB", size=12, color=(225, 225, 225, 255)
+            )
+        return {"dl": dl, "fill": fill, "tick": tick, "lamp": lamp, "text": text}
+
+    def _meter_fill(self, value: float) -> float:
+        """Linear amp -> 0..1 fill on the fixed -90..0 dBFS scale.
+
+        Fixed, not auto-ranged, so any two meters are directly
+        comparable (and L/R of one stereo pair line up).
+        """
+        if value <= 1e-9:
+            return 0.0
+        db = 20.0 * math.log10(value)
+        db = max(self._METER_FLOOR_DB, min(0.0, db))
+        return (db - self._METER_FLOOR_DB) / (0.0 - self._METER_FLOOR_DB)
+
+    def _draw_meter_channel(self, ch: dict, triple) -> None:
+        """Reconfigure one channel drawlist from its (level, hold, clip)."""
+        level, hold, clip = triple
+        fl = self._meter_fill(level)
+        fh = self._meter_fill(hold)
+        x_fill = 1.0 + fl * (self._AMETER_BAR_W - 2.0)
+        x_tick = 1.0 + fh * (self._AMETER_BAR_W - 2.0)
+        if fl > 1e-6:
+            db = max(self._METER_FLOOR_DB, 20.0 * math.log10(max(level, 1e-9)))
+            overlay = f"{min(0.0, db):.1f} dB"
+        else:
+            overlay = "-inf dB"
+        try:
+            dpg.configure_item(ch["fill"], pmax=(x_fill, self._AMETER_H - 2))
+            dpg.configure_item(
+                ch["tick"], p1=(x_tick, 1.0), p2=(x_tick, self._AMETER_H - 2)
+            )
+            dpg.configure_item(
+                ch["lamp"],
+                fill=self._AMETER_LAMP_ON if clip else self._AMETER_LAMP_OFF,
+            )
+            dpg.configure_item(ch["text"], text=overlay)
+        except Exception:
+            pass
+
+    def _update_audio_meters(self) -> None:
+        """Push Meter-module indicator triples into their displays.
+
+        Reads a snapshot of the backend's per-meter ``(left, right)``
+        channel triples and reconfigures each channel's drawlist: bar
+        fill and dB text from the level (peak or RMS, per the module's
+        ``mode``), tick position from the peak-hold value, lamp colour
+        from the clip flag. The R display is shown/hidden to track
+        whether ``in_r`` is patched (None in the snapshot = hidden).
+        Cheap: a handful of meters, a couple of log10s each.
         """
         if not self._audio_meter_bars:
             return
-        snap = getattr(self.backend, "snapshot_audio_levels", None)
+        snap = getattr(self.backend, "snapshot_audio_meters", None)
         if snap is None:
             return
-        levels = snap()
-        floor = self._METER_FLOOR_DB
-        for module_id, bar in self._audio_meter_bars.items():
-            env = levels.get(module_id, 0.0)
-            if env > 1e-9:
-                db = 20.0 * math.log10(env)
-            else:
-                db = floor
-            db_clamped = max(floor, min(0.0, db))
-            fill = (db_clamped - floor) / (0.0 - floor)
-            overlay = "-inf dB" if db_clamped <= floor else f"{db_clamped:.1f} dB"
-            try:
-                dpg.set_value(bar, fill)
-                dpg.configure_item(bar, overlay=overlay)
-            except Exception:
-                pass
+        meters = snap()
+        for module_id, bundle in self._audio_meter_bars.items():
+            chans = meters.get(module_id)
+            if chans is None:
+                continue
+            left, right = chans
+            self._draw_meter_channel(bundle["l"], left)
+            want_r = right is not None
+            if want_r != bundle["r_shown"]:
+                try:
+                    dpg.configure_item(bundle["r"]["dl"], show=want_r)
+                except Exception:
+                    pass
+                bundle["r_shown"] = want_r
+            if want_r:
+                self._draw_meter_channel(bundle["r"], right)
 
     def _auto_range_fill(self, key: tuple[int, str], value: float) -> float:
         """Normalise ``value`` into 0..1 against the port's auto-range
