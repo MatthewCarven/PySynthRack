@@ -30,7 +30,22 @@ Two extra indicators ride on top of the bar in either mode:
   read a transient's true level after the bar has fallen;
 * a **clip lamp** — lights the moment any sample reaches 0 dBFS
   (|sample| ≥ 1.0) and stays lit for ~2 s, so a momentary overload
-  can't slip past between glances.
+  can't slip past between glances;
+* a **clip counter** — every unbroken run of samples at 0 dBFS counts
+  as one clip event, and the tally rides next to the lamp. It resets
+  when the patch recompiles, or click the meter row to zero it.
+
+Two more modes read loudness the broadcast way: ``lufs_m`` (momentary,
+400 ms) and ``lufs_s`` (short-term, 3 s) run the signal through a
+K-weighting filter pair before averaging, so the number tracks how
+loud things *sound* (bass counts less, presence counts more). The bar
+then reads in LUFS-ish units on the same scale.
+
+With ``stereo_link`` on and both inputs patched, the pair reads like a
+DAW master meter: the two bars stay per-channel (you keep the balance
+picture), but the peak-hold tick, clip lamp and numeric readout are
+shared — the louder channel in peak/rms, the proper channel-energy sum
+in the LUFS modes.
 
 Use it to compare source levels at a glance — e.g. a MicInput against a
 FilePlayer — before they hit a mixer, to watch a stereo effect's two
@@ -43,8 +58,11 @@ from ..core.port import Port
 
 # What the level bar shows. ``peak`` is the historical fast-attack /
 # slow-release peak envelope (bit-identical to the pre-``mode`` Meter);
-# ``rms`` is a ~300 ms root-mean-square average (loudness-ish).
-METER_MODES = ("peak", "rms")
+# ``rms`` is a ~300 ms root-mean-square average (loudness-ish);
+# ``lufs_m``/``lufs_s`` are K-weighted loudness readings (BS.1770-style
+# highpass + high shelf into a 400 ms momentary / 3 s short-term
+# mean-square window, displayed in LUFS-ish numbers).
+METER_MODES = ("peak", "rms", "lufs_m", "lufs_s")
 
 
 @register_module_type
@@ -64,11 +82,17 @@ class Meter(Module):
             (catches transients and clipping); larger holds peaks longer.
             Also sets how fast the peak-hold tick falls once its hold
             time expires.
-        mode: ``"peak"`` (default, the classic recent-maximum bar) or
-            ``"rms"`` (average level, reads closer to loudness).
+        mode: ``"peak"`` (default, the classic recent-maximum bar),
+            ``"rms"`` (average level, reads closer to loudness),
+            ``"lufs_m"`` (K-weighted momentary loudness, 400 ms) or
+            ``"lufs_s"`` (K-weighted short-term loudness, 3 s).
+        stereo_link: With both inputs patched, share the peak-hold
+            tick, clip lamp and numeric readout across the pair
+            (louder channel; channel-energy sum in the LUFS modes).
+            Bars stay per-channel. Default False.
     """
 
     TYPE = "meter"
-    DEFAULT_PARAMS = {"release": 0.4, "mode": "peak"}
+    DEFAULT_PARAMS = {"release": 0.4, "mode": "peak", "stereo_link": False}
     INPUT_PORTS = [Port("in", "in", "audio"), Port("in_r", "in", "audio")]
     OUTPUT_PORTS = [Port("out", "out", "audio"), Port("out_r", "out", "audio")]

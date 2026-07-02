@@ -277,6 +277,14 @@ Living list of what's next. Edit freely.
 - [ ] App icon for the packaged `.exe` -- add a `.ico` and reference it from `pysynthrack.spec` (EXE(icon=...))
 - [ ] Code-signed build -- removes the SmartScreen "unrecognized publisher" prompt; only worth it if the synth ever leaves the hobby circle
 
+- [x] **Meter round 3 (2026-07-02)** — `lufs_m`/`lufs_s` K-weighted loudness modes
+      (BS.1770-ish RBJ pre-filter, 997 Hz anchor within tenths of −3.01), clip-event
+      counter (runs not samples; recompile/click reset), `stereo_link` master
+      readout (per-channel bars, shared tick/lamp/number, energy sum in LUFS).
+      Possible round 4: true gated *integrated* LUFS (needs the 400 ms block
+      history + absolute/relative gates); loudness-range (LRA); numeric
+      true-peak (4x oversampled) readout.
+
 ## CV coverage — filling the "uneven CV coverage" gap (captured 2026-07-02)
 
 Audit finding: most processors take CV (filter `cutoff_cv`, delay `time_cv`,

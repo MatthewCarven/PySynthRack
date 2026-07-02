@@ -26,8 +26,21 @@ Coverage:
   - Clip lamp: lights at |sample| ≥ 1.0 (0 dBFS), never below, stays
     ~2 s (block-size independent, sample-counted), re-clip restarts
     the window; detected on any voice of a 2D buffer.
+  - LUFS-ish modes: 997 Hz full-scale anchors near the spec's -3.01;
+    readings track level linearly; K-weighting discounts bass and
+    boosts presence; short-term (3 s) reacts slower than momentary
+    (400 ms); unknown modes still fall back to peak; loudest voice
+    wins on voice-aware buffers.
+  - Stereo link: linked flag + pair readout published (channel-energy
+    sum in LUFS modes, louder channel in peak); hold/clip merge
+    pair-wide; bars stay per-channel; link without in_r is a no-op.
+  - Clip counter: events not samples (a flat-top counts once, a run
+    spanning a block boundary counts once); per-channel tallies in the
+    snapshot; reset via the API and on recompile.
 """
 from __future__ import annotations
+
+import math
 
 import numpy as np
 import pytest
@@ -35,7 +48,7 @@ import pytest
 import pysynthrack.modules  # noqa: F401  (registers types)
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core import Patch
-from pysynthrack.modules.meter import Meter
+from pysynthrack.modules.meter import Meter, METER_MODES
 
 SR, F = 44100, 512
 
@@ -68,7 +81,7 @@ class TestModel:
         patch = Patch()
         m = patch.add_module("meter")
         assert isinstance(m, Meter)
-        assert m.params == {"release": 0.4, "mode": "peak"}
+        assert m.params == {"release": 0.4, "mode": "peak", "stereo_link": False}
 
     def test_ports_and_signal_kinds(self):
         m = Patch().add_module("meter")
@@ -288,8 +301,15 @@ def _sine(amp, freq=440.0, frames=F, offset=0):
     return (amp * np.sin(2 * np.pi * freq * t)).astype(np.float32)
 
 
-def _channels(b, m):
+def _entry(b, m):
+    """Full published tuple: (left, right, linked, mode, pair_level)."""
     return b.snapshot_audio_meters()[m.id]
+
+
+def _channels(b, m):
+    """(left, right) channel tuples -- each (level, hold, clip, clips)."""
+    e = _entry(b, m)
+    return e[0], e[1]
 
 
 def _rms_rig(mode="rms"):
@@ -306,6 +326,199 @@ def _settle(b, patch, src, m, amp, blocks=400, freq=440.0):
     for i in range(blocks):
         _drive(b, patch, src, m, _sine(amp, freq=freq, offset=i * F))
     return _channels(b, m)[0][0]
+
+
+# ----- LUFS-ish modes ----------------------------------------------------------
+
+
+def _db(x):
+    return 20.0 * math.log10(max(float(x), 1e-12))
+
+
+def _lufs_rig(mode="lufs_m", extra=None, stereo=False):
+    patch = Patch()
+    src = patch.add_module("oscillator")
+    params = {"mode": mode}
+    params.update(extra or {})
+    m = patch.add_module("meter", params=params)
+    patch.connect(src.id, "out", m.id, "in")
+    src2 = None
+    if stereo:
+        src2 = patch.add_module("oscillator")
+        patch.connect(src2.id, "out", m.id, "in_r")
+    b = _backend()
+    b.compile(patch)
+    return patch, src, src2, m, b
+
+
+def _drive_sig(b, patch, src, m, x, src2=None, x2=None):
+    for k in range(x.shape[-1] // F):
+        bufs = {(src.id, "out"): x[..., k * F:(k + 1) * F].astype(np.float32)}
+        if src2 is not None:
+            bufs[(src2.id, "out")] = x2[..., k * F:(k + 1) * F].astype(np.float32)
+        b._render_meter(m, F, bufs, patch)
+    return _entry(b, m)
+
+
+def _sine_sig(freq, amp=1.0, secs=4.0):
+    t = np.arange(int(secs * SR) // F * F)
+    return (amp * np.sin(2 * np.pi * freq * t / SR)).astype(np.float32)
+
+
+class TestLufsModes:
+    def test_modes_registered(self):
+        assert METER_MODES == ("peak", "rms", "lufs_m", "lufs_s")
+
+    def test_anchor_997_fullscale(self):
+        # BS.1770's anchor: a 997 Hz full-scale sine reads -3.01 LUFS.
+        # Our RBJ-approximated K pair lands within a few tenths (-ish).
+        patch, src, _, m, b = _lufs_rig()
+        e = _drive_sig(b, patch, src, m, _sine_sig(997.0))
+        assert -3.8 < _db(e[0][0]) < -2.6
+
+    def test_tracks_level_linearly(self):
+        patch, src, _, m, b = _lufs_rig()
+        hi = _db(_drive_sig(b, patch, src, m, _sine_sig(997.0))[0][0])
+        patch, src, _, m, b = _lufs_rig()
+        lo = _db(_drive_sig(b, patch, src, m, _sine_sig(997.0, amp=10 ** (-18 / 20)))[0][0])
+        assert hi - lo == pytest.approx(18.0, abs=0.3)
+
+    def test_bass_discounted(self):
+        patch, src, _, m, b = _lufs_rig()
+        ref = _db(_drive_sig(b, patch, src, m, _sine_sig(997.0))[0][0])
+        patch, src, _, m, b = _lufs_rig()
+        bass = _db(_drive_sig(b, patch, src, m, _sine_sig(60.0))[0][0])
+        assert bass < ref - 2.5
+
+    def test_presence_boosted(self):
+        patch, src, _, m, b = _lufs_rig()
+        ref = _db(_drive_sig(b, patch, src, m, _sine_sig(997.0))[0][0])
+        patch, src, _, m, b = _lufs_rig()
+        hf = _db(_drive_sig(b, patch, src, m, _sine_sig(6000.0))[0][0])
+        assert hf > ref + 2.0
+
+    def test_short_term_slower_than_momentary(self):
+        step = _sine_sig(997.0, secs=0.5)
+        patch, src, _, m, b = _lufs_rig("lufs_m")
+        fast = _db(_drive_sig(b, patch, src, m, step)[0][0])
+        patch, src, _, m, b = _lufs_rig("lufs_s")
+        slow = _db(_drive_sig(b, patch, src, m, step)[0][0])
+        assert slow < fast - 3.0
+
+    def test_unknown_mode_falls_back_to_peak(self):
+        patch, src, _, m, b = _lufs_rig("lufs")   # not a real mode
+        e = _drive_sig(b, patch, src, m, _sine_sig(440.0, amp=0.5, secs=1.0))
+        assert e[3] == "peak"
+        assert e[0][0] == pytest.approx(0.5, rel=0.01)
+
+    def test_voice_aware_loudest_voice_wins(self):
+        sig = _sine_sig(997.0, secs=2.0)
+        patch, src, _, m, b = _lufs_rig()
+        mono = _db(_drive_sig(b, patch, src, m, sig)[0][0])
+        stacked = np.vstack([sig, np.zeros_like(sig)])
+        patch, src, _, m, b = _lufs_rig()
+        voiced = _db(_drive_sig(b, patch, src, m, stacked)[0][0])
+        assert voiced == pytest.approx(mono, abs=0.2)
+
+
+# ----- Stereo link ---------------------------------------------------------------
+
+
+class TestStereoLink:
+    def test_pair_is_energy_sum_in_lufs(self):
+        sig = _sine_sig(997.0, secs=2.0)
+        patch, src, src2, m, b = _lufs_rig(
+            "lufs_m", extra={"stereo_link": True}, stereo=True
+        )
+        e = _drive_sig(b, patch, src, m, sig, src2=src2, x2=sig)
+        assert e[2] is True
+        assert _db(e[4]) - _db(e[0][0]) == pytest.approx(3.01, abs=0.1)
+
+    def test_pair_is_louder_channel_in_peak(self):
+        l = _sine_sig(440.0, amp=0.8, secs=1.0)
+        r = _sine_sig(440.0, amp=0.3, secs=1.0)
+        patch, src, src2, m, b = _lufs_rig(
+            "peak", extra={"stereo_link": True}, stereo=True
+        )
+        e = _drive_sig(b, patch, src, m, l, src2=src2, x2=r)
+        assert e[4] == pytest.approx(0.8, rel=0.01)
+        # Bars stay per-channel: the balance picture survives the link.
+        assert e[0][0] == pytest.approx(0.8, rel=0.01)
+        assert e[1][0] == pytest.approx(0.3, rel=0.01)
+
+    def test_hold_and_clip_merge_pair_wide(self):
+        l = _sine_sig(440.0, amp=0.2, secs=0.5)
+        r = l.copy()
+        r[100:130] = 1.4   # clip + hold spike on R only
+        patch, src, src2, m, b = _lufs_rig(
+            "peak", extra={"stereo_link": True}, stereo=True
+        )
+        e = _drive_sig(b, patch, src, m, l, src2=src2, x2=r)
+        left, right = e[0], e[1]
+        assert left[2] is True and right[2] is True     # shared lamp
+        assert left[1] == right[1]                       # shared hold tick
+        assert left[1] == pytest.approx(1.4, rel=0.05)
+
+    def test_unlinked_publishes_no_pair(self):
+        patch, src, src2, m, b = _lufs_rig("peak", stereo=True)
+        e = _drive_sig(b, patch, src, m, _sine_sig(440.0, secs=0.5),
+                       src2=src2, x2=_sine_sig(440.0, secs=0.5))
+        assert e[2] is False
+        assert e[4] is None
+
+    def test_link_without_right_is_noop(self):
+        patch, src, _, m, b = _lufs_rig("peak", extra={"stereo_link": True})
+        e = _drive_sig(b, patch, src, m, _sine_sig(440.0, secs=0.5))
+        assert e[2] is False
+        assert e[1] is None
+
+
+# ----- Clip counter --------------------------------------------------------------
+
+
+class TestClipCounter:
+    def test_flat_top_counts_once(self):
+        patch, src, _, m, b = _lufs_rig("peak")
+        sig = np.zeros(2 * F, dtype=np.float32)
+        sig[200:250] = 1.5
+        e = _drive_sig(b, patch, src, m, sig)
+        assert e[0][3] == 1
+
+    def test_separate_bursts_and_boundary_span(self):
+        patch, src, _, m, b = _lufs_rig("peak")
+        sig = np.zeros(3 * F, dtype=np.float32)
+        sig[100:150] = 1.5
+        sig[700:702] = -1.2                # negative overs count too
+        sig[F - 10:F + 20] = 1.1           # spans a block boundary: once
+        e = _drive_sig(b, patch, src, m, sig)
+        assert e[0][3] == 3
+
+    def test_no_events_below_fullscale(self):
+        patch, src, _, m, b = _lufs_rig("peak")
+        e = _drive_sig(b, patch, src, m, _sine_sig(440.0, amp=0.95, secs=0.5))
+        assert e[0][3] == 0
+
+    def test_per_channel_tallies(self):
+        l = np.zeros(2 * F, dtype=np.float32)
+        r = np.zeros(2 * F, dtype=np.float32)
+        l[100:110] = 1.2
+        l[500:510] = 1.2
+        r[300:310] = -1.2
+        patch, src, src2, m, b = _lufs_rig("peak", stereo=True)
+        e = _drive_sig(b, patch, src, m, l, src2=src2, x2=r)
+        assert e[0][3] == 2
+        assert e[1][3] == 1
+
+    def test_reset_api_and_recompile(self):
+        patch, src, _, m, b = _lufs_rig("peak")
+        sig = np.zeros(F, dtype=np.float32)
+        sig[10:20] = 1.5
+        assert _drive_sig(b, patch, src, m, sig)[0][3] == 1
+        b.reset_meter_clips(m.id)
+        assert int(b._state[m.id]["clips_l"]) == 0
+        assert _drive_sig(b, patch, src, m, sig)[0][3] == 1
+        b.compile(patch)   # recompile = fresh tally
+        assert int(b._state[m.id]["clips_l"]) == 0
 
 
 # ----- Stereo (optional in_r) ------------------------------------------------
@@ -328,10 +541,10 @@ class TestStereo:
     def test_precreated_snapshot_matches_patching(self):
         # Unpatched in_r: compile pre-creates (zero, None) …
         patch, src, m, b = _meter_rig()
-        assert _channels(b, m) == ((0.0, 0.0, False), None)
+        assert _channels(b, m) == ((0.0, 0.0, False, 0), None)
         # … patched in_r: both slots exist before any render.
         patch2, sl, sr, m2, b2 = _stereo_rig()
-        assert _channels(b2, m2) == ((0.0, 0.0, False), (0.0, 0.0, False))
+        assert _channels(b2, m2) == ((0.0, 0.0, False, 0), (0.0, 0.0, False, 0))
 
     def test_both_outputs_pass_through_bit_exact(self):
         patch, sl, sr, m, b = _stereo_rig()
@@ -469,7 +682,7 @@ class TestPeakHold:
         for i in range(400):
             amp = 0.8 if i % 50 == 0 else 0.05
             _drive(b, patch, src, m, rng.uniform(-amp, amp, F).astype(np.float32))
-            level, hold, _ = _channels(b, m)[0]
+            level, hold = _channels(b, m)[0][:2]
             assert hold >= level
 
     def test_new_peak_resets_hold(self):
@@ -492,7 +705,7 @@ class TestPeakHold:
         _drive(b, patch, src, m, spike)
         for i in range(10):
             _drive(b, patch, src, m, _sine(0.1, offset=i * F))
-        level, hold, _ = _channels(b, m)[0]
+        level, hold, _ = _channels(b, m)[0][:3]
         assert hold == pytest.approx(0.9, abs=1e-6)  # the transient's true level
         assert level < 0.2  # while the bar reads the quiet RMS
 

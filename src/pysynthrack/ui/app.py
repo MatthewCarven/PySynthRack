@@ -364,8 +364,8 @@ class App:
             if module.TYPE == "meter":
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                     self._audio_meter_bars[module.id] = {
-                        "l": self._build_meter_display(show=True),
-                        "r": self._build_meter_display(show=False),
+                        "l": self._build_meter_display(module.id, show=True),
+                        "r": self._build_meter_display(module.id, show=False),
                         "r_shown": False,
                     }
 
@@ -808,11 +808,18 @@ class App:
             # Level meter: ``release`` sets the bar fall time in seconds
             # (small = snappier / more reactive) and how fast the
             # peak-hold tick falls once its ~1.5 s hold expires.
+            # ``stereo_link`` merges the pair's tick/lamp/readout.
             if param_name == "release":
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
                     min_value=0.02, max_value=2.0, format="%.2f s",
                     width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "stereo_link":
+                dpg.add_checkbox(
+                    label=param_name, default_value=bool(current),
+                    callback=self._on_param_changed, user_data=user_data,
                 )
                 return
 
@@ -1907,17 +1914,19 @@ class App:
     _AMETER_LAMP_ON = (235, 64, 52, 255)
     _AMETER_LAMP_OFF = (60, 34, 34, 255)
 
-    def _build_meter_display(self, show: bool = True) -> dict:
+    def _build_meter_display(self, module_id: int, show: bool = True) -> dict:
         """One meter channel: a drawlist with bar, tick, lamp and text.
 
-        Layout (172x16): the level bar spans x 0..146 with its fill
+        Layout (208x16): the level bar spans x 0..146 with its fill
         rect growing from the left; the peak-hold tick is a 2 px
         vertical line over the bar; the clip lamp is the small rect at
-        x 152..166 (dim red normally, bright red while lit); the dB
-        readout is drawn over the bar's left edge. Returns the tag dict
+        x 152..166 (dim red normally, bright red while lit); the clip
+        counter rides at x 170 (hidden while zero); the dB/LUFS readout
+        is drawn over the bar's left edge. Clicking the row zeroes the
+        module's clip counters. Returns the tag dict
         ``_update_audio_meters`` reconfigures each frame.
         """
-        with dpg.drawlist(width=172, height=int(self._AMETER_H), show=show) as dl:
+        with dpg.drawlist(width=208, height=int(self._AMETER_H), show=show) as dl:
             dpg.draw_rectangle(
                 (0, 0), (self._AMETER_BAR_W, self._AMETER_H - 1),
                 fill=(28, 30, 34, 255), color=(70, 72, 78, 255),
@@ -1937,7 +1946,26 @@ class App:
             text = dpg.draw_text(
                 (4, 1), "-inf dB", size=12, color=(225, 225, 225, 255)
             )
-        return {"dl": dl, "fill": fill, "tick": tick, "lamp": lamp, "text": text}
+            clips = dpg.draw_text(
+                (170, 1), "", size=12, color=(235, 120, 110, 255)
+            )
+        # Click anywhere on the row -> zero this meter's clip counters.
+        try:
+            with dpg.item_handler_registry() as reg:
+                dpg.add_item_clicked_handler(
+                    callback=self._on_meter_clips_reset, user_data=module_id
+                )
+            dpg.bind_item_handler_registry(dl, reg)
+        except Exception:
+            pass
+        return {"dl": dl, "fill": fill, "tick": tick, "lamp": lamp,
+                "text": text, "clips": clips}
+
+    def _on_meter_clips_reset(self, sender, app_data, user_data) -> None:
+        """Clip-counter click target: zero the meter's counters."""
+        reset = getattr(self.backend, "reset_meter_clips", None)
+        if reset is not None:
+            reset(int(user_data))
 
     def _meter_fill(self, value: float) -> float:
         """Linear amp -> 0..1 fill on the fixed -90..0 dBFS scale.
@@ -1951,18 +1979,35 @@ class App:
         db = max(self._METER_FLOOR_DB, min(0.0, db))
         return (db - self._METER_FLOOR_DB) / (0.0 - self._METER_FLOOR_DB)
 
-    def _draw_meter_channel(self, ch: dict, triple) -> None:
-        """Reconfigure one channel drawlist from its (level, hold, clip)."""
-        level, hold, clip = triple
+    def _draw_meter_channel(self, ch: dict, chan, unit: str = "dB",
+                            text_level=None, show_text: bool = True,
+                            clips_value=None) -> None:
+        """Reconfigure one channel drawlist from ``(level, hold, clip,
+        clips)``.
+
+        ``unit`` labels the readout ("dB" or "LUFS"); ``text_level``
+        overrides the number the text shows (the stereo-linked pair
+        readout) while the bar still draws ``level``; ``show_text``
+        hides the R row's text when the pair shares one readout;
+        ``clips_value`` overrides the displayed clip count (the linked
+        pair shows the summed tally on the L row).
+        """
+        level, hold, clip = chan[0], chan[1], chan[2]
+        clips = chan[3] if len(chan) > 3 else 0
+        if clips_value is not None:
+            clips = clips_value
         fl = self._meter_fill(level)
         fh = self._meter_fill(hold)
         x_fill = 1.0 + fl * (self._AMETER_BAR_W - 2.0)
         x_tick = 1.0 + fh * (self._AMETER_BAR_W - 2.0)
-        if fl > 1e-6:
-            db = max(self._METER_FLOOR_DB, 20.0 * math.log10(max(level, 1e-9)))
-            overlay = f"{min(0.0, db):.1f} dB"
+        tl = level if text_level is None else text_level
+        if not show_text:
+            overlay = ""
+        elif tl > 1e-9 and self._meter_fill(tl) > 1e-6:
+            db = max(self._METER_FLOOR_DB, 20.0 * math.log10(max(tl, 1e-9)))
+            overlay = f"{min(0.0, db):.1f} {unit}"
         else:
-            overlay = "-inf dB"
+            overlay = f"-inf {unit}"
         try:
             dpg.configure_item(ch["fill"], pmax=(x_fill, self._AMETER_H - 2))
             dpg.configure_item(
@@ -1973,6 +2018,9 @@ class App:
                 fill=self._AMETER_LAMP_ON if clip else self._AMETER_LAMP_OFF,
             )
             dpg.configure_item(ch["text"], text=overlay)
+            dpg.configure_item(
+                ch["clips"], text=(f"x{clips}" if clips else "")
+            )
         except Exception:
             pass
 
@@ -1994,20 +2042,37 @@ class App:
             return
         meters = snap()
         for module_id, bundle in self._audio_meter_bars.items():
-            chans = meters.get(module_id)
-            if chans is None:
+            entry = meters.get(module_id)
+            if entry is None:
                 continue
-            left, right = chans
-            self._draw_meter_channel(bundle["l"], left)
-            want_r = right is not None
+            left, right, linked, mode, pair_level = entry
+            unit = "LUFS" if str(mode).startswith("lufs") else "dB"
+            if linked and right is not None:
+                # Master readout: one number (and one summed clip
+                # tally) on the L row; the R row keeps only its bar,
+                # tick and lamp (already pair-merged by the backend).
+                clips_sum = (left[3] if len(left) > 3 else 0) + (
+                    right[3] if len(right) > 3 else 0
+                )
+                self._draw_meter_channel(
+                    bundle["l"], left, unit,
+                    text_level=pair_level, clips_value=clips_sum,
+                )
+                self._draw_meter_channel(
+                    bundle["r"], right, unit, show_text=False, clips_value=0
+                )
+                want_r = True
+            else:
+                self._draw_meter_channel(bundle["l"], left, unit)
+                want_r = right is not None
+                if want_r:
+                    self._draw_meter_channel(bundle["r"], right, unit)
             if want_r != bundle["r_shown"]:
                 try:
                     dpg.configure_item(bundle["r"]["dl"], show=want_r)
                 except Exception:
                     pass
                 bundle["r_shown"] = want_r
-            if want_r:
-                self._draw_meter_channel(bundle["r"], right)
 
     def _auto_range_fill(self, key: tuple[int, str], value: float) -> float:
         """Normalise ``value`` into 0..1 against the port's auto-range

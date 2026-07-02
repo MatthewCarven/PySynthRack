@@ -1440,7 +1440,8 @@ Each channel's display is three indicators drawn together:
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
 | `release` | `0.4` | 0.02 … 2 s | Fall time — roughly how long the bar takes to drop ~20 dB after a peak, and how fast the peak-hold tick falls once its ~1.5 s hold expires. Small = snappy/reactive; large = holds peaks longer for an easier read. Attack is always instant. |
-| `mode` | `"peak"` | peak / rms | What the bar shows: recent maximum (peak) or ~300 ms average level (rms). The tick and lamp are peak-driven either way. |
+| `mode` | `"peak"` | peak / rms | What the bar shows: recent maximum (peak) or ~300 ms average level (rms). The tick and lamp are peak-driven either way.  Plus `lufs_m`/`lufs_s`: K-weighted momentary (400 ms) / short-term (3 s) loudness, read in LUFS-ish units. |
+| `stereo_link` | `False` | bool | With `in_r` patched: bars stay per-channel but hold tick, clip lamp and the numeric readout merge pair-wide (louder channel; channel-energy sum in the LUFS modes). |
 
 **How it works.** Everything is computed on the audio thread, so a
 short transient registers even between UI repaints and the meter
@@ -1463,6 +1464,21 @@ every pluck).
 ### Sinks (outputs)
 
 The end of a patch — where signal leaves the graph. Sinks have no outputs.
+
+**Loudness + clip accounting (2026-07-02).** Two K-weighted modes read
+loudness the broadcast way: `lufs_m` (momentary, 400 ms) and `lufs_s`
+(short-term, 3 s) run the signal through a BS.1770-style pre-filter
+pair (2nd-order highpass + high shelf, plain RBJ biquads — hence
+LUFS-*ish*) into a mean-square window, displayed as
+`-0.691 + 10·log10(msq)`; a full-scale 997 Hz sine anchors within a
+few tenths of the spec's −3.01. A **clip counter** rides next to the
+lamp in every mode: one unbroken run of samples at ≥0 dBFS is one
+event (a flat-top counts once, block boundaries don't double-count);
+it resets on recompile or a click on the meter row. `stereo_link`
+turns a patched pair into a DAW-style master meter: per-channel bars,
+shared tick/lamp/readout (energy-summed in the LUFS modes, so two
+identical channels read +3 dB over one).
+
 
 #### `speaker_output`
 

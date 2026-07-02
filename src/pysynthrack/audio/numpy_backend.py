@@ -478,17 +478,29 @@ class NumpyBackend(AudioBackend):
                 for mid, m in patch.modules.items()
                 if m.TYPE == "meter"
             }
-            zero_ch = (0.0, 0.0, False)
+            zero_ch = (0.0, 0.0, False, 0)
             self._audio_meter_state = {
                 mid: (
                     zero_ch,
                     zero_ch
                     if any(c.dst_port == "in_r" for c in patch.cables_into(mid))
                     else None,
+                    False,
+                    "peak",
+                    None,
                 )
                 for mid, m in patch.modules.items()
                 if m.TYPE == "meter"
             }
+            # Recompile resets the clip counters -- a fresh run starts
+            # its "how many times did this clip" tally from zero.
+            for mid, m in patch.modules.items():
+                if m.TYPE == "meter" and mid in self._state:
+                    st = self._state[mid]
+                    for suffix in ("_l", "_r"):
+                        if "clips" + suffix in st:
+                            st["clips" + suffix] = 0
+                            st["over_tail" + suffix] = False
             # Recompile = a fresh chance. Clear any sticky crash state
             # from the previous patch so audio resumes on the new graph.
             self._render_disabled = False
@@ -958,6 +970,20 @@ class NumpyBackend(AudioBackend):
         tuples, so this copy never races the writes.
         """
         return dict(self._audio_meter_state)
+
+    def reset_meter_clips(self, module_id: int) -> None:
+        """GUI hook: zero one Meter's clip counters (both channels).
+
+        Takes the backend lock so it can't interleave with a render
+        mid-block; worst case a same-block clip event lands after the
+        reset and the counter shows it -- which is the truth anyway.
+        """
+        with self._lock:
+            st = self._state.get(module_id)
+            if st:
+                for suffix in ("_l", "_r"):
+                    st["clips" + suffix] = 0
+                    st["over_tail" + suffix] = False
 
     def snapshot_file_positions(self) -> dict[int, tuple[float, float]]:
         """GUI hook: each ``file_player``'s playhead as ``(elapsed, total)``
@@ -6197,6 +6223,18 @@ class NumpyBackend(AudioBackend):
     # RMS mode: EMA time constant of the mean-square average. ~300 ms
     # gives a VU-ish loudness ballistics.
     _METER_RMS_SEC = 0.3
+    # LUFS-ish loudness modes: BS.1770-style K-weighting (2nd-order
+    # highpass + high shelf, both plain RBJ biquads -- hence the -ish)
+    # into a mean-square window, displayed as -0.691 + 10*log10(msq).
+    # ``lufs_m`` is the 400 ms momentary window, ``lufs_s`` the 3 s
+    # short-term one (EMA time constants, window-ish).
+    _METER_K_HP_HZ = 38.0
+    _METER_K_HP_Q = 0.5
+    _METER_K_SHELF_HZ = 1681.0
+    _METER_K_SHELF_DB = 4.0
+    _METER_LUFS_OFFSET = -0.691
+    _METER_LUFS_M_SEC = 0.4
+    _METER_LUFS_S_SEC = 3.0
 
     def _meter_channel(self, state, suffix, src, frames, release, mode):
         """Advance one meter channel's indicators by one block.
@@ -6227,9 +6265,35 @@ class NumpyBackend(AudioBackend):
         lights it for ``_METER_CLIP_SEC``. Hold and clip ages are
         counted in samples, so their wall-clock timing is block-size
         independent.
+
+        The ``lufs_m``/``lufs_s`` modes run the raw signal through the
+        K-weighting pair (highpass + high shelf, fixed coefficients, zi
+        carried exactly) into a 400 ms / 3 s mean-square EMA; the bar
+        value is the linear equivalent of ``-0.691 + 10*log10(msq)`` so
+        the existing dBFS pipeline displays LUFS numbers directly. On a
+        2D voice buffer the loudest voice wins, mirroring rms mode.
+
+        The clip counter tallies clip EVENTS on the raw signal in every
+        mode: one unbroken run of samples at >= 0 dBFS is one event (a
+        run spanning a block boundary counts once -- the tail state
+        carries). Returns ``(level, hold, clip, clips)``.
         """
         peak = 0.0 if src is None or src.size == 0 else float(np.max(np.abs(src)))
         coeff = 0.1 ** (frames / self.sample_rate / release)
+
+        # Clip-event counter (all modes, raw signal). Collapse voices to
+        # a per-time-position "any voice over" line, then count rising
+        # edges, carrying the run state across the block boundary.
+        tail = bool(state["over_tail" + suffix])
+        if src is not None and src.size:
+            a = np.abs(src)
+            over_t = (a if a.ndim == 1 else a.max(axis=0)) >= 1.0
+            if over_t.any():
+                prev = np.concatenate(([tail], over_t[:-1]))
+                state["clips" + suffix] += int(np.sum(over_t & ~prev))
+            state["over_tail" + suffix] = bool(over_t[-1])
+        else:
+            state["over_tail" + suffix] = False
 
         # Peak envelope (the bar in ``peak`` mode; kept warm in ``rms``
         # mode too so switching modes never restarts from silence).
@@ -6255,6 +6319,26 @@ class NumpyBackend(AudioBackend):
             rms_sq = mean_sq + (state["rms_sq" + suffix] - mean_sq) * k
             state["rms_sq" + suffix] = rms_sq
             level = math.sqrt(rms_sq)
+        elif mode in ("lufs_m", "lufs_s"):
+            if src is None or src.size == 0:
+                mean_sq = 0.0
+            else:
+                y = self._meter_kweight(state, suffix, src)
+                sq = np.square(y)
+                if sq.ndim == 2:
+                    mean_sq = float(np.max(np.mean(sq, axis=-1)))
+                else:
+                    mean_sq = float(np.mean(sq))
+            tau = (self._METER_LUFS_M_SEC if mode == "lufs_m"
+                   else self._METER_LUFS_S_SEC)
+            k = math.exp(-frames / (self.sample_rate * tau))
+            lufs_sq = mean_sq + (state["lufs_sq" + suffix] - mean_sq) * k
+            state["lufs_sq" + suffix] = lufs_sq
+            if lufs_sq > 1e-18:
+                lufs_db = self._METER_LUFS_OFFSET + 10.0 * math.log10(lufs_sq)
+                level = 10.0 ** (lufs_db / 20.0)
+            else:
+                level = 0.0
         else:
             level = env
 
@@ -6276,7 +6360,35 @@ class NumpyBackend(AudioBackend):
         state["clip_age" + suffix] = clip_age
         clip = clip_age < int(self.sample_rate * self._METER_CLIP_SEC)
 
-        return (level, hold, clip)
+        return (level, hold, clip, int(state["clips" + suffix]))
+
+    def _meter_kweight(self, state, suffix, src):
+        """K-weight one channel's block (fixed coeffs, exact zi carry).
+
+        Two cascaded RBJ biquads approximating BS.1770's pre-filter: a
+        2nd-order highpass (~38 Hz, Q 0.5) and a +4 dB high shelf
+        (~1681 Hz). Coefficients are fixed per sample rate, so plain
+        lfilter zi carry is exact. State follows the input shape; a
+        mono<->voice change resets the filter (worth a one-block
+        loudness blip, same policy as the grain engines).
+        """
+        kc = getattr(self, "_meter_k_coeffs", None)
+        if kc is None:
+            hp = self._filter_coeffs("highpass", self._METER_K_HP_HZ,
+                                     self._METER_K_HP_Q)
+            sh = self._loud_shelf(self._METER_K_SHELF_HZ,
+                                  self._METER_K_SHELF_DB, False)
+            kc = self._meter_k_coeffs = (hp, sh)
+        x = src.astype(np.float64, copy=False)
+        want = (2,) if x.ndim == 1 else (x.shape[0], 2)
+        for stage, (b0, b1, b2, a1n, a2n) in enumerate(kc):
+            key = f"kz{stage}{suffix}"
+            zi = state.get(key)
+            if zi is None or zi.shape != want:
+                zi = np.zeros(want)
+            x, zf = lfilter([b0, b1, b2], [1.0, a1n, a2n], x, axis=-1, zi=zi)
+            state[key] = zf
+        return x
 
     def _render_meter(self, module, frames: int, buffers, patch):
         """Level-meter tap: pass audio through, track level indicators.
@@ -6309,8 +6421,9 @@ class NumpyBackend(AudioBackend):
         release = float(module.params.get("release", self._METER_RELEASE_DEFAULT))
         release = min(max(release, self._METER_RELEASE_MIN), self._METER_RELEASE_MAX)
         mode = str(module.params.get("mode", "peak"))
-        if mode != "rms":
+        if mode not in ("rms", "lufs_m", "lufs_s"):
             mode = "peak"  # unknown values fall back to the default
+        link = bool(module.params.get("stereo_link", False))
 
         state = self._state.setdefault(module.id, {})
         for suffix in ("_l", "_r"):
@@ -6321,6 +6434,10 @@ class NumpyBackend(AudioBackend):
                 # Start far past the lamp window so a fresh meter is unlit.
                 state["clip_age" + suffix] = 1 << 62
                 state["rms_sq" + suffix] = 0.0
+            if "clips" + suffix not in state:
+                state["clips" + suffix] = 0
+                state["over_tail" + suffix] = False
+                state["lufs_sq" + suffix] = 0.0
 
         left = self._meter_channel(state, "_l", src, frames, release, mode)
 
@@ -6338,8 +6455,27 @@ class NumpyBackend(AudioBackend):
             out_r = np.zeros(frames, dtype=np.float32)
             right = None
 
+        # Stereo link ("master readout"): the bars stay per-channel, but
+        # the pair shares one hold tick, one clip lamp and one numeric
+        # reading -- the louder channel in peak/rms, the CHANNEL-ENERGY
+        # SUM in the LUFS modes (that is how BS.1770 defines a stereo
+        # loudness; per-channel linear levels are 10^(LUFS/20), so the
+        # combined linear value is simply the root-sum-square).
+        pair_level = None
+        if link and right is not None:
+            hold_pair = max(left[1], right[1])
+            clip_pair = left[2] or right[2]
+            if mode in ("lufs_m", "lufs_s"):
+                pair_level = math.sqrt(left[0] ** 2 + right[0] ** 2)
+            else:
+                pair_level = max(left[0], right[0])
+            left = (left[0], hold_pair, clip_pair, left[3])
+            right = (right[0], hold_pair, clip_pair, right[3])
+
         self._audio_levels[module.id] = left[0]
-        self._audio_meter_state[module.id] = (left, right)
+        self._audio_meter_state[module.id] = (
+            left, right, link and right is not None, mode, pair_level
+        )
 
         return {"out": out, "out_r": out_r}
 

@@ -5429,3 +5429,56 @@ speaker 0.6). UI formant_preserve checkbox; MODULES.md updated.
 Still open on this module: vectorize the per-voice NCC if profiled hot;
 transient detection to sharpen attacks. The WSOLA-style seam search for
 the RESAMPLER (logged yesterday) could now share `_detect_period`.
+
+
+## 2026-07-02 - Meter round 3: LUFS-ish modes + stereo link + clip counter
+
+Matthew's fresh meter set, scoped by three questions: stereo link =
+"master readout" (bars stay per-channel, tick/lamp/number merge),
+LUFS = BOTH momentary and short-term, clip counter = events with
+recompile+click reset.
+
+LUFS: `lufs_m` (400 ms) / `lufs_s` (3 s) join METER_MODES. K-weighting
+is two plain RBJ biquads - the existing `_filter_coeffs` highpass at
+38 Hz Q 0.5 and `_loud_shelf` +4 dB at 1681 Hz - cascaded in
+`_meter_kweight` with exact zi carry (fixed coeffs, so no DF-I
+gymnastics needed). Mean-square EMA per mode, displayed as
+-0.691 + 10*log10(msq) mapped through the existing linear->dB bar
+pipeline (bar value = 10^(LUFS/20), so the -90..0 scale just works and
+the text unit flips to "LUFS"). Anchor: full-scale 997 Hz sine reads
+-3.27 vs the spec's -3.01 - the RBJ approximation's tenths, hence the
+honest -ish. 60 Hz reads 3.4 dB under 997 (bass discount), 6 kHz 3.5
+over (presence). Voice buffers: loudest voice wins, mirroring rms.
+
+Stereo link: `stereo_link` param (default False = today's behavior,
+and a no-op without `in_r`). Per-channel detector state is untouched;
+the merge happens at publish: hold = pair max, clip = pair OR, and the
+readout is the louder channel in peak/rms but the CHANNEL-ENERGY SUM
+in the LUFS modes (per-channel linear levels are 10^(LUFS/20), so the
+combined value is just root-sum-square - two identical channels read
++3.01 dB, asserted to 0.1).
+
+Clip counter: counts EVENTS on the raw signal in every mode - one
+unbroken run of |x| >= 1.0 is one event; rising-edge count with the
+run state carried across block boundaries (a spanning run counts
+once); voices collapse to any-voice-over per time position. Published
+as the 4th channel-tuple field; resets on recompile (compile() zeroes
+the tallies) and via the new `reset_meter_clips(mid)` GUI hook (takes
+the backend lock). UI: count rides next to the lamp as "xN" (hidden at
+zero), and clicking the meter row zeroes it via an item-clicked
+handler on the drawlist.
+
+Published snapshot grew: outer (left, right, linked, mode, pair_level),
+channels (level, hold, clip, clips). compile()'s pre-created zeros and
+the GUI updater track the new shape; the UI hides the R row's text when
+linked and shows the summed pair tally on the L row.
+
+Sandbox gotcha worth remembering: the first meter-test run PASSED
+against last session's stale `pip -e` install (pytest imported
+/tmp/psverify_*), silently ignoring every edit in the fresh clone -
+re-`pip install -e` the current clone before trusting green.
+
+18 new tests (8 LUFS + 5 link + 5 counter) in tests/test_meter.py;
+existing helper/tuple-shape tests updated for the wider snapshot.
+Suite 1190 sandbox (+18 mido). MODULES.md meter section + param rows;
+TODO logs a possible round 4 (gated integrated LUFS, LRA, true-peak).
