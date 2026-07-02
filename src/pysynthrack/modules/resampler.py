@@ -22,7 +22,8 @@ internally it runs a short **looping buffer** of recent audio. The read
 head wraps within that window, so the module keeps making sound
 indefinitely on any source — a live oscillator, the mic, the file
 player — at the cost of a faint granular-repeat texture on extreme
-shifts. The unavoidable consequence of varispeed is a little latency
+shifts. Each wrap of that window is a short equal-power crossfade
+rather than a splice, so the loop seam doesn't click. The unavoidable consequence of varispeed is a little latency
 (the read head trails the write head); that buffer is what lets you
 glide and modulate the pitch freely.
 
@@ -30,13 +31,19 @@ glide and modulate the pitch freely.
 ramp instead of stepping, giving portamento and tape-stop sweeps. At 0
 the pitch follows instantly.
 
+``mix`` blends the shifted signal against the dry input (1 = fully
+wet, the default; 0 = dry). The dry tap is time-aligned with the
+unity-pitch wet signal, so sweeping the mix blends coherently instead
+of adding a slapback echo — at 50% with a small detune you get
+instant chorus-style thickening in one module.
+
 Use cases:
   * Transpose a sample/loop from the FilePlayer — turn one hit into a
     melodic run by sequencing ``pitch_cv``.
   * Tape-stop / vinyl-brake risers by gliding the pitch down to a
     crawl.
-  * Detune/thicken: feed a copy through at +0.1 semitone for chorusy
-    width.
+  * Detune/thicken: +10 cents at 50% ``mix`` for chorusy width,
+    without needing a parallel path.
   * Sci-fi / formant-shift vocal and drum mangling at extreme settings,
     where the loop texture becomes part of the sound.
 
@@ -77,6 +84,9 @@ class Resampler(Module):
             one octave per unit, 1V/oct-style).
         glide: Portamento time in seconds for pitch changes (0 =
             instant). Smooths slider and CV moves into ramps.
+        mix: Dry/wet blend (0 = dry, 1 = fully wet, default 1.0). The
+            dry tap is latency-compensated to line up with unity-pitch
+            wet, so the blend is coherent.
 
     Ports:
         in (in, audio): signal to transpose. Unpatched -> silence.
@@ -90,6 +100,7 @@ class Resampler(Module):
         "cents": 0.0,
         "cv_depth": 12.0,
         "glide": 0.0,
+        "mix": 1.0,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),

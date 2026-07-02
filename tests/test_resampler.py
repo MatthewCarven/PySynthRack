@@ -13,6 +13,18 @@ Coverage:
     intermediate pitches.
   - Voice DSP: a single-voice row is bit-identical to mono; voices
     transpose independently via per-voice CV; mono<->voice state reinit.
+  - Loop-seam declick: sustained up/down shifts fire half-span head
+    jumps (observable via the seam_jumps state counter) and the output
+    stays click-free (sample-to-sample step bounded, no RMS dropout);
+    unity never jumps; extreme ratios stay finite with many jumps; a
+    fade spanning multiple small blocks is still click-free; a single
+    voice row through seams is bit-identical to mono; voices jump
+    independently.
+  - Dry/wet mix: registered default 1.0; mix=0 is the delayed dry
+    passthrough (bit-equal to the unity render) even when pitched;
+    mix=0.5 at unity is coherent (bit-equal to full wet -- dry and wet
+    taps are sample-aligned); mix=0.5 pitched shows both spectral
+    peaks; out-of-range mix clamps; voice row bit-identical to mono.
   - Integration: osc -> resampler -> speaker renders audible audio; an
     LFO into pitch_cv gives vibrato.
 """
@@ -91,6 +103,7 @@ class TestModel:
             "cents": 0.0,
             "cv_depth": 12.0,
             "glide": 0.0,
+            "mix": 1.0,
         }
 
     def test_ports_and_signal_kinds(self):
@@ -298,6 +311,164 @@ class TestVoiceDSP:
         assert ov.shape == (4, F)
         assert o2.shape == (F,)
         assert np.all(np.isfinite(ov))
+
+
+# ----- Loop-seam declick ------------------------------------------------------
+
+
+def _max_step(y):
+    """Largest sample-to-sample jump after the priming latency."""
+    yp = y[len(y) // 3:]
+    return float(np.max(np.abs(np.diff(yp))))
+
+
+def _seam_jumps(b, rs):
+    return int(np.sum(b._state[rs.id]["seam_jumps"]))
+
+
+class TestDeclick:
+    def test_pitch_up_jumps_and_stays_clickfree(self):
+        # +12 st: the read head gains on the write head and must jump
+        # repeatedly. A hard wrap would splice audio ~0.2 s apart (a
+        # step on the order of the amplitude); the crossfaded jump keeps
+        # the step bounded by the (doubled) tone's own angular step.
+        patch, src, rs, _, b = _rig({"semitones": 12.0})
+        out = _run(b, patch, src, rs, _tone(440.0, 3.0))
+        assert _seam_jumps(b, rs) >= 5
+        assert _max_step(out) < 2.5 * (2 * np.pi * 880.0 / SR)
+
+    def test_pitch_down_jumps_and_stays_clickfree(self):
+        patch, src, rs, _, b = _rig({"semitones": -12.0})
+        out = _run(b, patch, src, rs, _tone(440.0, 3.0))
+        assert _seam_jumps(b, rs) >= 5
+        assert _max_step(out) < 2.5 * (2 * np.pi * 220.0 / SR)
+
+    def test_unity_never_jumps(self):
+        # No drift at ratio 1 -> the guard band never fires; the
+        # bit-exact delayed-passthrough test above stays honest.
+        patch, src, rs, _, b = _rig({"semitones": 0.0})
+        _run(b, patch, src, rs, _tone(440.0, 2.0))
+        assert _seam_jumps(b, rs) == 0
+
+    def test_no_rms_dropout_through_seams(self):
+        # Equal-power fades: windowed RMS through many seams never
+        # collapses (a hard mute/dropout would).
+        patch, src, rs, _, b = _rig({"semitones": 7.0})
+        out = _run(b, patch, src, rs, _tone(440.0, 3.0))
+        yp = out[len(out) // 3:]
+        n = (len(yp) // 2048) * 2048
+        rms = np.sqrt((yp[:n].reshape(-1, 2048) ** 2).mean(axis=1))
+        assert float(rms.min()) > 0.35 * float(rms.max())
+
+    def test_extreme_ratio_finite_with_many_jumps(self):
+        patch, src, rs, _, b = _rig({"semitones": 36.0})
+        sig = (np.random.RandomState(9).randn(90 * F) * 0.3).astype(np.float32)
+        out = _run(b, patch, src, rs, sig)
+        assert np.all(np.isfinite(out))
+        assert _seam_jumps(b, rs) >= 10
+
+    def test_fade_spans_small_blocks_clickfree(self):
+        # Block (64) much shorter than the fade (~350 samples): the
+        # crossfade must carry across block boundaries seamlessly.
+        patch, src, rs, _, b = _rig({"semitones": 12.0})
+        out = _run(b, patch, src, rs, _tone(440.0, 2.0), block=64)
+        assert _seam_jumps(b, rs) >= 3
+        assert _max_step(out) < 2.5 * (2 * np.pi * 880.0 / SR)
+
+    def test_single_voice_matches_mono_through_seams(self):
+        sig = np.random.RandomState(4).randn(70 * F).astype(np.float32)
+        p1, s1, r1, _, b1 = _rig({"semitones": 12.0})
+        mono = _run(b1, p1, s1, r1, sig)
+        p2, s2, r2, _, b2 = _rig({"semitones": 12.0})
+        voice = _run(b2, p2, s2, r2, np.tile(sig, (2, 1)))
+        assert _seam_jumps(b1, r1) >= 5
+        assert np.array_equal(voice[0], mono)
+        assert np.array_equal(voice[0], voice[1])
+
+    def test_voices_jump_independently(self):
+        # Voice 0 shifted (must jump), voice 1 held at unity via CV
+        # (must never jump) -- per-voice heads, per-voice seams.
+        tone = _tone(440.0, 3.0)
+        p, s, r, c, b = _rig({"cv_depth": 12.0}, with_cv=True)
+        n = tone.shape[0] // F
+        for k in range(n):
+            blk = np.tile(tone[k * F:(k + 1) * F], (2, 1))
+            cv = np.zeros((2, F), dtype=np.float32)
+            cv[0, :] = 1.0
+            b._render_resampler(r, F, {(s.id, "out"): blk, (c.id, "cv"): cv}, p)
+        jumps = b._state[r.id]["seam_jumps"]
+        assert int(jumps[0]) >= 5
+        assert int(jumps[1]) == 0
+
+
+# ----- Dry/wet mix ------------------------------------------------------------
+
+
+class TestMix:
+    def test_mix_zero_is_delayed_dry_even_when_pitched(self):
+        # The dry tap ignores the pitch entirely: mix=0 at +7 st equals
+        # the unity full-wet render bit-for-bit (same fixed-lag tap).
+        sig = np.random.RandomState(11).randn(20 * F).astype(np.float32)
+        p1, s1, r1, _, b1 = _rig({"semitones": 7.0, "mix": 0.0})
+        p2, s2, r2, _, b2 = _rig({"semitones": 0.0, "mix": 1.0})
+        o1 = _run(b1, p1, s1, r1, sig)
+        o2 = _run(b2, p2, s2, r2, sig)
+        assert np.array_equal(o1, o2)
+
+    def test_mix_half_at_unity_is_coherent(self):
+        # Latency-compensated dry: at unity the wet and dry taps are the
+        # same samples, so 0.5/0.5 sums back to exactly 1.0x -- a mix
+        # sweep is a coherent blend, not a slapback comb.
+        sig = np.random.RandomState(12).randn(20 * F).astype(np.float32)
+        p1, s1, r1, _, b1 = _rig({"semitones": 0.0, "mix": 0.5})
+        p2, s2, r2, _, b2 = _rig({"semitones": 0.0, "mix": 1.0})
+        o1 = _run(b1, p1, s1, r1, sig)
+        o2 = _run(b2, p2, s2, r2, sig)
+        assert np.array_equal(o1, o2)
+
+    def test_mix_half_pitched_has_both_spectral_peaks(self):
+        out = _run(*_rig_run({"semitones": 12.0, "mix": 0.5}))
+        m440, m880 = _mag_at(out, 440.0), _mag_at(out, 880.0)
+        floor = _mag_at(out, 660.0)  # off-peak reference
+        assert m440 > 10 * floor
+        assert m880 > 10 * floor
+
+    def test_full_wet_has_no_dry_leak(self):
+        out = _run(*_rig_run({"semitones": 12.0, "mix": 1.0}))
+        m440, m880 = _mag_at(out, 440.0), _mag_at(out, 880.0)
+        assert m440 < 0.05 * m880
+
+    def test_mix_clamped(self):
+        sig = np.random.RandomState(13).randn(10 * F).astype(np.float32)
+        for lo, hi in ((1.7, 1.0), (-0.4, 0.0)):
+            p1, s1, r1, _, b1 = _rig({"semitones": 5.0, "mix": lo})
+            p2, s2, r2, _, b2 = _rig({"semitones": 5.0, "mix": hi})
+            assert np.array_equal(
+                _run(b1, p1, s1, r1, sig), _run(b2, p2, s2, r2, sig)
+            )
+
+    def test_mix_voice_matches_mono(self):
+        sig = np.random.RandomState(14).randn(20 * F).astype(np.float32)
+        p1, s1, r1, _, b1 = _rig({"semitones": 5.0, "mix": 0.5})
+        mono = _run(b1, p1, s1, r1, sig)
+        p2, s2, r2, _, b2 = _rig({"semitones": 5.0, "mix": 0.5})
+        voice = _run(b2, p2, s2, r2, np.tile(sig, (2, 1)))
+        assert np.array_equal(voice[0], mono)
+
+
+def _rig_run(params):
+    """(b, patch, src, rs, tone) tuple for the spectral mix tests."""
+    patch, src, rs, _, b = _rig(params)
+    return b, patch, src, rs, _tone(440.0, 2.0)
+
+
+def _mag_at(y, hz, width=8.0):
+    """Peak windowed-FFT magnitude within +/-width Hz of ``hz``."""
+    yp = y[len(y) // 3:]
+    spec = np.abs(np.fft.rfft(yp * np.hanning(len(yp))))
+    fr = np.fft.rfftfreq(len(yp), 1.0 / SR)
+    band = (fr >= hz - width) & (fr <= hz + width)
+    return float(spec[band].max())
 
 
 # ----- Integration -----------------------------------------------------------

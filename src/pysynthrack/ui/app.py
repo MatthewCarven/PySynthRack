@@ -658,6 +658,18 @@ class App:
                     user_data=user_data,
                 )
                 return
+            if param_name == "mix":
+                dpg.add_slider_float(
+                    label=param_name,
+                    default_value=float(current),
+                    min_value=0.0,
+                    max_value=1.0,
+                    format="%.2f",
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
 
         if module.TYPE == "sweep_eq":
             # A single CV-swept resonant band (auto-wah / envelope filter).

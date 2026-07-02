@@ -668,6 +668,7 @@ and lo-fi tape effects.
 | `cents` | `0.0` | −100 … +100 ct | Fine-tune, added to `semitones`. |
 | `cv_depth` | `12.0` | 0 … 48 st/unit | Semitones per unit of `pitch_cv` (12 = one octave per unit, 1V/oct-style). |
 | `glide` | `0.0` | 0 … 5 s | Portamento time for pitch changes (0 = instant). |
+| `mix` | `1.0` | 0 … 1 | Dry/wet blend. The dry tap is latency-compensated to line up with unity-pitch wet, so the blend is coherent (no slapback). |
 
 **How it works.** Pitch is summed in semitone space
 (`st = semitones + cents/100 + cv_depth · pitch_cv`), optionally glided
@@ -678,7 +679,12 @@ rate than it's fed can't stay in sync with a continuous stream
 forever, it runs a short **looping buffer** of recent audio: the read
 head wraps inside the window, so the module keeps sounding indefinitely
 on any live source (oscillator, mic, file player), at the cost of a
-faint granular-repeat texture on extreme shifts. That buffer also means
+faint granular-repeat texture on extreme shifts. Each wrap is
+**declicked**: when the head drifts into a guard band near either
+buffer edge it jumps half a span back toward the centre under a short
+equal-power crossfade, instead of splicing audio a window apart with a
+click. At unity ratio the head never drifts, no jump ever fires, and
+the output stays a bit-exact delayed passthrough. That buffer also means
 a fixed latency (~90 ms) — the unavoidable price of varispeed on a live
 signal, and what lets you glide and modulate the pitch freely. The path
 is shape-polymorphic like [Filter](#filter) / [Crossover](#crossover):
@@ -694,8 +700,11 @@ deliberately the tape kind.
 or feed the [FilePlayer](#file_player) in to pitch a sample. Wire an
 [LFO](#lfo) into `pitch_cv` for vibrato/tape-wobble, or an
 [ADSR](#adsr)/[AD](#ad_envelope) for pitch dives; raise `glide` for
-portamento and tape-stop sweeps. See `examples/resampler_tape_wobble.json`
-(saw → varispeed with a slow LFO wobbling the pitch → speaker).
+portamento and tape-stop sweeps. Set `mix` to ~0.5 with a few `cents`
+of detune for one-module chorus-style thickening. See
+`examples/resampler_tape_wobble.json` (saw → varispeed with a slow LFO
+wobbling the pitch → speaker) and `examples/resampler_detune_blend.json`
+(+12 ct at 50% mix → detune thickening).
 
 #### `pitch_shifter`
 
@@ -1522,6 +1531,7 @@ loads in the app. Notable ones referenced above:
 - `file_crossover_split.json` — a WAV track split and used as modulation.
 - `mic_beatbox_crossover.json` — live mic, beatbox-driven.
 - `resampler_tape_wobble.json` — varispeed pitch shift, LFO wobbling the pitch.
+- `resampler_detune_blend.json` — resampler `mix`: +12 cents at 50% dry/wet, one-module detune thickening.
 - `pitch_shifter_harmony.json` — time-preserving shift; +7 st at 50% mix = a fifth harmony.
 - `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.

@@ -5197,6 +5197,19 @@ class NumpyBackend(AudioBackend):
     # Clamp the effective transpose so the playback ratio can't explode
     # (+/-60 st = +/-5 octaves -> ratio in [1/32, 32]).
     _RESAMP_MAX_ST = 60.0
+    # Loop-seam declick. When the read head drifts inside a guard band
+    # near either buffer edge (about to collide with the write head, or
+    # to fall off the oldest sample), it jumps half a span back toward
+    # the centre with a short equal-power crossfade between the old and
+    # the jumped tap, instead of hard-wrapping with a click. This is the
+    # nominal fade time; it shrinks automatically when extreme ratios
+    # leave less old-tap runway than this.
+    _RESAMP_XFADE_SEC = 0.008
+    # Guard-band width as a fraction of the window (floored to the fade
+    # length plus a margin, and to one block, so a jump always fires
+    # with crossfade runway to spare and cross-block drift can't skip
+    # past the band).
+    _RESAMP_EDGE_FRAC = 0.06
 
     def _render_resampler(self, module, frames: int, buffers, patch) -> np.ndarray:
         """Varispeed pitch shifter: resample ``in`` at a pitch-derived rate.
@@ -5263,9 +5276,28 @@ class NumpyBackend(AudioBackend):
         Per output sample the read head advances by the playback ratio
         ``2 ** (st/12)`` (``st`` summed in semitone space and optionally
         glided), reading the per-voice ring buffer with linear
-        interpolation and wrapping inside the loop window. The whole block
-        is vectorized: the read positions are the cumulative integral of
-        the per-sample ratio, wrapped with a single ``np.mod``.
+        interpolation. The whole block is vectorized: the read positions
+        are the cumulative integral of the per-sample ratio.
+
+        **Loop-seam declick.** At a non-unity ratio the read head
+        eventually collides with the write head (pitch up) or falls off
+        the oldest buffered sample (pitch down). Rather than
+        hard-wrapping the read phase with a click (audio from a window
+        apart butted together), the head watches a guard band near both
+        edges and *jumps half a span* back toward the centre as soon as
+        it drifts inside, equal-power crossfading from the old tap to
+        the jumped tap (``_RESAMP_XFADE_SEC``, shortened when extreme
+        ratios leave less runway). Far from the edges nothing fires and
+        the legacy single-tap path runs bit-identically -- in particular
+        unity ratio, where the head doesn't drift, stays a bit-exact
+        delayed passthrough.
+
+        **Dry/wet mix.** ``mix`` blends the varispeed signal against a
+        dry tap read from the *same ring buffer* at the fixed initial
+        delay, so dry and wet are sample-aligned at unity ratio and a
+        mix sweep is a coherent blend with no slapback offset. ``mix=1``
+        (the default) skips the dry read and is bit-identical to the
+        wet-only render; ``mix=0`` is the delayed dry passthrough.
         """
         V = src.shape[0]
         sr = self.sample_rate
@@ -5286,6 +5318,14 @@ class NumpyBackend(AudioBackend):
             )
             state["delay"] = np.full(V, init_delay, dtype=np.float64)
             state["last_st"] = np.zeros(V, dtype=np.float64)
+        if "xf_rem" not in state:
+            # Seam-crossfade + jump-count state (created lazily so a
+            # reinit -- or a state carried across this feature's
+            # introduction -- picks it up cleanly).
+            state["xf_rem"] = np.zeros(V, dtype=np.int64)
+            state["xf_len"] = np.ones(V, dtype=np.int64)
+            state["xf_off"] = np.zeros(V, dtype=np.float64)
+            state["seam_jumps"] = np.zeros(V, dtype=np.int64)
 
         buf = state["buf"]
         write_idx = int(state["write_idx"])
@@ -5307,6 +5347,7 @@ class NumpyBackend(AudioBackend):
         cents = float(module.params.get("cents", 0.0))
         cv_depth = float(module.params.get("cv_depth", 12.0))
         glide = float(module.params.get("glide", 0.0))
+        mix = min(max(float(module.params.get("mix", 1.0)), 0.0), 1.0)
 
         base_st = semis + cents / 100.0
         target = np.full((V, frames), base_st, dtype=np.float64)
@@ -5327,32 +5368,165 @@ class NumpyBackend(AudioBackend):
         np.clip(smoothed, -self._RESAMP_MAX_ST, self._RESAMP_MAX_ST, out=smoothed)
         ratio = np.exp2(smoothed / 12.0)   # (V, F) playback rate per sample
 
-        # --- read positions: cumulative integral of ratio, wrapped ---
+        # --- read positions: cumulative integral of ratio ---
         cum = np.cumsum(ratio, axis=-1)
         excum = cum - ratio                 # exclusive cumsum (offset per sample)
         offs = (L - delay)[:, np.newaxis] + excum
-        phase = np.mod(offs, span)          # in [0, span)
-        i0 = np.floor(phase).astype(np.int64)
-        frac = phase - i0
-
-        rows = np.arange(V)[:, np.newaxis]
-        s0 = buf[rows, (head + i0) % L]
-        s1 = buf[rows, (head + i0 + 1) % L]
-        out = (s0 * (1.0 - frac) + s1 * frac).astype(np.float32)
-
-        # --- carry the read head as a lag behind the (new) write head ---
-        # Over the block the head moved by `frames`, the read by sum(ratio),
-        # so the new lag is delay + frames - sum(ratio). Wrap into [1, L) by
-        # integer span steps (the loop) -- this preserves the fractional
-        # read phase, so unity ratio stays perfectly click-free.
         sum_ratio = cum[:, -1]
-        new_delay = 1.0 + np.mod((delay + frames - sum_ratio) - 1.0, span)
+
+        # --- loop-seam declick guard band ---
+        x_nom = max(1, int(self._RESAMP_XFADE_SEC * sr))
+        guard = int(max(self._RESAMP_EDGE_FRAC * L, x_nom + 8, frames + 8))
+        guard = min(guard, span // 3)
+
+        slow = bool(
+            state["xf_rem"].any()
+            or (offs[:, 0] <= guard).any()
+            or (offs.max(axis=-1) >= span - guard).any()
+        )
+        if not slow:
+            # Legacy single-tap path, bit-identical to the pre-declick
+            # engine (the mods are no-ops with the head deep in-band).
+            phase = np.mod(offs, span)          # in [0, span)
+            i0 = np.floor(phase).astype(np.int64)
+            frac = phase - i0
+            rows = np.arange(V)[:, np.newaxis]
+            s0 = buf[rows, (head + i0) % L]
+            s1 = buf[rows, (head + i0 + 1) % L]
+            wet = s0 * (1.0 - frac) + s1 * frac
+            # Carry the read head as a lag behind the (new) write head.
+            new_delay = 1.0 + np.mod((delay + frames - sum_ratio) - 1.0, span)
+        else:
+            wet = np.empty((V, frames), dtype=np.float64)
+            new_delay = np.empty(V, dtype=np.float64)
+            for v in range(V):
+                wet[v], new_delay[v] = self._resampler_voice_declick(
+                    state, v, buf[v], head, offs[v], ratio[v],
+                    float(delay[v]), float(sum_ratio[v]),
+                    frames, L, span, guard, x_nom,
+                )
+
+        # --- dry/wet mix: the dry tap is the same ring read at the fixed
+        # initial delay, so unity wet and dry are sample-aligned.
+        if mix < 1.0:
+            init_lag = int(max(1, min(L - 1, int(self._RESAMP_INIT_FRAC * L))))
+            dry_slots = (head + (L - init_lag) + np.arange(frames)) % L
+            dry = buf[:, dry_slots]
+            out = (mix * wet + (1.0 - mix) * dry).astype(np.float32)
+        else:
+            out = wet.astype(np.float32)
 
         state["buf"] = buf
         state["write_idx"] = head
         state["delay"] = new_delay
         state["last_st"] = last_st
         return out
+
+    def _resampler_voice_declick(
+        self, state, v, bufv, head, p, r, delay_v, sum_r,
+        frames, L, span, guard, x_nom,
+    ):
+        """One voice's block with the read head inside the guard band (or
+        a seam crossfade still in flight from the previous block).
+
+        ``p`` is the voice's unwrapped read-position trajectory for this
+        block (position in the window: 0 = oldest, ``span`` = newest) and
+        ``r`` its per-sample ratio. Applies a half-span jump wherever the
+        trajectory enters the guard band, records one equal-power
+        crossfade per jump (old tap fading out, jumped tap fading in) and
+        returns ``(float64 out, new end-of-block delay)``.
+
+        Fade weights are a function of the sample index *within the
+        fade*, so a fade that outlives the block is carried in ``state``
+        and continues seamlessly next call. An old tap that runs out of
+        valid content mid-fade (extreme ratios) is force-completed early
+        -- by then its weight is already near zero. Seam events are
+        always at least half a span of head travel apart, so fades never
+        overlap; each jump also bumps ``seam_jumps[v]`` (an observable
+        for tests and debugging).
+        """
+        half = 0.5 * span
+        p = p.copy()
+        fades = []          # (n0, n_here, t0, x_eff, back_off)
+        jump_sum = 0.0      # net delay change from the jumps
+
+        # Continue an in-flight fade from the previous block.
+        rem = int(state["xf_rem"][v])
+        if rem > 0:
+            x_eff = int(state["xf_len"][v])
+            off = float(state["xf_off"][v])
+            n_here = min(rem, frames)
+            fades.append([0, n_here, x_eff - rem, x_eff, off])
+
+        # Low edge: the head is on nearly-overwritten (oldest) content --
+        # the pitch-down collision. Jump forward half a span; the old
+        # tap, half a span behind the jumped head, fades out.
+        if p[0] <= guard:
+            p += half
+            jump_sum -= half
+            fades_adj = [f for f in fades if f[0] == 0]
+            for f in fades_adj:
+                # A carried fade's back tap rides the canonical
+                # trajectory; keep it in place across the new jump.
+                f[4] -= half
+            fades.append([0, min(x_nom, frames), 0, x_nom, -half])
+            state["seam_jumps"][v] += 1
+
+        # High edge: the head is about to collide with the write head --
+        # the pitch-up collision. Jump back half a span at the first
+        # offending sample (can recur in one block at extreme ratios).
+        # The old tap runs on toward the newest sample, so the fade
+        # shortens to the runway left at this ratio.
+        while True:
+            hits = np.nonzero(p >= span - guard)[0]
+            if hits.size == 0:
+                break
+            n0 = int(hits[0])
+            rmax = float(r[n0:n0 + x_nom].max())
+            runway = (span - 1.0) - float(p[n0])
+            x_eff = int(min(x_nom, max(1.0, runway / max(rmax, 1e-9))))
+            p[n0:] -= half
+            jump_sum += half
+            fades.append([n0, min(x_eff, frames - n0), 0, x_eff, half])
+            state["seam_jumps"][v] += 1
+
+        # Jumped main tap, linear interpolation (same math as the fast
+        # path; p is inside (0, span) by construction after the jumps).
+        i0 = np.floor(p).astype(np.int64)
+        frac = p - i0
+        s0 = bufv[(head + i0) % L]
+        s1 = bufv[(head + i0 + 1) % L]
+        out = s0 * (1.0 - frac) + s1 * frac
+
+        # Blend each fade's old tap back in, equal-power. A back tap that
+        # has left the valid window keeps the new tap at full weight.
+        state["xf_rem"][v] = 0
+        for n0, n_here, t0, x_eff, off in fades:
+            if n_here <= 0:
+                continue
+            t = (t0 + np.arange(n_here, dtype=np.float64) + 1.0) / x_eff
+            t = np.minimum(t, 1.0)
+            pb = p[n0:n0 + n_here] + off
+            valid = (pb >= 0.0) & (pb <= span - 1.0)
+            pbc = np.clip(pb, 0.0, span - 1.0)
+            ib = np.floor(pbc).astype(np.int64)
+            fb = pbc - ib
+            b0 = bufv[(head + ib) % L]
+            b1 = bufv[(head + ib + 1) % L]
+            back = b0 * (1.0 - fb) + b1 * fb
+            w_old = np.where(valid, np.cos(0.5 * np.pi * t), 0.0)
+            g_new = np.where(valid, np.sin(0.5 * np.pi * t), 1.0)
+            seg = slice(n0, n0 + n_here)
+            out[seg] = g_new * out[seg] + w_old * back
+            if t0 + n_here < x_eff and n0 + n_here >= frames:
+                # The fade outlives the block -- carry the remainder.
+                state["xf_rem"][v] = x_eff - (t0 + n_here)
+                state["xf_len"][v] = x_eff
+                state["xf_off"][v] = off
+
+        new_delay = delay_v + frames - sum_r + jump_sum
+        new_delay = 1.0 + float(np.mod(new_delay - 1.0, span))
+        return out, new_delay
 
     # ----- PitchShifter rendering -----------------------------------------
 

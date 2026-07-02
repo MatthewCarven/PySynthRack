@@ -5305,3 +5305,58 @@ at the EQ, 0.44 at the speaker.
 MODULES.md: ports/params rows, conventions-table row
 (motion_eq.band{i}_q_cv | 1.0 shared | Q doublings), index row now says
 x4 per family. UI: q_cv_depth drag 0-4 "%.2f dbl/unit".
+
+
+## 2026-07-02 - Resampler declick + dry/wet mix (follow-up pair ships)
+
+The two resampler follow-ups flagged since 2026-06-30, scoped with
+Matthew via two questions (both recommendations accepted): loop-seam
+declick = **event-jump crossfade** (not the always-on dual-head
+harmonizer, which would have combed unity), dry tap =
+**latency-compensated** (pitch_shifter precedent, coherent blend).
+
+**Declick.** The seam in a full-ring varispeed is the read head
+colliding with the write head (pitch up) or falling off the oldest
+sample (pitch down) - the hard `mod span` wrap butted audio ~0.2 s
+apart together, a click per wrap. A same-buffer dual tap can't fix it
+(offset `span` aliases to one sample away mod L), and crossfading *at*
+the collision has zero runway, so the fix triggers **early**: a guard
+band (`max(6% of window, fade+8, block+8)`, capped span/3) near both
+edges; when the head drifts in it jumps **half a span** back toward
+the centre, equal-power crossfading old->new tap over
+`_RESAMP_XFADE_SEC` = 8 ms (auto-shortened to the old tap's runway
+`(span-1-p)/rmax` at extreme up-ratios). Far from the edges the legacy
+single-tap path runs **bit-identically** (the mods are no-ops
+in-band), so unity stays a bit-exact delayed passthrough and no event
+ever fires there - the fast/slow fork is per-block, slow only when a
+fade is in flight or a voice is inside the band. Slow path is
+per-voice but numpy-vector within the block; fades carry across block
+boundaries via `xf_rem/xf_len/xf_off` state (weights are a function of
+sample-index-within-fade, so a fade split over five 64-sample blocks
+is seamless - tested). Seam events are >= half a span of travel apart
+so fades never overlap; each bumps a per-voice `seam_jumps` counter
+(the test observable). Old tap running out of content mid-fade is
+force-completed at ~zero weight. Perf: 0.088 ms/block unity (fast
+path, unchanged), 0.102 ms/block at +12 st through seams - noise.
+
+**Mix.** `mix` (0..1, default 1.0 = wet-only, bit-identical to the
+pre-mix render via a skip branch). The dry tap is the **same ring
+buffer** read at the fixed init delay - no second buffer, and at unity
+ratio it's the exact samples the wet tap reads, so `mix` sweeps
+coherently: mix=0.5 at unity is *bit-equal* to full wet (0.5x+0.5x),
+and mix=0 is the delayed dry passthrough, bit-equal to a unity render
+even with the pitch cranked (both tested). The detune/thicken use case
+from the module docstring is now one module: +12 ct at 50% mix.
+
+14 tests (8 declick + 6 mix) in the two new classes in
+`tests/test_resampler.py`; suite **1154** passed sandbox (+18 mido
+skips), +14 from 1140. Voice row stays bit-identical to mono through
+seams and mix. Example `examples/resampler_detune_blend.json`; UI mix
+slider on the resampler block; MODULES.md param row + declick/mix
+paragraphs + example index line.
+
+Known limit kept deliberately: a blind crossfade can pass through a
+brief anti-phase amplitude dip on a pure tone (equal-power handles
+uncorrelated content; correlated-opposite is the worst case). The fix
+is a WSOLA-style seam-position search - logged in TODO as the natural
+next resampler step.
