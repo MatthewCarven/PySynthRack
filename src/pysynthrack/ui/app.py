@@ -900,6 +900,41 @@ class App:
                 )
                 return
 
+        if module.TYPE == "stereo_speaker_output":
+            # The stereo sink. ``pan`` places a mono source
+            # (constant-power) or balances a stereo pair; ``width`` is
+            # mid/side (0 mono .. 2 over-wide, pairs only); ``gain`` is
+            # the output trim; ``cv_depth`` scales pan_cv in pan units
+            # per CV unit.
+            if param_name == "pan":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-1.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "width":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=2.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "gain":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=2.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=2.0, format="%.2f pan/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "distortion":
             # Drive pedal. ``drive`` pushes the signal into the curve;
             # ``tone`` is the post-distortion low-pass in Hz (20 kHz =

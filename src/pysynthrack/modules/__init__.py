@@ -44,7 +44,12 @@ from .phaser import Phaser
 from .resampler import Resampler
 from .reverb import Reverb
 from .pitch_shifter import PitchShifter
-from .output import LeftSpeakerOutput, RightSpeakerOutput, SpeakerOutput
+from .output import (
+    LeftSpeakerOutput,
+    RightSpeakerOutput,
+    SpeakerOutput,
+    StereoSpeakerOutput,
+)
 from .samplehold import SampleHold
 from .schmitt import Schmitt
 from .sequencer import Sequencer
@@ -97,6 +102,7 @@ __all__ = [
     "SweepEQ",
     "TiltEQ",
     "SpeakerOutput",
+    "StereoSpeakerOutput",
     "VCA",
     "Waveshaper",
 ]

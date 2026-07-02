@@ -619,6 +619,9 @@ class NumpyBackend(AudioBackend):
         "left_speaker_output": (True, False),
         "right_speaker_output": (False, True),
     }
+    # The stereo sink is drained separately (pan/width/pan_cv need more
+    # than a channel-flag pair; see _drain_stereo_speaker).
+    _STEREO_SPEAKER = "stereo_speaker_output"
 
     def render_block(self, frames: int) -> np.ndarray | None:
         """Pure-function rendering of one block. Used by the audio callback
@@ -665,6 +668,9 @@ class NumpyBackend(AudioBackend):
 
         out = np.zeros((frames, 2), dtype=np.float32)
         for module in patch.modules.values():
+            if module.TYPE == self._STEREO_SPEAKER:
+                self._drain_stereo_speaker(module, frames, buffers, patch, out)
+                continue
             channels = self._SPEAKER_CHANNELS.get(module.TYPE)
             if channels is None:
                 continue
@@ -691,6 +697,78 @@ class NumpyBackend(AudioBackend):
 
         np.clip(out, -1.0, 1.0, out=out)
         return out
+
+    def _drain_stereo_speaker(self, module, frames, buffers, patch, out):
+        """Mix one StereoSpeakerOutput into the master bus, in place.
+
+        Two source modes, decided by whether ``in_r`` is cabled:
+
+        * MONO (``in_l`` only): constant-power pan. The pan position p
+          (param + cv_depth * pan_cv, clamped to [-1, 1]) maps to an
+          angle theta = (p + 1) * pi/4, and the source lands as
+          (cos theta, sin theta) -- equal power everywhere, -3 dB in
+          the middle, so a sweep doesn't pump.
+        * STEREO (``in_r`` cabled): width first, then balance. Width is
+          mid/side -- M = (L+R)/2, S = (L-R)/2 * width -- skipped
+          entirely at width == 1 so the default is bit-exact. Balance
+          attenuates only the far side with a cosine taper
+          (gL = cos(max(p, 0) * pi/2), gR mirrored): unity at centre,
+          smooth fade to one side at the extremes.
+
+        ``pan_cv`` is per-sample (a (V, F) buffer is averaged across
+        voices -- pan is one global position, like Loudness's
+        level_cv); audio inputs sum their voice axis (the implicit-sum
+        rule). ``gain`` is applied last; the master bus clip at +-1
+        happens in render_block for all sinks together. Stateless, so
+        block-size independence is structural.
+        """
+        left = self._input_buffer(patch, buffers, module.id, "in_l", collapse=False)
+        right = self._input_buffer(patch, buffers, module.id, "in_r", collapse=False)
+        r_cabled = any(
+            c.dst_port == "in_r" for c in patch.cables_into(module.id)
+        )
+        if left is None and right is None:
+            return
+        if left is not None and left.ndim == 2:
+            left = left.sum(axis=0)
+        if right is not None and right.ndim == 2:
+            right = right.sum(axis=0)
+
+        pan = float(module.params.get("pan", 0.0))
+        width = float(module.params.get("width", 1.0))
+        width = min(max(width, 0.0), 2.0)
+        gain = float(module.params.get("gain", 1.0))
+        cv_depth = float(module.params.get("cv_depth", 1.0))
+
+        cv = self._input_buffer(patch, buffers, module.id, "pan_cv", collapse=False)
+        if cv is not None and cv.size and cv_depth != 0.0:
+            if cv.ndim == 2:
+                cv = cv.mean(axis=0)
+            p = np.clip(pan + cv_depth * cv, -1.0, 1.0)
+        else:
+            p = min(max(pan, -1.0), 1.0)
+
+        if not r_cabled:
+            # Mono source: constant-power placement.
+            mono = left if left is not None else np.zeros(frames, dtype=np.float32)
+            theta = (p + 1.0) * (np.pi / 4.0)
+            l_mix = mono * np.cos(theta) * gain
+            r_mix = mono * np.sin(theta) * gain
+        else:
+            l_buf = left if left is not None else np.zeros(frames, dtype=np.float32)
+            r_buf = right if right is not None else np.zeros(frames, dtype=np.float32)
+            if width != 1.0:
+                mid = (l_buf + r_buf) * 0.5
+                side = (l_buf - r_buf) * (0.5 * width)
+                l_buf = mid + side
+                r_buf = mid - side
+            g_l = np.cos(np.maximum(p, 0.0) * (np.pi / 2.0))
+            g_r = np.cos(np.maximum(-p, 0.0) * (np.pi / 2.0))
+            l_mix = l_buf * g_l * gain
+            r_mix = r_buf * g_r * gain
+
+        out[:, 0] += l_mix
+        out[:, 1] += r_mix
 
     def snapshot_meter_levels(self) -> dict[tuple[int, str], float]:
         """GUI hook: a copy of the latest per-cv-port block-mean levels.
@@ -844,7 +922,10 @@ class NumpyBackend(AudioBackend):
             return self._render_file_player(module, frames, buffers, patch)
         if module.TYPE == "mic_input":
             return self._render_mic_input(module, frames, buffers, patch)
-        if module.TYPE in self._SPEAKER_CHANNELS:
+        if (
+            module.TYPE in self._SPEAKER_CHANNELS
+            or module.TYPE == self._STEREO_SPEAKER
+        ):
             return None  # speaker-family sink — drained by the speaker pass
         return None
 

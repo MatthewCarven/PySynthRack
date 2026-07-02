@@ -223,6 +223,7 @@ Every module type, its category, and its ports at a glance.
 | [`speaker_output`](#speaker_output) | Sink | `in` (audio) → — |
 | [`left_speaker_output`](#left_speaker_output) | Sink | `in` (audio) → — |
 | [`right_speaker_output`](#right_speaker_output) | Sink | `in` (audio) → — |
+| [`stereo_speaker_output`](#stereo_speaker_output) | Sink | `in_l`,`in_r` (audio), `pan_cv` (cv) → — |
 | [`disk_writer`](#disk_writer) | Sink | `in` (audio) → — |
 
 ---
@@ -1434,6 +1435,53 @@ with `right_speaker_output` for hard-panned stereo. See
 #### `right_speaker_output`
 
 _To document._ Routes `in` to the **right** channel only. Param: `gain`.
+
+#### `stereo_speaker_output`
+
+The **stereo speaker** — a sink with a place in the field, and the
+"stereo variant" the mono speaker's docstring promised since v0.1.
+Patch a mono source into `in_l` alone and `pan` places it with a
+**constant-power** (−3 dB centre) cos/sin law — sweeps keep even
+loudness. Patch a stereo pair (`in_l` + `in_r`, e.g. straight off a
+chorus/reverb/flanger) and `pan` becomes a **balance** control (unity
+at centre, cosine fade of the far side) while `width` does mid/side
+scaling: 0 collapses to mono, 1 is untouched (bit-exact — the default
+settings pass a pair through exactly), up to 2 exaggerates the sides.
+
+`pan_cv` moves the pan per sample — an LFO is the classic autopan, an
+envelope walks each note across the field. Voice-aware sources sum at
+the jacks (the implicit-sum rule); everything lands on the same master
+bus as the other speaker sinks, clipped at ±1.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in_l` | in | audio | Left / only input. Alone = mono source, constant-power panned. |
+| `in_r` | in | audio | Right input; cabling it switches to stereo balance + width. |
+| `pan_cv` | in | cv | Per-sample pan modulation, scaled by `cv_depth`. Optional. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `gain` | `1.0` | 0 … 2 | Output trim, applied after pan/width. |
+| `pan` | `0.0` | −1 … 1 | Position (mono) or balance (pair). |
+| `width` | `1.0` | 0 … 2 | Mid/side width; pairs only (mono has no side content). |
+| `cv_depth` | `1.0` | 0 … 2 | Pan units per unit of `pan_cv`. |
+
+**How it works.** Stateless per block, so block-size independence is
+structural. Mono: θ = (pan + 1)·π/4, source × (cos θ, sin θ) — L² + R²
+equals the source power at every position. Pair: width first
+(M = (L+R)/2, S = (L−R)/2·width, skipped exactly at width = 1), then
+balance gL = cos(max(p, 0)·π/2) / gR mirrored, then gain. `pan_cv` is
+per-sample; a `(V, F)` CV is averaged across voices (one global
+position, like Loudness's `level_cv`). See
+`examples/stereo_field_pluck.json` (a pentatonic pluck through a
+chorus, width 1.6, with a 0.22 Hz autopan sweeping the whole voice
+around the room).
+
+---
 
 #### `disk_writer`
 

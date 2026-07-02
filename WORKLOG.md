@@ -5151,3 +5151,51 @@ fold 1→7, symmetry 0.15 — post-master peak 0.54).
 grit, waveshaper for west-coast bloom, both aliasing-safe on the same
 streaming 4× pair. Suite: 1073 in sandbox (+18 mido) — +27 pedal, +23
 folder over the meter baseline.
+
+## 2026-07-02 — StereoSpeakerOutput: the sink learns where things are
+
+Matthew's pick after the nonlinear pair — the long-listed "stereo-aware
+speaker (pan / width)", which the mono SpeakerOutput docstring has
+promised since v0.1 ("a stereo variant arrives once the mixer module
+exists" — the mixer arrived 2026-05-13; the promise is now kept, and the
+docstring updated to say so). Scoped via AskUserQuestion: NEW sink (the
+existing three untouched), pan_cv autopan input, constant-power pan law,
+width 0–2 with over-wide allowed.
+
+**Two source modes, decided by whether `in_r` is cabled.** Mono
+(`in_l` alone): constant-power placement — θ = (pan+1)·π/4, source ×
+(cos θ, sin θ). The invariant L²+R² == source² holds at every pan
+position (tested at five). Stereo pair: width first as mid/side
+(M=(L+R)/2, S=(L−R)/2·width) — SKIPPED entirely at width==1 so the
+defaults pass a pair to the bus bit-exactly — then balance with a
+cosine taper on the far side only (gL=cos(max(p,0)·π/2), unity at
+centre, no centre attenuation on pairs). `pan_cv` is per-sample
+(LFO = autopan), clamped at the rails after cv_depth scaling; a (V,F)
+CV averages across voices (one global position, the Loudness
+convention). Audio jacks sum their voice axis — the implicit-sum rule.
+
+**Drain architecture.** The three mono sinks stay on the channel-flag
+table; the stereo sink gets its own `_drain_stereo_speaker(module,
+frames, buffers, patch, out)` called from render_block's speaker pass —
+factored as a method so tests can drive it directly with crafted (V,F)
+buffers (which is how the voice-sum and voice-CV tests work). Stateless,
+so block-size independence is structural. Master ±1 clip unchanged,
+shared with all sinks.
+
+**Tests: 23 in `tests/test_stereo_speaker.py`.** One test-side gotcha:
+the first stereo rig used `noise` as the R source — random per render,
+so any cross-render comparison failed; swapped for a square oscillator.
+Model walls, the constant-power invariant, hard-pan kills, balance
+near-side-unity, width 0/2 algebra (side doubles, mid preserved),
+mono-width no-op, constant-CV == static pan, clamping, voice sums, two
+sinks adding, gain, master clip, uncabled silence.
+
+**Example.** `examples/stereo_field_pluck.json` — pentatonic tri pluck
+→ chorus (the pair straight into the sink), width 1.6, 0.22 Hz LFO on
+pan_cv at depth 0.7 sweeping the whole voice around the room. Peak 0.49;
+measured L-dominant and R-dominant blocks both present over two sweep
+cycles (it really pans).
+
+Suite: 1096 in sandbox (+18 mido) — +23 over the nonlinear pair.
+UI: TYPE-guarded pan/width/gain sliders + cv_depth drag. pyo silent-stub.
+Follow-ups logged: width_cv, node meters, pan-law selector.

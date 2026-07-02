@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "next_id": 10,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "Clock (104 BPM)",
+      "params": {"bpm": 104.0, "division": 2.0, "pulse_width": 0.5}
+    },
+    {
+      "id": 2,
+      "type": "sequencer",
+      "name": "Pentatonic line",
+      "params": {
+        "steps": 8,
+        "step1_pitch": 0.0, "step1_on": true,
+        "step2_pitch": 7.0, "step2_on": true,
+        "step3_pitch": 4.0, "step3_on": true,
+        "step4_pitch": 12.0, "step4_on": true,
+        "step5_pitch": 9.0, "step5_on": true,
+        "step6_pitch": 4.0, "step6_on": true,
+        "step7_pitch": 7.0, "step7_on": true,
+        "step8_pitch": 2.0, "step8_on": true
+      }
+    },
+    {
+      "id": 3,
+      "type": "oscillator",
+      "name": "Tri pluck",
+      "params": {"waveform": "triangle", "freq": 220.0, "amp": 0.6}
+    },
+    {
+      "id": 4,
+      "type": "adsr",
+      "name": "Pluck env",
+      "params": {"attack": 0.004, "decay": 0.22, "sustain": 0.2, "release": 0.15}
+    },
+    {
+      "id": 5,
+      "type": "vca",
+      "name": "VCA",
+      "params": {}
+    },
+    {
+      "id": 6,
+      "type": "chorus",
+      "name": "Widener",
+      "params": {"rate": 0.5, "depth": 0.5, "voices": 3, "mix": 0.5, "cv_depth": 1.0}
+    },
+    {
+      "id": 7,
+      "type": "lfo",
+      "name": "Autopan sweep",
+      "params": {"waveform": "sine", "rate": 0.22, "depth": 1.0, "bipolar": true}
+    },
+    {
+      "id": 8,
+      "type": "stereo_speaker_output",
+      "name": "Stereo out",
+      "params": {"gain": 0.8, "pan": 0.0, "width": 1.6, "cv_depth": 0.7}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "clock"},
+    {"src_module_id": 2, "src_port": "cv", "dst_module_id": 3, "dst_port": "freq_cv"},
+    {"src_module_id": 2, "src_port": "gate", "dst_module_id": 4, "dst_port": "gate"},
+    {"src_module_id": 3, "src_port": "out", "dst_module_id": 5, "dst_port": "audio"},
+    {"src_module_id": 4, "src_port": "cv", "dst_module_id": 5, "dst_port": "cv"},
+    {"src_module_id": 5, "src_port": "out", "dst_module_id": 6, "dst_port": "in"},
+    {"src_module_id": 6, "src_port": "out_l", "dst_module_id": 8, "dst_port": "in_l"},
+    {"src_module_id": 6, "src_port": "out_r", "dst_module_id": 8, "dst_port": "in_r"},
+    {"src_module_id": 7, "src_port": "cv", "dst_module_id": 8, "dst_port": "pan_cv"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 80], "2": [280, 80], "3": [40, 320], "4": [560, 80],
+      "5": [560, 320], "6": [820, 200], "7": [820, 460], "8": [1100, 280]
+    }
+  }
+}
