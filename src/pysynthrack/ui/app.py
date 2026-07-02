@@ -31,6 +31,7 @@ from ..modules.cvtofrequency import MODES as CVTOFREQ_MODES
 from ..modules.lfo import LFO_WAVEFORMS
 from ..modules.midiinput import AUTO_DEVICE, available_devices as midi_available_devices
 from ..modules.micinput import available_input_devices as mic_available_devices
+from ..modules.distortion import DISTORTION_MODES
 from ..modules.meter import METER_MODES
 from ..modules.noise import NOISE_COLORS
 from ..modules.oscillator import WAVEFORMS
@@ -898,6 +899,49 @@ class App:
                 )
                 return
 
+        if module.TYPE == "distortion":
+            # Drive pedal. ``drive`` pushes the signal into the curve;
+            # ``tone`` is the post-distortion low-pass in Hz (20 kHz =
+            # out of circuit); ``level`` trims the (loud) output;
+            # ``mix`` blends dry back in; ``cv_depth`` scales drive_cv
+            # in drive units per CV unit. ``mode`` hits the shared
+            # mode-combo branch (soft / hard / tube).
+            if param_name == "drive":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.1, max_value=30.0, format="%.1f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "tone":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=200.0, max_value=20000.0, format="%.0f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "level":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=2.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "mix":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.1,
+                    min_value=0.0, max_value=30.0, format="%.1f drive/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "delay":
             # Echo controls. ``time`` is the delay in ms; ``feedback`` sets
             # how many repeats; ``tone`` damps the feedback path (dark <->
@@ -1015,6 +1059,8 @@ class App:
                 items = list(SWEEP_EQ_MODES)
             elif module.TYPE == "meter":
                 items = list(METER_MODES)
+            elif module.TYPE == "distortion":
+                items = list(DISTORTION_MODES)
             else:
                 items = list(FILTER_MODES)
             dpg.add_combo(

@@ -42,7 +42,7 @@ import wave
 from typing import Any
 
 import numpy as np
-from scipy.signal import lfilter, resample_poly
+from scipy.signal import firwin, lfilter, resample_poly
 
 from . import media
 from scipy.io import wavfile
@@ -60,6 +60,70 @@ try:
 except Exception:  # pragma: no cover - environment-dependent
     sd = None  # type: ignore[assignment]
     _HAS_SOUNDDEVICE = False
+
+
+# ---------------------------------------------------------------------------
+# 4x oversampling for nonlinear stages (Distortion, Waveshaper)
+#
+# A saturating or folding curve generates harmonics with no bandwidth
+# limit; run at the native rate, everything past Nyquist folds straight
+# back into the audible band as inharmonic hash. So the nonlinear step
+# runs at 4x: zero-stuff -> low-pass -> curve -> low-pass -> decimate.
+# Both low-passes are the same linear-phase FIR run STREAMING via
+# lfilter with per-voice zi carry, so the result is block-size
+# independent and voice rows are fully independent. The FIR length is
+# chosen so the total group delay is an integer number of BASE-rate
+# samples (2 * 32 taps / factor 4 = 16), letting a dry path be
+# delay-compensated exactly.
+# ---------------------------------------------------------------------------
+
+_OS_FACTOR = 4
+_OS_TAPS = 65  # (65-1)/2 = 32 -> 8 base samples per filter, 16 total
+_OS_LATENCY = 2 * ((_OS_TAPS - 1) // 2) // _OS_FACTOR
+_OS_FIR = firwin(_OS_TAPS, 0.9 / _OS_FACTOR)  # band edge ~10% under base Nyquist
+
+
+class _Oversampler4:
+    """Streaming 4x up/down pair for one module's voice bank.
+
+    ``up`` zero-stuffs (x4 gain restored) and low-passes; ``down``
+    low-passes and takes every 4th sample. Filter state is carried per
+    voice across blocks. Because the block length is decimated as
+    ``[..., ::4]`` and 4*F is always divisible by 4, the decimation
+    phase is identical for every block size.
+    """
+
+    def __init__(self, voices: int):
+        self._zi_up = np.zeros((voices, _OS_TAPS - 1))
+        self._zi_dn = np.zeros((voices, _OS_TAPS - 1))
+
+    @property
+    def voices(self) -> int:
+        return self._zi_up.shape[0]
+
+    def up(self, x):
+        """(V, F) base-rate -> (V, 4F) oversampled."""
+        v, f = x.shape
+        stuffed = np.zeros((v, f * _OS_FACTOR))
+        stuffed[:, ::_OS_FACTOR] = x * _OS_FACTOR
+        y, self._zi_up = lfilter(_OS_FIR, [1.0], stuffed, axis=-1, zi=self._zi_up)
+        return y
+
+    def down(self, y):
+        """(V, 4F) oversampled -> (V, F) base-rate."""
+        z, self._zi_dn = lfilter(_OS_FIR, [1.0], y, axis=-1, zi=self._zi_dn)
+        return z[:, ::_OS_FACTOR]
+
+
+# One-pole DC blocker (y[n] = x[n] - x[n-1] + R*y[n-1]) for asymmetric
+# curves: they shift the waveform's average off zero, and that offset
+# would eat headroom downstream. ~3.5 Hz corner at 44.1 kHz.
+_DC_R = 0.9995
+
+
+def _dc_block(x, zi):
+    """Streaming DC blocker. x (V, F); zi (V, 1) carried by the caller."""
+    return lfilter([1.0, -1.0], [1.0, -_DC_R], x, axis=-1, zi=zi)
 
 
 class _GrainShifter:
@@ -766,6 +830,8 @@ class NumpyBackend(AudioBackend):
             return self._render_reverb(module, frames, buffers, patch)
         if module.TYPE == "loudness":
             return self._render_loudness(module, frames, buffers, patch)
+        if module.TYPE == "distortion":
+            return self._render_distortion(module, frames, buffers, patch)
         if module.TYPE == "resampler":
             return self._render_resampler(module, frames, buffers, patch)
         if module.TYPE == "pitch_shifter":
@@ -5329,6 +5395,129 @@ class NumpyBackend(AudioBackend):
             left *= gain
             right *= gain
         return {"left": left, "right": right}
+
+    # ----- distortion -------------------------------------------------------
+
+    _DIST_DRIVE_MIN = 0.01
+    _DIST_DRIVE_MAX = 60.0
+    _DIST_TONE_BYPASS = 19999.0  # tone at/above this -> filter out of circuit
+    _TUBE_BIAS = 0.25  # asymmetry of the tube curve (even-harmonic content)
+
+    @staticmethod
+    def _dist_curve(mode: str, drive, u):
+        """Apply one saturation curve at the oversampled rate.
+
+        ``u`` is the (V, 4F) oversampled input; ``drive`` is a positive
+        scalar or a (V, 4F) per-sample array (CV-modulated). All three
+        curves are normalised so full-scale input maps to full-scale
+        output, and all tend to the identity as drive -> 0:
+
+          soft: tanh(d*u)/tanh(d)            (odd harmonics, smooth)
+          hard: clip(d*u, -1, 1)             (odd harmonics, buzzy)
+          tube: biased tanh, zero-through    (even + odd harmonics)
+
+        The tube curve is tanh(d*u + c) - tanh(c) with a CONSTANT bias
+        c (not scaled by drive): the positive and negative halves bend
+        at different points, which is what generates even harmonics.
+        It is normalised by whichever rail is larger, so output stays
+        in [-1, 1] for |u| <= 1, passes exactly through zero, and tends
+        to the identity as d -> 0. The small DC the asymmetry creates
+        on a symmetric signal is removed by the caller's DC blocker.
+        """
+        if mode == "hard":
+            return np.clip(drive * u, -1.0, 1.0)
+        if mode == "tube":
+            c = NumpyBackend._TUBE_BIAS
+            tc = math.tanh(c)
+            pos_rail = np.tanh(drive + c) - tc
+            neg_rail = np.tanh(drive - c) + tc
+            return (np.tanh(drive * u + c) - tc) / np.maximum(pos_rail, neg_rail)
+        # soft (default)
+        return np.tanh(drive * u) / np.tanh(drive)
+
+    def _render_distortion(self, module, frames: int, buffers, patch):
+        """Drive pedal: 4x-oversampled saturation with tone and mix.
+
+        Chain: up 4x -> curve (per-sample drive = drive + cv_depth *
+        drive_cv, clamped) -> down 4x -> DC blocker (tube mode only) ->
+        one-pole tone low-pass (bypassed at 20 kHz) -> level -> blend
+        with a 16-sample delay-compensated dry tap.
+
+        Shape-polymorphic: mono runs the same (V, F) core with V=1, so a
+        single voice row is bit-identical to mono; per-voice filter and
+        oversampler state keeps voices fully independent. ``mix`` <= 0
+        returns the input untouched (bit-exact, no state advance) --
+        the same contract as the chorus/flanger/phaser dry path.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        if src is None or src.size == 0:
+            return {"out": np.zeros(frames, dtype=np.float32)}
+
+        mix = float(module.params.get("mix", 1.0))
+        if mix <= 0.0:
+            return {"out": src}  # bit-exact bypass
+
+        was_mono = src.ndim == 1
+        x = np.atleast_2d(src).astype(np.float64)
+        v = x.shape[0]
+
+        state = self._state.setdefault(module.id, {})
+        os4 = state.get("os4")
+        if os4 is None or os4.voices != v:
+            state["os4"] = os4 = _Oversampler4(v)
+            state["dc_zi"] = np.zeros((v, 1))
+            state["tone_zi"] = np.zeros((v, 1))
+            state["dry_tail"] = np.zeros((v, _OS_LATENCY))
+
+        drive = float(module.params.get("drive", 4.0))
+        mode = str(module.params.get("mode", "soft"))
+        if mode not in ("soft", "hard", "tube"):
+            mode = "soft"
+        tone = float(module.params.get("tone", 20000.0))
+        level = float(module.params.get("level", 1.0))
+        cv_depth = float(module.params.get("cv_depth", 5.0))
+
+        cv = self._input_buffer(patch, buffers, module.id, "drive_cv", collapse=False)
+        if cv is not None and cv.size and cv_depth != 0.0:
+            d = drive + cv_depth * np.atleast_2d(cv).astype(np.float64)
+            d = np.clip(d, self._DIST_DRIVE_MIN, self._DIST_DRIVE_MAX)
+            d = np.broadcast_to(d, x.shape)
+            # Zero-order hold up to the oversampled rate (control signal:
+            # its own images are far below audio significance).
+            d_up = np.repeat(d, _OS_FACTOR, axis=-1)
+        else:
+            d_up = min(max(drive, self._DIST_DRIVE_MIN), self._DIST_DRIVE_MAX)
+
+        shaped = self._dist_curve(mode, d_up, os4.up(x))
+        wet = os4.down(shaped)
+
+        if mode == "tube":
+            wet, state["dc_zi"] = _dc_block(wet, state["dc_zi"])
+
+        if tone < self._DIST_TONE_BYPASS:
+            # One-pole low-pass, streaming (zi carried per voice).
+            a0 = 1.0 - math.exp(-2.0 * math.pi * max(tone, 20.0) / self.sample_rate)
+            wet, state["tone_zi"] = lfilter(
+                [a0], [1.0, a0 - 1.0], wet, axis=-1, zi=state["tone_zi"]
+            )
+
+        if level != 1.0:
+            wet = wet * level
+
+        if mix >= 1.0:
+            out = wet
+            # Keep the dry tail warm so sweeping mix down mid-stream
+            # doesn't splice in a stale block.
+            buf = np.concatenate([state["dry_tail"], x], axis=-1)
+            state["dry_tail"] = buf[:, frames:]
+        else:
+            buf = np.concatenate([state["dry_tail"], x], axis=-1)
+            dry = buf[:, :frames]
+            state["dry_tail"] = buf[:, frames:]
+            out = (1.0 - mix) * dry + mix * wet
+
+        out32 = out.astype(np.float32)
+        return {"out": out32[0] if was_mono else out32}
 
     # Meter fall time: seconds for the peak bar to drop ~20 dB (a factor of
     # ten). The per-meter ``release`` param overrides this default. The fall

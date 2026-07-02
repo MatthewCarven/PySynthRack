@@ -5066,3 +5066,50 @@ push the osc amp up to see it fire.
 
 **Follow-ups (new).** Stereo-link option (both bars share one peak scale);
 K-weighted/LUFS-ish mode; clip counter; numeric hold readout on hover.
+
+## 2026-07-02 — Distortion (`distortion`): the rack goes nonlinear
+
+Matthew picked the missing food group — and asked for the pair as **two
+separate modules** (this pedal, then the wavefolder). Scoped via
+AskUserQuestion: drive-pedal + folder split, **4× oversampling on both**,
+all three curves (soft/hard/tube), triangle+sine folds for its sibling.
+
+**The oversampling infrastructure is the real fixture of this commit.**
+Nonlinear curves make harmonics without a bandwidth limit; at the native
+rate everything past Nyquist folds back as inharmonic hash. New
+module-level `_Oversampler4` in `numpy_backend.py`: zero-stuff ×4 →
+65-tap linear-phase FIR → curve → same FIR → decimate `[::4]`, both
+filters run STREAMING via `lfilter` with per-voice `zi` carry, so the
+result is block-size independent and voices stay fully independent. Tap
+count chosen so total group delay is an integer **16 base-rate samples**,
+letting the dry path of `mix` be delay-compensated exactly (same trick as
+the pitch shifter's dry tap). Measured: the folded 5th harmonic of a
+hard-clipped 6 kHz sine sits >34 dB below the legitimate 3rd (0.14%).
+Also new: a shared streaming `_dc_block` one-pole (~3.5 Hz) for
+asymmetric curves.
+
+**The curves.** All normalised (full-scale → full-scale, identity as
+drive→0): `soft` = tanh(d·u)/tanh(d); `hard` = clip(d·u); `tube` =
+tanh(d·u + c) − tanh(c) with a CONSTANT bias c=0.25, normalised by the
+larger rail. The first tube attempt scaled the bias WITH drive and
+normalised to the positive rail only — the negative rail blew up to
+≈−20× full scale. Caught in the smoke test (tube "DC" of −0.66 was
+really the blocker chewing through a monster transient), redesigned to
+the constant-bias bounded form: H2/H1 ≈ 5%, peak 0.83, DC 0.0007.
+
+`tone` = streaming one-pole post low-pass (bypassed ≥ 20 kHz); `level`
+trim; `mix` ≤ 0 returns the input bit-exactly (chorus contract);
+`drive_cv` per-sample in drive units (zero-order-hold up to 4×), clamped
+0.01..60. UI: TYPE-guarded sliders + `mode` arm in the shared combo
+dispatch. pyo stub extended.
+
+**Tests: 27 in `tests/test_distortion.py`** — curve character (odd-only
+vs even+DC-blocked vs flat-top), tone/level/mix algebra (mix output ==
+0.5·delayed-dry + 0.5·wet exactly), constant-CV == static-drive, alias
+suppression, bit-identical 512/4096/333, voice==mono, voices
+independent, extremes finite. Example `examples/distortion_drive.json`
+(96 BPM sequenced saw riff → ADSR/VCA → tube drive 8, tone 3.5 kHz,
+level 0.55 — post-master peak 0.51, headroom per the house rule).
+
+Waveshaper (the folder) lands in the next commit, stacked on this
+oversampling plumbing.

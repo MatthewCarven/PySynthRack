@@ -23,6 +23,7 @@ from .cv_keyboard import CVKeyboard
 from .cvtoaudio import CVToAudio
 from .cvtofrequency import CVToFrequency
 from .delay import Delay
+from .distortion import Distortion
 from .diskwriter import DiskWriter
 from .fileplayer import FilePlayer
 from .filter import Filter
@@ -68,6 +69,7 @@ __all__ = [
     "CVToFrequency",
     "Delay",
     "DiskWriter",
+    "Distortion",
     "FilePlayer",
     "Filter",
     "Flanger",

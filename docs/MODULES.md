@@ -200,6 +200,7 @@ Every module type, its category, and its ports at a glance.
 | [`delay`](#delay) | Processor | `in` (audio), `time_cv` (cv) → `out` (audio) |
 | [`reverb`](#reverb) | Processor | `in` (audio), `decay_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`loudness`](#loudness) | Processor | `in` (audio), `level_cv` (cv) → `out` (audio) |
+| [`distortion`](#distortion) | Processor | `in` (audio), `drive_cv` (cv) → `out` (audio) |
 | [`chorus`](#chorus) | Processor | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`flanger`](#flanger) | Processor | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
@@ -849,6 +850,57 @@ the contour is one global control (a voice-aware `level_cv` is averaged). See
 **Patching.** Drop it on the output bus as a master "loudness", or fatten a
 thin oscillator / the mic. Automate `level_cv` from an envelope for a sound
 that warms as it fades.
+
+#### `distortion`
+
+A **drive pedal** — the rack's first nonlinear stage. Everything else
+in the Processors family reshapes the signal *linearly*; distortion
+bends the waveform itself, creating harmonics that were never in the
+input. Push a dull sine and it grows teeth; push a saw and it turns
+into a wall.
+
+`drive` scales the signal into the curve; `mode` picks the bend:
+**soft** (normalised tanh — smooth, warm, odd harmonics), **hard**
+(straight clipping — aggressive, buzzy) or **tube** (asymmetric tanh —
+adds *even* harmonics, the octave-flavoured valve warmth; its DC
+byproduct is blocked internally). `tone` is the classic
+post-distortion low-pass, `level` trims the loud result, `mix` blends
+dry back in for parallel grit, and `drive_cv` modulates the drive per
+sample (envelope → bite on the attack; LFO → chew).
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to distort. Unpatched → silence. |
+| `drive_cv` | in | cv | Per-sample drive modulation, scaled by `cv_depth`. Optional. |
+| `out` | out | audio | The distorted signal. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `drive` | `4.0` | 0.1 … 30 | How hard the signal is pushed into the curve. |
+| `mode` | `"soft"` | soft / hard / tube | Curve family (see above). |
+| `tone` | `20000` | 200 … 20000 Hz | Post-distortion low-pass; 20 kHz = out of the circuit. |
+| `level` | `1.0` | 0 … 2 | Output trim — saturation is loud. |
+| `mix` | `1.0` | 0 … 1 | Dry/wet. 0 = bit-exact passthrough. |
+| `cv_depth` | `5.0` | 0 … 30 | Drive units per unit of `drive_cv`. |
+
+**How it works.** The curve runs at **4× the sample rate** between a
+streaming polyphase up/down pair: nonlinear stages generate harmonics
+past Nyquist that would otherwise fold back as inharmonic aliasing
+hash, so they're filtered off at 4× *before* decimation (the folded
+5th harmonic of a hard-clipped 6 kHz sine measures > 34 dB below the
+legitimate 3rd). The FIR pair costs a fixed 16 samples (~0.4 ms); the
+dry path of `mix` is delay-compensated to match. All three curves are
+normalised (full scale in → full scale out) and tend to the identity
+as drive → 0. Shape-polymorphic with per-voice filter state; a single
+voice row is bit-identical to mono; block-size independent. See
+`examples/distortion_drive.json` (a sequenced saw riff through the
+tube curve).
+
+---
 
 #### `chorus`
 
