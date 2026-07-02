@@ -96,5 +96,4 @@ entry also carries its own smaller follow-ups list.)
 - [ ] FilePlayer: node hint showing whether ffmpeg was found.
 - [ ] Exe slimming: pytest is baked into the 85.1 MB build — prune the
       spec's collected modules.
-- [ ] Split-keyboard 2-player mode (Matthew's idea, logged 2026-07-01).
 

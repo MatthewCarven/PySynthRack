@@ -5611,3 +5611,11 @@ write is read back and verified in the same session.
 State after this session: ca8ef8a (housekeeping) + f2fa75e (TODO compaction:
 TODO.md 459→100-line live list, TODO-ARCHIVE.md 436 lines verbatim) both
 committed and pushed by Matthew. No open hand-offs.
+
+## 2026-07-03 — Idea dropped: split-keyboard 2-player mode
+
+Matthew dropped the logged split-keyboard 2-player idea (2026-07-01):
+two people can already share the existing keyboard pipeline (cv_keyboard /
+cv_gates) by simply agreeing on which keys are whose — no dedicated split
+mode or split-point param needed. Removed from TODO.md (verified, 73-byte
+delta) and marked DROPPED in memory. Not to be re-proposed.
