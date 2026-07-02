@@ -72,6 +72,7 @@ class CVGates(Module):
     """
 
     TYPE = "cv_gates"
+    CATEGORY = "Sources"
     # Marks this as a module the UI feeds physical key events to — the same
     # flag Keyboard and CVKeyboard set. The UI routes by this flag, not by
     # concrete type.

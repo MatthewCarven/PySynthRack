@@ -23,6 +23,7 @@ class Combiner(Module):
     """Sum four audio inputs into one output. No per-channel gain."""
 
     TYPE = "combiner"
+    CATEGORY = "Routing & VCA"
     DEFAULT_PARAMS: dict = {}
     INPUT_PORTS = [
         Port("in1", "in", "audio"),

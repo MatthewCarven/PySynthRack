@@ -43,6 +43,7 @@ class DiskWriter(Module):
     """Record an audio bus to a WAV file."""
 
     TYPE = "disk_writer"
+    CATEGORY = "Outputs"
     DEFAULT_PARAMS = {"path": "recording.wav", "armed": True}
     INPUT_PORTS = [Port("in", "in", "audio")]
     OUTPUT_PORTS: list = []  # sink — no audio output

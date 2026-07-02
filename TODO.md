@@ -447,3 +447,8 @@ open to a better scheme if one turns up.
       Reverb `mix`/`size`/`decay` CV for swelling or morphing spaces could be
       nice; a voltage-controlled `mixer` (per-channel gain CV) is largely
       redundant with putting a `vca` on each channel, so likely skip it.
+
+- [x] **Group the Add-module menu** — DONE 2026-07-03. 47 flat entries →
+      7 category submenus via per-class `CATEGORY` +
+      `grouped_module_types()`; MODULES.md index recategorised (+ missing
+      phaser row added); 5 tests.

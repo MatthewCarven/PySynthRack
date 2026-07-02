@@ -67,6 +67,7 @@ class Waveshaper(Module):
     """
 
     TYPE = "waveshaper"
+    CATEGORY = "Effects"
     DEFAULT_PARAMS = {
         "fold": 1.0,
         "symmetry": 0.0,

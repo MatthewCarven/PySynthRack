@@ -35,6 +35,7 @@ class ADSR(Module):
     """
 
     TYPE = "adsr"
+    CATEGORY = "Modulation"
     DEFAULT_PARAMS = {
         "attack": 0.01,
         "decay": 0.10,

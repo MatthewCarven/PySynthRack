@@ -103,6 +103,7 @@ class Phaser(Module):
     """
 
     TYPE = "phaser"
+    CATEGORY = "Effects"
     DEFAULT_PARAMS = {
         "rate": 0.5,
         "depth": 0.6,

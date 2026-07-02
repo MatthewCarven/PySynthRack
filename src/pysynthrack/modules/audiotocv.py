@@ -56,6 +56,7 @@ class AudioToCV(Module):
     """
 
     TYPE = "audio_to_cv"
+    CATEGORY = "CV & Utilities"
     DEFAULT_PARAMS = {
         "attack_ms": 5.0,
         "release_ms": 100.0,

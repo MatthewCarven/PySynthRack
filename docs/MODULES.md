@@ -150,8 +150,10 @@ The pattern, end to end:
 
 1. **Write the class** in `src/pysynthrack/modules/<name>.py`: subclass
    `Module`, decorate with `@register_module_type`, and declare `TYPE`,
-   `DEFAULT_PARAMS`, `INPUT_PORTS`, `OUTPUT_PORTS`. No DSP here — it's pure
-   data.
+   `CATEGORY` (the Add-menu submenu — one of `CATEGORY_ORDER` in
+   `core/module.py`; forgetting it lands the module in a visible "Other"
+   submenu), `DEFAULT_PARAMS`, `INPUT_PORTS`, `OUTPUT_PORTS`. No DSP here —
+   it's pure data.
 2. **Register it** by importing the class in `src/pysynthrack/modules/__init__.py`
    (and adding it to `__all__`).
 3. **Write the renderer** in `src/pysynthrack/audio/numpy_backend.py`: add a
@@ -177,56 +179,61 @@ combos for known enum params, a text box otherwise) and draws a jack per port.
 ### Module index
 
 Every module type, its category, and its ports at a glance.
-(`→` separates inputs from outputs; “—” means none.)
+(`→` separates inputs from outputs; “—” means none.) *Category* is the
+submenu the module appears under in the UI's **Add module** menu — each class
+declares it with a `CATEGORY` attribute (`CATEGORY_ORDER` in `core/module.py`
+fixes the menu order). The detailed sections below are still organised by
+signal-flow role (sources → processors → … → sinks).
 
 | Module (`TYPE`) | Category | Inputs → Outputs |
 |-----------------|----------|------------------|
-| [`oscillator`](#oscillator) | Source | `freq_cv`,`amp_cv` (cv) → `out` (audio) |
-| [`keyboard`](#keyboard) | Source | — → `out` (audio), `gate` (gate) |
-| [`cv_keyboard`](#cv_keyboard) | Source | — → `pitch_cv` (cv), `gate`, `key_c`…`key_b` (gate) |
-| [`cv_gates`](#cv_gates) | Source | — → `c4`…`e5` (cv, one enveloped gate per key) |
-| [`midi_input`](#midi_input) | Source | — → `out` (audio), `gate`, `pitch_cv`, `mod_cv`, `pressure_cv` |
-| [`file_player`](#file_player) | Source | — → `left`,`right` (audio) |
-| [`mic_input`](#mic_input) | Source | — → `left`,`right` (audio) |
-| [`cv_to_frequency`](#cv_to_frequency) | Source | `cv` (cv) → `out` (audio) |
-| [`noise`](#noise) | Source | — → `out` (audio), `cv` (cv) |
-| [`filter`](#filter) | Processor | `in` (audio), `cutoff_cv` (cv) → `out` (audio) |
-| [`crossover`](#crossover) | Processor | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
-| [`parametric_eq`](#parametric_eq) | Processor | `in` (audio) → `out` (audio) |
-| [`sweep_eq`](#sweep_eq) | Processor | `in` (audio), `freq_cv` (cv) → `out` (audio) |
-| [`motion_eq`](#motion_eq) | Processor | `in` (audio), `band{i}_freq_cv`, `band{i}_gain_cv`, `band{i}_q_cv` ×4 (cv) → `out` (audio) |
-| [`tilt_eq`](#tilt_eq) | Processor | `in` (audio), `tilt_cv` (cv) → `out` (audio) |
-| [`vca`](#vca) | Processor | `audio` (audio), `cv` (cv) → `out` (audio) |
-| [`resampler`](#resampler) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
-| [`pitch_shifter`](#pitch_shifter) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
-| [`delay`](#delay) | Processor | `in` (audio), `time_cv` (cv) → `out` (audio) |
-| [`reverb`](#reverb) | Processor | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
-| [`loudness`](#loudness) | Processor | `in` (audio), `level_cv` (cv) → `out` (audio) |
-| [`distortion`](#distortion) | Processor | `in` (audio), `drive_cv` (cv) → `out` (audio) |
-| [`waveshaper`](#waveshaper) | Processor | `in` (audio), `fold_cv` (cv) → `out` (audio) |
-| [`chorus`](#chorus) | Processor | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
-| [`flanger`](#flanger) | Processor | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
+| [`oscillator`](#oscillator) | Sources | `freq_cv`,`amp_cv` (cv) → `out` (audio) |
+| [`keyboard`](#keyboard) | Sources | — → `out` (audio), `gate` (gate) |
+| [`cv_keyboard`](#cv_keyboard) | Sources | — → `pitch_cv` (cv), `gate`, `key_c`…`key_b` (gate) |
+| [`cv_gates`](#cv_gates) | Sources | — → `c4`…`e5` (cv, one enveloped gate per key) |
+| [`midi_input`](#midi_input) | Sources | — → `out` (audio), `gate`, `pitch_cv`, `mod_cv`, `pressure_cv` |
+| [`file_player`](#file_player) | Sources | — → `left`,`right` (audio) |
+| [`mic_input`](#mic_input) | Sources | — → `left`,`right` (audio) |
+| [`cv_to_frequency`](#cv_to_frequency) | Sources | `cv` (cv) → `out` (audio) |
+| [`noise`](#noise) | Sources | — → `out` (audio), `cv` (cv) |
+| [`filter`](#filter) | Filters & EQ | `in` (audio), `cutoff_cv` (cv) → `out` (audio) |
+| [`crossover`](#crossover) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
+| [`parametric_eq`](#parametric_eq) | Filters & EQ | `in` (audio) → `out` (audio) |
+| [`sweep_eq`](#sweep_eq) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `out` (audio) |
+| [`motion_eq`](#motion_eq) | Filters & EQ | `in` (audio), `band{i}_freq_cv`, `band{i}_gain_cv`, `band{i}_q_cv` ×4 (cv) → `out` (audio) |
+| [`tilt_eq`](#tilt_eq) | Filters & EQ | `in` (audio), `tilt_cv` (cv) → `out` (audio) |
+| [`vca`](#vca) | Routing & VCA | `audio` (audio), `cv` (cv) → `out` (audio) |
+| [`resampler`](#resampler) | Effects | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
+| [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
+| [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv) → `out` (audio) |
+| [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
+| [`loudness`](#loudness) | Filters & EQ | `in` (audio), `level_cv` (cv) → `out` (audio) |
+| [`distortion`](#distortion) | Effects | `in` (audio), `drive_cv` (cv) → `out` (audio) |
+| [`waveshaper`](#waveshaper) | Effects | `in` (audio), `fold_cv` (cv) → `out` (audio) |
+| [`chorus`](#chorus) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
+| [`flanger`](#flanger) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
+| [`phaser`](#phaser) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
 | [`adsr`](#adsr) | Modulation | `gate` (gate) → `cv` (cv) |
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
 | [`clock`](#clock) | Modulation | — → `out` (gate) |
 | [`sequencer`](#sequencer) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
-| [`audio_to_cv`](#audio_to_cv) | Bridge | `in` (audio) → `cv` (cv) |
-| [`cv_to_audio`](#cv_to_audio) | Bridge | `cv` (cv) → `out` (audio) |
-| [`schmitt`](#schmitt) | Bridge | `in` (cv) → `gate` (gate) |
-| [`mixer`](#mixer) | Routing | `in1`–`in4` (audio), `gain1_cv`–`gain4_cv` (cv) → `out` (audio) |
-| [`combiner`](#combiner) | Routing | `in1`–`in4` (audio) → `out` (audio) |
-| [`cv_combiner`](#cv_combiner) | Routing | `in1`–`in4` (cv) → `out` (cv) |
-| [`constant`](#constant) | Utility | — → `out` (cv) |
-| [`cv_scale`](#cv_scale) | Utility | `in` (cv) → `out` (cv) |
-| [`cv_offset`](#cv_offset) | Utility | `in` (cv) → `out` (cv) |
-| [`sample_hold`](#sample_hold) | Utility | `in` (cv), `trig` (gate) → `out` (cv) |
-| [`meter`](#meter) | Utility | `in`, `in_r` (audio) → `out`, `out_r` (audio) |
-| [`speaker_output`](#speaker_output) | Sink | `in` (audio) → — |
-| [`left_speaker_output`](#left_speaker_output) | Sink | `in` (audio) → — |
-| [`right_speaker_output`](#right_speaker_output) | Sink | `in` (audio) → — |
-| [`stereo_speaker_output`](#stereo_speaker_output) | Sink | `in_l`,`in_r` (audio), `pan_cv`,`width_cv` (cv) → — |
-| [`disk_writer`](#disk_writer) | Sink | `in` (audio) → — |
+| [`audio_to_cv`](#audio_to_cv) | CV & Utilities | `in` (audio) → `cv` (cv) |
+| [`cv_to_audio`](#cv_to_audio) | CV & Utilities | `cv` (cv) → `out` (audio) |
+| [`schmitt`](#schmitt) | CV & Utilities | `in` (cv) → `gate` (gate) |
+| [`mixer`](#mixer) | Routing & VCA | `in1`–`in4` (audio), `gain1_cv`–`gain4_cv` (cv) → `out` (audio) |
+| [`combiner`](#combiner) | Routing & VCA | `in1`–`in4` (audio) → `out` (audio) |
+| [`cv_combiner`](#cv_combiner) | Routing & VCA | `in1`–`in4` (cv) → `out` (cv) |
+| [`constant`](#constant) | CV & Utilities | — → `out` (cv) |
+| [`cv_scale`](#cv_scale) | CV & Utilities | `in` (cv) → `out` (cv) |
+| [`cv_offset`](#cv_offset) | CV & Utilities | `in` (cv) → `out` (cv) |
+| [`sample_hold`](#sample_hold) | CV & Utilities | `in` (cv), `trig` (gate) → `out` (cv) |
+| [`meter`](#meter) | CV & Utilities | `in`, `in_r` (audio) → `out`, `out_r` (audio) |
+| [`speaker_output`](#speaker_output) | Outputs | `in` (audio) → — |
+| [`left_speaker_output`](#left_speaker_output) | Outputs | `in` (audio) → — |
+| [`right_speaker_output`](#right_speaker_output) | Outputs | `in` (audio) → — |
+| [`stereo_speaker_output`](#stereo_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv` (cv) → — |
+| [`disk_writer`](#disk_writer) | Outputs | `in` (audio) → — |
 
 ---
 

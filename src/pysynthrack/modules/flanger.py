@@ -117,6 +117,7 @@ class Flanger(Module):
     """
 
     TYPE = "flanger"
+    CATEGORY = "Effects"
     DEFAULT_PARAMS = {
         "rate": 0.3,
         "depth": 0.7,

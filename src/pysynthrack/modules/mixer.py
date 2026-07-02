@@ -30,6 +30,7 @@ class Mixer(Module):
     """
 
     TYPE = "mixer"
+    CATEGORY = "Routing & VCA"
     DEFAULT_PARAMS = {
         "gain1": 1.0,
         "gain2": 1.0,

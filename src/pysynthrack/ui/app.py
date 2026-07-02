@@ -21,7 +21,7 @@ import dearpygui.dearpygui as dpg
 import pysynthrack.modules  # noqa: F401
 
 from ..audio import AudioBackend, pick_backend
-from ..core.module import all_module_types
+from ..core.module import grouped_module_types
 from ..core.patch import Cable, Patch
 from ..io_patch import load_patch, save_patch
 from ..modules.filter import FILTER_MODES
@@ -183,12 +183,17 @@ class App:
                     dpg.add_separator()
                     dpg.add_menu_item(label="Quit", callback=lambda: dpg.stop_dearpygui())
                 with dpg.menu(label="Add module"):
-                    for type_name in sorted(all_module_types()):
-                        dpg.add_menu_item(
-                            label=type_name,
-                            callback=self._on_add_module,
-                            user_data=type_name,
-                        )
+                    # One submenu per category (see CATEGORY_ORDER in
+                    # core.module); modules declare their group with a
+                    # CATEGORY class attribute.
+                    for category, type_names in grouped_module_types():
+                        with dpg.menu(label=category):
+                            for type_name in type_names:
+                                dpg.add_menu_item(
+                                    label=type_name,
+                                    callback=self._on_add_module,
+                                    user_data=type_name,
+                                )
 
             with dpg.group(horizontal=True):
                 dpg.add_button(

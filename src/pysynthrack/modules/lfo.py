@@ -46,6 +46,7 @@ class LFO(Module):
     """
 
     TYPE = "lfo"
+    CATEGORY = "Modulation"
     DEFAULT_PARAMS = {
         "waveform": "sine",
         "rate": 4.0,

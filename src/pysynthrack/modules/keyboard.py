@@ -75,6 +75,7 @@ class Keyboard(Module):
     """
 
     TYPE = "keyboard"
+    CATEGORY = "Sources"
     PARAM_ALIASES = {"volume": "amp"}  # legacy name
     # Marks this as a module the UI feeds physical key events to.
     # CVKeyboard sets the same flag; the UI routes by this flag rather

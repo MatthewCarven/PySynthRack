@@ -38,6 +38,7 @@ class Oscillator(Module):
     """
 
     TYPE = "oscillator"
+    CATEGORY = "Sources"
     DEFAULT_PARAMS = {
         "waveform": "sine",
         "freq": 440.0,

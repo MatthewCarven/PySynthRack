@@ -61,6 +61,7 @@ class Crossover(Module):
     """
 
     TYPE = "crossover"
+    CATEGORY = "Filters & EQ"
     PARAM_ALIASES = {"frequency": "freq"}  # legacy name
     DEFAULT_PARAMS = {"freq": 1000.0, "cv_depth": 1.0}
     INPUT_PORTS = [

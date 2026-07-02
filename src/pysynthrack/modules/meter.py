@@ -93,6 +93,7 @@ class Meter(Module):
     """
 
     TYPE = "meter"
+    CATEGORY = "CV & Utilities"
     DEFAULT_PARAMS = {"release": 0.4, "mode": "peak", "stereo_link": False}
     INPUT_PORTS = [Port("in", "in", "audio"), Port("in_r", "in", "audio")]
     OUTPUT_PORTS = [Port("out", "out", "audio"), Port("out_r", "out", "audio")]

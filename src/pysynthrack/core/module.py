@@ -13,6 +13,7 @@ Subclasses declare:
 
     class Oscillator(Module):
         TYPE = "oscillator"
+        CATEGORY = "Sources"
         DEFAULT_PARAMS = {"waveform": "sine", "freq": 440.0, "amp": 0.5}
         INPUT_PORTS = []
         OUTPUT_PORTS = [Port("out", "out")]
@@ -62,6 +63,41 @@ def all_module_types() -> dict[str, type["Module"]]:
     return dict(_REGISTRY)
 
 
+# Display order of module categories in the UI's Add-module menu. A module
+# declares its group with a ``CATEGORY`` class attribute; anything with a
+# category not listed here (including the base-class default "Other") is
+# appended after these, so forgetting to categorise a new module never hides
+# it — it just lands in a visible catch-all submenu.
+CATEGORY_ORDER: list[str] = [
+    "Sources",
+    "Filters & EQ",
+    "Effects",
+    "Modulation",
+    "Routing & VCA",
+    "CV & Utilities",
+    "Outputs",
+]
+
+
+def grouped_module_types() -> list[tuple[str, list[str]]]:
+    """Return registered module types grouped by CATEGORY.
+
+    Categories come out in ``CATEGORY_ORDER`` (empty ones skipped), followed
+    by any unknown categories alphabetically. Type names are sorted within
+    each group. Every registered type appears exactly once.
+    """
+    groups: dict[str, list[str]] = {}
+    for type_name, cls in _REGISTRY.items():
+        groups.setdefault(cls.CATEGORY, []).append(type_name)
+    ordered: list[tuple[str, list[str]]] = []
+    for cat in CATEGORY_ORDER:
+        if cat in groups:
+            ordered.append((cat, sorted(groups.pop(cat))))
+    for cat in sorted(groups):
+        ordered.append((cat, sorted(groups[cat])))
+    return ordered
+
+
 class Module:
     """Base class for every module type.
 
@@ -70,6 +106,8 @@ class Module:
     """
 
     TYPE: ClassVar[str] = ""
+    # Add-module menu group; see CATEGORY_ORDER above. Subclasses override.
+    CATEGORY: ClassVar[str] = "Other"
     DEFAULT_PARAMS: ClassVar[dict[str, Any]] = {}
     # Legacy/alternate param names -> canonical, applied whenever params are
     # set or loaded so older saved patches keep working after a rename.

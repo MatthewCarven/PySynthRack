@@ -59,6 +59,7 @@ class Schmitt(Module):
     """
 
     TYPE = "schmitt"
+    CATEGORY = "CV & Utilities"
     DEFAULT_PARAMS = {
         "high": 0.6,
         "low": 0.4,

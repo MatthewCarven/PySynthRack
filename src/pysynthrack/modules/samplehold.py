@@ -64,6 +64,7 @@ class SampleHold(Module):
     """
 
     TYPE = "sample_hold"
+    CATEGORY = "CV & Utilities"
     DEFAULT_PARAMS: dict = {}
     INPUT_PORTS = [
         Port("in", "in", "cv"),

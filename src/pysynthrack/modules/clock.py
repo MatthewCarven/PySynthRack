@@ -33,6 +33,7 @@ class Clock(Module):
     """
 
     TYPE = "clock"
+    CATEGORY = "Modulation"
     DEFAULT_PARAMS = {
         "bpm": 120.0,
         "division": 4.0,

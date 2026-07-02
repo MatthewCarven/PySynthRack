@@ -26,6 +26,7 @@ class VCA(Module):
     """
 
     TYPE = "vca"
+    CATEGORY = "Routing & VCA"
     DEFAULT_PARAMS = {
         "gain": 1.0,
     }

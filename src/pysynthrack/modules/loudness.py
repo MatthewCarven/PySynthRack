@@ -64,6 +64,7 @@ class Loudness(Module):
     """
 
     TYPE = "loudness"
+    CATEGORY = "Filters & EQ"
     DEFAULT_PARAMS = {
         "level": 0.5,
         "bass": 0.0,

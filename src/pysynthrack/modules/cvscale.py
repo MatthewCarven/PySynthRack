@@ -47,6 +47,7 @@ class CVScale(Module):
     """
 
     TYPE = "cv_scale"
+    CATEGORY = "CV & Utilities"
     DEFAULT_PARAMS = {"scale": 1.0}
     INPUT_PORTS = [Port("in", "in", "cv")]
     OUTPUT_PORTS = [Port("out", "out", "cv")]

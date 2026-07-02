@@ -67,6 +67,7 @@ class Delay(Module):
     """
 
     TYPE = "delay"
+    CATEGORY = "Effects"
     DEFAULT_PARAMS = {
         "time": 300.0,
         "feedback": 0.4,

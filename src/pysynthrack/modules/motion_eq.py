@@ -115,6 +115,7 @@ class MotionEQ(Module):
     """
 
     TYPE = "motion_eq"
+    CATEGORY = "Filters & EQ"
     EQ_BANDS = EQ_BANDS
     DEFAULT_PARAMS = _default_params()
     INPUT_PORTS = _INPUT_PORTS

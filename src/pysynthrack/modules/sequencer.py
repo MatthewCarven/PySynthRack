@@ -66,6 +66,7 @@ class Sequencer(Module):
     """
 
     TYPE = "sequencer"
+    CATEGORY = "Modulation"
     DEFAULT_PARAMS = _default_params()
     INPUT_PORTS = [
         Port("clock", "in", "gate"),

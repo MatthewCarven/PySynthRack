@@ -108,6 +108,7 @@ class CVToFrequency(Module):
     """
 
     TYPE = "cv_to_frequency"
+    CATEGORY = "Sources"
     DEFAULT_PARAMS = {
         "waveform": "sine",
         "f0": 110.0,

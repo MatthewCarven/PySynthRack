@@ -86,6 +86,7 @@ class CVKeyboard(Module):
     """
 
     TYPE = "cv_keyboard"
+    CATEGORY = "Sources"
     # Marks this as a module the UI feeds physical key events to. Set on
     # Keyboard too; the UI routes by this flag, not by concrete type.
     ACCEPTS_COMPUTER_KEYS = True

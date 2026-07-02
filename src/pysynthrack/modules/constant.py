@@ -47,6 +47,7 @@ class Constant(Module):
     """
 
     TYPE = "constant"
+    CATEGORY = "CV & Utilities"
     DEFAULT_PARAMS = {"value": 1.0}
     INPUT_PORTS: list[Port] = []
     OUTPUT_PORTS = [Port("out", "out", "cv")]

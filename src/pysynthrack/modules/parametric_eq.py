@@ -63,6 +63,7 @@ class ParametricEQ(Module):
     """
 
     TYPE = "parametric_eq"
+    CATEGORY = "Filters & EQ"
     EQ_BANDS = EQ_BANDS
     DEFAULT_PARAMS = _default_params()
     INPUT_PORTS = [Port("in", "in", "audio")]

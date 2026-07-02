@@ -44,6 +44,7 @@ class FilePlayer(Module):
     """Play a WAV file as a stereo audio source (one-shot or looping)."""
 
     TYPE = "file_player"
+    CATEGORY = "Sources"
     DEFAULT_PARAMS = {
         "path": "",
         "gain": 1.0,

@@ -85,6 +85,7 @@ class Reverb(Module):
     """
 
     TYPE = "reverb"
+    CATEGORY = "Effects"
     DEFAULT_PARAMS = {
         "size": 0.5,
         "decay": 0.5,

@@ -39,6 +39,7 @@ class ADEnvelope(Module):
     """
 
     TYPE = "ad_envelope"
+    CATEGORY = "Modulation"
     DEFAULT_PARAMS = {
         "attack": 0.005,
         "decay": 0.20,

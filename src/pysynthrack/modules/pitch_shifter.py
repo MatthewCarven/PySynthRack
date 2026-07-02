@@ -95,6 +95,7 @@ class PitchShifter(Module):
     """
 
     TYPE = "pitch_shifter"
+    CATEGORY = "Effects"
     DEFAULT_PARAMS = {
         "semitones": 0.0,
         "cents": 0.0,

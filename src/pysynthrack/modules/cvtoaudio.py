@@ -60,6 +60,7 @@ class CVToAudio(Module):
     """
 
     TYPE = "cv_to_audio"
+    CATEGORY = "CV & Utilities"
     DEFAULT_PARAMS = {
         "gain": 1.0,
     }

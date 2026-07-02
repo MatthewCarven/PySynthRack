@@ -79,6 +79,7 @@ class MicInput(Module):
     """Live microphone capture, published as a stereo audio source."""
 
     TYPE = "mic_input"
+    CATEGORY = "Sources"
     DEFAULT_PARAMS = {
         "device": AUTO_DEVICE,
         "gain": 1.0,

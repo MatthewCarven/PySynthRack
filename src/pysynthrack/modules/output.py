@@ -18,6 +18,7 @@ class SpeakerOutput(Module):
     """
 
     TYPE = "speaker_output"
+    CATEGORY = "Outputs"
     DEFAULT_PARAMS = {
         "gain": 1.0,
     }
@@ -38,6 +39,7 @@ class LeftSpeakerOutput(Module):
     """
 
     TYPE = "left_speaker_output"
+    CATEGORY = "Outputs"
     DEFAULT_PARAMS = {
         "gain": 1.0,
     }
@@ -55,6 +57,7 @@ class RightSpeakerOutput(Module):
     """
 
     TYPE = "right_speaker_output"
+    CATEGORY = "Outputs"
     DEFAULT_PARAMS = {
         "gain": 1.0,
     }
@@ -103,6 +106,7 @@ class StereoSpeakerOutput(Module):
     """
 
     TYPE = "stereo_speaker_output"
+    CATEGORY = "Outputs"
     DEFAULT_PARAMS = {
         "gain": 1.0,
         "pan": 0.0,

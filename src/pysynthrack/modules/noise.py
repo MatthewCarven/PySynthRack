@@ -55,6 +55,7 @@ class Noise(Module):
     """
 
     TYPE = "noise"
+    CATEGORY = "Sources"
     DEFAULT_PARAMS = {"color": "white", "amp": 1.0}
     INPUT_PORTS: list[Port] = []
     OUTPUT_PORTS = [

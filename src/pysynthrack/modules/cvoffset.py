@@ -47,6 +47,7 @@ class CVOffset(Module):
     """
 
     TYPE = "cv_offset"
+    CATEGORY = "CV & Utilities"
     DEFAULT_PARAMS = {"offset": 0.0}
     INPUT_PORTS = [Port("in", "in", "cv")]
     OUTPUT_PORTS = [Port("out", "out", "cv")]

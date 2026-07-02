@@ -36,6 +36,7 @@ class Filter(Module):
     """
 
     TYPE = "filter"
+    CATEGORY = "Filters & EQ"
     DEFAULT_PARAMS = {
         "mode": "lowpass",
         "cutoff": 1000.0,

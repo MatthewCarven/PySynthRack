@@ -71,6 +71,7 @@ class Distortion(Module):
     """
 
     TYPE = "distortion"
+    CATEGORY = "Effects"
     DEFAULT_PARAMS = {
         "drive": 4.0,
         "mode": "soft",

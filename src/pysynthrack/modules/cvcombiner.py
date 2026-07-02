@@ -37,6 +37,7 @@ class CVCombiner(Module):
     """Sum or average up to four CV sources into one CV output."""
 
     TYPE = "cv_combiner"
+    CATEGORY = "Routing & VCA"
     DEFAULT_PARAMS = {"mode": "sum"}
     INPUT_PORTS = [
         Port("in1", "in", "cv"),

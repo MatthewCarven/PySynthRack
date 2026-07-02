@@ -5482,3 +5482,26 @@ re-`pip install -e` the current clone before trusting green.
 existing helper/tuple-shape tests updated for the wider snapshot.
 Suite 1190 sandbox (+18 mido). MODULES.md meter section + param rows;
 TODO logs a possible round 4 (gated integrated LUFS, LRA, true-peak).
+
+## 2026-07-03 — Add-module menu grouped into submenus
+
+The flat Add-module list had reached 47 entries; Matthew asked for groups.
+Chosen scheme (over mirroring the docs' signal-flow taxonomy, whose
+"Processor" bucket alone held 17): seven browsing-sized submenus —
+Sources / Filters & EQ / Effects / Modulation / Routing & VCA /
+CV & Utilities / Outputs — biggest is 9 items.
+
+Mechanism: each module class declares `CATEGORY` (new ClassVar next to
+TYPE, base default "Other"); `core/module.py` gains `CATEGORY_ORDER` and
+`grouped_module_types()` (known categories in fixed order, unknown ones
+appended alphabetically, names sorted within groups, empty groups
+skipped). app.py's menu loop is now two nested `dpg.menu`/`add_menu_item`
+loops — a forgotten CATEGORY lands in a visible "Other" submenu rather
+than vanishing.
+
+Docs: MODULES.md index Category column now names the menu submenu (note
+added; detailed sections keep the signal-flow organisation), the
+Adding-a-new-module recipe includes CATEGORY, and the index gained the
+missing `phaser` row (drift — it was never added when phaser shipped).
+5 new tests in tests/test_module_categories.py (partition, order,
+inner sort, oddball-to-Other).

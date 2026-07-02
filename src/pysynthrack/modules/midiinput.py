@@ -158,6 +158,7 @@ class MIDIInput(Module):
     """
 
     TYPE = "midi_input"
+    CATEGORY = "Sources"
     PARAM_ALIASES = {"volume": "amp"}  # legacy name
     DEFAULT_PARAMS = {
         "device": AUTO_DEVICE,

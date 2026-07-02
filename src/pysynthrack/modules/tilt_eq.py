@@ -64,6 +64,7 @@ class TiltEQ(Module):
     """
 
     TYPE = "tilt_eq"
+    CATEGORY = "Filters & EQ"
     DEFAULT_PARAMS = {
         "pivot": 1000.0,
         "tilt": 0.0,

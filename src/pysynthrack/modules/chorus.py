@@ -72,6 +72,7 @@ class Chorus(Module):
     """
 
     TYPE = "chorus"
+    CATEGORY = "Effects"
     DEFAULT_PARAMS = {
         "rate": 0.6,
         "depth": 0.5,

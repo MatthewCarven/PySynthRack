@@ -72,6 +72,7 @@ class SweepEQ(Module):
     """
 
     TYPE = "sweep_eq"
+    CATEGORY = "Filters & EQ"
     SWEEP_EQ_MODES = SWEEP_EQ_MODES
     DEFAULT_PARAMS = {
         "mode": "bandpass",
