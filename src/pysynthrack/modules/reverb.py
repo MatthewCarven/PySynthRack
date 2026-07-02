@@ -36,8 +36,18 @@ Ports:
   * ``in`` (audio): the signal to reverberate. A polyphonic (voice-aware)
     source is summed to mono first — you reverberate the mix. Unpatched
     -> silence.
+  * ``decay_cv`` (cv): added to ``decay`` (× ``cv_depth``) — animate the
+    tail length (open the room on held notes). Optional.
+  * ``mix_cv`` (cv): added to ``mix`` (× ``cv_depth``) — envelope-driven
+    reverb throws / wet ducking. Optional.
   * ``out_l`` (audio): left channel (dry + decorrelated wet tap A).
   * ``out_r`` (audio): right channel (dry + decorrelated wet tap B).
+
+CV: both targets are 0..1 macros, so the depths are level units per CV
+unit (one shared ``cv_depth``, default 1.0, like the Loudness), summed
+additively and block-meaned — one macro value per block, then clamped
+to 0..1 exactly as the static params are. ``size`` deliberately has no
+CV: sweeping the delay-line lengths clicks.
 """
 from __future__ import annotations
 
@@ -56,10 +66,14 @@ class Reverb(Module):
         damping: High-frequency absorption in the tail, bright (0) ->
             dark (1).
         mix: Dry/wet balance, dry (0) -> wet (1).
+        cv_depth: Level units per CV unit, shared by ``decay_cv`` and
+            ``mix_cv``. Default 1.0; 0 disables both.
 
     Ports:
         in (in, audio): signal to reverberate (voice sources summed to
             mono). Unpatched -> silence.
+        decay_cv (in, cv): added to ``decay``, scaled by ``cv_depth``.
+        mix_cv (in, cv): added to ``mix``, scaled by ``cv_depth``.
         out_l (out, audio): left channel.
         out_r (out, audio): right channel.
     """
@@ -70,8 +84,13 @@ class Reverb(Module):
         "decay": 0.5,
         "damping": 0.5,
         "mix": 0.3,
+        "cv_depth": 1.0,
     }
-    INPUT_PORTS = [Port("in", "in", "audio")]
+    INPUT_PORTS = [
+        Port("in", "in", "audio"),
+        Port("decay_cv", "in", "cv"),
+        Port("mix_cv", "in", "cv"),
+    ]
     OUTPUT_PORTS = [
         Port("out_l", "out", "audio"),
         Port("out_r", "out", "audio"),

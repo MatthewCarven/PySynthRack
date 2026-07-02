@@ -102,6 +102,8 @@ The full map:
 | `delay.time_cv` | `50.0` | ms | `time + d·cv` |
 | `loudness.level_cv` | `1.0` | level (0…1) | `level + d·mean cv` |
 | `tilt_eq.tilt_cv` | `6.0` | dB | `tilt + d·mean cv` |
+| `reverb.decay_cv` / `reverb.mix_cv` | `1.0` (shared) | level (0…1) | `decay/mix + d·mean cv` |
+| `mixer.gain{i}_cv` | — (multiplier) | linear, per-sample | `in_i · gain_i · cv_i` |
 
 (Converters whose entire job is a CV mapping — `cv_to_frequency`, the bridges,
 `cv_scale`/`cv_offset`, sample_hold, schmitt, sequencer — are out of scope:
@@ -196,7 +198,7 @@ Every module type, its category, and its ports at a glance.
 | [`resampler`](#resampler) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`delay`](#delay) | Processor | `in` (audio), `time_cv` (cv) → `out` (audio) |
-| [`reverb`](#reverb) | Processor | `in` (audio) → `out_l`,`out_r` (audio) |
+| [`reverb`](#reverb) | Processor | `in` (audio), `decay_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`loudness`](#loudness) | Processor | `in` (audio), `level_cv` (cv) → `out` (audio) |
 | [`chorus`](#chorus) | Processor | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`flanger`](#flanger) | Processor | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
@@ -208,7 +210,7 @@ Every module type, its category, and its ports at a glance.
 | [`audio_to_cv`](#audio_to_cv) | Bridge | `in` (audio) → `cv` (cv) |
 | [`cv_to_audio`](#cv_to_audio) | Bridge | `cv` (cv) → `out` (audio) |
 | [`schmitt`](#schmitt) | Bridge | `in` (cv) → `gate` (gate) |
-| [`mixer`](#mixer) | Routing | `in1`–`in4` (audio) → `out` (audio) |
+| [`mixer`](#mixer) | Routing | `in1`–`in4` (audio), `gain1_cv`–`gain4_cv` (cv) → `out` (audio) |
 | [`combiner`](#combiner) | Routing | `in1`–`in4` (audio) → `out` (audio) |
 | [`cv_combiner`](#cv_combiner) | Routing | `in1`–`in4` (cv) → `out` (cv) |
 | [`constant`](#constant) | Utility | — → `out` (cv) |
@@ -785,6 +787,8 @@ what the ear reads as width.
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to reverberate (voice sources summed to mono). Unpatched → silence. |
+| `decay_cv` | in | cv | Added to `decay` (× `cv_depth`) — animate the tail length. Optional. |
+| `mix_cv` | in | cv | Added to `mix` (× `cv_depth`) — envelope-driven reverb throws / wet ducking. Optional. |
 | `out_l` | out | audio | Left channel (dry + decorrelated wet). |
 | `out_r` | out | audio | Right channel (dry + decorrelated wet). |
 
@@ -796,6 +800,7 @@ what the ear reads as width.
 | `decay` | `0.5` | 0 … 1 | Tail length (reverberation time), short → long. |
 | `damping` | `0.5` | 0 … 1 | High-frequency absorption in the tail, bright → dark. |
 | `mix` | `0.3` | 0 … 1 | Dry/wet balance. Dry is centred; wet is the stereo tail. |
+| `cv_depth` | `1.0` | 0 … 2 lvl/unit | Level units per CV unit, shared by `decay_cv` and `mix_cv`; 0 disables both. `size` deliberately has no CV — sweeping delay-line lengths clicks. |
 
 Patch the outputs into [`left_speaker_output`](#left_speaker_output) and
 [`right_speaker_output`](#right_speaker_output) for a wide tail. The
@@ -1158,8 +1163,27 @@ thresholds (`high`/`low`) with hysteresis — e.g. an LFO becomes a clock. See
 
 #### `mixer`
 
-_To document._ Four audio inputs with per-channel gains plus a master.
-Params: `gain1`–`gain4`, `master`. Outputs `out`.
+Four audio inputs with per-channel gain trims and a master:
+`out = master · Σ (gain_i · cv_i · in_i)`. Output is clipped at the speaker,
+not here, so a hot mix keeps its headroom into downstream filters.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in1` … `in4` | in | audio | The four channels. Unconnected = silence. |
+| `gain1_cv` … `gain4_cv` | in | cv | Per-channel VCA-style gain CV, **per-sample multiplicative** (`in_i · gain_i · cv_i`); unpatched = unity. Optional. |
+| `out` | out | audio | The mix. |
+
+**Parameters:** `gain1`–`gain4` (default `1.0`), `master` (default `0.7`).
+
+**Patching.** The gain CVs are knobless by the house rule ([CV depth
+conventions](#cv-depth-conventions)) — the CV *is* the channel's amplitude,
+like [vca](#vca)'s `cv`; attenuate with a [CVScale](#cv_scale) if needed. An
+ADSR into `gain2_cv` swells channel 2; an LFO into `gain1_cv` plus its
+inverse (CVScale −1 → CVOffset +1) into `gain2_cv` is an auto-crossfade; a
+[sequencer](#sequencer) lane steps channels in and out — voltage-controlled
+mixing. See `examples/mixer_crossfade_verb.json`.
 
 #### `combiner`
 

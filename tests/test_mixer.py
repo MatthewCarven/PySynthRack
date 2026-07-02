@@ -23,9 +23,12 @@ class TestMixerModel:
             "master": 0.7,
         }
         in_names = [p.name for p in mx.input_ports]
-        assert in_names == list(MIXER_INPUT_NAMES)
+        assert in_names == list(MIXER_INPUT_NAMES) + [
+            "gain1_cv", "gain2_cv", "gain3_cv", "gain4_cv",
+        ]
         for port in mx.input_ports:
-            assert port.signal_kind == "audio"
+            expected = "cv" if port.name.endswith("_cv") else "audio"
+            assert port.signal_kind == expected
         assert [p.name for p in mx.output_ports] == ["out"]
         assert mx.output_ports[0].signal_kind == "audio"
 
@@ -222,9 +225,10 @@ class TestMixerIntegration:
 
         example = Path(__file__).parent.parent / "examples" / "fat_saw.json"
         patch = load_patch(example)
-        # Sanity: mixer is in there with 4 inputs declared.
+        # Sanity: mixer is in there with 4 audio inputs declared
+        # (plus the 4 per-channel gain CVs added 2026-07-02).
         mx = next(m for m in patch if m.TYPE == "mixer")
-        assert len(mx.input_ports) == 4
+        assert len(mx.input_ports) == 8
 
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         backend.compile(patch)

@@ -4967,3 +4967,50 @@ renamed). Exact-dict assertions in test_filter/test_lfo updated.
 convention standardised. Remaining (lowest priority): reverb size/mix CV,
 mixer gain CV; motion_eq per-band gain-CV and tilt_eq pivot_cv stay logged
 as follow-ups.
+
+## 2026-07-02 — Reverb + Mixer CV: the CV-coverage plan closes
+
+The last two static holdouts from the CV-coverage audit, scoped with Matthew
+(both recommendations accepted): **reverb `decay_cv` + `mix_cv`**, and
+**per-channel VCA-style gain CVs on the mixer**.
+
+**Reverb.** Both new inputs target 0..1 macros, so they follow the loudness
+pattern: additive in level units, one shared `cv_depth` (default 1.0),
+block-meaned, then clamped 0..1 by the exact clamps the static params use.
+Implementation is ~10 lines in `_render_reverb` before the clamps — the FDN
+itself is untouched. `size` deliberately gets no CV: sweeping the delay-line
+lengths clicks (noted as a follow-up only with crossfaded re-tap
+interpolation). Musical payoffs: envelope-driven reverb throws, wet ducking
+(mix CV to 0 reaches the documented bit-exact dry passthrough), rooms that
+open on held notes.
+
+**Mixer.** `gain1_cv`…`gain4_cv`, **per-sample multiplicative** — channel i
+becomes `in_i · gain_i · cv_i`, unpatched = unity. Knobless by the
+just-written house rule (the amplitude-multiplier exception: the CV *is* the
+amplitude, like `vca.cv`); no new params at all. This turns the mixer into
+four VCAs with a sum: ADSR-swelled channels, sequencer-stepped mixing, and
+the classic auto-crossfade (LFO → `gain1_cv`, its inverse via CVScale −1 →
+CVOffset +1 → `gain2_cv`; the crossfade test proves cv + (1−cv) reconstructs
+the input exactly).
+
+**Tested invariants (+19 → suite 1014).** Reverb: CV renders bit-identically
+to the equivalent static param (dyadic-exact test values — 0.3+0.7 style
+sums differ in the last ulp and taught the tests to use 0.5+0.5); depth
+scales and 0 disables; over-range CV clamps; the tail audibly lengthens
+(30-block render, late-window RMS > 4×). Mixer: unpatched CVs bit-identical
+to the pre-change sum (the retrofit is inert); a ramp CV shapes the block
+per-sample exactly; one channel's CV leaves the others untouched; crossfade
+sums to constant. Model walls; pre-CV patch dicts load with the default.
+
+**Example.** `examples/mixer_crossfade_verb.json` — saw A ↔ square B
+auto-crossfaded at 0.2 Hz through the gain CVs, into a hall whose mix
+breathes under a 0.09 Hz LFO (`cv_depth` 0.5 so it stays tasteful). Peak
+≈ 0.35. UI: reverb `cv_depth` drag ("lvl/unit"); mixer needs no new widgets
+(knobless). MODULES.md: CV-conventions table rows, reverb entry updated,
+mixer "_To document._" stub replaced with a full entry.
+
+**With this, every item on the 2026-07-02 CV-coverage plan is done:**
+crossover freq_cv → animated-EQ trio (sweep/motion/tilt) → cv_depth
+convention standardisation → reverb/mixer CV. Open follow-ups live with
+their modules (damping_cv, master_cv, pivot_cv, per-band gain-CV, tilt
+slope options).

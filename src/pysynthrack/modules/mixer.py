@@ -42,6 +42,15 @@ class Mixer(Module):
         Port("in2", "in", "audio"),
         Port("in3", "in", "audio"),
         Port("in4", "in", "audio"),
+        # Per-channel VCA-style gain CVs: channel i becomes
+        # ``in_i * gain_i * cv_i`` per sample, unpatched = unity.
+        # Knobless by the house rule ("CV depth conventions" in
+        # docs/MODULES.md): the CV *is* the amplitude, like vca.cv /
+        # oscillator.amp_cv — attenuate with a CVScale if needed.
+        Port("gain1_cv", "in", "cv"),
+        Port("gain2_cv", "in", "cv"),
+        Port("gain3_cv", "in", "cv"),
+        Port("gain4_cv", "in", "cv"),
     ]
     OUTPUT_PORTS = [Port("out", "out", "audio")]
 

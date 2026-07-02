@@ -3168,7 +3168,13 @@ class NumpyBackend(AudioBackend):
 
         Unconnected channels contribute silence. The signal is::
 
-            out = master * sum_i (gain_i * input_i)
+            out = master * sum_i (gain_i * cv_i * input_i)
+
+        where ``cv_i`` is the channel's optional ``gain{i}_cv`` input
+        (unpatched -> unity). The CV multiplies **per sample**, VCA-style
+        — the CV *is* the channel's amplitude (knobless by the house
+        rule, like ``vca.cv``), so an ADSR into ``gain2_cv`` swells
+        channel 2 and a sequencer lane steps channels in and out.
 
         Output is clipped at the speaker stage, not here — so a hot
         mixer feeding a filter still has the headroom the filter needs.
@@ -3180,7 +3186,11 @@ class NumpyBackend(AudioBackend):
             if buf is None:
                 continue
             gain = float(module.params.get(f"gain{idx}", 1.0))
-            out += (buf * gain).astype(np.float32)
+            ch = buf * gain
+            cv = self._input_buffer(patch, buffers, module.id, f"gain{idx}_cv")
+            if cv is not None and cv.size > 0:
+                ch = ch * cv
+            out += ch.astype(np.float32)
         return (out * master).astype(np.float32)
 
     # ----- Combiner rendering ---------------------------------------------
@@ -4235,6 +4245,19 @@ class NumpyBackend(AudioBackend):
         decay = float(module.params.get("decay", 0.5))
         damping = float(module.params.get("damping", 0.5))
         mix = float(module.params.get("mix", 0.3))
+
+        # CV on the two safe macros (size would sweep the delay-line
+        # lengths and click): additive in level units scaled by the
+        # shared cv_depth, block-meaned -- one macro value per block,
+        # clamped 0..1 below exactly like the static params.
+        cv_depth = float(module.params.get("cv_depth", 1.0))
+        decay_cv = self._input_buffer(patch, buffers, module.id, "decay_cv")
+        if decay_cv is not None and decay_cv.size > 0:
+            decay = decay + cv_depth * float(np.mean(decay_cv))
+        mix_cv = self._input_buffer(patch, buffers, module.id, "mix_cv")
+        if mix_cv is not None and mix_cv.size > 0:
+            mix = mix + cv_depth * float(np.mean(mix_cv))
+
         size = min(max(size, 0.0), 1.0)
         decay = min(max(decay, 0.0), 1.0)
         damping = min(max(damping, 0.0), 1.0)

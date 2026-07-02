@@ -938,6 +938,15 @@ class App:
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
+            if param_name == "cv_depth":
+                # Shared by decay_cv + mix_cv; both targets are 0..1
+                # macros, so the depth is level units per CV unit.
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=2.0, format="%.2f lvl/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
 
         if module.TYPE == "loudness":
             # Equal-loudness contour: level drives the auto curve; bass/

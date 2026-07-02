@@ -1,0 +1,212 @@
+{
+ "version": 1,
+ "next_id": 11,
+ "modules": [
+  {
+   "id": 1,
+   "type": "oscillator",
+   "name": "saw A",
+   "params": {
+    "waveform": "saw",
+    "freq": 110.0,
+    "amp": 0.3
+   }
+  },
+  {
+   "id": 2,
+   "type": "oscillator",
+   "name": "square B",
+   "params": {
+    "waveform": "square",
+    "freq": 220.0,
+    "amp": 0.25
+   }
+  },
+  {
+   "id": 3,
+   "type": "lfo",
+   "name": "crossfade",
+   "params": {
+    "waveform": "sine",
+    "rate": 0.2,
+    "depth": 1.0,
+    "bipolar": false,
+    "cv_depth": 1.0
+   }
+  },
+  {
+   "id": 4,
+   "type": "cv_scale",
+   "name": "invert",
+   "params": {
+    "scale": -1.0
+   }
+  },
+  {
+   "id": 5,
+   "type": "cv_offset",
+   "name": "+1",
+   "params": {
+    "offset": 1.0
+   }
+  },
+  {
+   "id": 6,
+   "type": "mixer",
+   "name": "cv mixer",
+   "params": {
+    "gain1": 1.0,
+    "gain2": 1.0,
+    "gain3": 1.0,
+    "gain4": 1.0,
+    "master": 1.5
+   }
+  },
+  {
+   "id": 7,
+   "type": "lfo",
+   "name": "verb swell",
+   "params": {
+    "waveform": "sine",
+    "rate": 0.09,
+    "depth": 1.0,
+    "bipolar": false,
+    "cv_depth": 1.0
+   }
+  },
+  {
+   "id": 8,
+   "type": "reverb",
+   "name": "hall",
+   "params": {
+    "size": 0.5,
+    "decay": 0.6,
+    "damping": 0.5,
+    "mix": 0.15,
+    "cv_depth": 0.5
+   }
+  },
+  {
+   "id": 9,
+   "type": "left_speaker_output",
+   "name": "left_speaker_output",
+   "params": {
+    "gain": 1.0
+   }
+  },
+  {
+   "id": 10,
+   "type": "right_speaker_output",
+   "name": "right_speaker_output",
+   "params": {
+    "gain": 1.0
+   }
+  }
+ ],
+ "cables": [
+  {
+   "src_module_id": 1,
+   "src_port": "out",
+   "dst_module_id": 6,
+   "dst_port": "in1"
+  },
+  {
+   "src_module_id": 2,
+   "src_port": "out",
+   "dst_module_id": 6,
+   "dst_port": "in2"
+  },
+  {
+   "src_module_id": 3,
+   "src_port": "cv",
+   "dst_module_id": 6,
+   "dst_port": "gain1_cv"
+  },
+  {
+   "src_module_id": 3,
+   "src_port": "cv",
+   "dst_module_id": 4,
+   "dst_port": "in"
+  },
+  {
+   "src_module_id": 4,
+   "src_port": "out",
+   "dst_module_id": 5,
+   "dst_port": "in"
+  },
+  {
+   "src_module_id": 5,
+   "src_port": "out",
+   "dst_module_id": 6,
+   "dst_port": "gain2_cv"
+  },
+  {
+   "src_module_id": 6,
+   "src_port": "out",
+   "dst_module_id": 8,
+   "dst_port": "in"
+  },
+  {
+   "src_module_id": 7,
+   "src_port": "cv",
+   "dst_module_id": 8,
+   "dst_port": "mix_cv"
+  },
+  {
+   "src_module_id": 8,
+   "src_port": "out_l",
+   "dst_module_id": 9,
+   "dst_port": "in"
+  },
+  {
+   "src_module_id": 8,
+   "src_port": "out_r",
+   "dst_module_id": 10,
+   "dst_port": "in"
+  }
+ ],
+ "ui": {
+  "node_positions": {
+   "1": [
+    40,
+    40
+   ],
+   "2": [
+    40,
+    200
+   ],
+   "3": [
+    40,
+    380
+   ],
+   "4": [
+    260,
+    420
+   ],
+   "5": [
+    440,
+    420
+   ],
+   "6": [
+    320,
+    120
+   ],
+   "7": [
+    320,
+    540
+   ],
+   "8": [
+    620,
+    200
+   ],
+   "9": [
+    880,
+    160
+   ],
+   "10": [
+    880,
+    300
+   ]
+  }
+ }
+}

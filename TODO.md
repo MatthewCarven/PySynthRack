@@ -371,6 +371,27 @@ open to a better scheme if one turns up.
       pre-retrofit patch dicts load with the default); suite 995. No
       PARAM_ALIASES needed (params added, none renamed).
 
+- [x] **Reverb + Mixer CV (the last stragglers)** — DONE 2026-07-02; the
+      CV-coverage plan is now fully closed. Matthew's calls: reverb gets
+      **`decay_cv` + `mix_cv`** (additive level units, one shared `cv_depth`
+      default 1.0, block-mean, clamped 0..1 like the static params — `size`
+      deliberately excluded: sweeping delay-line lengths clicks) and the mixer
+      gets **per-channel VCA-style `gain{i}_cv`** (per-sample multiplicative
+      `in_i · gain_i · cv_i`, unpatched = unity, knobless per the house-rule
+      amplitude-multiplier exception — the CV *is* the amplitude). Mix ducking
+      to 0 via CV reaches the bit-exact dry passthrough; unpatched mixer CVs
+      render bit-identically to the old sum. 19 tests
+      `tests/test_reverb_mixer_cv.py` (static-equivalence bit-identical via
+      dyadic-exact values, depth scaling/disable, per-sample ramp shaping,
+      channel isolation, crossfade-sums-to-constant, tail audibly lengthens);
+      suite 1014. Example `examples/mixer_crossfade_verb.json` (LFO
+      auto-crossfade between two oscillators via gain CVs + inverse through
+      CVScale/CVOffset, into a reverb whose mix breathes under a second LFO).
+      CV-conventions table + reverb/mixer entries updated in MODULES.md (mixer
+      stub replaced with full ports/params/patching). Follow-ups: damping_cv
+      (tone of the tail); master_cv on the mixer if chaining a VCA ever
+      grates; reverb size CV only with crossfaded line-length interpolation.
+
 - [ ] **Reverb / mixer CV (lowest priority).** The other two static processors.
       Reverb `mix`/`size`/`decay` CV for swelling or morphing spaces could be
       nice; a voltage-controlled `mixer` (per-channel gain CV) is largely

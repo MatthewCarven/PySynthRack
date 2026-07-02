@@ -63,11 +63,21 @@ class TestModel:
     def test_register_and_defaults(self):
         rv = Patch().add_module("reverb")
         assert isinstance(rv, Reverb)
-        assert rv.params == {"size": 0.5, "decay": 0.5, "damping": 0.5, "mix": 0.3}
+        assert rv.params == {
+            "size": 0.5,
+            "decay": 0.5,
+            "damping": 0.5,
+            "mix": 0.3,
+            "cv_depth": 1.0,
+        }
 
     def test_ports_and_kinds(self):
         rv = Patch().add_module("reverb")
-        assert [(p.name, p.signal_kind) for p in rv.input_ports] == [("in", "audio")]
+        assert [(p.name, p.signal_kind) for p in rv.input_ports] == [
+            ("in", "audio"),
+            ("decay_cv", "cv"),
+            ("mix_cv", "cv"),
+        ]
         assert [(p.name, p.signal_kind) for p in rv.output_ports] == [
             ("out_l", "audio"),
             ("out_r", "audio"),
