@@ -43,6 +43,7 @@ from ..modules.waveshaper import WAVESHAPER_MODES
 from ..modules.noise import NOISE_COLORS
 from ..modules.oscillator import WAVEFORMS
 from ..modules.sweep_eq import SWEEP_EQ_MODES
+from .dsp_load import IDLE_COLOR, format_dsp_load, load_color
 from .zoom import (
     ZOOM_DEFAULT,
     ZOOM_MAX,
@@ -87,6 +88,7 @@ AUDIO_BTN_TAG = "audio_btn"
 STATUS_TEXT_TAG = "status_text"
 MAIN_WINDOW_TAG = "main_window"
 ZOOM_SLIDER_TAG = "zoom_slider"
+DSP_TEXT_TAG = "dsp_load_text"
 
 from .._resources import examples_dir
 
@@ -174,6 +176,7 @@ class App:
             while dpg.is_dearpygui_running():
                 self._update_cv_meters()
                 self._update_audio_meters()
+                self._update_dsp_load()
                 self._update_file_positions()
                 self._update_velocity_capture()
                 dpg.render_dearpygui_frame()
@@ -228,6 +231,11 @@ class App:
                     callback=self._on_zoom_slider,
                 )
                 dpg.add_button(label="Reset", callback=self._on_zoom_reset)
+                dpg.add_spacer(width=24)
+                # DSP-load readout: render time over the block budget,
+                # smoothed by the backend (see ui/dsp_load.py). Grey
+                # dashes while audio is stopped.
+                dpg.add_text("DSP --", tag=DSP_TEXT_TAG, color=IDLE_COLOR)
 
             dpg.add_separator()
             dpg.add_text(
@@ -2273,6 +2281,23 @@ class App:
     # value. ~0.02 at vsync rates settles over roughly a second -- fast
     # enough to track a patch change, slow enough not to twitch.
     _METER_RELEASE = 0.02
+
+    def _update_dsp_load(self) -> None:
+        """Refresh the toolbar DSP-load readout from the backend.
+
+        Reads the backend's lock-free snapshot when audio is running
+        (and the backend publishes one -- getattr-guarded so a backend
+        without the observable just leaves the readout greyed out).
+        """
+        if not dpg.does_item_exist(DSP_TEXT_TAG):
+            return
+        load = None
+        if self.backend.is_running:
+            snap = getattr(self.backend, "dsp_load_snapshot", None)
+            if snap is not None:
+                load = snap()[0]
+        dpg.set_value(DSP_TEXT_TAG, format_dsp_load(load))
+        dpg.configure_item(DSP_TEXT_TAG, color=load_color(load))
 
     def _update_cv_meters(self) -> None:
         """Push the backend's latest per-cv-port levels into the bars.

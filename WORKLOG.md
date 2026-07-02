@@ -5793,3 +5793,39 @@ skips (was 1292).
 
 Docs: MODULES.md param row + latency prose; module docstring; TODO
 follow-up line updated.
+
+## 2026-07-03 — toolbar DSP-load readout (Matthew's "CPU near the zoom" ask)
+
+Matthew asked for a CPU indicator next to the zoom control. Shipped as a
+**DSP-load** readout — render time over the block budget (frames/sr,
+11.6 ms at 512/44.1k), the figure a DAW's "CPU" meter shows — rather
+than whole-machine CPU, which would need a psutil dependency and says
+little about whether the patch is about to glitch.
+
+Backend: `_fill_output` wraps `render_block` in two perf_counter calls
+and keeps three attributes — an EMA of the load (smoothing 0.9/block,
+settles in a few tenths of a second), a since-start() peak, and an
+over-budget block counter (load > 1.0 = the block missed real time).
+Same no-lock discipline as the meters: plain float/int assignment is
+GIL-atomic, the GUI reads via `dsp_load_snapshot()` → (smoothed, peak,
+overloads). Stats reset in start(); a crashing render leaves them
+untouched (its timing means nothing) and the disabled path
+short-circuits before the timer. Cost: two perf_counter calls per block.
+
+UI: `ui/dsp_load.py` holds the dpg-free maths (zoom.py convention) —
+`format_dsp_load` ("DSP 7%", dashes when stopped) and `load_color`
+(grey stopped / meter-green < 50% / amber < 80% / meter-red beyond,
+palette matching the audio meter fill + clip lamp). The toolbar text
+sits after the zoom Reset button and refreshes in the existing manual
+frame loop next to the meter polls; the backend read is getattr-guarded
+so a backend without the observable just leaves it greyed out.
+
+Tests: 18 new in tests/test_dsp_load.py — formatter (stopped/zero/
+typical/rounding/over-100%/negative clamp), colour thresholds + palette
+pins, fresh-backend zeros, rendered blocks move load and peak (trivial
+patch far under budget), a render pinned at 4x budget converges to ~4
+with 40/40 overloads counted, a single slow block counts once, crash
+leaves stats untouched, start()-style reset, snapshot shape. Injection
+mirrors test_backend_crash.py (monkeypatched render_block, direct
+_fill_output calls — no PortAudio). Suite: 1324 in-sandbox, zero skips
+(was 1306).

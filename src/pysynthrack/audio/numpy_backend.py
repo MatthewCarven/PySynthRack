@@ -38,6 +38,7 @@ from __future__ import annotations
 import math
 import queue
 import threading
+import time
 import wave
 from typing import Any
 
@@ -452,6 +453,16 @@ class NumpyBackend(AudioBackend):
         # MicInput's renderer reads it; reset on stop so a stale block
         # can't leak into the next run.
         self._input_block: np.ndarray | None = None
+        # DSP-load readout for the UI toolbar. After every rendered
+        # block the audio thread updates a smoothed load figure (render
+        # time over the block budget, frames / sample_rate), a
+        # since-start() peak, and a count of over-budget blocks; the
+        # GUI thread reads them via dsp_load_snapshot(). Same no-lock
+        # discipline as the meters: float/int attribute assignment is
+        # atomic under the GIL and a stale frame is harmless.
+        self._dsp_load: float = 0.0
+        self._dsp_load_peak: float = 0.0
+        self._dsp_overloads: int = 0
 
     # ----- availability ----------------------------------------------------
 
@@ -623,6 +634,11 @@ class NumpyBackend(AudioBackend):
             )
         if self._patch is None:
             raise RuntimeError("Call compile(patch) before start().")
+        # Fresh load stats per run (the toolbar readout greys out while
+        # stopped, so a stale figure would never be seen anyway).
+        self._dsp_load = 0.0
+        self._dsp_load_peak = 0.0
+        self._dsp_overloads = 0
         # Full-duplex only when a mic module is present; otherwise the
         # cheaper output-only stream (no input device / permission
         # needed). A duplex open that fails (no device, rate mismatch,
@@ -722,10 +738,17 @@ class NumpyBackend(AudioBackend):
         self._input_block = indata
         self._fill_output(outdata, frames)
 
+    # Exponential smoothing for the DSP-load readout. Per-block render
+    # times are spiky (GC pauses, OS scheduling); 0.9 over 512-sample
+    # blocks settles in a few tenths of a second while still tracking
+    # patch edits promptly.
+    _DSP_LOAD_SMOOTH = 0.9
+
     def _fill_output(self, outdata: np.ndarray, frames: int) -> None:
         if self._render_disabled:
             outdata.fill(0.0)
             return
+        t0 = time.perf_counter()
         try:
             out = self.render_block(frames)
         except BaseException as e:
@@ -734,14 +757,36 @@ class NumpyBackend(AudioBackend):
             # of this stream. Calling describe_error from inside the
             # audio thread is fine - it never raises, and the cost is
             # paid once (subsequent blocks short-circuit at the
-            # _render_disabled check above).
+            # _render_disabled check above). Load stats are left alone:
+            # a crashed render's timing means nothing.
             self._handle_audio_crash(e)
             outdata.fill(0.0)
             return
+        elapsed = time.perf_counter() - t0
         if out is None:
             outdata.fill(0.0)
-            return
-        outdata[:] = out
+        else:
+            outdata[:] = out
+        # --- DSP-load bookkeeping (audio thread; see the __init__ notes)
+        if frames > 0:
+            load = elapsed * self.sample_rate / frames
+            k = self._DSP_LOAD_SMOOTH
+            self._dsp_load = k * self._dsp_load + (1.0 - k) * load
+            if load > self._dsp_load_peak:
+                self._dsp_load_peak = load
+            if load > 1.0:
+                self._dsp_overloads += 1
+
+    def dsp_load_snapshot(self) -> tuple[float, float, int]:
+        """``(smoothed, peak, overloads)`` DSP load since start().
+
+        Load is render time over the block budget (``frames /
+        sample_rate`` seconds): 0.5 means half the budget went to
+        rendering, above 1.0 the block missed real time (an audible
+        underrun risk); ``overloads`` counts such blocks. GUI-thread
+        safe -- plain attribute reads, see the __init__ notes.
+        """
+        return self._dsp_load, self._dsp_load_peak, self._dsp_overloads
 
     def _handle_audio_crash(self, exc: BaseException) -> None:
         """Called from the audio callback on the first render_block
