@@ -76,6 +76,7 @@ class TestModel:
         assert [(p.name, p.signal_kind) for p in rv.input_ports] == [
             ("in", "audio"),
             ("decay_cv", "cv"),
+            ("damping_cv", "cv"),
             ("mix_cv", "cv"),
         ]
         assert [(p.name, p.signal_kind) for p in rv.output_ports] == [

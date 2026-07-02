@@ -3942,7 +3942,8 @@ class NumpyBackend(AudioBackend):
             return self._render_parametric_eq_voice(module, frames, src)
         return self._render_parametric_eq_mono(module, frames, src)
 
-    def _render_parametric_eq_mono(self, module, frames, src, freqs_override=None):
+    def _render_parametric_eq_mono(self, module, frames, src, freqs_override=None,
+                                   gains_override=None):
         """Mono path -- N cascaded peaking biquads via ``lfilter``.
 
         Same state design as ``_render_filter_mono`` (filter
@@ -3958,6 +3959,8 @@ class NumpyBackend(AudioBackend):
         freqs, gains, qs = self._peq_band_params(module)
         if freqs_override is not None:
             freqs = freqs_override  # MotionEQ: per-band CV-swept centres
+        if gains_override is not None:
+            gains = gains_override  # MotionEQ: per-band CV-pushed gains
         n_bands = len(freqs)
         b0, b1, b2, a1n, a2n = self._peq_coeffs(freqs, gains, qs)
 
@@ -4004,7 +4007,8 @@ class NumpyBackend(AudioBackend):
 
         return x.astype(np.float32)
 
-    def _render_parametric_eq_voice(self, module, frames, src, freqs_override=None):
+    def _render_parametric_eq_voice(self, module, frames, src, freqs_override=None,
+                                    gains_override=None):
         """Voice-aware path -- V parallel cascades, output ``(V, F)``.
 
         The cascade is the mono path vectorized across voices. Because
@@ -4019,6 +4023,8 @@ class NumpyBackend(AudioBackend):
         freqs, gains, qs = self._peq_band_params(module)
         if freqs_override is not None:
             freqs = freqs_override  # MotionEQ: per-band CV-swept centres
+        if gains_override is not None:
+            gains = gains_override  # MotionEQ: per-band CV-pushed gains
         n_bands = len(freqs)
         b0, b1, b2, a1n, a2n = self._peq_coeffs(freqs, gains, qs)
 
@@ -4072,14 +4078,16 @@ class NumpyBackend(AudioBackend):
         """4-band peaking EQ with a per-band centre-frequency CV sweep.
 
         Reuses ParametricEQ's cascade wholesale: the only difference is
-        that each band's centre is CV-swept before the coefficients are
-        built. For band ``i`` the centre is
-        ``band{i}_freq * 2 ** (cv_depth * mean(band{i}_freq_cv))``,
-        block-meaned (one coefficient set per block, shared across
-        voices -- the Crossover's macro-sweep policy). Gain and Q stay
-        static. An unpatched ``band{i}_freq_cv`` leaves that band at its
-        static centre, so with nothing patched MotionEQ is bit-identical
-        to a ParametricEQ with the same params.
+        that each band's centre and gain are CV-modulated before the
+        coefficients are built. For band ``i`` the centre is
+        ``band{i}_freq * 2 ** (cv_depth * mean(band{i}_freq_cv))`` and
+        the gain is
+        ``band{i}_gain + gain_cv_depth * mean(band{i}_gain_cv)`` (dB,
+        clamped +/-24), both block-meaned (one coefficient set per
+        block, shared across voices -- the Crossover's macro-sweep
+        policy). Q stays static. An unpatched CV leaves that band at
+        its static value, so with nothing patched MotionEQ is
+        bit-identical to a ParametricEQ with the same params.
         """
         src = self._input_buffer(
             patch, buffers, module.id, "in", collapse=False
@@ -4088,7 +4096,8 @@ class NumpyBackend(AudioBackend):
             return np.zeros(frames, dtype=np.float32)
 
         cv_depth = float(module.params.get("cv_depth", 1.0))
-        base_freqs, _gains, _qs = self._peq_band_params(module)
+        gain_cv_depth = float(module.params.get("gain_cv_depth", 6.0))
+        base_freqs, base_gains, _qs = self._peq_band_params(module)
         mod_freqs = []
         for i, base in enumerate(base_freqs, start=1):
             cv = self._input_buffer(
@@ -4098,12 +4107,28 @@ class NumpyBackend(AudioBackend):
                 base = base * float(2.0 ** (cv_depth * float(np.mean(cv))))
             mod_freqs.append(base)
 
+        # Per-band gain CV: additive in dB (the tilt_eq convention),
+        # block-meaned like the freq sweep, clamped to the knob range
+        # (±24 dB) so a hot CV can't push a bell into absurd gain. An
+        # unpatched band keeps its exact static gain (bit-identical).
+        mod_gains = []
+        for i, base in enumerate(base_gains, start=1):
+            cv = self._input_buffer(
+                patch, buffers, module.id, f"band{i}_gain_cv"
+            )
+            if cv is not None and cv.size > 0:
+                base = base + gain_cv_depth * float(np.mean(cv))
+                base = min(max(base, -24.0), 24.0)
+            mod_gains.append(base)
+
         if src.ndim == 2:
             return self._render_parametric_eq_voice(
-                module, frames, src, freqs_override=mod_freqs
+                module, frames, src,
+                freqs_override=mod_freqs, gains_override=mod_gains,
             )
         return self._render_parametric_eq_mono(
-            module, frames, src, freqs_override=mod_freqs
+            module, frames, src,
+            freqs_override=mod_freqs, gains_override=mod_gains,
         )
 
     # ----- SweepEQ rendering ----------------------------------------------
@@ -4443,7 +4468,7 @@ class NumpyBackend(AudioBackend):
         damping = float(module.params.get("damping", 0.5))
         mix = float(module.params.get("mix", 0.3))
 
-        # CV on the two safe macros (size would sweep the delay-line
+        # CV on the three safe macros (size would sweep the delay-line
         # lengths and click): additive in level units scaled by the
         # shared cv_depth, block-meaned -- one macro value per block,
         # clamped 0..1 below exactly like the static params.
@@ -4451,6 +4476,9 @@ class NumpyBackend(AudioBackend):
         decay_cv = self._input_buffer(patch, buffers, module.id, "decay_cv")
         if decay_cv is not None and decay_cv.size > 0:
             decay = decay + cv_depth * float(np.mean(decay_cv))
+        damping_cv = self._input_buffer(patch, buffers, module.id, "damping_cv")
+        if damping_cv is not None and damping_cv.size > 0:
+            damping = damping + cv_depth * float(np.mean(damping_cv))
         mix_cv = self._input_buffer(patch, buffers, module.id, "mix_cv")
         if mix_cv is not None and mix_cv.size > 0:
             mix = mix + cv_depth * float(np.mean(mix_cv))

@@ -5224,3 +5224,47 @@ bit-identical, clamp both ends (CV −5 collapses to mono, CV +10 caps at
 breathes while the autopan orbits.
 
 Suite: 1104 in sandbox (+18 mido; 1122 on Matthew's mido-equipped venv).
+
+## 2026-07-02 — Animated-EQ extras: motion_eq per-band gain CV + reverb damping_cv
+
+Matthew's ask, and both are the "flagged for later" items off their own
+ship notes: the motion_eq entry said "gain-CV per band remains a possible
+future add", the reverb CV entry listed "damping_cv (tone of the tail)".
+
+**motion_eq `band{i}_gain_cv` (×4).** Additive in dB — the tilt_eq
+convention, since gain lives in dB — with a second **shared** depth knob
+`gain_cv_depth` (default 6.0 dB/unit, tilt_eq's default; the freq CVs
+keep their oct/unit `cv_depth`, one knob per unit domain per the house
+rule). Block-meaned like the freq sweep, clamped ±24 dB (the knob
+range) so a hot CV can't push a bell absurd. Implementation is the
+freq-CV move repeated: `gains_override` joins `freqs_override` on
+`_render_parametric_eq_mono/_voice` (None = bit-identical, peq suite
+untouched), `_render_motion_eq` builds both override lists. Unpatched
+band = exact static gain; nothing patched = still bit-identical to
+ParametricEQ.
+
+**reverb `damping_cv`.** The third safe macro, literally the decay/mix
+pattern with s/decay/damping/: additive level units on the same shared
+`cv_depth`, block-mean, clamp 0..1. Click-safe: damping only sets the
+recirculation one-pole's coefficient, recomputed per block anyway, and
+the filter state carries. (`size` stays the one no-CV param — line
+lengths still click.)
+
+Tests: 13 in `tests/test_motion_eq_gain_cv.py` + 7 appended to
+`tests/test_reverb_mixer_cv.py`. The equivalence tests are dyadic-exact
+bit-identical (6.0·0.5 in dB space, 0.25+0.5 in level space); the
+block-mean proof is an alternating ±1 CV whose mean is exactly zero ==
+no CV at all; clamp tests hit both rails; voice row == mono; tail-HF
+fraction halves when CV drives damping up. Existing exact-shape
+assertions updated (motion_eq 13→14 params + port list, reverb port
+list in two files).
+
+Example `motion_eq_breathe.json`: white noise → motion_eq with two slow
+LFOs breathing bands 2+3 (gain_cv_depth 10 → ±10 dB swells) → reverb
+whose damping a 0.05 Hz LFO sweeps 0.05..0.95 (the hall darkens and
+re-opens). Peak 0.29 at the speakers — headroom respected.
+
+MODULES.md: motion_eq + reverb sections, module index rows, and two new
+rows in the CV-depth conventions table. UI: gain_cv_depth drag
+(0–18, "%.1f dB/unit") in the shared EQ block; reverb cv_depth comment
+now names all three targets. No pyo change (types already stubbed).

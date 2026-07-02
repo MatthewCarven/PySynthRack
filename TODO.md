@@ -306,6 +306,18 @@ open to a better scheme if one turns up.
         reuses the parametric_eq band block + a cv_depth drag. 12 tests, suite
         961. Example `motion_eq_animated.json`. Delivered as `motion_eq.patch`.
         (Gain-CV per band remains a possible future add.)
+        - [x] **Per-band gain CV** — DONE 2026-07-02 (the "possible future
+          add", Matthew's ask). Four `band{i}_gain_cv` inputs, additive in dB
+          (the tilt_eq convention) × a **shared `gain_cv_depth`** (default
+          6.0 dB/unit, same shared-depth policy as the freq CVs), block-meaned,
+          clamped ±24 dB (the knob range). `gains_override` added alongside
+          `freqs_override` on `_render_parametric_eq_mono/_voice` (bit-identical
+          when None). Unpatched = bit-identical to before; zero-mean CV ==
+          static (block-mean proven); voice == mono. 13 tests
+          `tests/test_motion_eq_gain_cv.py`. Example `motion_eq_breathe.json`
+          (two bands breathing over a reverb darkening on `damping_cv`).
+          Follow-ups: per-band Q CV would complete the set; a `band{i}_gain_cv`
+          per-sample mode if anyone wants tremolo-rate breathing.
 
   - [x] **`sweep_eq`** — DONE 2026-07-02. Shipped with a **switchable
         `mode`** (Matthew's call): `bandpass` (default, classic wah),
@@ -393,8 +405,19 @@ open to a better scheme if one turns up.
       CVScale/CVOffset, into a reverb whose mix breathes under a second LFO).
       CV-conventions table + reverb/mixer entries updated in MODULES.md (mixer
       stub replaced with full ports/params/patching). Follow-ups: damping_cv
-      (tone of the tail); master_cv on the mixer if chaining a VCA ever
-      grates; reverb size CV only with crossfaded line-length interpolation.
+      (tone of the tail) — DONE 2026-07-02, see below; master_cv on the mixer
+      if chaining a VCA ever grates; reverb size CV only with crossfaded
+      line-length interpolation.
+
+- [x] **Reverb `damping_cv`** — DONE 2026-07-02 (Matthew's ask, with the
+      motion_eq gain CVs). By-the-book third macro: additive level units on
+      the same shared `cv_depth` as decay/mix, block-meaned, clamped 0..1.
+      Click-safe by construction — it only retunes the recirculation one-pole
+      between blocks and the filter state (`lpz`) carries. 7 tests appended to
+      `tests/test_reverb_mixer_cv.py` (dyadic bit-identical static
+      equivalence, depth scale/disable, clamp, tail-HF halves at high CV,
+      pre-CV dicts load). Example `motion_eq_breathe.json` LFOs it at 0.05 Hz
+      (the hall darkens and re-opens). `size` remains the one no-CV param.
 
 - [ ] **Reverb / mixer CV (lowest priority).** The other two static processors.
       Reverb `mix`/`size`/`decay` CV for swelling or morphing spaces could be

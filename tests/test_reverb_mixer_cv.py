@@ -3,7 +3,9 @@
 Reverb gains ``decay_cv`` + ``mix_cv`` — additive in level units,
 scaled by one shared ``cv_depth`` (default 1.0), block-meaned and
 clamped 0..1 exactly like the static params. ``size`` deliberately has
-no CV (sweeping delay-line lengths clicks).
+no CV (sweeping delay-line lengths clicks). 2026-07-02: ``damping_cv``
+joins them (same shared depth, same summing) — it only retunes the
+recirculation low-pass between blocks, so it's click-safe.
 
 Mixer gains per-channel ``gain{i}_cv`` — VCA-style **per-sample
 multiplicative** (channel i = ``in_i * gain_i * cv_i``), unpatched =
@@ -67,6 +69,7 @@ class TestModel:
         assert [(p.name, p.signal_kind) for p in rv.input_ports] == [
             ("in", "audio"),
             ("decay_cv", "cv"),
+            ("damping_cv", "cv"),
             ("mix_cv", "cv"),
         ]
 
@@ -290,3 +293,78 @@ class TestIntegration:
             assert blk is not None and np.all(np.isfinite(blk))
             peak = max(peak, float(np.abs(blk).max()))
         assert 0.0 < peak < 1.0
+
+
+class TestReverbDampingCV:
+    """``damping_cv`` — the third safe macro, added 2026-07-02."""
+
+    def setup_method(self):
+        rng = np.random.default_rng(7)
+        self.x = (rng.standard_normal(8 * 512) * 0.3).astype(np.float32)
+
+    def test_audio_into_damping_cv_rejected(self):
+        p = Patch()
+        osc = p.add_module("oscillator")
+        rv = p.add_module("reverb")
+        with pytest.raises(ValueError):
+            p.connect(osc.id, "out", rv.id, "damping_cv")
+
+    def test_damping_cv_equivalent_to_static_damping(self):
+        # damping 0.25 + cv 0.5 at depth 1 must render bit-identically
+        # to a static damping of 0.75 (dyadic values, float-exact sum).
+        via_cv = _reverb_render(self.x, 8, cv_port="damping_cv",
+                                cv_value=0.5, damping=0.25)
+        static = _reverb_render(self.x, 8, damping=0.75)
+        assert np.array_equal(via_cv[0], static[0])
+        assert np.array_equal(via_cv[1], static[1])
+
+    def test_cv_depth_scales_damping(self):
+        # depth 0.5 halves the CV: 0.25 + 0.5*0.5 = 0.5 (dyadic).
+        via_cv = _reverb_render(self.x, 8, cv_port="damping_cv",
+                                cv_value=0.5, damping=0.25, cv_depth=0.5)
+        static = _reverb_render(self.x, 8, damping=0.5)
+        assert np.array_equal(via_cv[0], static[0])
+
+    def test_cv_depth_zero_disables_damping(self):
+        via_cv = _reverb_render(self.x, 8, cv_port="damping_cv",
+                                cv_value=1.0, damping=0.5, cv_depth=0.0)
+        static = _reverb_render(self.x, 8, damping=0.5)
+        assert np.array_equal(via_cv[0], static[0])
+
+    def test_over_range_damping_cv_clamps(self):
+        # 0.5 + cv 5.0 clamps to 1.0, same as static damping 1.0.
+        via_cv = _reverb_render(self.x, 8, cv_port="damping_cv",
+                                cv_value=5.0, damping=0.5)
+        static = _reverb_render(self.x, 8, damping=1.0)
+        assert np.array_equal(via_cv[0], static[0])
+
+    def test_damping_cv_darkens_the_tail(self):
+        # Burst in, then silence: driving damping up by CV must strip
+        # high-frequency energy from the late tail relative to leaving
+        # it bright (that is the knob's whole job).
+        blocks = 24
+        burst = np.zeros(blocks * 512, dtype=np.float32)
+        burst[:512] = (np.random.default_rng(8)
+                       .standard_normal(512).astype(np.float32) * 0.5)
+
+        def tail_hf(cv_value):
+            l, _ = _reverb_render(burst, blocks, cv_port="damping_cv",
+                                  cv_value=cv_value, damping=0.0,
+                                  decay=0.8, mix=1.0)
+            tail = l[16 * 512:]
+            spec = np.abs(np.fft.rfft(tail.astype(np.float64)))
+            freqs = np.fft.rfftfreq(tail.size, 1.0 / SR)
+            hf = spec[freqs > 4000.0].sum()
+            return hf / max(spec.sum(), 1e-12)
+
+        assert tail_hf(0.95) < 0.5 * tail_hf(0.0)
+
+    def test_pre_damping_cv_patch_dict_loads(self):
+        # A patch saved before damping_cv existed (no cable, params
+        # unchanged) still loads and renders.
+        p = Patch()
+        rv = p.add_module("reverb")
+        d = p.to_dict()
+        p2 = Patch.from_dict(d)
+        rv2 = p2.modules[rv.id]
+        assert "damping_cv" in [pt.name for pt in rv2.input_ports]

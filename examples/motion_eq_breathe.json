@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "next_id": 9,
+  "modules": [
+    { "id": 1, "type": "noise", "name": "white noise", "params": { "color": "white", "amp": 0.25 } },
+    { "id": 2, "type": "lfo", "name": "breathe A", "params": { "waveform": "sine", "rate": 0.13, "depth": 1.0, "bipolar": true } },
+    { "id": 3, "type": "lfo", "name": "breathe B", "params": { "waveform": "triangle", "rate": 0.21, "depth": 1.0, "bipolar": true } },
+    { "id": 4, "type": "motion_eq", "name": "breathing EQ", "params": {
+        "band1_freq": 120.0, "band1_gain": 0.0, "band1_q": 1.5,
+        "band2_freq": 500.0, "band2_gain": 0.0, "band2_q": 2.5,
+        "band3_freq": 2000.0, "band3_gain": 0.0, "band3_q": 2.5,
+        "band4_freq": 6000.0, "band4_gain": 0.0, "band4_q": 1.2,
+        "cv_depth": 1.0, "gain_cv_depth": 10.0 } },
+    { "id": 5, "type": "lfo", "name": "air", "params": { "waveform": "sine", "rate": 0.05, "depth": 1.0, "bipolar": true } },
+    { "id": 6, "type": "reverb", "name": "darkening hall", "params": {
+        "size": 0.7, "decay": 0.6, "damping": 0.5, "mix": 0.4, "cv_depth": 0.45 } },
+    { "id": 7, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.8 } },
+    { "id": 8, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.8 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",   "dst_module_id": 4, "dst_port": "in" },
+    { "src_module_id": 2, "src_port": "cv",    "dst_module_id": 4, "dst_port": "band2_gain_cv" },
+    { "src_module_id": 3, "src_port": "cv",    "dst_module_id": 4, "dst_port": "band3_gain_cv" },
+    { "src_module_id": 4, "src_port": "out",   "dst_module_id": 6, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "cv",    "dst_module_id": 6, "dst_port": "damping_cv" },
+    { "src_module_id": 6, "src_port": "out_l", "dst_module_id": 7, "dst_port": "in" },
+    { "src_module_id": 6, "src_port": "out_r", "dst_module_id": 8, "dst_port": "in" }
+  ]
+}

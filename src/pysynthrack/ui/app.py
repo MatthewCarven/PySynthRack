@@ -491,9 +491,10 @@ class App:
         if module.TYPE in ("parametric_eq", "motion_eq"):
             # (Parametric/Motion) EQ bands: ``band{i}_freq`` (Hz),
             # ``band{i}_gain`` (dB, 0 = flat), ``band{i}_q`` (width);
-            # MotionEQ adds a shared ``cv_depth`` (oct/unit) that scales
-            # its per-band ``freq_cv`` sweeps. Distinct ranges from the
-            # generic numeric fallbacks below.
+            # MotionEQ adds a shared ``cv_depth`` (oct/unit) scaling its
+            # per-band ``freq_cv`` sweeps and a shared ``gain_cv_depth``
+            # (dB/unit) scaling its per-band ``gain_cv`` pushes.
+            # Distinct ranges from the generic numeric fallbacks below.
             if param_name.endswith("_freq"):
                 dpg.add_drag_float(
                     label=param_name,
@@ -535,6 +536,13 @@ class App:
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=0.02,
                     min_value=0.0, max_value=4.0, format="%.2f oct/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "gain_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.1,
+                    min_value=0.0, max_value=18.0, format="%.1f dB/unit",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
@@ -1066,8 +1074,9 @@ class App:
                 )
                 return
             if param_name == "cv_depth":
-                # Shared by decay_cv + mix_cv; both targets are 0..1
-                # macros, so the depth is level units per CV unit.
+                # Shared by decay_cv + damping_cv + mix_cv; all three
+                # targets are 0..1 macros, so the depth is level units
+                # per CV unit.
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=0.02,
                     min_value=0.0, max_value=2.0, format="%.2f lvl/unit",

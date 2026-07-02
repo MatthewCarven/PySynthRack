@@ -94,6 +94,7 @@ The full map:
 | `crossover.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
 | `sweep_eq.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
 | `motion_eq.band{i}_freq_cv` | `1.0` (shared) | octaves | `freq_i · 2^(d·mean cv)` |
+| `motion_eq.band{i}_gain_cv` | `6.0` (shared, `gain_cv_depth`) | dB | `gain_i + d·mean cv` (clamped ±24) |
 | `chorus.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `flanger.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `phaser.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
@@ -102,7 +103,7 @@ The full map:
 | `delay.time_cv` | `50.0` | ms | `time + d·cv` |
 | `loudness.level_cv` | `1.0` | level (0…1) | `level + d·mean cv` |
 | `tilt_eq.tilt_cv` | `6.0` | dB | `tilt + d·mean cv` |
-| `reverb.decay_cv` / `reverb.mix_cv` | `1.0` (shared) | level (0…1) | `decay/mix + d·mean cv` |
+| `reverb.decay_cv` / `reverb.damping_cv` / `reverb.mix_cv` | `1.0` (shared) | level (0…1) | `decay/damping/mix + d·mean cv` |
 | `mixer.gain{i}_cv` | — (multiplier) | linear, per-sample | `in_i · gain_i · cv_i` |
 
 (Converters whose entire job is a CV mapping — `cv_to_frequency`, the bridges,
@@ -192,13 +193,13 @@ Every module type, its category, and its ports at a glance.
 | [`crossover`](#crossover) | Processor | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
 | [`parametric_eq`](#parametric_eq) | Processor | `in` (audio) → `out` (audio) |
 | [`sweep_eq`](#sweep_eq) | Processor | `in` (audio), `freq_cv` (cv) → `out` (audio) |
-| [`motion_eq`](#motion_eq) | Processor | `in` (audio), `band1_freq_cv`…`band4_freq_cv` (cv) → `out` (audio) |
+| [`motion_eq`](#motion_eq) | Processor | `in` (audio), `band1_freq_cv`…`band4_freq_cv`, `band1_gain_cv`…`band4_gain_cv` (cv) → `out` (audio) |
 | [`tilt_eq`](#tilt_eq) | Processor | `in` (audio), `tilt_cv` (cv) → `out` (audio) |
 | [`vca`](#vca) | Processor | `audio` (audio), `cv` (cv) → `out` (audio) |
 | [`resampler`](#resampler) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`delay`](#delay) | Processor | `in` (audio), `time_cv` (cv) → `out` (audio) |
-| [`reverb`](#reverb) | Processor | `in` (audio), `decay_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
+| [`reverb`](#reverb) | Processor | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`loudness`](#loudness) | Processor | `in` (audio), `level_cv` (cv) → `out` (audio) |
 | [`distortion`](#distortion) | Processor | `in` (audio), `drive_cv` (cv) → `out` (audio) |
 | [`waveshaper`](#waveshaper) | Processor | `in` (audio), `fold_cv` (cv) → `out` (audio) |
@@ -562,8 +563,10 @@ shape-polymorphic and block-size independent like both. See
 A **4-band parametric EQ whose band centres you sweep with CV** — the full
 "animated EQ". Four peaking bells like [parametric_eq](#parametric_eq), but
 each band has its own CV input (`band1_freq_cv` … `band4_freq_cv`) that slides
-*that band's* centre frequency. Patch four LFOs/envelopes in and four
-peaks/notches glide independently around the spectrum.
+*that band's* centre frequency, and a second (`band1_gain_cv` …
+`band4_gain_cv`) that pushes *that band's gain* in dB. Patch four
+LFOs/envelopes in and four peaks/notches glide independently around the
+spectrum — or breathe in and out.
 
 **Ports**
 
@@ -571,9 +574,10 @@ peaks/notches glide independently around the spectrum.
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to EQ. |
 | `band1_freq_cv` … `band4_freq_cv` | in | cv | Each sweeps its band's centre 1 V/oct × `cv_depth`; optional per band. |
+| `band1_gain_cv` … `band4_gain_cv` | in | cv | Each adds `gain_cv_depth` dB per CV unit to its band's gain (clamped ±24 dB); optional per band. |
 | `out` | out | audio | Equalised signal. |
 
-**Parameters** (per band `i` in 1..4, plus one shared `cv_depth`)
+**Parameters** (per band `i` in 1..4, plus shared `cv_depth` / `gain_cv_depth`)
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
@@ -581,14 +585,17 @@ peaks/notches glide independently around the spectrum.
 | `band{i}_gain` | `0.0` | −24 … +24 dB | Boost/cut (0 = transparent; negative = a notch). |
 | `band{i}_q` | `1.0` | 0.1 … 20 | Band width. |
 | `cv_depth` | `1.0` | octaves / CV unit | **Shared** — octaves each `band{i}_freq_cv` sweeps its band (1 V/oct). Per-band sensitivity is reachable with a [CVScale](#cv_scale) on any input. |
+| `gain_cv_depth` | `6.0` | 0 … 18 dB / CV unit | **Shared** — dB each `band{i}_gain_cv` adds to its band's gain (additive, block-meaned, clamped ±24 dB), the [tilt_eq](#tilt_eq) convention. 0 disables the gain CVs. |
 
-**Patching.** Gain/Q are static; frequency is the animated dimension. With
+**Patching.** Q is static; frequency and gain are the animated dimensions. With
 nothing patched, `motion_eq` is bit-identical to a [parametric_eq](#parametric_eq)
 of the same params (an unpatched band stays at its static centre). Reuses
 ParametricEQ's exact peaking cascade, so a 0 dB band is exactly transparent and
 shape-polymorphic/block-size behaviour matches. See
 `examples/motion_eq_animated.json` (two boosted bands swept through white noise
-by a pair of slow LFOs).
+by a pair of slow LFOs) and `examples/motion_eq_breathe.json` (two bands
+*breathing* via `gain_cv` while the reverb behind them darkens on
+`damping_cv`).
 
 #### `tilt_eq`
 
@@ -791,6 +798,7 @@ what the ear reads as width.
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to reverberate (voice sources summed to mono). Unpatched → silence. |
 | `decay_cv` | in | cv | Added to `decay` (× `cv_depth`) — animate the tail length. Optional. |
+| `damping_cv` | in | cv | Added to `damping` (× `cv_depth`) — darken/brighten the tail over a phrase. Optional. |
 | `mix_cv` | in | cv | Added to `mix` (× `cv_depth`) — envelope-driven reverb throws / wet ducking. Optional. |
 | `out_l` | out | audio | Left channel (dry + decorrelated wet). |
 | `out_r` | out | audio | Right channel (dry + decorrelated wet). |
@@ -803,7 +811,7 @@ what the ear reads as width.
 | `decay` | `0.5` | 0 … 1 | Tail length (reverberation time), short → long. |
 | `damping` | `0.5` | 0 … 1 | High-frequency absorption in the tail, bright → dark. |
 | `mix` | `0.3` | 0 … 1 | Dry/wet balance. Dry is centred; wet is the stereo tail. |
-| `cv_depth` | `1.0` | 0 … 2 lvl/unit | Level units per CV unit, shared by `decay_cv` and `mix_cv`; 0 disables both. `size` deliberately has no CV — sweeping delay-line lengths clicks. |
+| `cv_depth` | `1.0` | 0 … 2 lvl/unit | Level units per CV unit, shared by `decay_cv`, `damping_cv` and `mix_cv`; 0 disables all three. `size` deliberately has no CV — sweeping delay-line lengths clicks. |
 
 Patch the outputs into [`left_speaker_output`](#left_speaker_output) and
 [`right_speaker_output`](#right_speaker_output) for a wide tail. The
