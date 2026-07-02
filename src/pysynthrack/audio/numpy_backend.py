@@ -1061,7 +1061,9 @@ class NumpyBackend(AudioBackend):
             return self._render_cv_gates(module, frames)
         if module.TYPE == "clock":
             return self._render_clock(module, frames)
-        if module.TYPE == "sequencer":
+        if module.TYPE in ("sequencer", "fader_seq"):
+            # fader_seq is the Sequencer with a different front panel —
+            # identical param contract, one engine (see modules/fader_seq.py).
             return self._render_sequencer(module, frames, buffers, patch)
         if module.TYPE == "midi_input":
             return self._render_midi_input(module, frames)

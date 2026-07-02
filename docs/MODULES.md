@@ -218,6 +218,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
 | [`clock`](#clock) | Modulation | — → `out` (gate) |
 | [`sequencer`](#sequencer) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
+| [`fader_seq`](#fader_seq) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
 | [`audio_to_cv`](#audio_to_cv) | CV & Utilities | `in` (audio) → `cv` (cv) |
 | [`cv_to_audio`](#cv_to_audio) | CV & Utilities | `cv` (cv) → `out` (audio) |
 | [`schmitt`](#schmitt) | CV & Utilities | `in` (cv) → `gate` (gate) |
@@ -1319,6 +1320,24 @@ A clock-driven **step sequencer** — the self-playing centrepiece. On each `clo
 | `step{i}_on` | `true` | bool | Whether step *i* fires its gate. `false` = a rest (the step still consumes a clock tick). |
 
 **Patching.** `clock.out → sequencer.clock`; `sequencer.cv → oscillator.freq_cv`; `sequencer.gate → adsr.gate → vca.cv`; `oscillator.out → vca.audio → speaker`. See `examples/sequencer_melody.json`. The `cv` is generic 1V/oct — patch it into a filter `cutoff_cv` or any CV input for stepped modulation instead of pitch.
+
+#### `fader_seq`
+
+The [`sequencer`](#sequencer) with a hardware-style **fader-bank panel** —
+same engine, same ports, same params, different front. Instead of 33
+labelled parameter rows, the node draws sixteen **vertical pitch faders**
+side by side (Korg SQ-10 lineage) with nothing beneath each but its step
+number and an on/off tickbox; hover a fader for its note (`+7 st (G4)`).
+One labelled `steps` slider sets the loop length. The melody is readable
+at a glance — the fader heights *are* the tune.
+
+Faders are quantized to **integer semitones over ±12**; the shared engine
+accepts any float, so a hand-edited patch JSON can still go microtonal or
+beyond the panel range (the slider only clamps what the mouse does).
+Everything else — stepping, rests, reset, sample-and-hold `cv`, wrap at
+`steps` — behaves exactly as documented on [`sequencer`](#sequencer), and
+is pinned by a bit-identical A/B test. Pick whichever panel suits the
+patch; saved patches remember which one they used.
 
 #### `lfo`
 

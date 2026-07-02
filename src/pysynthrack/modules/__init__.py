@@ -53,6 +53,7 @@ from .output import (
 from .samplehold import SampleHold
 from .schmitt import Schmitt
 from .sequencer import Sequencer
+from .fader_seq import FaderSeq
 from .sweep_eq import SweepEQ
 from .tilt_eq import TiltEQ
 from .vca import VCA

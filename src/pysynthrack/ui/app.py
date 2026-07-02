@@ -35,6 +35,8 @@ from ..modules.midiinput import (
     compute_velocity_curve,
 )
 from ..modules.micinput import available_input_devices as mic_available_devices
+from ..modules.fader_seq import FADER_RANGE_ST
+from ..modules.sequencer import MAX_STEPS as SEQ_MAX_STEPS
 from ..modules.distortion import DISTORTION_MODES
 from ..modules.meter import METER_MODES
 from ..modules.waveshaper import WAVESHAPER_MODES
@@ -357,10 +359,15 @@ class App:
                 self._attr_to_port[attr_id] = (module.id, port.name, "in")
                 self._port_to_attr[(module.id, port.name, "in")] = attr_id
 
-            # Parameters (static, no circle)
-            for param_name, default in module.DEFAULT_PARAMS.items():
+            # Parameters (static, no circle). fader_seq draws its own
+            # compact fader-bank panel instead of 33 labelled param rows.
+            if module.TYPE == "fader_seq":
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                    self._add_param_widget(module, param_name, default)
+                    self._build_fader_seq_panel(module)
+            else:
+                for param_name, default in module.DEFAULT_PARAMS.items():
+                    with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                        self._add_param_widget(module, param_name, default)
 
             # FilePlayer: tape-style transport buttons plus a live
             # 'elapsed / total' playhead readout (_update_file_positions
@@ -1620,6 +1627,74 @@ class App:
         dpg.configure_item(tag, items=items)
         kind = "MIDI" if module_type == "midi_input" else "audio input"
         self._set_status(f"Refreshed {kind} devices: {n} found")
+
+    # ----- fader_seq panel ---------------------------------------------------
+
+    @classmethod
+    def _fader_tip(cls, st: int) -> str:
+        """Tooltip text for a fader position, e.g. '+7 st (G4)'."""
+        midi = 60 + int(st)
+        name = f"{cls._NOTE_NAMES[midi % 12]}{midi // 12 - 1}"
+        return f"{int(st):+d} st ({name})"
+
+    def _build_fader_seq_panel(self, module) -> None:
+        """The fader-bank front panel: one labelled ``steps`` slider, then
+        sixteen vertical pitch faders with only a step number and an on/off
+        tickbox beneath each — no other text (hover a fader for its note).
+        """
+        dpg.add_slider_int(
+            label="steps",
+            default_value=int(module.params["steps"]),
+            min_value=1,
+            max_value=SEQ_MAX_STEPS,
+            width=140,
+            callback=self._on_param_changed,
+            user_data=(module.id, "steps"),
+        )
+        with dpg.group(horizontal=True, horizontal_spacing=5):
+            for i in range(1, SEQ_MAX_STEPS + 1):
+                with dpg.group():
+                    st = int(round(float(module.params[f"step{i}_pitch"])))
+                    st = max(-FADER_RANGE_ST, min(FADER_RANGE_ST, st))
+                    fader = dpg.add_slider_int(
+                        vertical=True,
+                        default_value=st,
+                        min_value=-FADER_RANGE_ST,
+                        max_value=FADER_RANGE_ST,
+                        width=18,
+                        height=96,
+                        format="",
+                        callback=self._on_fader_pitch,
+                        user_data=(module.id, i),
+                    )
+                    with dpg.tooltip(fader):
+                        dpg.add_text(
+                            self._fader_tip(st),
+                            tag=f"fader_tip_{module.id}_{i}",
+                        )
+                    dpg.add_text(f"{i}")
+                    dpg.add_checkbox(
+                        label="",
+                        default_value=bool(module.params[f"step{i}_on"]),
+                        callback=self._on_param_changed,
+                        user_data=(module.id, f"step{i}_on"),
+                    )
+
+    def _on_fader_pitch(self, sender, app_data, user_data) -> None:
+        """A pitch fader moved: write the (float) semitone param, update tip.
+
+        Stored as float to keep the param type identical to the original
+        sequencer's — one engine, one JSON shape.
+        """
+        module_id, i = user_data
+        try:
+            self.backend.set_param(module_id, f"step{i}_pitch", float(app_data))
+        except Exception as exc:
+            self._set_status(f"Param error: {exc}")
+            return
+        tip_tag = f"fader_tip_{module_id}_{i}"
+        if dpg.does_item_exist(tip_tag):
+            dpg.set_value(tip_tag, self._fader_tip(int(app_data)))
 
     # ----- per-key velocity calibration dialog ------------------------------
 

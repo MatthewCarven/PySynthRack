@@ -5670,3 +5670,35 @@ house convention of not unit-testing dpg wiring.
 Docs: midi_input section in MODULES.md promoted from "_To document._" stub
 to full ports/params tables + calibration walkthrough; mic_input device row
 updated for the refresh button. Both TODO items moved to TODO-ARCHIVE.
+
+## 2026-07-03 — fader_seq: the sequencer with a fader-bank panel
+
+Matthew asked for "the sequencer horizontalised": up to 16 notes on
+vertical sliders, minimalist, only step numbers and a tickbox beneath —
+and wanted a better name than his. Picks via question dialog: name
+**fader_seq**, faders **±12 st**, **integer-semitone** quantization.
+
+New module type (original untouched, house precedent cv_gates/cv_keyboard),
+but engine sharing is by CONTRACT rather than copy: fader_seq publishes the
+exact same param names (steps / step{i}_pitch / step{i}_on) and ports, its
+DEFAULT_PARAMS are imported from sequencer._default_params (can't drift),
+and the numpy backend routes both TYPEs through the one _render_sequencer
+(state is per-module-id, so siblings step independently). pyo silent stub.
+
+UI: node build short-circuits the per-param loop for fader_seq and draws
+_build_fader_seq_panel instead — one labelled `steps` slider, then a
+horizontal group of 16 columns: 18x96 px vertical slider_int (±12,
+format="" so no in-slider text), step number, label-less checkbox. Hover
+tooltip per fader shows "+7 st (G4)" (updated live by _on_fader_pitch,
+which writes the param as float to keep the JSON shape identical to the
+original). FADER_RANGE_ST lives in the module (dpg-free) so tests pin it.
+
+Tests: 8 new in tests/test_fader_seq.py — param/port contract equality
+against Sequencer, default scale fits the fader range, serialization
+round-trip, BIT-IDENTICAL A/B render vs sequencer (same params + clock),
+independent per-module state, rest/reset smoke through the fader_seq TYPE.
+Suite: 1239 sandbox (+18 mido skips) expected, was 1231.
+
+Docs: MODULES.md table row + section after `sequencer`. No example patch
+yet — sequencer_melody.json applies verbatim (swap the type) — candidate
+follow-up if wanted.
