@@ -205,6 +205,7 @@ class PyoBackend(AudioBackend):
             "parametric_eq",
             "sweep_eq",
             "motion_eq",
+            "tilt_eq",
             "meter",
             "ad_envelope",
             "chorus",

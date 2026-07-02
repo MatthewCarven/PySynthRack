@@ -4869,3 +4869,56 @@ bass↔treble about a pivot via opposed shelves) remains to complete the trio;
 then the `cv_depth`-convention standardisation. Reverb/mixer CV stays lowest
 priority. Possible motion_eq follow-up: per-band gain-CV (the other animated
 dimension).
+
+## 2026-07-02 — TiltEQ (`tilt_eq`): the spectral seesaw — animated-EQ trio COMPLETE
+
+Third and final of the animated-EQ trio (after `sweep_eq` and `motion_eq`):
+a **CV-controlled tilt EQ**. One control seesaws the whole spectral balance
+about a `pivot` frequency — positive tilt boosts the lows and cuts the highs
+by the same amount (warmer), negative is the exact mirror (brighter), and the
+response passes ~0 dB at the pivot. `tilt_cv` drives it: an LFO makes a patch
+breathe dark↔bright, an envelope opens the top end with dynamics — one-knob
+voltage-controlled brightness, the simplest possible animated EQ.
+
+**Built by reuse, again.** The TODO spec said "two opposed shelves about
+`pivot` (like the `loudness` shelving pair)" and that's exactly what shipped:
+`_tilt_eq_coeffs` calls the loudness module's `_loud_shelf` twice — low shelf
+at `pivot` with `+tilt` dB, high shelf at the *same* pivot with `-tilt` — and
+`_render_tilt_eq` then delegates straight to `_render_loudness_mono/_voice`,
+which turn out to be fully generic biquad-cascade renderers keyed by module
+id. No loudness code was touched. So the DF-I state discipline,
+shape-polymorphism (mono `(F,)` + per-voice `(V, F)`, voice row bit-identical
+to mono) and the bit-exact identity at 0 dB are literally the same code paths
+the loudness module runs — the same reuse-not-duplication move as
+motion_eq → parametric_eq.
+
+**Knob convention** (Tonelux-style hardware tilt): `tilt` in dB is what the
+lows gain *and* the highs lose, so the total low↔high spread is twice the
+knob. Effective tilt = `tilt + cv_depth · mean(tilt_cv)` dB — summed in dB
+space, block-meaned (one coefficient set per block shared across voices, the
+Crossover's macro-sweep policy), clamped ±18 dB. `cv_depth` defaults to 6
+dB/unit so a full-depth bipolar LFO seesaws ±6 dB. Measured on sine probes:
+tilt +6 → **+6.0 dB @ 60 Hz, −0.0 @ 1 kHz pivot, −6.0 @ 12 kHz**; the null
+tracks `pivot` (500 Hz probe: flat with pivot=500, +8 dB with pivot=4 kHz).
+
+**Tested invariants (+20 → suite 981, all green in the sandbox with mido +
+dpg installed).** Bit-exact passthrough at tilt 0; boost/cut symmetry both
+directions; pivot stays flat and moves the null; a +1 CV at depth 6 renders
+**bit-identically** to a static +6 dB tilt (dB-space summing); depth 0
+disables CV; 12 + 12 clamps to 18 (bit-identical to static 18); block-size
+independent (512 vs 2048 bit-identical); voice==mono bit-identical; type
+walls; JSON round-trip; osc→tilt→speaker integration.
+
+**Example.** `tilt_eq_seesaw.json` — a 110 Hz saw drone through tilt_eq
+(`cv_depth` 9) swept by a 0.12 Hz bipolar sine LFO → speaker. Self-playing;
+the saw's harmonic balance audibly rocks bass-heavy↔treble-heavy; peak ≈ 0.47
+(headroom per the house gain rule). UI: pivot drag (Hz), tilt slider
+(±12 dB), cv_depth drag (dB/unit); pyo silent-stub extended; MODULES.md
+catalogue + index entries.
+
+**Animated-EQ trio complete** — sweep_eq (one moving band) / motion_eq (four
+moving bells) / tilt_eq (the whole spectrum on a seesaw). Follow-ups logged:
+slope options (fixed dB/oct tilt steepness), `pivot_cv`, per-band gain-CV on
+motion_eq. **Next on the CV-coverage plan:** the `cv_depth`-convention
+standardisation (units drifted: octaves / ms / semitones / dB across
+modules); reverb/mixer CV stays lowest priority.

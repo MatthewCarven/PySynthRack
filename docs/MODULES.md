@@ -144,6 +144,7 @@ Every module type, its category, and its ports at a glance.
 | [`parametric_eq`](#parametric_eq) | Processor | `in` (audio) → `out` (audio) |
 | [`sweep_eq`](#sweep_eq) | Processor | `in` (audio), `freq_cv` (cv) → `out` (audio) |
 | [`motion_eq`](#motion_eq) | Processor | `in` (audio), `band1_freq_cv`…`band4_freq_cv` (cv) → `out` (audio) |
+| [`tilt_eq`](#tilt_eq) | Processor | `in` (audio), `tilt_cv` (cv) → `out` (audio) |
 | [`vca`](#vca) | Processor | `audio` (audio), `cv` (cv) → `out` (audio) |
 | [`resampler`](#resampler) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
@@ -535,6 +536,42 @@ ParametricEQ's exact peaking cascade, so a 0 dB band is exactly transparent and
 shape-polymorphic/block-size behaviour matches. See
 `examples/motion_eq_animated.json` (two boosted bands swept through white noise
 by a pair of slow LFOs).
+
+#### `tilt_eq`
+
+A **CV-controlled spectral tilt** — a bass↔treble seesaw about a pivot
+frequency, the third (and simplest) of the animated-EQ trio. Positive tilt
+boosts the lows and cuts the highs by the same amount (warmer/darker);
+negative tilt is the mirror (brighter/thinner). Patch an LFO into `tilt_cv`
+and the sound breathes dark↔bright; an envelope (via
+[audio_to_cv](#audio_to_cv)) opens the top end with dynamics — one-knob
+voltage-controlled brightness.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to tilt. |
+| `tilt_cv` | in | cv | Added to `tilt`, scaled by `cv_depth` (dB per unit); optional. |
+| `out` | out | audio | Tilted signal. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `pivot` | `1000.0` | ~20 … 0.45·sr Hz | Frequency the balance seesaws about — the response stays ~0 dB there. |
+| `tilt` | `0.0` | −12 … +12 dB (UI) | Static base tilt. What the lows gain and the highs lose (total low↔high spread is twice this). 0 = bit-exact passthrough. |
+| `cv_depth` | `6.0` | 0 … 18 dB/unit | dB of tilt per `tilt_cv` unit — a bipolar LFO at full depth seesaws ±6 dB by default. |
+
+**Patching.** Two opposed RBJ shelves cornered at the *same* pivot — the
+[loudness](#loudness) module's shelf pair with mirrored gains, run by the same
+cascade renderer, so shape-polymorphism and the bit-exact identity at 0 dB are
+literally the same code. Effective tilt = `tilt + cv_depth × mean(tilt_cv)`
+dB, block-meaned (macro control, all voices share the curve), clamped ±18 dB.
+Where the trio sits: [sweep_eq](#sweep_eq) moves one resonant band,
+[motion_eq](#motion_eq) sweeps four bells, `tilt_eq` seesaws the whole
+spectrum. See `examples/tilt_eq_seesaw.json` (a saw drone breathing
+dark↔bright under a slow LFO).
 
 #### `vca`
 

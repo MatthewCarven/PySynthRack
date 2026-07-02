@@ -718,6 +718,8 @@ class NumpyBackend(AudioBackend):
             return self._render_motion_eq(module, frames, buffers, patch)
         if module.TYPE == "sweep_eq":
             return self._render_sweep_eq(module, frames, buffers, patch)
+        if module.TYPE == "tilt_eq":
+            return self._render_tilt_eq(module, frames, buffers, patch)
         if module.TYPE == "meter":
             return self._render_meter(module, frames, buffers, patch)
         if module.TYPE == "chorus":
@@ -4147,6 +4149,48 @@ class NumpyBackend(AudioBackend):
             x1[k] = nx1; x2[k] = nx2; y1[k] = ny1; y2[k] = ny2
             x = out
         return x.astype(np.float32)
+
+    # ----- TiltEQ rendering ------------------------------------------------
+
+    def _tilt_eq_coeffs(self, pivot, tilt_db):
+        """Two opposed shelves about one pivot: lows +tilt dB, highs -tilt.
+
+        Same RBJ shelf as Loudness (`_loud_shelf`), same (2, ...) coeff
+        layout, so the generic loudness cascade renderers run it as-is.
+        At tilt 0 both shelves are identity -> bit-exact passthrough.
+        """
+        lo = self._loud_shelf(pivot, tilt_db, True)
+        hi = self._loud_shelf(pivot, -tilt_db, False)
+        return tuple(np.array([lo[k], hi[k]], dtype=np.float64) for k in range(5))
+
+    def _render_tilt_eq(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Spectral tilt about a pivot, CV-controlled (bass<->treble seesaw).
+
+        Effective tilt is ``tilt + cv_depth * mean(tilt_cv)`` dB (block-
+        meaned, one coefficient set per block shared across voices --
+        the Crossover's macro-sweep policy), clamped to +/-18 dB.
+        Positive CV boosts the lows and cuts the highs. Delegates to the
+        Loudness cascade renderers (they are generic biquad chains keyed
+        by module id), so shape-polymorphism, DF-I state discipline and
+        the bit-exact identity at 0 dB are literally the same code.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        if src is None:
+            return np.zeros(frames, dtype=np.float32)
+
+        tilt_cv = self._input_buffer(
+            patch, buffers, module.id, "tilt_cv", collapse=False
+        )
+        pivot = float(module.params.get("pivot", 1000.0))
+        tilt = float(module.params.get("tilt", 0.0))
+        cv_depth = float(module.params.get("cv_depth", 6.0))
+        cvs = float(np.mean(tilt_cv)) if tilt_cv is not None and tilt_cv.size else 0.0
+        tilt_eff = float(np.clip(tilt + cv_depth * cvs, -18.0, 18.0))
+        coeffs = self._tilt_eq_coeffs(pivot, tilt_eff)
+
+        if src.ndim == 2:
+            return self._render_loudness_voice(module, frames, src, coeffs)
+        return self._render_loudness_mono(module, frames, src, coeffs)
 
     # ----- Reverb rendering -----------------------------------------------
 

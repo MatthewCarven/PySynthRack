@@ -47,6 +47,7 @@ from .samplehold import SampleHold
 from .schmitt import Schmitt
 from .sequencer import Sequencer
 from .sweep_eq import SweepEQ
+from .tilt_eq import TiltEQ
 from .vca import VCA
 
 __all__ = [
@@ -91,6 +92,7 @@ __all__ = [
     "Schmitt",
     "Sequencer",
     "SweepEQ",
+    "TiltEQ",
     "SpeakerOutput",
     "VCA",
 ]

@@ -282,7 +282,7 @@ chorus/flanger/phaser `rate_cv`, loudness `level_cv`, resampler/pitch_shifter
 yet — spec capture only. Module names are Claude's call (Matthew deferred);
 open to a better scheme if one turns up.
 
-- [ ] **Animated-EQ trio — three CV-controllable EQ modules.** Matthew's call:
+- [x] **Animated-EQ trio — three CV-controllable EQ modules.** COMPLETE 2026-07-02. Matthew's call:
       offer a *module per take* rather than one mega-EQ. All three are new
       modules; the existing `parametric_eq` stays exactly as-is (the static
       one). Each follows the house CV convention (`<target>_cv` input +
@@ -316,13 +316,27 @@ open to a better scheme if one turns up.
         block-size independent. 19 tests, suite 949. Example
         `sweep_eq_autowah.json`. Delivered as `sweep_eq.patch`.
 
-  - [ ] **`tilt_eq`** — *spin-off #2, the global-tilt take.* One `tilt_cv`
-        **tilts the spectral balance** about a pivot frequency: as the CV rises,
-        lows boost + highs cut (and vice versa) — a bass↔treble seesaw, i.e.
-        one-knob voltage-controlled brightness/darkness. Implement as two
-        opposed shelves about `pivot` (like the `loudness` shelving pair).
-        Params: `pivot` (Hz), `tilt` (static base tilt, dB), `cv_depth`. Ports:
-        `in` + `tilt_cv` (cv) → `out`.
+  - [x] **`tilt_eq`** — DONE 2026-07-02. **Trio complete.** One `tilt_cv`
+        tilts the spectral balance about `pivot`: positive CV/tilt boosts the
+        lows and cuts the highs by the same dB (Tonelux-style knob convention:
+        `tilt` is what the lows gain and the highs lose; total spread is twice
+        it), negative is the mirror; the response passes ~0 dB at the pivot.
+        Built as planned from the `loudness` shelving pair: two opposed RBJ
+        shelves cornered at the *same* pivot (`_tilt_eq_coeffs` = `_loud_shelf`
+        ±tilt), delegating to `_render_loudness_mono/_voice` — those are
+        generic biquad-cascade renderers keyed by module id, so
+        shape-polymorphism, DF-I state and the bit-exact identity at 0 dB are
+        literally the loudness code (reuse-not-duplication, like motion_eq →
+        parametric_eq). Effective tilt = `tilt + cv_depth·mean(tilt_cv)` dB,
+        block-meaned macro control, clamped ±18 dB; `cv_depth` defaults 6
+        dB/unit (bipolar LFO seesaws ±6 dB). Params `pivot`(1000)/`tilt`(0)/
+        `cv_depth`; measured +6.0/−0.0/−6.0 dB at 60 Hz/pivot/12 kHz for
+        tilt=+6, null tracks the pivot. Shape-polymorphic, voice==mono
+        bit-identical, block-size independent, tilt-0 bit-exact passthrough.
+        20 tests, suite 981. Example `tilt_eq_seesaw.json` (saw drone
+        breathing dark↔bright under a 0.12 Hz LFO). Delivered as
+        `tilt_eq.patch`. Follow-ups: slope options (dB/oct steepness);
+        `pivot_cv`; a mid-flat "shelf-tilt" variant.
 
 - [x] **Crossover `freq_cv`** — DONE 2026-07-02. `crossover` gained a
       `freq_cv` input + `cv_depth` param (octaves/unit, 1 V/oct), block-mean

@@ -1,0 +1,85 @@
+{
+ "version": 1,
+ "next_id": 5,
+ "modules": [
+  {
+   "id": 1,
+   "type": "oscillator",
+   "name": "saw drone",
+   "params": {
+    "waveform": "saw",
+    "freq": 110.0,
+    "amp": 0.35
+   }
+  },
+  {
+   "id": 2,
+   "type": "lfo",
+   "name": "seesaw",
+   "params": {
+    "waveform": "sine",
+    "rate": 0.12,
+    "depth": 1.0,
+    "bipolar": true
+   }
+  },
+  {
+   "id": 3,
+   "type": "tilt_eq",
+   "name": "tilt",
+   "params": {
+    "pivot": 1000.0,
+    "tilt": 0.0,
+    "cv_depth": 9.0
+   }
+  },
+  {
+   "id": 4,
+   "type": "speaker_output",
+   "name": "speaker_output",
+   "params": {
+    "gain": 0.5
+   }
+  }
+ ],
+ "cables": [
+  {
+   "src_module_id": 1,
+   "src_port": "out",
+   "dst_module_id": 3,
+   "dst_port": "in"
+  },
+  {
+   "src_module_id": 2,
+   "src_port": "cv",
+   "dst_module_id": 3,
+   "dst_port": "tilt_cv"
+  },
+  {
+   "src_module_id": 3,
+   "src_port": "out",
+   "dst_module_id": 4,
+   "dst_port": "in"
+  }
+ ],
+ "ui": {
+  "node_positions": {
+   "1": [
+    40,
+    60
+   ],
+   "2": [
+    40,
+    240
+   ],
+   "3": [
+    320,
+    130
+   ],
+   "4": [
+    600,
+    150
+   ]
+  }
+ }
+}

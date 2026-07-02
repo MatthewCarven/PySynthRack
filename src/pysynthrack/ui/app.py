@@ -671,6 +671,33 @@ class App:
                 )
                 return
 
+        if module.TYPE == "tilt_eq":
+            # Spectral tilt (bass<->treble seesaw). ``pivot`` is the Hz the
+            # balance seesaws about; ``tilt`` the static base tilt in dB
+            # (positive = lows up / highs down); ``cv_depth`` the dB of
+            # tilt per tilt_cv unit.
+            if param_name == "pivot":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=20.0, max_value=20000.0, format="%.0f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "tilt":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-12.0, max_value=12.0, format="%.1f dB",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.1,
+                    min_value=0.0, max_value=18.0, format="%.1f dB/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "crossover":
             # LR4 two-way split. ``freq`` is the corner (Hz); ``cv_depth``
             # scales freq_cv (octaves per unit, 1 V/oct) to sweep the
