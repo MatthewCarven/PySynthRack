@@ -215,6 +215,7 @@ class PyoBackend(AudioBackend):
             "reverb",
             "loudness",
             "distortion",
+            "waveshaper",
             "resampler",
             "pitch_shifter",
             "cv_gates",

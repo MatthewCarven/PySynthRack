@@ -33,6 +33,7 @@ from ..modules.midiinput import AUTO_DEVICE, available_devices as midi_available
 from ..modules.micinput import available_input_devices as mic_available_devices
 from ..modules.distortion import DISTORTION_MODES
 from ..modules.meter import METER_MODES
+from ..modules.waveshaper import WAVESHAPER_MODES
 from ..modules.noise import NOISE_COLORS
 from ..modules.oscillator import WAVEFORMS
 from ..modules.sweep_eq import SWEEP_EQ_MODES
@@ -942,6 +943,42 @@ class App:
                 )
                 return
 
+        if module.TYPE == "waveshaper":
+            # Wavefolder. ``fold`` is the push into the folder (1 = a
+            # full-scale signal just reaches the rails); ``symmetry``
+            # slides the signal off-centre pre-fold (even harmonics);
+            # ``mix`` is dry/wet; ``cv_depth`` scales fold_cv in fold
+            # units per CV unit. ``mode`` hits the shared mode-combo
+            # branch (triangle / sine).
+            if param_name == "fold":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=16.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "symmetry":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-1.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "mix":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.1,
+                    min_value=0.0, max_value=16.0, format="%.1f fold/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "delay":
             # Echo controls. ``time`` is the delay in ms; ``feedback`` sets
             # how many repeats; ``tone`` damps the feedback path (dark <->
@@ -1061,6 +1098,8 @@ class App:
                 items = list(METER_MODES)
             elif module.TYPE == "distortion":
                 items = list(DISTORTION_MODES)
+            elif module.TYPE == "waveshaper":
+                items = list(WAVESHAPER_MODES)
             else:
                 items = list(FILTER_MODES)
             dpg.add_combo(

@@ -201,6 +201,7 @@ Every module type, its category, and its ports at a glance.
 | [`reverb`](#reverb) | Processor | `in` (audio), `decay_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`loudness`](#loudness) | Processor | `in` (audio), `level_cv` (cv) → `out` (audio) |
 | [`distortion`](#distortion) | Processor | `in` (audio), `drive_cv` (cv) → `out` (audio) |
+| [`waveshaper`](#waveshaper) | Processor | `in` (audio), `fold_cv` (cv) → `out` (audio) |
 | [`chorus`](#chorus) | Processor | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`flanger`](#flanger) | Processor | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
@@ -899,6 +900,58 @@ as drive → 0. Shape-polymorphic with per-voice filter state; a single
 voice row is bit-identical to mono; block-size independent. See
 `examples/distortion_drive.json` (a sequenced saw riff through the
 tube curve).
+
+---
+
+#### `waveshaper`
+
+A **wavefolder** — the west-coast sibling of the
+[`distortion`](#distortion) pedal. Where distortion *flattens* a
+waveform against the rails, a folder *reflects* it: signal that would
+exceed the rails folds back toward zero, and keeps folding as you push
+harder. A plain sine through a rising `fold` sweeps from pure tone
+through nasal, brassy, metallic, to shimmering comb-like spectra — the
+classic Buchla/Serge way to build complex timbres from simple sources
+(sine in, fold, filter after).
+
+`fold` is the push into the folder (1 = a full-scale signal just
+touches the rails); `mode` picks the reflection — **triangle** (hard
+geometric reflection; *exact passthrough* below the rails) or **sine**
+(a sine transfer curve: smooth creases, gently colours even below the
+rails). `symmetry` slides the signal off-centre before folding for
+even harmonics and growl (its DC byproduct is blocked internally), and
+`fold_cv` modulates the fold per sample — a slow LFO here is *the*
+wavefolder patch. `mix` = 0 is a bit-exact passthrough.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to fold. Unpatched → silence. |
+| `fold_cv` | in | cv | Per-sample fold modulation, scaled by `cv_depth`. Optional. |
+| `out` | out | audio | The folded signal. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `fold` | `1.0` | 0 … 16 | Fold amount; 1 = rails just reached, higher folds repeatedly. |
+| `symmetry` | `0.0` | −1 … 1 | Pre-fold offset — even harmonics; DC blocked internally. |
+| `mode` | `"triangle"` | triangle / sine | Hard reflection vs smooth sine fold. |
+| `mix` | `1.0` | 0 … 1 | Dry/wet. 0 = bit-exact passthrough. |
+| `cv_depth` | `4.0` | 0 … 16 | Fold units per unit of `fold_cv`. |
+
+**How it works.** Shares the Distortion's **4× streaming oversampling**
+pair (folding is savagely bright — without it the upper folds alias
+into inharmonic hash) and its 16-sample delay-compensated dry path.
+The triangle fold is one vectorised `mod` (the periodic triangle
+function of `fold·x + symmetry`, identity for |u| ≤ 1); the sine fold
+is `sin(π/2·u)`. The DC blocker only engages while `symmetry` ≠ 0, so
+a centred triangle fold at `fold` = 1 passes a full-scale signal
+through *exactly* (modulo the oversampler's tiny FIR ripple).
+Shape-polymorphic, per-voice state, block-size independent. See
+`examples/waveshaper_fold_drone.json` (a pure 110 Hz sine, fold swept
+1→7 by a 0.08 Hz LFO with a touch of symmetry — timbre that breathes).
 
 ---
 

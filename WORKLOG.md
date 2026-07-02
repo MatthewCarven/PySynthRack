@@ -5113,3 +5113,41 @@ level 0.55 — post-master peak 0.51, headroom per the house rule).
 
 Waveshaper (the folder) lands in the next commit, stacked on this
 oversampling plumbing.
+
+## 2026-07-02 — Waveshaper (`waveshaper`): the wavefolder, stacked on the 4× plumbing
+
+Second of Matthew's two-module nonlinear pair. Where the Distortion
+flattens against the rails, this reflects off them — the Buchla/Serge
+route from a plain sine to brassy/metallic/comb-like spectra. Built
+directly on the previous commit's `_Oversampler4` + `_dc_block`
+infrastructure, which is exactly why that landed as shared module-level
+kit.
+
+**Folds.** `triangle` = the periodic triangle function of
+`u = fold·x + symmetry`, one vectorised `np.mod` — hard geometric
+reflection that is the IDENTITY for |u| ≤ 1, so a centred fold=1 passes
+a full-scale signal through exactly (measured 5e-5, just FIR ripple).
+`sine` = `sin(π/2·u)` — smooth creases, colours even below the rails
+(that's its character, documented as such). `symmetry` slides the wave
+off-centre pre-fold → even harmonics (H2/H1 ≈ 7% at 0.4) with the DC
+blocked; the blocker only engages while symmetry ≠ 0 so the exactness
+guarantee above survives. Per-sample `fold_cv` (fold units, ZOH to 4×,
+clamped 0..32); fold=0 collapses to silence (u = symmetry constant).
+
+**Measured at fold 6 on a sine: H3 and H5 rival the fundamental**
+(1.9× / 2.0×) while the output stays bounded (1.15 incl. filter
+ringing) — the folder doing folder things.
+
+**Tests: 23 in `tests/test_waveshaper.py`** — identity/silence edges,
+fold richness + bound, mode difference, sine-curve formula match at low
+fold, symmetry evens + DC, constant-CV == static fold, a
+held-then-ramped fold_cv blooming H3 by >5× between halves, and the
+same invariant battery as the pedal (bit-identical 512/4096/333,
+voice==mono, voices independent, extremes finite). Example
+`examples/waveshaper_fold_drone.json` (110 Hz sine, 0.08 Hz LFO sweeps
+fold 1→7, symmetry 0.15 — post-master peak 0.54).
+
+**With this the nonlinear pair is complete:** distortion for east-coast
+grit, waveshaper for west-coast bloom, both aliasing-safe on the same
+streaming 4× pair. Suite: 1073 in sandbox (+18 mido) — +27 pedal, +23
+folder over the meter baseline.

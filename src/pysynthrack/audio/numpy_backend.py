@@ -832,6 +832,8 @@ class NumpyBackend(AudioBackend):
             return self._render_loudness(module, frames, buffers, patch)
         if module.TYPE == "distortion":
             return self._render_distortion(module, frames, buffers, patch)
+        if module.TYPE == "waveshaper":
+            return self._render_waveshaper(module, frames, buffers, patch)
         if module.TYPE == "resampler":
             return self._render_resampler(module, frames, buffers, patch)
         if module.TYPE == "pitch_shifter":
@@ -5508,6 +5510,95 @@ class NumpyBackend(AudioBackend):
             out = wet
             # Keep the dry tail warm so sweeping mix down mid-stream
             # doesn't splice in a stale block.
+            buf = np.concatenate([state["dry_tail"], x], axis=-1)
+            state["dry_tail"] = buf[:, frames:]
+        else:
+            buf = np.concatenate([state["dry_tail"], x], axis=-1)
+            dry = buf[:, :frames]
+            state["dry_tail"] = buf[:, frames:]
+            out = (1.0 - mix) * dry + mix * wet
+
+        out32 = out.astype(np.float32)
+        return {"out": out32[0] if was_mono else out32}
+
+    # ----- waveshaper (wavefolder) -------------------------------------------
+
+    _FOLD_MAX = 32.0
+
+    @staticmethod
+    def _fold_curve(mode: str, u):
+        """Fold ``u`` (any real) back into [-1, 1].
+
+        triangle: exact geometric reflection at the rails — the
+        periodic triangle function of u, which is the IDENTITY for
+        |u| <= 1 and reflects beyond (period 4: 1 -> 1, 2 -> 0,
+        3 -> -1, ...). Vectorised via one mod.
+
+        sine: sin(pi/2 * u) — smooth trigonometric folding; for
+        |u| <= 1 it is a gentle S-curve rather than the identity
+        (that's the mode's character, not an error).
+        """
+        if mode == "sine":
+            return np.sin((np.pi / 2.0) * u)
+        return np.abs(np.mod(u - 1.0, 4.0) - 2.0) - 1.0
+
+    def _render_waveshaper(self, module, frames: int, buffers, patch):
+        """Wavefolder: 4x-oversampled fold with symmetry and mix.
+
+        Chain: up 4x -> u = fold_total * x + symmetry (fold_total =
+        fold + cv_depth * fold_cv per sample, clamped 0.._FOLD_MAX) ->
+        fold curve -> down 4x -> DC blocker (only when symmetry != 0;
+        a centred fold generates no DC and triangle mode's below-rails
+        passthrough stays exact) -> blend with the delay-compensated
+        dry tap. Same oversampler/latency/mix contract as Distortion:
+        shape-polymorphic, per-voice state, mix <= 0 returns the input
+        bit-exactly.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        if src is None or src.size == 0:
+            return {"out": np.zeros(frames, dtype=np.float32)}
+
+        mix = float(module.params.get("mix", 1.0))
+        if mix <= 0.0:
+            return {"out": src}  # bit-exact bypass
+
+        was_mono = src.ndim == 1
+        x = np.atleast_2d(src).astype(np.float64)
+        v = x.shape[0]
+
+        state = self._state.setdefault(module.id, {})
+        os4 = state.get("os4")
+        if os4 is None or os4.voices != v:
+            state["os4"] = os4 = _Oversampler4(v)
+            state["dc_zi"] = np.zeros((v, 1))
+            state["dry_tail"] = np.zeros((v, _OS_LATENCY))
+
+        fold = float(module.params.get("fold", 1.0))
+        symmetry = float(module.params.get("symmetry", 0.0))
+        mode = str(module.params.get("mode", "triangle"))
+        if mode not in ("triangle", "sine"):
+            mode = "triangle"
+        cv_depth = float(module.params.get("cv_depth", 4.0))
+
+        cv = self._input_buffer(patch, buffers, module.id, "fold_cv", collapse=False)
+        if cv is not None and cv.size and cv_depth != 0.0:
+            g = fold + cv_depth * np.atleast_2d(cv).astype(np.float64)
+            g = np.clip(g, 0.0, self._FOLD_MAX)
+            g = np.broadcast_to(g, x.shape)
+            g_up = np.repeat(g, _OS_FACTOR, axis=-1)  # zero-order hold
+        else:
+            g_up = min(max(fold, 0.0), self._FOLD_MAX)
+
+        u = g_up * os4.up(x)
+        if symmetry != 0.0:
+            u = u + symmetry
+        wet = os4.down(self._fold_curve(mode, u))
+
+        if symmetry != 0.0:
+            wet, state["dc_zi"] = _dc_block(wet, state["dc_zi"])
+
+        if mix >= 1.0:
+            out = wet
             buf = np.concatenate([state["dry_tail"], x], axis=-1)
             state["dry_tail"] = buf[:, frames:]
         else:
