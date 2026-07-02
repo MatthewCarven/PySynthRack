@@ -5564,3 +5564,28 @@ row present, TODO items ticked). Two fixes and one find:
 Compaction verdict: WORKLOG is 5.5k lines (append-only history — fine);
 TODO still carries every completed v0.1–v0.4 item (~350 of 460 lines are
 [x]) — offered to archive completed eras into a TODO-ARCHIVE.md if wanted.
+
+## 2026-07-03 — TODO compacted into live list + archive
+
+Matthew approved the compaction offered in the housekeeping audit. TODO.md
+(459 lines, ~350 of them [x]) split programmatically, conservation-checked
+(every non-blank line lands in exactly one output, same multiplicity):
+
+- TODO.md (100 lines): open items only — the Filter-vectorization block
+  (slices 5/6 still open, shipped sub-slices kept in place for context),
+  the audio_to_cv per-sample loop, and the six polish one-liners — plus a
+  new "Follow-up threads extracted from archived entries" section hoisting
+  the recurring open threads (resampler window/AA/seam-search, pitch_shifter
+  vectorize/transients, S&H slew/T&H/noise-normal, meter round 4, FilePlayer
+  ffmpeg hint, exe slimming, 2-player idea) so the live list stands alone.
+- TODO-ARCHIVE.md (436 lines, new file): v0.1–v0.4 eras, all shipped
+  Later/wishlist entries, and the CV-coverage section, verbatim with their
+  per-entry follow-up notes.
+
+Also: commit ca8ef8a landed but its accompanying git restore did NOT —
+media.py in the working tree is still the 3.7 KB pre-streaming version
+(mtime 2026-06-30) vs HEAD's 11 KB StreamingDecoder blob. Restore re-handed
+to Matthew with a Select-String verification step. (Sandbox note: the
+Windows-git index now uses an extension the sandbox git can't parse, so
+index-dependent git — status/diff-against-index — is unusable from here;
+object reads like log/show still work.)
