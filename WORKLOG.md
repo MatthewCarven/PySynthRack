@@ -5589,3 +5589,25 @@ to Matthew with a Select-String verification step. (Sandbox note: the
 Windows-git index now uses an extension the sandbox git can't parse, so
 index-dependent git — status/diff-against-index — is unusable from here;
 object reads like log/show still work.)
+
+## 2026-07-03 — CORRECTION: the FilePlayer 'working-tree drift' was a phantom
+
+Retraction of the audit FOUND above. Matthew's Select-String shows
+`class StreamingDecoder` at media.py:108 on the real filesystem — his
+working tree was correct all along. The sandbox mount was serving STALE
+per-file reads: media.py appeared as the 3.7 KB pre-streaming version
+(and not even byte-faithful to any committed version — a corrupted read,
+not a clean stale snapshot) while numpy_backend.py
+read fresh in the same directory. The 'corrupt index' error was more of the
+same. Both git restores I handed over (ca8ef8a's and f2fa75e's) were
+therefore no-ops, not failures.
+
+Lesson recorded in memory: never diagnose repo/working-tree state from
+sandbox reads of this mount — phantom diffs are indistinguishable from real
+drift on this side. Verify on the Windows side (Select-String / git status
+there) before raising an alarm. Doc edits remain trustworthy because each
+write is read back and verified in the same session.
+
+State after this session: ca8ef8a (housekeeping) + f2fa75e (TODO compaction:
+TODO.md 459→100-line live list, TODO-ARCHIVE.md 436 lines verbatim) both
+committed and pushed by Matthew. No open hand-offs.
