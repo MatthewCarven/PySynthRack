@@ -103,6 +103,27 @@ def available_devices() -> list[str]:
         return []
 
 
+def compute_velocity_curve(samples: dict[int, list[float]]) -> dict[str, float]:
+    """Turn learn-mode capture data into a per-key velocity curve.
+
+    ``samples`` maps raw MIDI note -> list of captured normalized
+    velocities ([0, 1]), as returned by
+    :meth:`MIDIInput.stop_velocity_capture`. Each key's hits are averaged;
+    the calibration target is the mean of those per-key means, so quiet
+    keys get multipliers > 1 and hot keys < 1. Keys never captured keep
+    their implicit 1.0 (they simply don't appear in the result).
+
+    Returned keys are *strings* — the curve lives in the JSON-serialized
+    ``velocity_curve`` param and JSON object keys are always strings, so
+    string keys are the canonical form end to end.
+    """
+    means = {n: sum(vs) / len(vs) for n, vs in samples.items() if vs}
+    if not means:
+        return {}
+    target = sum(means.values()) / len(means)
+    return {str(n): round(target / m, 4) for n, m in means.items() if m > 0.0}
+
+
 @register_module_type
 class MIDIInput(Module):
     """MIDI-driven polyphonic note source.
@@ -119,6 +140,16 @@ class MIDIInput(Module):
             note-on velocity (0-127 mapped to 0-1). When False, every note
             plays at unit velocity — useful when the controller has bad
             velocity curves.
+        velocity_curve: Per-key velocity calibration map, ``{str(raw
+            midi note): multiplier}``. Applied to the normalized note-on
+            velocity *after* the 0-127 normalization and *before* voice
+            allocation, then clamped back into [0, 1]. Keyed by the
+            physical key (pre-``octave_shift``) because it corrects
+            keybed manufacturing variance, which lives in the hardware,
+            not the transposed pitch. Keys absent from the map get 1.0.
+            String keys are canonical (JSON object keys are strings).
+            Built by the "Calibrate keys" learn flow (see
+            :func:`compute_velocity_curve`) or edited by hand.
         waveform: naive ``"sine"`` / ``"saw"`` / ``"square"`` /
             ``"triangle"``, PolyBLEP/PolyBLAMP ``*_blep``, or
             wavetable ``*_wt`` (see ``oscillator.WAVEFORMS``).
@@ -165,6 +196,7 @@ class MIDIInput(Module):
         "channel": 0,
         "octave_shift": 0,
         "velocity_sensitive": True,
+        "velocity_curve": {},
         "waveform": "sine",
         "amp": 0.5,
         "bend_range": 2.0,
@@ -208,6 +240,17 @@ class MIDIInput(Module):
         self._lock = threading.Lock()
         self._midi_port: Any = None
         self._opened_device: str = ""
+        # Canonicalize the velocity curve to string keys. Patches saved
+        # to JSON come back with string keys anyway; tests and hand-built
+        # params may pass ints. One shape internally.
+        curve = self.params.get("velocity_curve") or {}
+        self.params["velocity_curve"] = {
+            str(k): float(v) for k, v in dict(curve).items()
+        }
+        # Learn-mode capture buffer: raw-note -> list of raw normalized
+        # velocities. None means "not capturing". Guarded by self._lock
+        # like all other MIDI-thread-mutated state.
+        self._velocity_capture: dict[int, list[float]] | None = None
 
     # ----- mido integration -----------------------------------------------
 
@@ -286,6 +329,7 @@ class MIDIInput(Module):
             self._pitch_bend = 0.0
             self._mod_wheel = 0.0
             self._aftertouch = 0.0
+            self._velocity_capture = None
 
     # ----- message handling -----------------------------------------------
 
@@ -360,7 +404,15 @@ class MIDIInput(Module):
             return  # Drop transposes that escape the MIDI range.
         v = max(0.0, min(1.0, float(velocity)))
         with self._lock:
-            self.voices.allocate(shifted, v)
+            if self._velocity_capture is not None:
+                # Learn mode: record the RAW normalized velocity, keyed
+                # by the physical key (pre-octave-shift) and taken
+                # pre-curve — re-learning with a curve already applied
+                # must not compound it.
+                self._velocity_capture.setdefault(int(midi_note), []).append(v)
+            curve = self.params.get("velocity_curve") or {}
+            mult = float(curve.get(str(int(midi_note)), 1.0))
+            self.voices.allocate(shifted, max(0.0, min(1.0, v * mult)))
 
     def note_off(self, midi_note: int) -> None:
         shifted = int(midi_note) + 12 * int(self.params.get("octave_shift", 0))
@@ -468,3 +520,39 @@ class MIDIInput(Module):
         """Return the current normalized channel-pressure value in [0, 1]."""
         with self._lock:
             return self._aftertouch
+
+    # ----- per-key velocity calibration (learn mode) ------------------------
+
+    def start_velocity_capture(self) -> None:
+        """Begin learn mode: subsequent note-ons record their raw velocity.
+
+        Notes keep playing normally while capturing — learn mode is a tap,
+        not a detour. Calling again mid-capture restarts with an empty
+        buffer.
+        """
+        with self._lock:
+            self._velocity_capture = {}
+
+    def stop_velocity_capture(self) -> dict[int, list[float]]:
+        """End learn mode and return the captured ``{raw note: [velocities]}``.
+
+        Returns an empty dict if capture was never started. Feed the
+        result to :func:`compute_velocity_curve` to build the
+        ``velocity_curve`` param.
+        """
+        with self._lock:
+            captured = self._velocity_capture or {}
+            self._velocity_capture = None
+            return captured
+
+    def snapshot_velocity_capture(self) -> dict[int, list[float]]:
+        """Copy of the in-progress capture buffer (for live UI feedback)."""
+        with self._lock:
+            if self._velocity_capture is None:
+                return {}
+            return {n: list(vs) for n, vs in self._velocity_capture.items()}
+
+    @property
+    def is_capturing_velocity(self) -> bool:
+        with self._lock:
+            return self._velocity_capture is not None

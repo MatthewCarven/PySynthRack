@@ -129,8 +129,15 @@ class Module:
             )
         self.id: int = module_id
         self.name: str = name if name is not None else self.TYPE
-        # Deep-ish copy: params values are scalars/strings for v0.1.
-        self.params: dict[str, Any] = dict(self.DEFAULT_PARAMS)
+        # Per-instance copy of the defaults. Values are mostly scalars /
+        # strings, but dict-valued params exist since velocity_curve
+        # (midi_input) — those need a fresh dict per instance or every
+        # module of the type would share (and mutate) the class-level
+        # default.
+        self.params: dict[str, Any] = {
+            key: (dict(value) if isinstance(value, dict) else value)
+            for key, value in self.DEFAULT_PARAMS.items()
+        }
         if params:
             for key, value in params.items():
                 key = self.PARAM_ALIASES.get(key, key)

@@ -25,6 +25,7 @@ from pysynthrack.modules.midiinput import (
     MIDIInput,
     _MIDO_AVAILABLE,
     available_devices,
+    compute_velocity_curve,
 )
 
 try:
@@ -990,3 +991,160 @@ class TestPolyphonicRendering:
         assert peak_tail < 0.05, (
             f"pedal-up did not silence the voice: peak={peak_tail:.3f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Per-key velocity calibration (velocity_curve param + learn-mode capture)
+# ---------------------------------------------------------------------------
+
+
+class TestVelocityCurve:
+    def test_default_is_empty_dict(self):
+        m = MIDIInput(module_id=1)
+        assert m.params["velocity_curve"] == {}
+
+    def test_default_dict_not_shared_between_instances(self):
+        # dict-valued DEFAULT_PARAMS must be deep-copied per instance —
+        # mutating one module's curve must not leak into a sibling or
+        # into the class-level default.
+        a = MIDIInput(module_id=1)
+        b = MIDIInput(module_id=2)
+        a.params["velocity_curve"]["60"] = 0.5
+        assert b.params["velocity_curve"] == {}
+        assert MIDIInput.DEFAULT_PARAMS["velocity_curve"] == {}
+        del a.params["velocity_curve"]["60"]
+
+    def test_int_keys_canonicalized_to_str(self):
+        m = MIDIInput(module_id=1, params={"velocity_curve": {60: 0.5}})
+        assert m.params["velocity_curve"] == {"60": 0.5}
+
+    def test_multiplier_applied_to_velocity(self):
+        m = MIDIInput(module_id=1, params={"velocity_curve": {"60": 0.5}})
+        m.note_on(60, 0.8)
+        assert m.snapshot_active_notes()[60] == pytest.approx(0.4)
+
+    def test_uncurved_key_passes_through(self):
+        m = MIDIInput(module_id=1, params={"velocity_curve": {"60": 0.5}})
+        m.note_on(61, 0.8)
+        assert m.snapshot_active_notes()[61] == pytest.approx(0.8)
+
+    def test_result_clamped_to_unity(self):
+        m = MIDIInput(module_id=1, params={"velocity_curve": {"60": 4.0}})
+        m.note_on(60, 0.9)
+        assert m.snapshot_active_notes()[60] == pytest.approx(1.0)
+
+    def test_curve_keyed_by_raw_note_not_shifted(self):
+        # Calibration corrects the physical keybed, so the lookup key is
+        # the incoming (raw) note even though the allocated voice is
+        # transposed by octave_shift.
+        m = MIDIInput(
+            module_id=1,
+            params={"octave_shift": 1, "velocity_curve": {"60": 0.5}},
+        )
+        m.note_on(60, 0.8)
+        notes = m.snapshot_active_notes()
+        assert notes[72] == pytest.approx(0.4)
+
+    def test_round_trips_through_serialization(self):
+        m = MIDIInput(module_id=1, params={"velocity_curve": {"60": 1.25}})
+        clone = MIDIInput.from_dict(m.to_dict())
+        assert clone.params["velocity_curve"] == {"60": 1.25}
+
+
+class TestVelocityCapture:
+    def test_not_capturing_by_default(self):
+        m = MIDIInput(module_id=1)
+        assert m.is_capturing_velocity is False
+        assert m.snapshot_velocity_capture() == {}
+
+    def test_capture_records_raw_velocity_per_key(self):
+        m = MIDIInput(module_id=1)
+        m.start_velocity_capture()
+        m.note_on(60, 0.5)
+        m.note_off(60)
+        m.note_on(60, 0.7)
+        m.note_on(64, 0.9)
+        cap = m.snapshot_velocity_capture()
+        assert cap[60] == pytest.approx([0.5, 0.7])
+        assert cap[64] == pytest.approx([0.9])
+
+    def test_capture_is_pre_curve(self):
+        # Recorded velocities must be the raw values, not curved ones —
+        # otherwise re-learning on top of an existing curve compounds it.
+        m = MIDIInput(module_id=1, params={"velocity_curve": {"60": 0.5}})
+        m.start_velocity_capture()
+        m.note_on(60, 0.8)
+        assert m.snapshot_velocity_capture()[60] == pytest.approx([0.8])
+        # ...while the sounding voice still gets the curved velocity.
+        assert m.snapshot_active_notes()[60] == pytest.approx(0.4)
+
+    def test_capture_keyed_by_raw_note_under_shift(self):
+        m = MIDIInput(module_id=1, params={"octave_shift": -1})
+        m.start_velocity_capture()
+        m.note_on(60, 0.6)
+        assert list(m.snapshot_velocity_capture()) == [60]
+
+    def test_stop_returns_and_clears(self):
+        m = MIDIInput(module_id=1)
+        m.start_velocity_capture()
+        m.note_on(60, 0.5)
+        cap = m.stop_velocity_capture()
+        assert cap == {60: pytest.approx([0.5])}
+        assert m.is_capturing_velocity is False
+        m.note_on(64, 0.9)
+        assert m.snapshot_velocity_capture() == {}
+
+    def test_stop_without_start_is_empty(self):
+        m = MIDIInput(module_id=1)
+        assert m.stop_velocity_capture() == {}
+
+    def test_restart_clears_previous_buffer(self):
+        m = MIDIInput(module_id=1)
+        m.start_velocity_capture()
+        m.note_on(60, 0.5)
+        m.start_velocity_capture()
+        assert m.snapshot_velocity_capture() == {}
+
+    def test_stop_midi_clears_capture(self):
+        m = MIDIInput(module_id=1)
+        m.start_velocity_capture()
+        m.note_on(60, 0.5)
+        m.stop_midi()
+        assert m.is_capturing_velocity is False
+
+    def test_snapshot_returns_copies(self):
+        m = MIDIInput(module_id=1)
+        m.start_velocity_capture()
+        m.note_on(60, 0.5)
+        snap = m.snapshot_velocity_capture()
+        snap[60].append(999.0)
+        assert m.snapshot_velocity_capture()[60] == pytest.approx([0.5])
+
+
+class TestComputeVelocityCurve:
+    def test_empty_capture_gives_empty_curve(self):
+        assert compute_velocity_curve({}) == {}
+
+    def test_single_key_gets_unity(self):
+        assert compute_velocity_curve({60: [0.5, 0.5]}) == {"60": 1.0}
+
+    def test_two_keys_normalized_to_mean(self):
+        # Means: 0.5 and 1.0 -> target 0.75 -> multipliers 1.5 and 0.75.
+        curve = compute_velocity_curve({60: [0.4, 0.6], 64: [1.0]})
+        assert curve["60"] == pytest.approx(1.5)
+        assert curve["64"] == pytest.approx(0.75)
+
+    def test_multiple_hits_averaged(self):
+        curve = compute_velocity_curve({60: [0.2, 0.4], 64: [0.6, 0.6]})
+        # Means 0.3 and 0.6 -> target 0.45 -> 1.5 and 0.75.
+        assert curve["60"] == pytest.approx(1.5)
+        assert curve["64"] == pytest.approx(0.75)
+
+    def test_keys_are_strings(self):
+        curve = compute_velocity_curve({60: [0.5], 64: [0.7]})
+        assert all(isinstance(k, str) for k in curve)
+
+    def test_quiet_key_boosted_hot_key_tamed(self):
+        curve = compute_velocity_curve({48: [0.3], 72: [0.9]})
+        assert curve["48"] > 1.0
+        assert curve["72"] < 1.0

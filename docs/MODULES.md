@@ -338,10 +338,54 @@ of enveloped control voltages keyed to the computer keyboard. Headline use:
 
 #### `midi_input`
 
-_To document._ Hardware-MIDI note source (polyphonic), `[midi]` extra
-required. Outputs `out`, `gate`, `pitch_cv`, `mod_cv`, `pressure_cv`. Params
-include `device`, `channel`, `octave_shift`, `velocity_sensitive`,
-`bend_range`, `mod_scale`, `pressure_scale`. See `examples/midi_lead.json`.
+Hardware-MIDI note source (polyphonic, 16 voice slots) — the external-
+keyboard sibling of [Keyboard](#keyboard). Needs the `[midi]` extra
+(`pip install -e ".[midi]"`); without it the node still appears but logs
+what to install. Handles note on/off (incl. running-status note-offs),
+pitch wheel, mod wheel (CC 1), sustain pedal (CC 64), channel aftertouch,
+and All Notes Off (CC 123).
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `out` | out | audio | Summed voices (per-voice rows to voice-aware consumers). |
+| `gate` | out | gate | High while any key is held or sustained. |
+| `pitch_cv` | out | cv | Pitch-wheel deflection as 1V/oct CV (`bend * bend_range / 12`). |
+| `mod_cv` | out | cv | Mod wheel (CC 1), `[0, 1] * mod_scale`. |
+| `pressure_cv` | out | cv | Channel aftertouch, `[0, 1] * pressure_scale`. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `device` | `""` | MIDI input name | `""` = auto-pick the first available. Dropdown lists ports at node creation; the **Refresh** button beside it re-enumerates in place after hot-plugging. |
+| `channel` | `0` | 0…16 | MIDI channel filter; `0` = omni (all channels). |
+| `octave_shift` | `0` | -4…4 | Integer transpose in octaves, applied at note arrival. |
+| `velocity_sensitive` | `true` | bool | `false` plays every note at unit velocity. |
+| `velocity_curve` | `{}` | `{note: mult}` | Per-key velocity calibration — see below. Edited via the **Calibrate keys...** dialog, not a plain widget. |
+| `waveform` | `"sine"` | osc shapes | Same vocabulary as [`oscillator`](#oscillator), incl. `*_blep` / `*_wt`. |
+| `amp` | `0.5` | 0…1 | Master level after voice summing. |
+| `bend_range` | `2.0` | semitones | Full wheel deflection = ±`bend_range` semitones (GM default 2). |
+| `mod_scale` | `1.0` | ≥0 | Multiplier on the normalized mod wheel before `mod_cv`. |
+| `pressure_scale` | `1.0` | ≥0 | Multiplier on normalized aftertouch before `pressure_cv`. |
+
+**Per-key velocity calibration.** Budget keybeds drift key-by-key — the
+same finger force yields different velocities on different keys.
+`velocity_curve` maps *raw* MIDI note (the physical key, pre-
+`octave_shift`; string keys, JSON-canonical) to a multiplier applied to
+the normalized note-on velocity, clamped back into [0, 1]. Keys absent
+from the map play at 1.0. The node's **Calibrate keys...** dialog drives
+it: press **Learn**, play every key a few times at the *same intended
+force* (notes keep sounding — learn is a tap, not a detour; a live
+`keys / hits` readout ticks as you play), then **Compute**. Each key's
+hits are averaged and normalized to the mean captured level (quiet keys
+boosted, hot keys tamed); captured multipliers *merge* into the existing
+curve, and every key gets an editable row in the dialog's table
+(hand-trim, per-key remove, **Clear all**). Capture records raw
+velocities, so re-learning over an existing curve never compounds it.
+
+See `examples/midi_lead.json`.
 
 #### `file_player`
 
@@ -407,7 +451,7 @@ voice through the modular graph.
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
-| `device` | `""` | input device name | `""` = system default input. The UI offers a dropdown of capture devices (snapshotted when the node is created — reopen the patch to refresh after hot-plugging). |
+| `device` | `""` | input device name | `""` = system default input. The UI offers a dropdown of capture devices; the **Refresh** button beside it re-enumerates in place after hot-plugging. |
 | `gain` | `1.0` | 0…2 | Linear gain on both channels. |
 
 **How capture works.** When a patch contains a mic, the backend opens a

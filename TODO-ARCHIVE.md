@@ -434,3 +434,7 @@ open to a better scheme if one turns up.
       grows while decoding. 11 new tests, suite 1206. Still open from that
       list: node hint showing whether ffmpeg was found.
 
+
+- [x] **Per-key velocity calibration on MIDIInput** — shipped 2026-07-03. `velocity_curve` param (`{str(raw note): multiplier}`, JSON-canonical string keys, dict-safe per-instance copy fixed in Module.__init__), applied to the normalized note-on velocity pre-allocation and clamped to [0, 1]; keyed by the *physical* key (pre-octave_shift). "Calibrate keys..." dialog on the node: Learn (capture tap on note_on — records RAW pre-curve velocities so re-learning never compounds; live keys/hits readout per frame), Compute (per-key means normalized to the mean captured level via `compute_velocity_curve`, merged into the curve), editable per-key multiplier table with per-row remove + Clear all. 23 tests. Matthew picked learn+table / mean target / both-modules refresh via AskUserQuestion.
+
+- [x] **Refresh-devices button (MIDIInput + MicInput)** — shipped 2026-07-03. Device combos get an explicit tag + a Refresh button that re-enumerates in place (`_device_combo_items` shared helper; selection preserved, absent pinned devices stay listed); status bar reports the count. No recompile until a device is actually picked.

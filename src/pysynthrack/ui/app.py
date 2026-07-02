@@ -29,7 +29,11 @@ from ..modules.keyboard import midi_to_name, semitone_to_midi
 from ..modules.cvcombiner import CVCOMBINER_MODES
 from ..modules.cvtofrequency import MODES as CVTOFREQ_MODES
 from ..modules.lfo import LFO_WAVEFORMS
-from ..modules.midiinput import AUTO_DEVICE, available_devices as midi_available_devices
+from ..modules.midiinput import (
+    AUTO_DEVICE,
+    available_devices as midi_available_devices,
+    compute_velocity_curve,
+)
 from ..modules.micinput import available_input_devices as mic_available_devices
 from ..modules.distortion import DISTORTION_MODES
 from ..modules.meter import METER_MODES
@@ -106,6 +110,12 @@ class App:
         # shared WAV file dialog's callback knows which module to update.
         self._wav_target_id: Optional[int] = None
 
+        # The midi_input whose Calibrate-keys dialog is open, plus the
+        # last stopped-but-not-yet-computed learn capture (Learn -> Stop
+        # stashes here so Compute can still use it).
+        self._vel_target_id: Optional[int] = None
+        self._vel_captured: dict[int, list[float]] = {}
+
         # Diagonal stagger for newly-added nodes so they don't stack.
         self._next_node_pos = [40, 40]
 
@@ -163,6 +173,7 @@ class App:
                 self._update_cv_meters()
                 self._update_audio_meters()
                 self._update_file_positions()
+                self._update_velocity_capture()
                 dpg.render_dearpygui_frame()
         finally:
             try:
@@ -1261,26 +1272,45 @@ class App:
         # empty string at the top is the "auto-pick first available" path,
         # so saved patches that don't pin a device still load and run.
         if param_name == "device" and module.TYPE in ("midi_input", "mic_input"):
-            # Snapshot the relevant device list at widget creation; the
-            # user recompiles (delete+re-add, or reopen the patch) to
-            # refresh after hot-plugging. MIDIInput lists MIDI ports;
-            # MicInput lists audio capture devices.
-            if module.TYPE == "midi_input":
-                devices = midi_available_devices()
-            else:
-                devices = mic_available_devices()
-            items = [AUTO_DEVICE] + devices
+            # Device list snapshot at widget creation, plus a Refresh
+            # button that re-enumerates in place after hot-plugging (no
+            # more delete+re-add / reopen-the-patch dance). MIDIInput
+            # lists MIDI ports; MicInput lists audio capture devices.
             current_str = str(current)
-            if current_str not in items:
-                items = items + [current_str]
-            dpg.add_combo(
-                label=param_name,
-                items=items,
-                default_value=current_str,
-                width=200,
-                callback=self._on_param_changed,
-                user_data=user_data,
-            )
+            items, _ = self._device_combo_items(module.TYPE, current_str)
+            with dpg.group(horizontal=True):
+                dpg.add_combo(
+                    label=param_name,
+                    items=items,
+                    default_value=current_str,
+                    width=200,
+                    tag=f"device_combo_{module.id}",
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                dpg.add_button(
+                    label="Refresh",
+                    callback=self._on_refresh_devices,
+                    user_data=(module.id, module.TYPE),
+                )
+            return
+
+        if module.TYPE == "midi_input" and param_name == "velocity_curve":
+            # Dict-valued param — no generic widget fits. The whole
+            # editing story lives in the Calibrate-keys dialog (learn
+            # mode + per-key multiplier table); the label alongside just
+            # says how many keys currently deviate from 1.0.
+            n = len(module.params.get("velocity_curve") or {})
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    label="Calibrate keys...",
+                    callback=self._show_velocity_dialog,
+                    user_data=module.id,
+                )
+                dpg.add_text(
+                    f"{n} keys calibrated" if n else "",
+                    tag=f"vel_curve_count_{module.id}",
+                )
             return
 
         if param_name == "octave_shift":
@@ -1552,6 +1582,246 @@ class App:
         if dpg.does_item_exist(text_tag):
             dpg.set_value(text_tag, path)
         self._set_status(f"Selected: {os.path.basename(path)}")
+
+    # ----- device refresh ---------------------------------------------------
+
+    @staticmethod
+    def _device_combo_items(module_type: str, current_str: str) -> tuple[list[str], int]:
+        """Build the device-combo item list for a midi_input / mic_input.
+
+        Returns ``(items, n_devices)``. Items always start with
+        ``AUTO_DEVICE`` (the "auto-pick first available" empty string)
+        and always contain ``current_str`` — a saved patch may pin a
+        device that isn't plugged in right now, and the combo must keep
+        showing it rather than silently switching selection.
+        """
+        if module_type == "midi_input":
+            devices = midi_available_devices()
+        else:
+            devices = mic_available_devices()
+        items = [AUTO_DEVICE] + devices
+        if current_str not in items:
+            items = items + [current_str]
+        return items, len(devices)
+
+    def _on_refresh_devices(self, sender, app_data, user_data) -> None:
+        """Refresh button beside a device combo: re-enumerate in place.
+
+        Pure UI mutation — the selected value is untouched, so nothing
+        recompiles until the user actually picks a device from the fresh
+        list (same ``_on_param_changed`` path as before).
+        """
+        module_id, module_type = user_data
+        tag = f"device_combo_{module_id}"
+        if not dpg.does_item_exist(tag):
+            return
+        current_str = str(dpg.get_value(tag))
+        items, n = self._device_combo_items(module_type, current_str)
+        dpg.configure_item(tag, items=items)
+        kind = "MIDI" if module_type == "midi_input" else "audio input"
+        self._set_status(f"Refreshed {kind} devices: {n} found")
+
+    # ----- per-key velocity calibration dialog ------------------------------
+
+    _NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+
+    @classmethod
+    def _note_label(cls, note: int) -> str:
+        """Human key name for a raw MIDI note, e.g. 60 -> 'C4 (60)'."""
+        return f"{cls._NOTE_NAMES[note % 12]}{note // 12 - 1} ({note})"
+
+    def _vel_module(self):
+        """The MIDIInput the open calibration dialog is bound to, or None."""
+        if self._vel_target_id is None:
+            return None
+        return self.patch.modules.get(self._vel_target_id)
+
+    def _show_velocity_dialog(self, sender, app_data, user_data) -> None:
+        """Calibrate-keys button on a midi_input node: open the dialog.
+
+        Deliberately NOT modal: learn mode needs the user playing the
+        keyboard while the dialog sits open, and the rest of the UI
+        (meters, transport) should stay live while they do.
+        """
+        module_id = user_data
+        module = self.patch.modules.get(module_id)
+        if module is None:
+            return
+        # If a previous dialog was learning for another module, stop it.
+        prev = self._vel_module()
+        if prev is not None and prev.is_capturing_velocity:
+            prev.stop_velocity_capture()
+        self._vel_target_id = module_id
+        self._vel_captured = {}
+        if dpg.does_item_exist("vel_dialog"):
+            dpg.delete_item("vel_dialog")
+        with dpg.window(
+            label=f"Calibrate keys — {module.name}",
+            tag="vel_dialog",
+            width=450,
+            height=470,
+            pos=(320, 130),
+            on_close=self._on_vel_dialog_close,
+        ):
+            dpg.add_text(
+                "Learn: play every key a few times at the same intended\n"
+                "force, then Compute. Each key's hits are averaged and\n"
+                "normalized to the mean captured level; hand-trim any\n"
+                "multiplier below. Uncaptured keys stay at 1.0."
+            )
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    label="Learn", tag="vel_learn_btn", callback=self._on_vel_learn
+                )
+                dpg.add_button(label="Compute", callback=self._on_vel_compute)
+                dpg.add_button(label="Clear all", callback=self._on_vel_clear)
+                dpg.add_text("", tag="vel_capture_status")
+            dpg.add_separator()
+            dpg.add_group(tag="vel_table")
+        self._rebuild_vel_table()
+
+    def _on_vel_dialog_close(self, sender=None, app_data=None, user_data=None) -> None:
+        """Dialog X clicked: stop (and stash) any in-flight capture."""
+        module = self._vel_module()
+        if module is not None and module.is_capturing_velocity:
+            self._vel_captured = module.stop_velocity_capture()
+
+    def _set_vel_curve(self, module, curve: dict) -> None:
+        """Write a new velocity_curve through the canonical param path."""
+        try:
+            self.backend.set_param(module.id, "velocity_curve", curve)
+        except Exception as exc:
+            self._set_status(f"Param error: {exc}")
+            return
+        count_tag = f"vel_curve_count_{module.id}"
+        if dpg.does_item_exist(count_tag):
+            n = len(curve)
+            dpg.set_value(count_tag, f"{n} keys calibrated" if n else "")
+        self._rebuild_vel_table()
+
+    def _rebuild_vel_table(self) -> None:
+        """Repopulate the dialog's per-key multiplier rows from the param."""
+        if not dpg.does_item_exist("vel_table"):
+            return
+        dpg.delete_item("vel_table", children_only=True)
+        module = self._vel_module()
+        if module is None:
+            return
+        curve = module.params.get("velocity_curve") or {}
+        if not curve:
+            dpg.add_text(
+                "No calibration yet — every key plays at 1.0.",
+                parent="vel_table",
+            )
+            return
+        for key in sorted(curve, key=int):
+            note = int(key)
+            with dpg.group(horizontal=True, parent="vel_table"):
+                dpg.add_text(f"{self._note_label(note):<10}")
+                dpg.add_drag_float(
+                    default_value=float(curve[key]),
+                    speed=0.01,
+                    min_value=0.0,
+                    max_value=4.0,
+                    format="%.3f x",
+                    width=110,
+                    callback=self._on_vel_mult_changed,
+                    user_data=(module.id, key),
+                )
+                dpg.add_button(
+                    label="x",
+                    small=True,
+                    callback=self._on_vel_remove,
+                    user_data=(module.id, key),
+                )
+
+    def _on_vel_learn(self, sender, app_data, user_data=None) -> None:
+        """Learn/Stop toggle. Stop stashes the capture for Compute."""
+        module = self._vel_module()
+        if module is None:
+            return
+        if module.is_capturing_velocity:
+            self._vel_captured = module.stop_velocity_capture()
+            dpg.configure_item("vel_learn_btn", label="Learn")
+            dpg.set_value(
+                "vel_capture_status",
+                f"stopped: {len(self._vel_captured)} keys captured",
+            )
+        else:
+            self._vel_captured = {}
+            module.start_velocity_capture()
+            dpg.configure_item("vel_learn_btn", label="Stop")
+            dpg.set_value("vel_capture_status", "learning: 0 keys / 0 hits")
+
+    def _on_vel_compute(self, sender, app_data, user_data=None) -> None:
+        """Compute multipliers from the capture and merge into the curve.
+
+        Merge (not replace): keys captured this round get fresh
+        multipliers; previously-calibrated keys that weren't replayed
+        keep theirs. Clear-all is the escape hatch for a from-scratch
+        run.
+        """
+        module = self._vel_module()
+        if module is None:
+            return
+        if module.is_capturing_velocity:
+            self._vel_captured = module.stop_velocity_capture()
+            dpg.configure_item("vel_learn_btn", label="Learn")
+        captured = self._vel_captured
+        if not captured:
+            dpg.set_value("vel_capture_status", "nothing captured — Learn first")
+            return
+        curve = dict(module.params.get("velocity_curve") or {})
+        curve.update(compute_velocity_curve(captured))
+        self._vel_captured = {}
+        self._set_vel_curve(module, curve)
+        dpg.set_value(
+            "vel_capture_status", f"calibrated {len(captured)} keys"
+        )
+
+    def _on_vel_clear(self, sender, app_data, user_data=None) -> None:
+        module = self._vel_module()
+        if module is None:
+            return
+        self._set_vel_curve(module, {})
+        if dpg.does_item_exist("vel_capture_status"):
+            dpg.set_value("vel_capture_status", "cleared")
+
+    def _on_vel_mult_changed(self, sender, app_data, user_data) -> None:
+        """A multiplier drag in the table: write that one key back."""
+        module_id, key = user_data
+        module = self.patch.modules.get(module_id)
+        if module is None:
+            return
+        curve = dict(module.params.get("velocity_curve") or {})
+        curve[key] = float(app_data)
+        try:
+            self.backend.set_param(module_id, "velocity_curve", curve)
+        except Exception as exc:
+            self._set_status(f"Param error: {exc}")
+
+    def _on_vel_remove(self, sender, app_data, user_data) -> None:
+        """A row's remove button: drop that key back to implicit 1.0."""
+        module_id, key = user_data
+        module = self.patch.modules.get(module_id)
+        if module is None:
+            return
+        curve = dict(module.params.get("velocity_curve") or {})
+        curve.pop(key, None)
+        self._set_vel_curve(module, curve)
+
+    def _update_velocity_capture(self) -> None:
+        """Per-frame: live 'learning: N keys / M hits' readout."""
+        if not dpg.does_item_exist("vel_capture_status"):
+            return
+        module = self._vel_module()
+        if module is None or not module.is_capturing_velocity:
+            return
+        cap = module.snapshot_velocity_capture()
+        hits = sum(len(v) for v in cap.values())
+        dpg.set_value(
+            "vel_capture_status", f"learning: {len(cap)} keys / {hits} hits"
+        )
 
     def _on_key_press(self, sender, app_data, user_data=None) -> None:
         """Route a physical key press to every key-accepting module in the patch.

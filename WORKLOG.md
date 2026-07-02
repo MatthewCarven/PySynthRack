@@ -5619,3 +5619,54 @@ two people can already share the existing keyboard pipeline (cv_keyboard /
 cv_gates) by simply agreeing on which keys are whose — no dedicated split
 mode or split-point param needed. Removed from TODO.md (verified, 73-byte
 delta) and marked DROPPED in memory. Not to be re-proposed.
+
+## 2026-07-03 — MIDI device-refresh button + per-key velocity calibration
+
+Matthew asked for both remaining MIDIInput quality-of-life items in one go
+(both were already on the TODO). Design choices confirmed via question
+dialog: learn-dialog-plus-editable-table, normalize to the mean of captured
+keys, refresh button on BOTH midi_input and mic_input.
+
+**Refresh devices (UI-only).** The device combo on midi_input/mic_input now
+carries an explicit tag (`device_combo_{id}`) and a Refresh button beside
+it. `_device_combo_items` (shared helper) rebuilds the item list —
+AUTO_DEVICE first, current selection always kept even if the device is
+unplugged — and the button reconfigures the combo in place. Selection is
+untouched, so nothing recompiles until the user picks from the fresh list.
+Status bar reports the device count.
+
+**Velocity calibration (model + UI).**
+* Model: new `velocity_curve` param on midi_input — `{str(raw midi note):
+  multiplier}`. String keys are canonical (JSON object keys are strings);
+  `__init__` canonicalizes int keys from hand-built params. Applied in
+  `note_on` after 0-127 normalization, clamped back to [0, 1], keyed by the
+  RAW note (physical key, pre-octave_shift — calibration corrects the
+  keybed, not the transposed pitch).
+* Learn mode: `start/stop/snapshot_velocity_capture` on the module, a
+  capture dict under the existing MIDI-state lock. note_on records the raw
+  PRE-CURVE velocity while capturing (idempotent re-learning) and the note
+  still plays. `stop_midi()` clears any in-flight capture.
+* `compute_velocity_curve(samples)` (module-level, pure, dpg-free): per-key
+  means → target = mean of means → multiplier = target/mean, rounded to 4
+  dp. Quiet keys boosted, hot keys tamed; clamping happens at apply time.
+* UI: "Calibrate keys..." button on the node (plus an "N keys calibrated"
+  label). Non-modal dialog — learn mode needs the user playing while it is
+  open. Learn/Stop toggle stashes the capture; Compute merges fresh
+  multipliers into the existing curve (merge, not replace — Clear all is
+  the from-scratch path); table row per key: note name, drag-float
+  multiplier (0..4), remove button. Per-frame `_update_velocity_capture`
+  ticks a "learning: N keys / M hits" readout.
+* Base-class fix: `Module.__init__` shallow-copied DEFAULT_PARAMS; a
+  dict-valued default would have been SHARED across instances. Now dict
+  values get a fresh copy per instance (comment updated — first dict param
+  in the codebase).
+
+Tests: 23 new in test_midi_input.py (curve application incl. raw-note
+keying under octave_shift + unity clamp + serialization round-trip +
+no-shared-default; capture semantics incl. pre-curve recording and
+snapshot copies; compute maths). UI paths (dialog, refresh) follow the
+house convention of not unit-testing dpg wiring.
+
+Docs: midi_input section in MODULES.md promoted from "_To document._" stub
+to full ports/params tables + calibration walkthrough; mic_input device row
+updated for the refresh button. Both TODO items moved to TODO-ARCHIVE.
