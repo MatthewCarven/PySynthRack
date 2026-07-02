@@ -959,7 +959,7 @@ class App:
             if param_name == "cv_depth":
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=0.02,
-                    min_value=0.0, max_value=2.0, format="%.2f",
+                    min_value=0.0, max_value=2.0, format="%.2f lvl/unit",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
@@ -1146,6 +1146,24 @@ class App:
                     default_value=float(current),
                     min_value=0.0,
                     max_value=2.0 if hot_range else 1.0,
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+            elif param_name == "cv_depth":
+                # House default for cv_depth knobs without a dedicated
+                # module branch above (filter cutoff_cv, lfo rate_cv):
+                # frequency-domain depth in octaves per CV unit,
+                # default 1.0 = 1 V/oct. Modules whose depth is in
+                # another natural unit (ms, st, dB, level) add their
+                # own branch earlier with the unit in the label.
+                dpg.add_drag_float(
+                    label=param_name,
+                    default_value=float(current),
+                    speed=0.02,
+                    min_value=0.0,
+                    max_value=4.0,
+                    format="%.2f oct/unit",
                     width=140,
                     callback=self._on_param_changed,
                     user_data=user_data,

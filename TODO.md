@@ -349,14 +349,27 @@ open to a better scheme if one turns up.
       split points would be a larger rewrite of the broadcast voice path —
       deferred as an unlikely use case. Example `crossover_sweep.json`; 9 tests.
 
-- [ ] **CV-depth convention standardisation** — the subtler half of "uneven CV
-      coverage": among modules that *do* take CV, the pattern drifted. The older
-      CV modules (`oscillator`, `filter`) bake in a fixed depth with **no**
-      `cv_depth` knob; everything from the delay onward added one — and
-      `cv_depth` means **octaves** (mod FX), **ms** (delay) or **semitones**
-      (resampler) depending on the module. Decide a house rule (document the
-      per-domain unit, or unify), and optionally retrofit a `cv_depth` onto
-      oscillator/filter — the new `PARAM_ALIASES` layer makes that painless.
+- [x] **CV-depth convention standardisation** — DONE 2026-07-02. Audit first:
+      the drift was smaller than feared — every shipped frequency/pitch
+      `cv_depth` already defaulted to 1 V/oct (1.0 oct/unit, or 12.0 st/unit
+      ≡ 1 oct), so the de facto rule just needed writing down and back-filling.
+      Matthew's calls: **natural unit per domain** (octaves/semitones/ms/dB/
+      level — no forced unification) and **retrofit Filter + LFO only**.
+      Shipped: `filter.cutoff_cv` and `lfo.rate_cv` gained `cv_depth`
+      (octaves/unit, default 1.0 = the old hard-coded 1 V/oct → bit-identical
+      for existing patches, all 5 backend CV sites incl. both voice paths);
+      `oscillator.freq_cv` stays a **calibrated** pitch input by design (the
+      pitch bus; hardware splits V/OCT from FM-with-attenuator) and
+      `vca.cv`/`oscillator.amp_cv` stay knobless multipliers (the CV *is* the
+      amplitude; CVScale attenuates). New **"CV depth conventions"** section in
+      docs/MODULES.md: the house rule, the two exceptions, and a full
+      module×input×unit×summing table. UI: generic `cv_depth` fallback widget
+      ("%.2f oct/unit", the house default for octave-domain knobs) + the
+      loudness label now shows its unit ("lvl/unit") — every depth widget is
+      labelled. 14 tests `tests/test_cv_depth.py` (depth-1 bit-identical to
+      the old 1 V/oct, depth scaling, depth-0 disable, per-voice application,
+      pre-retrofit patch dicts load with the default); suite 995. No
+      PARAM_ALIASES needed (params added, none renamed).
 
 - [ ] **Reverb / mixer CV (lowest priority).** The other two static processors.
       Reverb `mix`/`size`/`decay` CV for swelling or morphing spaces could be

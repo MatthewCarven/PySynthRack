@@ -4922,3 +4922,48 @@ slope options (fixed dB/oct tilt steepness), `pivot_cv`, per-band gain-CV on
 motion_eq. **Next on the CV-coverage plan:** the `cv_depth`-convention
 standardisation (units drifted: octaves / ms / semitones / dB across
 modules); reverb/mixer CV stays lowest priority.
+
+## 2026-07-02 — CV-depth convention standardisation (audit + Filter/LFO retrofit)
+
+The "subtler half" of the CV-coverage plan, done as audit-first: walked every
+`*_cv` input in the codebase before touching anything. Finding: **the drift
+was smaller than the TODO feared.** All eleven shipped `cv_depth` knobs
+already agree — frequency targets are octaves/unit defaulting 1.0, pitch
+targets semitones/unit defaulting 12.0 (≡ 1 V/oct), delay ms/unit, loudness
+level/unit, tilt dB/unit — so every frequency/pitch input ships V/oct-
+calibrated. The real gaps: Filter and LFO still had 1 V/oct **hard-coded**
+with no knob, the rule existed nowhere in writing, and one UI label
+(loudness) hid its unit.
+
+**Matthew's calls** (offered with recommendations, both accepted): natural
+unit per domain — no forced unification (ms→octaves would be a forced fit);
+retrofit **Filter + LFO only**. `oscillator.freq_cv` stays a *calibrated*
+pitch input: it's the pitch bus every keyboard/sequencer/MIDI patch tunes
+through, and hardware makes the same split (calibrated V/OCT jack vs FM input
+with attenuator). `vca.cv` / `oscillator.amp_cv` stay knobless multipliers —
+the CV *is* the amplitude; CVScale attenuates.
+
+**Shipped.** `filter.cutoff_cv` + `lfo.rate_cv` gained `cv_depth`
+(octaves/unit, default 1.0 = the exact old behaviour). All five backend CV
+sites updated: filter mono, filter voice per-voice `(V,F)`, filter voice
+shared, lfo mono, lfo voice per-voice. Docs: new **"CV depth conventions"**
+section in MODULES.md — the house rule, the two deliberate exceptions, and a
+full module×input×default×unit×summing table; filter/lfo entries updated.
+UI: a generic `cv_depth` fallback widget ("%.2f oct/unit") now catches any
+octave-domain depth without a dedicated branch (filter + lfo land there);
+loudness's bare "%.2f" became "%.2f lvl/unit" — every depth knob in the app
+now shows its unit.
+
+**Tested invariants (+14 → suite 995).** Depth 1.0 + CV c renders
+**bit-identically** to a static cutoff/rate at `base·2^c` (the retrofit is
+provably the old 1 V/oct); unset depth == explicit 1.0; depth 2 doubles the
+octave shift; depth 0 disables bit-identically to unpatched; the voice paths
+apply depth per voice ((V,F) CV, voice 0 base / voice 1 shifted); patch
+dicts saved *before* the retrofit (no cv_depth key) load with the default —
+old patches sound identical. No PARAM_ALIASES needed (params added, none
+renamed). Exact-dict assertions in test_filter/test_lfo updated.
+
+**CV-coverage plan status:** animated-EQ trio done, crossover freq_cv done,
+convention standardised. Remaining (lowest priority): reverb size/mix CV,
+mixer gain CV; motion_eq per-band gain-CV and tilt_eq pivot_cv stay logged
+as follow-ups.

@@ -1840,15 +1840,17 @@ class NumpyBackend(AudioBackend):
         cutoff = float(module.params.get("cutoff", 1000.0))
         q = float(module.params.get("resonance", 0.707))
 
-        # CV-modulate the cutoff. 1V/octave: ``cutoff *= 2 ** mean(cv)``.
-        # Block-mean keeps the biquad coefficient recomputation to one
-        # pass per block; audio-rate cutoff mod would need a time-
-        # varying filter, which a single lfilter call can't express.
-        # If cutoff_cv is 2D (a voice-aware source feeding a mono
-        # filter), mean over both axes -- same effect as the old
-        # collapse=True path.
+        # CV-modulate the cutoff: octaves per CV unit scaled by
+        # ``cv_depth`` (default 1.0 = the classic 1 V/oct) --
+        # ``cutoff *= 2 ** (cv_depth * mean(cv))``. Block-mean keeps
+        # the biquad coefficient recomputation to one pass per block;
+        # audio-rate cutoff mod would need a time-varying filter,
+        # which a single lfilter call can't express. If cutoff_cv is
+        # 2D (a voice-aware source feeding a mono filter), mean over
+        # both axes -- same effect as the old collapse=True path.
         if cutoff_cv is not None and cutoff_cv.size > 0:
-            cutoff = cutoff * float(2.0 ** float(np.mean(cutoff_cv)))
+            cv_depth = float(module.params.get("cv_depth", 1.0))
+            cutoff = cutoff * float(2.0 ** (cv_depth * float(np.mean(cutoff_cv))))
 
         coeffs = self._filter_coeffs(mode, cutoff, q)
         if coeffs is None:
@@ -1935,9 +1937,10 @@ class NumpyBackend(AudioBackend):
             and cutoff_cv.size > 0
         )
 
+        cv_depth = float(module.params.get("cv_depth", 1.0))
         if per_voice_cutoff:
             cv_block_mean = cutoff_cv.mean(axis=1)  # (V,)
-            cutoff_per_voice = base_cutoff * np.power(2.0, cv_block_mean)
+            cutoff_per_voice = base_cutoff * np.power(2.0, cv_depth * cv_block_mean)
             sr = self.sample_rate
             cutoff_per_voice = np.clip(cutoff_per_voice, 20.0, sr * 0.45)
             q_clamped = max(0.1, min(q, 20.0))
@@ -1975,7 +1978,7 @@ class NumpyBackend(AudioBackend):
             if cutoff_cv is not None and cutoff_cv.size > 0:
                 # mean() over whatever shape: 1D collapses to scalar,
                 # 2D shouldn't reach here but be safe.
-                cutoff = cutoff * float(2.0 ** float(np.mean(cutoff_cv)))
+                cutoff = cutoff * float(2.0 ** (cv_depth * float(np.mean(cutoff_cv))))
             coeffs = self._filter_coeffs(mode, cutoff, q)
             if coeffs is None:
                 return src_buf.astype(np.float32)
@@ -2552,12 +2555,14 @@ class NumpyBackend(AudioBackend):
         bipolar = bool(module.params.get("bipolar", False))
 
         sr = self.sample_rate
-        # CV-modulate the rate: 1V/octave, block-mean. If rate_cv is
-        # 2D for any reason it shouldn't reach this branch -- the
+        # CV-modulate the rate: octaves per CV unit scaled by
+        # ``cv_depth`` (default 1.0 = 1 V/oct), block-mean. If rate_cv
+        # is 2D for any reason it shouldn't reach this branch -- the
         # dispatcher routes (V, F) to the voice path. mean() over a
         # 1D slice is the same as the old code.
         if rate_cv is not None and rate_cv.size > 0:
-            rate = rate * float(2.0 ** float(np.mean(rate_cv)))
+            cv_depth = float(module.params.get("cv_depth", 1.0))
+            rate = rate * float(2.0 ** (cv_depth * float(np.mean(rate_cv))))
 
         # Clamp to a safe range: 0.001 Hz floor (one cycle per ~17 min)
         # and an effective ceiling at Nyquist/2 -- beyond that an LFO
@@ -2648,11 +2653,13 @@ class NumpyBackend(AudioBackend):
         sr = self.sample_rate
         depth_c = max(0.0, min(depth, 1.0))
 
-        # Per-voice block-mean rate (1V/oct). Each voice gets its own
-        # phase increment for this block.
+        # Per-voice block-mean rate (octaves/unit x cv_depth, default
+        # 1 V/oct). Each voice gets its own phase increment for this
+        # block.
+        cv_depth = float(module.params.get("cv_depth", 1.0))
         cv_block_mean = rate_cv.mean(axis=1)  # (V,)
         rate_per_voice = base_rate * np.power(
-            2.0, cv_block_mean.astype(np.float64)
+            2.0, cv_depth * cv_block_mean.astype(np.float64)
         )
         rate_per_voice = np.clip(rate_per_voice, 0.001, sr * 0.45)
 

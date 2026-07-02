@@ -30,6 +30,9 @@ class Filter(Module):
         cutoff: Corner frequency in Hz.
         resonance: Q factor. ~0.707 is "no peak" (Butterworth); higher
             values give a resonant peak that whistles musically when swept.
+        cv_depth: Octaves the cutoff moves per unit of ``cutoff_cv``.
+            Default 1.0 = 1 V/oct (the pre-cv_depth fixed behaviour, so
+            old patches sound identical); 0 disables the CV.
     """
 
     TYPE = "filter"
@@ -37,13 +40,16 @@ class Filter(Module):
         "mode": "lowpass",
         "cutoff": 1000.0,
         "resonance": 0.707,
+        "cv_depth": 1.0,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),
-        # Cutoff CV: 1 volt = 1 octave. ``cutoff`` becomes
-        # ``cutoff * 2 ** mean(cv_block)`` when this is patched. Mean
-        # over the block keeps coefficient recomputation cheap; for
-        # audio-rate cutoff modulation we'd need per-sample coefs.
+        # Cutoff CV: octaves per CV unit, scaled by ``cv_depth``
+        # (default 1.0 = the classic 1 volt = 1 octave). ``cutoff``
+        # becomes ``cutoff * 2 ** (cv_depth * mean(cv_block))`` when
+        # this is patched. Mean over the block keeps coefficient
+        # recomputation cheap; for audio-rate cutoff modulation we'd
+        # need per-sample coefs.
         Port("cutoff_cv", "in", "cv"),
     ]
     OUTPUT_PORTS = [Port("out", "out", "audio")]

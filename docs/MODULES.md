@@ -60,6 +60,53 @@ The **bridge modules** ([AudioToCV](#audio_to_cv), [CVToAudio](#cv_to_audio),
 any destination — e.g. rectify an `audio` signal into `cv` to use a drum loop
 as an envelope.
 
+### CV depth conventions
+
+House rule (standardised 2026-07-02): **every modulatable `*_cv` input has a
+`cv_depth` parameter, measured in the target's natural unit per CV unit**, and
+the UI label always shows that unit. Frequency-domain depths are **octaves per
+unit** and default to `1.0` — the classic **1 V/oct** — and musical-pitch
+depths are **semitones per unit** defaulting to `12.0` (≡ 1 V/oct), so every
+frequency/pitch input is V/oct-calibrated out of the box. `cv_depth = 0`
+disables an input without unpatching it; per-input attenuation beyond the knob
+is a [CVScale](#cv_scale) away.
+
+Two deliberate exceptions:
+
+- **`oscillator.freq_cv` is a calibrated pitch input** (fixed 1 V/oct,
+  per-sample, no knob). It's the pitch bus — keyboards, sequencers and MIDI
+  emit 1 V/oct into it, and a depth knob here would silently detune patches.
+  Hardware makes the same split: a calibrated V/OCT jack, and separate FM
+  inputs with attenuators.
+- **Amplitude multipliers (`vca.cv`, `oscillator.amp_cv`) are knobless.** The
+  CV *is* the amplitude (`out = in × cv`), the modular convention; attenuate
+  with the source's own level or a CVScale.
+
+The full map:
+
+| Module . input | `cv_depth` default | Unit per CV unit | Summing |
+|----------------|--------------------|------------------|---------|
+| `oscillator.freq_cv` | — (calibrated) | 1 V/oct fixed, per-sample | `freq · 2^cv[n]` |
+| `oscillator.amp_cv` | — (multiplier) | linear | `amp · cv[n]` |
+| `vca.cv` | — (multiplier) | linear | `audio · cv · gain` |
+| `filter.cutoff_cv` | `1.0` | octaves | `cutoff · 2^(d·mean cv)` |
+| `lfo.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
+| `crossover.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
+| `sweep_eq.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
+| `motion_eq.band{i}_freq_cv` | `1.0` (shared) | octaves | `freq_i · 2^(d·mean cv)` |
+| `chorus.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
+| `flanger.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
+| `phaser.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
+| `resampler.pitch_cv` | `12.0` | semitones | `st + d·cv` (semitone space) |
+| `pitch_shifter.pitch_cv` | `12.0` | semitones | `st + d·mean cv` |
+| `delay.time_cv` | `50.0` | ms | `time + d·cv` |
+| `loudness.level_cv` | `1.0` | level (0…1) | `level + d·mean cv` |
+| `tilt_eq.tilt_cv` | `6.0` | dB | `tilt + d·mean cv` |
+
+(Converters whose entire job is a CV mapping — `cv_to_frequency`, the bridges,
+`cv_scale`/`cv_offset`, sample_hold, schmitt, sequencer — are out of scope:
+their params *are* the mapping.)
+
 ### Cabling rules
 
 - **Kinds must match.** You can't plug `cv` into an `audio` jack; the patch
@@ -391,7 +438,7 @@ highpass, or bandpass, with CV-modulatable cutoff.
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to filter. |
-| `cutoff_cv` | in | cv | 1 volt/octave cutoff modulation (`cutoff · 2^cv`). Patch an envelope or LFO here for sweeps. |
+| `cutoff_cv` | in | cv | Sweeps the cutoff, `cv_depth` octaves per CV unit (default 1.0 = 1 V/oct: `cutoff · 2^(cv_depth·cv)`). Patch an envelope or LFO here for sweeps. |
 | `out` | out | audio | Filtered signal. |
 
 **Parameters**
@@ -401,6 +448,7 @@ highpass, or bandpass, with CV-modulatable cutoff.
 | `mode` | `lowpass` | `lowpass`, `highpass`, `bandpass` | Filter response. |
 | `cutoff` | `1000.0` | ~20…20000 Hz | Corner/center frequency when `cutoff_cv` is unpatched. |
 | `resonance` | `0.707` | ~0.1…15 | Q. `0.707` is flat (no peak); higher emphasises the cutoff and can self-oscillate-ish. |
+| `cv_depth` | `1.0` | 0…4 oct/unit | Octaves the cutoff moves per `cutoff_cv` unit. Default 1 V/oct (pre-2026-07-02 fixed behaviour); 0 disables. |
 
 **Patching.** Classic: `oscillator → filter → vca`, with an `adsr → cutoff_cv`
 for a filter sweep. See `examples/filter_envelope.json`, `examples/wah.json`.
@@ -1057,9 +1105,10 @@ A clock-driven **step sequencer** — the self-playing centrepiece. On each `clo
 #### `lfo`
 
 _To document._ Low-frequency oscillator as a `cv` source (sine/tri/square/
-saw/random), with optional `rate_cv` for FM-of-modulation. Params:
-`waveform`, `rate`, `depth`, `bipolar`. See `examples/vibrato.json`,
-`examples/keyboard_tremolo.json`.
+saw/random), with optional `rate_cv` for FM-of-modulation (`cv_depth`
+octaves per CV unit, default 1.0 = 1 V/oct, 0 disables). Params:
+`waveform`, `rate`, `depth`, `bipolar`, `cv_depth`. See
+`examples/vibrato.json`, `examples/keyboard_tremolo.json`.
 
 ---
 

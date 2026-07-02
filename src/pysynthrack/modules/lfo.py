@@ -40,6 +40,9 @@ class LFO(Module):
         depth: Output amplitude in [0, 1]. Pre-scales the wave before the
             bipolar/unipolar shaping.
         bipolar: True → output in [-depth, +depth]. False → [0, depth].
+        cv_depth: Octaves the rate moves per unit of ``rate_cv``.
+            Default 1.0 = 1 V/oct (the pre-cv_depth fixed behaviour);
+            0 disables the CV.
     """
 
     TYPE = "lfo"
@@ -48,10 +51,13 @@ class LFO(Module):
         "rate": 4.0,
         "depth": 1.0,
         "bipolar": False,
+        "cv_depth": 1.0,
     }
     INPUT_PORTS = [
-        # 1V/oct on the rate. Block-mean evaluation (same trade-off as
-        # filter cutoff_cv): cheap, fine for sub-audio modulators.
+        # Octaves per CV unit on the rate, scaled by ``cv_depth``
+        # (default 1.0 = 1 V/oct). Block-mean evaluation (same
+        # trade-off as filter cutoff_cv): cheap, fine for sub-audio
+        # modulators.
         Port("rate_cv", "in", "cv"),
     ]
     OUTPUT_PORTS = [Port("cv", "out", "cv")]

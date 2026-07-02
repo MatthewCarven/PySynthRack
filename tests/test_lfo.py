@@ -19,6 +19,7 @@ class TestLFOModel:
             "rate": 4.0,
             "depth": 1.0,
             "bipolar": False,
+            "cv_depth": 1.0,
         }
         # v0.3 adds rate_cv input for modulation-matrix patches.
         assert [p.name for p in lfo.input_ports] == ["rate_cv"]
