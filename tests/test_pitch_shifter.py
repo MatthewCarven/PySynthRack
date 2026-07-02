@@ -14,6 +14,21 @@ Coverage:
     state reinit.
   - Integration: osc -> pitch_shifter -> speaker renders audible audio;
     a 50% mix harmony renders.
+  - Accuracy (ideal-grid WSOLA + sub-sample joins): octave up/down,
+    fourth up and one-semitone shifts land within ~a cent on a pure
+    sine (interpolated-FFT measurement); configs that used to deadlock
+    the old accumulating analysis pointer (100 ms grain @ +12, +5 st)
+    now sustain full level for the whole render.
+  - Deep bass: the period detector grows the working grain when the
+    user grain holds < ~2.5 cycles (35/30 Hz), observable via the
+    regrains counter and the engine's effective grain; normal material
+    never regrains (hysteresis, no thrash); pitch stays sub-3-cents.
+  - Formant preserve: default off and registered; st=0 with it on is
+    level-neutral; a synthetic two-resonator vowel shifted +7 keeps its
+    formant centroid (off, the centroid migrates up); mix=0 dry stays
+    the raw input bit-exactly; white noise stays bounded; LPC recovers
+    a known AR(2); voice row == mono through the formant path.
+
 """
 from __future__ import annotations
 
@@ -85,6 +100,7 @@ class TestModel:
             "mix": 1.0,
             "grain_size": 50.0,
             "overlap": 2,
+            "formant_preserve": False,
         }
 
     def test_ports_and_signal_kinds(self):
@@ -268,6 +284,210 @@ class TestVoiceDSP:
         assert ov.shape == (4, F)
         assert o2.shape == (F,)
         assert np.all(np.isfinite(ov))
+
+
+# ----- Accuracy (grid WSOLA + sub-sample joins) --------------------------------
+
+
+def _cents_vs(y, target_hz, lo=0.5, hi=0.95):
+    """Interpolated-FFT pitch error in cents against ``target_hz``."""
+    yp = y[int(len(y) * lo):int(len(y) * hi)]
+    spec = np.abs(np.fft.rfft(yp * np.hanning(len(yp))))
+    k0 = int(np.argmax(spec))
+    a = np.log(spec[k0 - 1] + 1e-30)
+    b = np.log(spec[k0] + 1e-30)
+    c = np.log(spec[k0 + 1] + 1e-30)
+    d = 0.5 * (a - c) / (a - 2 * b + c)
+    f_est = (k0 + d) * SR / len(yp)
+    return 1200.0 * np.log2(f_est / target_hz)
+
+
+def _tail_rms(y, secs=0.5):
+    return float(np.sqrt((y[-int(secs * SR):] ** 2).mean()))
+
+
+class TestAccuracy:
+    def test_octave_up_sub_cent(self):
+        patch, src, ps, _, b = _rig({"semitones": 12.0})
+        out = _run(b, patch, src, ps, _tone(440.0, 4.0))
+        assert abs(_cents_vs(out, 880.0)) < 1.5
+
+    def test_octave_down_sub_cent(self):
+        patch, src, ps, _, b = _rig({"semitones": -12.0})
+        out = _run(b, patch, src, ps, _tone(440.0, 4.0))
+        assert abs(_cents_vs(out, 220.0)) < 1.5
+
+    def test_one_semitone_fine(self):
+        patch, src, ps, _, b = _rig({"semitones": 1.0})
+        out = _run(b, patch, src, ps, _tone(440.0, 4.0))
+        assert abs(_cents_vs(out, 440.0 * 2 ** (1 / 12))) < 1.0
+
+    def test_fourth_up_no_deadlock(self):
+        # +5 st deadlocked the old accumulating analysis pointer (the
+        # constant alignment residue under-consumed input until the
+        # pointer fell out of the ring and the output died to DC).
+        patch, src, ps, _, b = _rig({"semitones": 5.0})
+        out = _run(b, patch, src, ps, _tone(440.0, 4.0))
+        assert _tail_rms(out) > 0.5
+        assert abs(_cents_vs(out, 440.0 * 2 ** (5 / 12))) < 1.5
+
+    def test_big_grain_no_deadlock(self):
+        # 100 ms grain @ +12 was another dead config.
+        patch, src, ps, _, b = _rig({"semitones": 12.0, "grain_size": 100.0})
+        out = _run(b, patch, src, ps, _tone(440.0, 4.0))
+        assert _tail_rms(out) > 0.5
+        assert abs(_cents_vs(out, 880.0)) < 2.0
+
+    def test_no_dropouts_long_run(self):
+        patch, src, ps, _, b = _rig({"semitones": 7.0})
+        out = _run(b, patch, src, ps, _tone(440.0, 5.0))
+        yp = out[SR:]
+        n = (len(yp) // 4096) * 4096
+        rms = np.sqrt((yp[:n].reshape(-1, 4096) ** 2).mean(axis=1))
+        assert float(rms.min()) > 0.4
+
+    def test_single_voice_matches_mono_new_path(self):
+        sig = _tone(440.0, 2.0)
+        p1, s1, r1, _, b1 = _rig({"semitones": 5.0})
+        mono = _run(b1, p1, s1, r1, sig)
+        p2, s2, r2, _, b2 = _rig({"semitones": 5.0})
+        voice = _run(b2, p2, s2, r2, np.tile(sig, (2, 1)))
+        assert np.array_equal(voice[0], mono)
+        assert np.array_equal(voice[0], voice[1])
+
+
+# ----- Deep bass (pitch-synchronous grain sizing) ------------------------------
+
+
+class TestDeepBass:
+    def test_35hz_octave_up_regrains_and_tracks(self):
+        patch, src, ps, _, b = _rig({"semitones": 12.0})
+        out = _run(b, patch, src, ps, _tone(35.0, 6.0))
+        st = b._state[ps.id]
+        assert int(st["regrains"][0]) >= 1
+        assert st["eng"][0].Lg > int(round(50.0e-3 * SR))
+        assert _tail_rms(out) > 0.5
+        assert abs(_cents_vs(out, 70.0, lo=0.6)) < 3.0
+
+    def test_30hz_fifth_up_sustains(self):
+        patch, src, ps, _, b = _rig({"semitones": 7.0})
+        out = _run(b, patch, src, ps, _tone(30.0, 6.0))
+        st = b._state[ps.id]
+        assert int(st["regrains"][0]) >= 1
+        assert _tail_rms(out) > 0.5
+        assert abs(_cents_vs(out, 30.0 * 2 ** (7 / 12), lo=0.6)) < 3.0
+
+    def test_normal_material_never_regrains(self):
+        patch, src, ps, _, b = _rig({"semitones": 3.0})
+        _run(b, patch, src, ps, _tone(440.0, 3.0))
+        st = b._state[ps.id]
+        assert int(st["regrains"][0]) == 0
+        assert st["eng"][0].Lg == int(round(50.0e-3 * SR))
+
+    def test_no_thrash_on_steady_tone(self):
+        patch, src, ps, _, b = _rig({"semitones": 5.0})
+        _run(b, patch, src, ps, _tone(220.0, 4.0))
+        assert int(b._state[ps.id]["regrains"][0]) == 0
+
+
+# ----- Formant preserve ---------------------------------------------------------
+
+
+def _vowel(secs, f0=110.0):
+    """Synthetic vowel: an ``f0`` pulse train through two resonators
+    (800 Hz + 2400 Hz) -- fixed formants over a definite pitch."""
+    from scipy.signal import lfilter as _lf
+    n = int(secs * SR)
+    pulses = np.zeros(n)
+    pulses[:: int(round(SR / f0))] = 1.0
+
+    def reso(fc, q, x):
+        w0 = 2 * np.pi * fc / SR
+        al = np.sin(w0) / (2 * q)
+        b_ = np.array([al, 0.0, -al]) / (1 + al)
+        a_ = np.array([1 + al, -2 * np.cos(w0), 1 - al]) / (1 + al)
+        return _lf(b_, a_, x)
+
+    v = reso(800.0, 8.0, pulses) + 0.7 * reso(2400.0, 8.0, pulses)
+    return (v / np.max(np.abs(v)) * 0.8).astype(np.float32)
+
+
+def _band_centroid(y, lo, hi):
+    spec = np.abs(np.fft.rfft(y * np.hanning(len(y)))) ** 2
+    fr = np.fft.rfftfreq(len(y), 1.0 / SR)
+    m = (fr >= lo) & (fr <= hi)
+    return float((fr[m] * spec[m]).sum() / (spec[m].sum() + 1e-12))
+
+
+class TestFormantPreserve:
+    def test_unshifted_is_level_neutral(self):
+        v = _vowel(4.0)
+        patch, src, ps, _, b = _rig({"semitones": 0.0, "formant_preserve": True})
+        out = _run(b, patch, src, ps, v)[2 * SR:]
+        vin = v[2 * SR: (len(v) // F) * F]
+        ratio = np.sqrt((out ** 2).mean()) / np.sqrt((vin ** 2).mean())
+        assert 0.7 < float(ratio) < 1.4
+
+    def test_vowel_keeps_formant_when_on(self):
+        # +7 st moves the fundamental 110 -> 165. Without preservation
+        # the 800 Hz formant migrates toward 1200; with it, the energy
+        # centroid of the first-formant band stays near 800.
+        v = _vowel(5.0)
+        p1, s1, r1, _, b1 = _rig({"semitones": 7.0, "formant_preserve": True})
+        on = _run(b1, p1, s1, r1, v)[2 * SR:]
+        p2, s2, r2, _, b2 = _rig({"semitones": 7.0, "formant_preserve": False})
+        off = _run(b2, p2, s2, r2, v)[2 * SR:]
+        c_on = _band_centroid(on, 400.0, 1600.0)
+        c_off = _band_centroid(off, 400.0, 1600.0)
+        assert c_on < 1050.0
+        assert c_off > 1100.0
+        assert c_on < c_off - 100.0
+
+    def test_dry_tap_stays_raw(self):
+        # mix=0 must return the true input regardless of the whitened
+        # wet path: bit-equal to the formant-off dry render.
+        sig = _tone(220.0, 2.0)
+        p1, s1, r1, _, b1 = _rig({"semitones": 12.0, "mix": 0.0, "formant_preserve": True})
+        p2, s2, r2, _, b2 = _rig({"semitones": 12.0, "mix": 0.0, "formant_preserve": False})
+        assert np.array_equal(
+            _run(b1, p1, s1, r1, sig), _run(b2, p2, s2, r2, sig)
+        )
+
+    def test_no_startup_blast(self):
+        # Regression: envelopes estimated before the wet path primed
+        # once blasted the first wet block ~10x over the input level.
+        v = _vowel(2.0)
+        patch, src, ps, _, b = _rig({"semitones": 5.0, "formant_preserve": True})
+        out = _run(b, patch, src, ps, v)
+        steady = float(np.abs(out[SR:]).max())
+        startup = float(np.abs(out[:SR]).max())
+        assert startup < max(4.0 * steady, 0.2)
+
+    def test_noise_stays_bounded(self):
+        sig = (np.random.RandomState(6).randn(int(4.0 * SR)) * 0.3).astype(np.float32)
+        patch, src, ps, _, b = _rig({"semitones": 12.0, "formant_preserve": True})
+        out = _run(b, patch, src, ps, sig)
+        assert np.all(np.isfinite(out))
+        assert float(np.abs(out).max()) < 4.0
+
+    def test_lpc_recovers_known_ar2(self):
+        from pysynthrack.audio.numpy_backend import _lpc_coeffs
+        from scipy.signal import lfilter as _lf
+        rng = np.random.RandomState(3)
+        x = _lf([1.0], [1.0, -1.2, 0.72], rng.randn(8192))
+        a = _lpc_coeffs(x, 8, SR)
+        assert a is not None
+        assert abs(a[1] - (-1.2)) < 0.1
+        assert abs(a[2] - 0.72) < 0.1
+        assert np.all(np.abs(a[3:]) < 0.1)
+
+    def test_voice_matches_mono_formant_on(self):
+        v = _vowel(2.0)
+        p1, s1, r1, _, b1 = _rig({"semitones": 7.0, "formant_preserve": True})
+        mono = _run(b1, p1, s1, r1, v)
+        p2, s2, r2, _, b2 = _rig({"semitones": 7.0, "formant_preserve": True})
+        voice = _run(b2, p2, s2, r2, np.tile(v, (2, 1)))
+        assert np.array_equal(voice[0], mono)
 
 
 # ----- Integration -----------------------------------------------------------

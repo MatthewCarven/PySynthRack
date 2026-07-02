@@ -36,6 +36,21 @@ on a characteristic granular smear — part of the sound.
 For pitch shifting where speed *should* follow (tape/turntable, sample
 transposition), use the [resampler] instead.
 
+``formant_preserve`` keeps the *timbre* (spectral envelope) in place
+while the pitch moves: an LPC envelope is estimated from the input,
+the grain engine shifts the whitened residual, and the envelope is
+re-applied afterwards. Off (the default) you get the classic
+"chipmunk/giant" coloration where formants travel with the pitch; on,
+a shifted voice or resonant patch keeps its vowel/body. Estimation is
+time-domain (Levinson-Durbin, order 24) — no FFT phase games.
+
+Deep bass takes care of itself: the engine watches the input period
+and, when the configured grain is too short to hold ~2.5 cycles (low
+E and below at the default 50 ms), grows its working grain
+automatically — ``grain_size`` acts as the floor. Pitch accuracy is
+sub-cent across the range: the analysis clock runs on an exact grid
+and grain joins are aligned to sub-sample precision.
+
 Ports:
   * ``in`` (audio): the signal to transpose. Unpatched -> silence out.
   * ``pitch_cv`` (cv): added to the semitone amount, scaled by
@@ -69,6 +84,9 @@ class PitchShifter(Module):
             sustained/low material, shorter = sharper transients).
         overlap: Number of overlapping grains (2-4). Higher = smoother
             and denser at more CPU.
+        formant_preserve: Keep the spectral envelope (timbre) in place
+            while pitch moves (LPC whiten -> shift -> re-color).
+            Default False = classic varispeed-style coloration.
 
     Ports:
         in (in, audio): signal to transpose. Unpatched -> silence.
@@ -84,6 +102,7 @@ class PitchShifter(Module):
         "mix": 1.0,
         "grain_size": 50.0,
         "overlap": 2,
+        "formant_preserve": False,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),

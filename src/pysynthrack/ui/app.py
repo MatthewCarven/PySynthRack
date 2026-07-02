@@ -602,6 +602,12 @@ class App:
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
+            if param_name == "formant_preserve":
+                dpg.add_checkbox(
+                    label=param_name, default_value=bool(current),
+                    callback=self._on_param_changed, user_data=user_data,
+                )
+                return
 
         if module.TYPE == "resampler":
             # Varispeed transpose controls. Pitch is set in semitones

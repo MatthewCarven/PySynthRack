@@ -126,6 +126,92 @@ def _dc_block(x, zi):
     return lfilter([1.0, -1.0], [1.0, -_DC_R], x, axis=-1, zi=zi)
 
 
+def _detect_period(x: np.ndarray, sr: int, fmin: float = 25.0,
+                   fmax: float = 800.0):
+    """Autocorrelation fundamental-period estimate of 1D ``x``.
+
+    Returns the period in samples (float, parabolic-refined) when a
+    clear repeat exists, else None. The peak must reach half the
+    zero-lag energy (rejects noise/silence), and the *smallest* lag
+    within 90% of the best peak wins, so a perfectly periodic input
+    doesn't alias to a subharmonic (2P, 3P, ... score just as well).
+    """
+    n = int(x.shape[0])
+    lag_max = int(sr / fmin)
+    lag_min = max(2, int(sr / fmax))
+    if lag_max <= lag_min or n < lag_max + lag_min:
+        return None
+    xw = x - x.mean()
+    if float(np.dot(xw, xw)) < 1e-9:
+        return None
+    nfft = 1 << int(np.ceil(np.log2(2 * n)))
+    X = np.fft.rfft(xw, nfft)
+    ac = np.fft.irfft(X * np.conj(X))[: lag_max + 2]
+    ac = ac / (ac[0] + 1e-12)
+    # Unbias the linear autocorrelation (fewer overlapping samples at
+    # long lags would otherwise punish deep-bass periods).
+    lags = np.arange(ac.shape[0])
+    ac = ac * (n / np.maximum(n - lags, n / 4.0))
+    seg = ac[lag_min:lag_max + 1]
+    # Candidates are LOCAL peaks only -- the ACF of a low tone is still
+    # high at lag_min (it hasn't decayed yet), so a plain threshold
+    # scan would lock onto that shoulder instead of the true period.
+    d1 = np.diff(seg)
+    # Interior peaks only: a boundary sample on the ACF's initial decay
+    # (still high at lag_min for a low tone) must never qualify.
+    pk = 1 + np.nonzero((d1[:-1] > 0) & (d1[1:] <= 0))[0]
+    if pk.size == 0:
+        return None
+    vals = seg[pk]
+    m = float(vals.max())
+    if m < 0.5:
+        return None
+    # Smallest peak lag within 90% of the best -- a perfectly periodic
+    # input scores multiples of P equally; take P, not 2P/3P.
+    k = int(pk[vals >= 0.9 * m][0]) + lag_min
+    if 1 <= k < ac.shape[0] - 1:
+        y0, y1, y2 = float(ac[k - 1]), float(ac[k]), float(ac[k + 1])
+        den = y0 - 2.0 * y1 + y2
+        d = 0.5 * (y0 - y2) / den if abs(den) > 1e-12 else 0.0
+        return float(k + float(np.clip(d, -0.5, 0.5)))
+    return float(k)
+
+
+def _lpc_coeffs(x: np.ndarray, order: int, sr: int):
+    """Levinson-Durbin LPC of ``x`` -> full coeff vector [1, a1..ap].
+
+    Autocorrelation method with a ~60 Hz Gaussian lag window and a tiny
+    white-noise floor (keeps the recursion positive definite -> a
+    stable synthesis filter), plus reflection-coefficient clamping as a
+    second belt. Returns None when the block has no usable energy.
+    ``A(z) = 1 + a1 z^-1 + ...`` whitens; ``1/A(z)`` re-colors.
+    """
+    n = int(x.shape[0])
+    if n < 2 * order:
+        return None
+    xw = x * np.hanning(n)
+    if float(np.dot(xw, xw)) < 1e-10:
+        return None
+    nfft = 1 << int(np.ceil(np.log2(2 * n)))
+    X = np.fft.rfft(xw, nfft)
+    rr = np.fft.irfft(X * np.conj(X))[: order + 1]
+    lags = np.arange(order + 1)
+    rr = rr * np.exp(-0.5 * (2.0 * np.pi * 60.0 * lags / sr) ** 2)
+    rr[0] *= 1.0 + 1e-4
+    a = np.zeros(order + 1)
+    a[0] = 1.0
+    err = float(rr[0])
+    for m in range(1, order + 1):
+        acc = rr[m] + float(np.dot(a[1:m], rr[1:m][::-1]))
+        k = -acc / err if err > 1e-12 else 0.0
+        k = float(np.clip(k, -0.999, 0.999))
+        prev = a[1:m].copy()
+        a[1:m] += k * prev[::-1]
+        a[m] = k
+        err *= (1.0 - k * k)
+    return a
+
+
 class _GrainShifter:
     """One voice's streaming WSOLA pitch-shift engine (time-preserving).
 
@@ -138,9 +224,24 @@ class _GrainShifter:
     persists across :meth:`process` calls. See modules/pitch_shifter.py
     for the musical description.
 
+    The analysis pointer lives on the **ideal float grid** (``a += Hs/r``
+    per grain) and never absorbs the similarity-search offset -- the
+    canonical WSOLA formulation. (An earlier revision accumulated the
+    offset, which on periodic input turned a constant alignment residue
+    into a systematic input-consumption drift: mild starvation pulled
+    the pitch a few cents at some settings, and in the other direction
+    the analysis pointer fell out of the ring and production deadlocked
+    -- deep bass and several grain/ratio combos died to DC.) The NCC
+    peak is refined parabolically and grains are extracted at the
+    resulting *fractional* position, so overlap joins stay
+    phase-continuous to sub-sample accuracy (sub-cent pitch).
+
     One engine handles one channel; the renderer keeps a list of these,
     one per voice slot, so a single voice is bit-identical to the mono
-    render (same deterministic ops).
+    render (same deterministic ops). ``db`` is an optional parallel ring
+    of the *raw* input (fed via ``process(..., x_dry=...)``) so the dry
+    tap stays true when the wet path is fed a whitened signal for
+    formant preservation.
     """
 
     def __init__(self, grain: int, overlap: int, head: int) -> None:
@@ -149,15 +250,16 @@ class _GrainShifter:
         self.Lov = max(1, self.Lg - self.Hs)
         self.seek = max(1, self.Hs // 2)
         self.win = np.hanning(self.Lg)
-        self.Lin = self.Lg + self.seek + head + 64
+        self.Lin = self.Lg + 2 * self.seek + head + 64
         self.Lstr = 2 * self.Lg + head + 64
-        self.ib = np.zeros(self.Lin)        # input ring
+        self.ib = np.zeros(self.Lin)        # engine-input ring
+        self.db = None                       # raw ring for the dry tap
         self.ss = np.zeros(self.Lstr)       # stretched signal ring (OLA accum)
         self.sw = np.zeros(self.Lstr)       # stretched window-sum ring
         self.iw = 0                          # total input samples written
         self.onset = 0                       # synth index of next grain
         self.final = 0                       # stretched samples finalized
-        self.a = 0.0                         # analysis pointer (abs input idx)
+        self.a = 0.0                         # IDEAL analysis grid (abs input idx)
         self.tgt = np.zeros(self.Lov)        # similarity-search target
         self.have_tgt = False
         self.rp = 0.0                        # resample read ptr (abs stretched)
@@ -167,41 +269,69 @@ class _GrainShifter:
 
     def _produce_one(self, r: float) -> bool:
         Lg, Hs, Lov, seek = self.Lg, self.Hs, self.Lov, self.seek
-        Ha = max(1, int(round(Hs / r)))
         c = int(round(self.a))
-        if c + seek + Lg > self.iw:                      # not enough input yet
+        if c + seek + Lg + 2 > self.iw:              # not enough input yet
             return False
-        if c - seek < self.iw - self.Lin + 2:            # would underflow ring
-            return False
+        if c - seek - 1 < self.iw - self.Lin + 2:
+            # The grid fell off the back of the ring (only possible
+            # after an abnormal stall -- with the ideal-grid pointer
+            # this is a safety net, not a steady state). Snap forward.
+            self.a = float(self.iw - self.Lin + 3 + seek)
+            c = int(round(self.a))
+            if c + seek + Lg + 2 > self.iw:
+                return False
         if not self.have_tgt:
-            d0 = 0
+            p = float(c)
         else:
-            seg = self.ib[(c - seek + np.arange(2 * seek + Lov)) % self.Lin]
-            dot = np.correlate(seg, self.tgt, "valid")               # (2*seek+1,)
+            seg = self.ib[(c - seek + np.arange(2 * seek + Lov + 1)) % self.Lin]
+            dot = np.correlate(seg[:-1], self.tgt, "valid")          # (2*seek+1,)
             cs = np.concatenate([[0.0], np.cumsum(seg * seg)])
             nrm = np.sqrt(np.maximum(cs[Lov:] - cs[:-Lov], 1e-12))[: 2 * seek + 1]
             tn = float(np.linalg.norm(self.tgt)) + 1e-9
             ncc = dot / (nrm * tn) - self.bias * np.abs(np.arange(-seek, seek + 1)) / seek
-            d0 = int(np.argmax(ncc)) - seek
-        sidx = c + d0
-        if sidx + Lg > self.iw:
-            sidx = self.iw - Lg
+            k = int(np.argmax(ncc))
+            if 0 < k < 2 * seek:
+                # Parabolic sub-sample refinement of the NCC peak.
+                y0, y1, y2 = float(ncc[k - 1]), float(ncc[k]), float(ncc[k + 1])
+                den = y0 - 2.0 * y1 + y2
+                dfr = 0.5 * (y0 - y2) / den if abs(den) > 1e-12 else 0.0
+                dfr = float(np.clip(dfr, -0.5, 0.5))
+            else:
+                dfr = 0.0
+            p = c + (k - seek) + dfr
+        # Fractional grain extraction (linear interp) at position p.
+        i0 = int(np.floor(p))
+        fr = p - i0
+        seg2 = self.ib[(i0 + np.arange(Lg + 1)) % self.Lin]
+        g = seg2[:-1] * (1.0 - fr) + seg2[1:] * fr
         ring = (self.onset + np.arange(Lg)) % self.Lstr
-        self.ss[ring] += self.win * self.ib[(sidx + np.arange(Lg)) % self.Lin]
+        self.ss[ring] += self.win * g
         self.sw[ring] += self.win
-        self.tgt = self.ib[(sidx + Hs + np.arange(Lov)) % self.Lin].copy()
+        # Target = this grain's continuation Hs later (fractional too).
+        ts = self.ib[(i0 + Hs + np.arange(Lov + 1)) % self.Lin]
+        self.tgt = ts[:-1] * (1.0 - fr) + ts[1:] * fr
         self.have_tgt = True
-        self.a = sidx + Ha
+        self.a += Hs / r      # ideal grid: search excursions never accumulate
         self.onset += Hs
         self.final = self.onset
         return True
 
-    def process(self, x: np.ndarray, r: float) -> np.ndarray:
-        """Push one input block (1D float64), return the shifted block."""
+    def process(self, x: np.ndarray, r: float, x_dry=None) -> np.ndarray:
+        """Push one input block (1D float64), return the shifted block.
+
+        ``x_dry``, when given, is written to the parallel raw ring so
+        ``dry_tap`` reads the true input even when ``x`` is a whitened
+        residual (formant-preserve mode).
+        """
         F = x.shape[0]
         if F == 0:
             return np.zeros(0, dtype=np.float64)
-        self.ib[(self.iw + np.arange(F)) % self.Lin] = x
+        slots = (self.iw + np.arange(F)) % self.Lin
+        self.ib[slots] = x
+        if x_dry is not None:
+            if self.db is None:
+                self.db = np.zeros(self.Lin)
+            self.db[slots] = x_dry
         self.iw += F
         if not self.primed:
             while self.final < self.Lg:
@@ -239,12 +369,21 @@ class _GrainShifter:
                 self.zeroed = tz
         return out
 
+    def history(self, n: int, dry: bool = False) -> np.ndarray:
+        """The last ``n`` input samples (raw ring when ``dry``), oldest
+        first -- used to prime a replacement engine and for the LPC /
+        period estimators."""
+        n = int(min(n, self.iw, self.Lin - 4))
+        src = self.db if (dry and self.db is not None) else self.ib
+        return src[(self.iw - n + np.arange(n)) % self.Lin].copy()
+
     def dry_tap(self, F: int, Dc: int) -> np.ndarray:
         """Latency-compensated dry read of the most recent block."""
+        src = self.db if self.db is not None else self.ib
         dp = (self.iw - F) + np.arange(F) - Dc
         d0 = np.floor(dp).astype(np.int64)
         df = dp - d0
-        return self.ib[d0 % self.Lin] * (1.0 - df) + self.ib[(d0 + 1) % self.Lin] * df
+        return src[d0 % self.Lin] * (1.0 - df) + src[(d0 + 1) % self.Lin] * df
 
 
 class NumpyBackend(AudioBackend):
@@ -5533,6 +5672,17 @@ class NumpyBackend(AudioBackend):
     # Clamp the effective transpose so the playback ratio (and the stretch
     # ring sized from it) stays bounded. +/-36 st -> ratio in [1/8, 8].
     _PS_MAX_ST = 36.0
+    # Formant preservation (LPC whiten -> shift residual -> re-color).
+    _PS_LPC_ORDER = 24          # envelope detail; ~speech-codec order at 44.1k
+    _PS_LPC_WIN = 1024          # raw samples per envelope estimate
+    # Pitch-synchronous deep-bass grain sizing: re-estimate the input
+    # period this often, and grow the effective grain so it always holds
+    # at least _PS_SYNC_PERIODS periods (capped; user grain is the floor).
+    _PS_DETECT_EVERY = 2048
+    _PS_DETECT_WIN = 4096
+    _PS_SYNC_PERIODS = 2.5
+    _PS_MAX_GRAIN_SEC = 0.15
+    _PS_FMIN = 25.0
 
     def _render_pitch_shifter(self, module, frames, buffers, patch):
         """Granular WSOLA pitch shifter (time-preserving). Shape-polymorphic.
@@ -5574,7 +5724,22 @@ class NumpyBackend(AudioBackend):
         return out[0]
 
     def _pitch_shifter_core(self, module, frames, src, cv):
-        """Shared ``(V, F)`` engine; mono runs with V=1 (bit-identical)."""
+        """Shared ``(V, F)`` engine; mono runs with V=1 (bit-identical).
+
+        Per voice and per block: (1) every ``_PS_DETECT_EVERY`` input
+        samples the input period is re-estimated and, when the current
+        grain holds fewer than ``_PS_SYNC_PERIODS`` periods (deep bass),
+        the engine is rebuilt with a longer grain -- primed from the old
+        engine's ring and equal-power crossfaded in over one block, with
+        20% hysteresis so it never thrashes; (2) with
+        ``formant_preserve`` on, an LPC envelope is estimated from the
+        raw history, the input is whitened through ``A(z)``, the grain
+        engine shifts the residual, and the output is re-colored through
+        ``1/A(z)`` using the coefficient set from ~one grain ago (so the
+        envelope rides with the content it described). Coefficient sets
+        change per block with lfilter zf-carry -- the standard adaptive-
+        filter compromise, smooth because envelopes evolve slowly.
+        """
         V = src.shape[0]
         sr = self.sample_rate
         semis = float(module.params.get("semitones", 0.0))
@@ -5583,6 +5748,7 @@ class NumpyBackend(AudioBackend):
         mix = float(np.clip(float(module.params.get("mix", 1.0)), 0.0, 1.0))
         grain_ms = float(module.params.get("grain_size", 50.0))
         overlap = max(1, min(8, int(module.params.get("overlap", 2))))
+        formant = bool(module.params.get("formant_preserve", False))
         Lg = max(8, int(round(grain_ms * 1e-3 * sr)))
 
         head = max(16384, 16 * int(getattr(self, "block_size", 512)))
@@ -5593,12 +5759,16 @@ class NumpyBackend(AudioBackend):
             state["Lg"] = Lg
             state["ov"] = overlap
             state["eng"] = [_GrainShifter(Lg, overlap, head) for _ in range(V)]
+            state["last_det"] = [0] * V
+            state["regrains"] = np.zeros(V, dtype=np.int64)
+            state["lpc_zi_w"] = [None] * V     # whitening FIR state
+            state["lpc_zi_s"] = [None] * V     # synthesis IIR state
+            state["lpc_fifo"] = [[] for _ in range(V)]
         engines = state["eng"]
 
         if frames == 0:
             return np.empty((V, 0), dtype=np.float32)
 
-        Dc = Lg  # approximate latency compensation for the dry tap
         base_st = semis + cents / 100.0
         out = np.empty((V, frames), dtype=np.float32)
         for v in range(V):
@@ -5606,7 +5776,87 @@ class NumpyBackend(AudioBackend):
             st = max(-self._PS_MAX_ST, min(self._PS_MAX_ST, st))
             r = 2.0 ** (st / 12.0)
             eng = engines[v]
-            wet = eng.process(src[v].astype(np.float64), r)
+            x = src[v].astype(np.float64)
+
+            # --- pitch-synchronous grain sizing (deep bass) ---
+            old_eng = None
+            if eng.iw - state["last_det"][v] >= self._PS_DETECT_EVERY:
+                state["last_det"][v] = eng.iw
+                tail = eng.history(self._PS_DETECT_WIN)
+                period = _detect_period(tail, sr, fmin=self._PS_FMIN)
+                want = Lg
+                if period is not None:
+                    want = max(Lg, int(round(self._PS_SYNC_PERIODS * period)))
+                want = min(want, int(self._PS_MAX_GRAIN_SEC * sr))
+                cur = eng.Lg
+                if want > cur * 1.2 or (cur > Lg and want < cur * 0.8):
+                    new_eng = _GrainShifter(want, overlap, head)
+                    hist = eng.history(new_eng.Lin - frames - 8)
+                    hist_dry = None
+                    if eng.db is not None:
+                        hist_dry = eng.history(hist.shape[0], dry=True)
+                    if hist.shape[0]:
+                        new_eng.process(hist, r, x_dry=hist_dry)  # prime; output discarded
+                    old_eng = eng
+                    eng = new_eng
+                    engines[v] = eng
+                    state["regrains"][v] += 1
+
+            # --- formant preserve: whiten the engine input ---
+            a_cur = None
+            xw = x
+            if formant:
+                raw_tail = eng.history(self._PS_LPC_WIN, dry=True) if eng.db is not None \
+                    else eng.history(self._PS_LPC_WIN)
+                a_cur = _lpc_coeffs(raw_tail, self._PS_LPC_ORDER, sr)
+                if a_cur is not None:
+                    zi = state["lpc_zi_w"][v]
+                    if zi is None:
+                        zi = np.zeros(self._PS_LPC_ORDER)
+                    xw, zf = lfilter(a_cur, [1.0], x, zi=zi)
+                    state["lpc_zi_w"][v] = zf
+            x_dry = x if formant else None
+
+            was_primed = eng.primed
+            wet = eng.process(xw, r, x_dry=x_dry)
+            if old_eng is not None:
+                # Equal-power splice from the outgoing engine's output.
+                wet_old = old_eng.process(
+                    xw, r, x_dry=x_dry if old_eng.db is not None else None
+                )
+                t = (np.arange(frames) + 1.0) / frames
+                wet = np.sin(0.5 * np.pi * t) * wet + np.cos(0.5 * np.pi * t) * wet_old
+
+            # --- formant preserve: re-color with the envelope from ~one
+            # grain ago (aligns the envelope with the content it described).
+            if formant:
+                fifo = state["lpc_fifo"][v]
+                # Envelopes estimated before the wet path primed describe
+                # the onset transient, not streaming content -- feeding
+                # them to the synthesis filter blasts the first wet block.
+                fifo.append(a_cur if was_primed else None)
+                lag_blocks = max(0, int(round(eng.Lg / float(frames))))
+                while len(fifo) > lag_blocks + 1:
+                    fifo.pop(0)
+                a_del = fifo[0]
+                if a_del is not None:
+                    zi = state["lpc_zi_s"][v]
+                    if zi is None:
+                        zi = np.zeros(self._PS_LPC_ORDER)
+                    wet, zf = lfilter([1.0], a_del, wet, zi=zi)
+                    state["lpc_zi_s"][v] = zf
+                    # Safety valve: a recolored block should sit near the
+                    # raw input's level (whiten -> shift -> re-color is
+                    # level-preserving by construction). An ill-conditioned
+                    # estimate (attack edges, near-silence) can't be ruled
+                    # out, so bound the block at 4x the raw RMS.
+                    raw_rms = float(np.sqrt((x ** 2).mean()))
+                    rec_rms = float(np.sqrt((wet ** 2).mean()))
+                    lim = 4.0 * max(raw_rms, 1e-4)
+                    if rec_rms > lim:
+                        wet = wet * (lim / rec_rms)
+
+            Dc = eng.Lg  # approximate latency compensation for the dry tap
             if mix >= 1.0:
                 blk = wet
             elif mix <= 0.0:

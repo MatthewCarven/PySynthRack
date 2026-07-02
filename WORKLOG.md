@@ -5360,3 +5360,72 @@ brief anti-phase amplitude dip on a pure tone (equal-power handles
 uncorrelated content; correlated-opposite is the worst case). The fix
 is a WSOLA-style seam-position search - logged in TODO as the natural
 next resampler step.
+
+
+## 2026-07-02 - PitchShifter trio: accuracy fix + deep-bass grains + formant preserve
+
+Matthew asked for the three logged pitch_shifter follow-ups in one go.
+Diagnosis first, and it re-scoped the job: the "~12 cents sharp at +12
+on a pure sine" was the mild face of a real WSOLA defect. The engine
+accumulated the similarity-search offset into the analysis pointer
+(`a = sidx + Ha`), and on periodic input the offset settles to a
+CONSTANT alignment residue (up to half a period), so input was consumed
+at `Ha + d0` per grain instead of `Ha`. Two failure faces, measured:
+over-consumption throttles production against the write head and the
+resample clamp inserts micro-holds (the -12 ct pull at 440 Hz/50 ms/ov2
+- and it IS flat, not sharp; the old argmax-bin measurement flipped the
+sign); under-consumption walks the pointer out of the ring and
+production DEADLOCKS - output dies to DC. Dead configs found: 100 ms
+grain @ +12, 440 @ +5 st, 55 Hz @ +/-12. Nobody had noticed because the
+shipped example (saw, +7, defaults) sits in a residue sweet spot.
+
+Fix per the canonical WSOLA formulation: the analysis pointer lives on
+the IDEAL FLOAT GRID (`a += Hs/r`, never absorbing d0), so search
+excursions can't accumulate - exact consumption, no starvation, no
+deadlock, and the integer-hop rounding error at fine cents settings
+goes with it. On top: parabolic NCC-peak refinement + fractional grain
+extraction (both grain and search target read at sub-sample positions),
+making joins phase-continuous to sub-sample accuracy. Measured matrix
+after the fix: WORST case -0.26 ct (55 Hz octave-down); every previously
+dead config sustains at full level. Scoped with Matthew via
+AskUserQuestion; both recommendations taken (LPC formants, auto grain).
+
+Deep bass: `_detect_period` (module-level) - unbiased FFT autocorr,
+INTERIOR local peaks only (the ACF of a low tone is still ~0.95 at
+lag_min, so a threshold scan locks onto that shoulder - found the hard
+way), smallest peak within 90% of best (subharmonic-proof), parabolic
+refine, None for noise/silence. Every 2048 input samples the core
+re-estimates; if the working grain holds < 2.5 periods it rebuilds the
+engine at 2.5P (user grain_size = floor, 150 ms cap, 20% hysteresis),
+primes it from the old ring via the new `history()` accessor and
+equal-power crossfades over one block; per-voice `regrains` counter is
+the observable. 35 Hz +12: one regrain to 3124 samples, +0.12 ct.
+Normal material never regrains.
+
+Formant preserve: `formant_preserve` bool (default False = bit-legacy
+path). Order-24 Levinson-Durbin LPC (`_lpc_coeffs`, module-level) on
+the raw history - Gaussian 60 Hz lag window + white-noise floor +
+reflection-coefficient clamp for guaranteed stability; whiten input
+through A(z) (FIR, zi carried), grain-shift the residual, re-color
+through 1/A(z) with the coefficient set from ~one grain AGO (a small
+FIFO aligns the envelope with the content it described). The engine
+grew a parallel raw ring (`db`, fed via `process(..., x_dry=)`) so the
+dry mix tap stays true raw - asserted bit-equal to the formant-off dry.
+Two hard-won guards: (1) envelopes estimated before the wet path primed
+describe the onset transient, not content - feeding them to the
+synthesis IIR blasted the first wet block to full scale (found via the
+example's 1.0 startup peak); pre-priming estimates are now dropped.
+(2) a 4x-raw-RMS safety valve bounds any ill-conditioned estimate.
+Synthetic-vowel proof (110 Hz pulses through 800+2400 Hz resonators,
++7 st): first-formant centroid 942 Hz preserved vs 1173 Hz migrated
+(input 794). St=0 level ratio 1.002.
+
+18 new tests (7 accuracy + 4 deep bass + 7 formant) -> suite 1172
+sandbox (+18 mido). Perf 0.30 ms/block off / 0.70 on (budget 11.6).
+Example `pitch_shifter_formant_vowel.json` (peak 0.097 after taming the
+resonant-bell headroom trap AGAIN - square 0.09 + bells +14/+10 dB Q8 +
+speaker 0.6). UI formant_preserve checkbox; MODULES.md updated.
+
+Still open on this module: vectorize the per-voice NCC if profiled hot;
+transient detection to sharpen attacks. The WSOLA-style seam search for
+the RESAMPLER (logged yesterday) could now share `_detect_period`.

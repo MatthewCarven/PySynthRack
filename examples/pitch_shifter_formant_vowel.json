@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    {
+      "id": 1,
+      "type": "oscillator",
+      "name": "square 110",
+      "params": {
+        "waveform": "square_blep",
+        "freq": 110.0,
+        "amp": 0.09
+      }
+    },
+    {
+      "id": 2,
+      "type": "parametric_eq",
+      "name": "vowel body",
+      "params": {
+        "band1_freq": 800.0,
+        "band1_gain": 14.0,
+        "band1_q": 8.0,
+        "band2_freq": 2400.0,
+        "band2_gain": 10.0,
+        "band2_q": 8.0,
+        "band3_freq": 100.0,
+        "band3_gain": 0.0,
+        "band3_q": 1.0,
+        "band4_freq": 250.0,
+        "band4_gain": 0.0,
+        "band4_q": 1.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "pitch_shifter",
+      "name": "up a fourth, voice intact",
+      "params": {
+        "semitones": 5.0,
+        "cents": 0.0,
+        "cv_depth": 12.0,
+        "mix": 1.0,
+        "grain_size": 50.0,
+        "overlap": 2,
+        "formant_preserve": true
+      }
+    },
+    {
+      "id": 4,
+      "type": "speaker_output",
+      "name": "speaker_output",
+      "params": {
+        "gain": 0.6
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "in"
+    }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [
+        40,
+        140
+      ],
+      "2": [
+        320,
+        140
+      ],
+      "3": [
+        620,
+        140
+      ],
+      "4": [
+        920,
+        140
+      ]
+    }
+  }
+}

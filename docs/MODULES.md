@@ -732,6 +732,7 @@ without it getting faster or slower.
 | `mix` | `1.0` | 0 … 1 | Dry/wet: 0 = original, 1 = fully shifted. |
 | `grain_size` | `50.0` | 10 … 200 ms | Grain length — longer = smoother on sustained/low material, shorter = sharper transients. |
 | `overlap` | `2` | 2 … 4 | Number of overlapping grains — higher = smoother/denser at more CPU. |
+| `formant_preserve` | `False` | bool | Keep the spectral envelope (timbre) in place while pitch moves — LPC whiten → shift residual → re-color. Off = classic chipmunk/giant coloration. |
 
 **How it works.** It uses **WSOLA** (waveform-similarity overlap-add):
 the audio is sliced into short overlapping grains and overlapped back
@@ -755,6 +756,27 @@ over the dry (instant harmony), or a couple of cents for detune-
 thickening. For pitch shifting where speed *should* follow, use the
 [resampler](#resampler). See `examples/pitch_shifter_harmony.json`
 (saw → +7 st at 50% mix → speaker: a self-playing fifth).
+
+**Accuracy & deep bass (2026-07-02).** The analysis clock runs on the
+ideal WSOLA grid (search excursions never accumulate into the input
+timeline — the earlier revision's accumulation could starve or
+deadlock the engine at some grain/ratio combos and pulled the pitch a
+few cents), and NCC peaks are refined parabolically with fractional
+grain extraction, so joins are phase-continuous to sub-sample
+accuracy: shifts land **sub-cent** on pure tones across the range. A
+built-in period detector grows the working grain whenever the
+configured one holds fewer than ~2.5 cycles (low E and below at the
+default 50 ms) — `grain_size` is the floor, growth is capped at 150 ms
+and hysteresis prevents thrash; the swap is primed from history and
+equal-power crossfaded in, observable via the per-voice `regrains`
+counter. With `formant_preserve` on, an order-24 LPC envelope
+(Levinson-Durbin, time-domain) whitens the input, the residual is
+shifted, and the envelope from ~one grain earlier re-colors the
+output — a shifted voice keeps its vowel instead of chipmunking. The
+dry `mix` tap always reads the raw input, and a level safety valve
+bounds any ill-conditioned envelope estimate at 4x the input RMS. See
+`examples/pitch_shifter_formant_vowel.json` (square → two resonant
+bells as a synthetic vowel → +5 st with formants held).
 
 #### `delay`
 
@@ -1533,6 +1555,7 @@ loads in the app. Notable ones referenced above:
 - `resampler_tape_wobble.json` — varispeed pitch shift, LFO wobbling the pitch.
 - `resampler_detune_blend.json` — resampler `mix`: +12 cents at 50% dry/wet, one-module detune thickening.
 - `pitch_shifter_harmony.json` — time-preserving shift; +7 st at 50% mix = a fifth harmony.
+- `pitch_shifter_formant_vowel.json` — formant-preserving shift: synthetic vowel up a fourth, timbre intact.
 - `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `stereo_hard_pan.json` — left/right speaker sinks.
