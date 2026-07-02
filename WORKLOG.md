@@ -5199,3 +5199,28 @@ cycles (it really pans).
 Suite: 1096 in sandbox (+18 mido) — +23 over the nonlinear pair.
 UI: TYPE-guarded pan/width/gain sliders + cv_depth drag. pyo silent-stub.
 Follow-ups logged: width_cv, node meters, pan-law selector.
+
+## 2026-07-02 — width_cv on the stereo speaker (same-day follow-up)
+
+Matthew took the first follow-up straight off the list: the width knob
+gets a CV jack. Small and by-the-book: `width_cv` is per-sample, shares
+the module's existing `cv_depth` with `pan_cv` — the Reverb's paired-CV
+convention (one shared depth, CVScale in front for independent
+sensitivity) — and clamps to the same 0..2 as the knob.
+
+One care point: the width==1 mid/side SKIP is what makes the sink's
+defaults bit-exact, so the skip now keys on "width_cv silent AND width
+== 1" rather than the knob alone. A patched-but-zero-depth jack still
+takes the exact path; the moment a live CV arrives, the mid/side maths
+runs per sample with a vector width. Mono mode ignores width_cv
+entirely (no side content), same as the knob.
+
++8 tests → 31 in `tests/test_stereo_speaker.py`: constant-CV == static
+width, shared-depth scaling (0.25 × 2.0 ≡ +0.5), zero-depth
+bit-identical, clamp both ends (CV −5 collapses to mono, CV +10 caps at
+2), a within-block ramp measurably growing the side (0 → doubled),
+(V,F) CV averaging, mono-mode ignore. `stereo_field_pluck.json` gains a
+0.06 Hz triangle "Width breath" LFO on the new jack — the image now
+breathes while the autopan orbits.
+
+Suite: 1104 in sandbox (+18 mido; 1122 on Matthew's mido-equipped venv).

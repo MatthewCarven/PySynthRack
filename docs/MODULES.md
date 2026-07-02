@@ -223,7 +223,7 @@ Every module type, its category, and its ports at a glance.
 | [`speaker_output`](#speaker_output) | Sink | `in` (audio) → — |
 | [`left_speaker_output`](#left_speaker_output) | Sink | `in` (audio) → — |
 | [`right_speaker_output`](#right_speaker_output) | Sink | `in` (audio) → — |
-| [`stereo_speaker_output`](#stereo_speaker_output) | Sink | `in_l`,`in_r` (audio), `pan_cv` (cv) → — |
+| [`stereo_speaker_output`](#stereo_speaker_output) | Sink | `in_l`,`in_r` (audio), `pan_cv`,`width_cv` (cv) → — |
 | [`disk_writer`](#disk_writer) | Sink | `in` (audio) → — |
 
 ---
@@ -1449,7 +1449,10 @@ scaling: 0 collapses to mono, 1 is untouched (bit-exact — the default
 settings pass a pair through exactly), up to 2 exaggerates the sides.
 
 `pan_cv` moves the pan per sample — an LFO is the classic autopan, an
-envelope walks each note across the field. Voice-aware sources sum at
+envelope walks each note across the field — and `width_cv` breathes
+the width the same way (both share `cv_depth`, the Reverb's paired-CV
+convention; put a CVScale in front of either for independent
+sensitivity). Voice-aware sources sum at
 the jacks (the implicit-sum rule); everything lands on the same master
 bus as the other speaker sinks, clipped at ±1.
 
@@ -1460,6 +1463,7 @@ bus as the other speaker sinks, clipped at ±1.
 | `in_l` | in | audio | Left / only input. Alone = mono source, constant-power panned. |
 | `in_r` | in | audio | Right input; cabling it switches to stereo balance + width. |
 | `pan_cv` | in | cv | Per-sample pan modulation, scaled by `cv_depth`. Optional. |
+| `width_cv` | in | cv | Per-sample width modulation, same shared `cv_depth`. Optional. |
 
 **Parameters**
 
@@ -1468,18 +1472,22 @@ bus as the other speaker sinks, clipped at ±1.
 | `gain` | `1.0` | 0 … 2 | Output trim, applied after pan/width. |
 | `pan` | `0.0` | −1 … 1 | Position (mono) or balance (pair). |
 | `width` | `1.0` | 0 … 2 | Mid/side width; pairs only (mono has no side content). |
-| `cv_depth` | `1.0` | 0 … 2 | Pan units per unit of `pan_cv`. |
+| `cv_depth` | `1.0` | 0 … 2 | Knob units per CV unit, shared by `pan_cv` and `width_cv`. |
 
 **How it works.** Stateless per block, so block-size independence is
 structural. Mono: θ = (pan + 1)·π/4, source × (cos θ, sin θ) — L² + R²
 equals the source power at every position. Pair: width first
-(M = (L+R)/2, S = (L−R)/2·width, skipped exactly at width = 1), then
+(M = (L+R)/2, S = (L−R)/2·width, skipped exactly at width = 1 while
+`width_cv` is silent — the bit-exact default survives until a cable
+actually modulates it; a live `width_cv` runs the maths per sample,
+clamped 0..2), then
 balance gL = cos(max(p, 0)·π/2) / gR mirrored, then gain. `pan_cv` is
 per-sample; a `(V, F)` CV is averaged across voices (one global
 position, like Loudness's `level_cv`). See
 `examples/stereo_field_pluck.json` (a pentatonic pluck through a
-chorus, width 1.6, with a 0.22 Hz autopan sweeping the whole voice
-around the room).
+chorus, width 1.6, a 0.22 Hz autopan sweeping the voice around the
+room while a 0.06 Hz triangle on `width_cv` breathes the image
+between narrow and wide).
 
 ---
 

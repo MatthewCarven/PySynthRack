@@ -715,9 +715,13 @@ class NumpyBackend(AudioBackend):
           (gL = cos(max(p, 0) * pi/2), gR mirrored): unity at centre,
           smooth fade to one side at the extremes.
 
-        ``pan_cv`` is per-sample (a (V, F) buffer is averaged across
-        voices -- pan is one global position, like Loudness's
-        level_cv); audio inputs sum their voice axis (the implicit-sum
+        ``pan_cv`` and ``width_cv`` are per-sample, both scaled by the
+        shared ``cv_depth`` (the Reverb's paired-CV convention; a (V, F)
+        buffer is averaged across voices -- pan and width are single
+        global controls, like Loudness's level_cv). The width == 1
+        skip only applies while ``width_cv`` is silent, so the
+        bit-exact default survives until a cable actually modulates
+        the width. Audio inputs sum their voice axis (the implicit-sum
         rule). ``gain`` is applied last; the master bus clip at +-1
         happens in render_block for all sinks together. Stateless, so
         block-size independence is structural.
@@ -748,6 +752,18 @@ class NumpyBackend(AudioBackend):
         else:
             p = min(max(pan, -1.0), 1.0)
 
+        wcv = self._input_buffer(
+            patch, buffers, module.id, "width_cv", collapse=False
+        )
+        if wcv is not None and wcv.size and cv_depth != 0.0:
+            if wcv.ndim == 2:
+                wcv = wcv.mean(axis=0)
+            w = np.clip(width + cv_depth * wcv, 0.0, 2.0)
+            width_active = True  # vector width: mid/side always runs
+        else:
+            w = width
+            width_active = width != 1.0
+
         if not r_cabled:
             # Mono source: constant-power placement.
             mono = left if left is not None else np.zeros(frames, dtype=np.float32)
@@ -757,9 +773,9 @@ class NumpyBackend(AudioBackend):
         else:
             l_buf = left if left is not None else np.zeros(frames, dtype=np.float32)
             r_buf = right if right is not None else np.zeros(frames, dtype=np.float32)
-            if width != 1.0:
+            if width_active:
                 mid = (l_buf + r_buf) * 0.5
-                side = (l_buf - r_buf) * (0.5 * width)
+                side = (l_buf - r_buf) * (0.5 * w)
                 l_buf = mid + side
                 r_buf = mid - side
             g_l = np.cos(np.maximum(p, 0.0) * (np.pi / 2.0))

@@ -80,21 +80,26 @@ class StereoSpeakerOutput(Module):
       1 leaves the pair untouched, up to 2 exaggerates the sides.
     * ``gain`` — how loud, applied last.
 
-    ``pan_cv`` modulates the pan per sample (scaled by ``cv_depth``):
-    an LFO here is the classic autopan, an envelope walks each note
-    across the field. Voice-aware sources are summed at the jack (the
+    ``pan_cv`` modulates the pan per sample and ``width_cv`` the width
+    (both scaled by the shared ``cv_depth``, like the Reverb's paired
+    CV inputs — drop a CVScale in front for independent sensitivity):
+    an LFO on ``pan_cv`` is the classic autopan, an envelope walks each
+    note across the field, and a slow LFO on ``width_cv`` makes the
+    image breathe between mono and wide. Voice-aware sources are summed at the jack (the
     implicit-sum-at-mono-sinks rule), and everything lands on the same
     master bus as the other speaker sinks, clipped at ±1.
 
-    At the defaults (pan 0, width 1, gain 1) a stereo pair passes to
-    the bus bit-exactly — patching a chorus/reverb straight into this
-    sink is transparent until you reach for a knob.
+    At the defaults (pan 0, width 1, gain 1, CV jacks unpatched) a
+    stereo pair passes to the bus bit-exactly — patching a
+    chorus/reverb straight into this sink is transparent until you
+    reach for a knob (or a CV cable).
 
     Parameters:
         gain: Linear output gain, applied after pan/width.
         pan: Position/balance, -1 (hard left) .. 1 (hard right).
         width: Stereo width, 0 (mono) .. 2 (over-wide). Pairs only.
-        cv_depth: Pan units added per unit of ``pan_cv``.
+        cv_depth: Knob units added per CV unit, shared by ``pan_cv``
+            and ``width_cv``. 0 disables both.
     """
 
     TYPE = "stereo_speaker_output"
@@ -108,5 +113,6 @@ class StereoSpeakerOutput(Module):
         Port("in_l", "in", "audio"),
         Port("in_r", "in", "audio"),
         Port("pan_cv", "in", "cv"),
+        Port("width_cv", "in", "cv"),
     ]
     OUTPUT_PORTS: list[Port] = []

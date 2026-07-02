@@ -14,6 +14,10 @@ Coverage:
   - pan_cv: a constant CV equals the equivalent static pan; cv_depth 0
     disables; the result is clamped at the rails; a (V, F) pan_cv is
     averaged across voices.
+  - width_cv: shares ``cv_depth`` with pan_cv (Reverb convention); a
+    constant CV equals the equivalent static width; clamped 0..2;
+    silent-jack default stays bit-exact; a swept width really moves
+    the side level within one render; mono mode ignores it.
   - Bus behaviour: voice-aware audio inputs sum their voice axis; two
     sinks add into the same bus; gain scales both channels; the master
     ±1 clip still applies; an uncabled sink contributes silence.
@@ -73,7 +77,8 @@ class TestModel:
     def test_ports_and_signal_kinds(self):
         sp = Patch().add_module("stereo_speaker_output")
         assert [(p.name, p.signal_kind) for p in sp.input_ports] == [
-            ("in_l", "audio"), ("in_r", "audio"), ("pan_cv", "cv")
+            ("in_l", "audio"), ("in_r", "audio"),
+            ("pan_cv", "cv"), ("width_cv", "cv")
         ]
         assert sp.output_ports == []
 
@@ -295,3 +300,111 @@ class TestBus:
         patch.add_module("stereo_speaker_output")
         out, _ = _render(patch, blocks=1)
         assert not out.any()
+
+
+class TestWidthCV:
+    def _w_rig(self, value, **params):
+        patch = Patch()
+        l = patch.add_module("oscillator", params={"amp": 0.4})
+        r = patch.add_module(
+            "oscillator",
+            params={"amp": 0.3, "waveform": "square", "freq": 330.0},
+        )
+        const = patch.add_module("constant", params={"value": value})
+        sp = patch.add_module("stereo_speaker_output", params=params)
+        patch.connect(l.id, "out", sp.id, "in_l")
+        patch.connect(r.id, "out", sp.id, "in_r")
+        patch.connect(const.id, "out", sp.id, "width_cv")
+        return patch
+
+    def test_constant_cv_equals_static_width(self):
+        out_cv, _ = _render(self._w_rig(0.5, width=1.0, cv_depth=1.0))
+        patch, l, r, sp = _stereo_rig(width=1.5)
+        out_static, _ = _render(patch)
+        assert np.allclose(out_cv, out_static, atol=1e-7)
+
+    def test_cv_depth_zero_disables(self):
+        out_cv, _ = _render(self._w_rig(1.0, width=1.2, cv_depth=0.0))
+        patch, l, r, sp = _stereo_rig(width=1.2)
+        out_static, _ = _render(patch)
+        assert np.array_equal(out_cv, out_static)
+
+    def test_width_clamped_low_collapses_to_mono(self):
+        # width 1 + cv -5 -> clamped at 0 -> mono collapse
+        out, _ = _render(self._w_rig(-5.0, width=1.0, cv_depth=1.0))
+        assert np.allclose(out[:, 0], out[:, 1], atol=1e-7)
+
+    def test_width_clamped_high_at_two(self):
+        out_hi, _ = _render(self._w_rig(10.0, width=1.0, cv_depth=1.0))
+        patch, l, r, sp = _stereo_rig(width=2.0)
+        out_two, _ = _render(patch)
+        assert np.allclose(out_hi, out_two, atol=1e-7)
+
+    def test_shared_depth_scales_width_cv(self):
+        # depth 0.25 x cv 2.0 -> +0.5 width
+        out_cv, _ = _render(self._w_rig(2.0, width=1.0, cv_depth=0.25))
+        patch, l, r, sp = _stereo_rig(width=1.5)
+        out_static, _ = _render(patch)
+        assert np.allclose(out_cv, out_static, atol=1e-7)
+
+    def test_swept_width_moves_the_side_within_a_render(self):
+        # Drive the drain directly with a ramped width_cv: the side
+        # level must grow across the block.
+        patch = Patch()
+        l = patch.add_module("oscillator", params={"amp": 0.4})
+        r = patch.add_module("oscillator", params={"amp": 0.3})
+        lfo = patch.add_module("lfo")
+        sp = patch.add_module("stereo_speaker_output")
+        patch.connect(l.id, "out", sp.id, "in_l")
+        patch.connect(r.id, "out", sp.id, "in_r")
+        patch.connect(lfo.id, "cv", sp.id, "width_cv")
+        b = NumpyBackend(sample_rate=SR, block_size=F)
+        b.compile(patch)
+        lb = np.full(F, 0.4, dtype=np.float32)
+        rb = np.full(F, -0.2, dtype=np.float32)  # constant side content
+        ramp = np.linspace(-1.0, 1.0, F).astype(np.float32)  # width 0 -> 2
+        out = np.zeros((F, 2), dtype=np.float32)
+        b._drain_stereo_speaker(
+            sp, F,
+            {(l.id, "out"): lb, (r.id, "out"): rb, (lfo.id, "cv"): ramp},
+            patch, out,
+        )
+        side = out[:, 0] - out[:, 1]
+        assert abs(side[0]) < 0.02          # width ~0: no side
+        assert side[-1] == pytest.approx(1.2, abs=0.02)  # width ~2: doubled side (0.6 * 2)
+
+    def test_voice_width_cv_is_averaged(self):
+        patch = Patch()
+        l = patch.add_module("oscillator", params={"amp": 0.4})
+        r = patch.add_module("oscillator", params={"amp": 0.3})
+        lfo = patch.add_module("lfo")
+        sp = patch.add_module("stereo_speaker_output")
+        patch.connect(l.id, "out", sp.id, "in_l")
+        patch.connect(r.id, "out", sp.id, "in_r")
+        patch.connect(lfo.id, "cv", sp.id, "width_cv")
+        b = NumpyBackend(sample_rate=SR, block_size=F)
+        b.compile(patch)
+        lb = np.full(F, 0.4, dtype=np.float32)
+        rb = np.full(F, -0.2, dtype=np.float32)
+        cv2d = np.stack([np.full(F, 1.0), np.full(F, -1.0)]).astype(np.float32)
+        out = np.zeros((F, 2), dtype=np.float32)
+        b._drain_stereo_speaker(
+            sp, F,
+            {(l.id, "out"): lb, (r.id, "out"): rb, (lfo.id, "cv"): cv2d},
+            patch, out,
+        )
+        # mean CV 0 -> width 1 -> pair passes unchanged
+        assert np.allclose(out[:, 0], lb, atol=1e-6)
+        assert np.allclose(out[:, 1], rb, atol=1e-6)
+
+    def test_mono_mode_ignores_width_cv(self):
+        patch = Patch()
+        src = patch.add_module("oscillator", params={"amp": 0.5})
+        const = patch.add_module("constant", params={"value": 1.0})
+        sp = patch.add_module("stereo_speaker_output", params={"pan": 0.3})
+        patch.connect(src.id, "out", sp.id, "in_l")
+        patch.connect(const.id, "out", sp.id, "width_cv")
+        out_cv, _ = _render(patch)
+        patch2, src2, sp2 = _mono_rig(pan=0.3)
+        out_plain, _ = _render(patch2)
+        assert np.array_equal(out_cv, out_plain)
