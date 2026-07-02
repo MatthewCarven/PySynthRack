@@ -25,6 +25,16 @@ Coverage:
     mix=0.5 at unity is coherent (bit-equal to full wet -- dry and wet
     taps are sample-aligned); mix=0.5 pitched shows both spectral
     peaks; out-of-range mix clamps; voice row bit-identical to mono.
+  - Window param: default 200 ms reproduces the legacy fixed window
+    (bit-identical render, legacy half-window latency); latency is half
+    the window and scales with it; the ring floors at 4 blocks;
+    out-of-range values clamp to 20..2000 ms bit-exactly; a tight
+    window still crossfades its (more frequent) seams; growing or
+    modestly shrinking the window mid-stream preserves the recent tail
+    (unity passthrough continues bit-exactly across the change); a hard
+    shrink below the head's lag recovers finite and audible; a window
+    change preserves the seam_jumps observable; single voice row
+    matches mono at non-default windows; JSON round-trip.
   - Integration: osc -> resampler -> speaker renders audible audio; an
     LFO into pitch_cv gives vibrato.
 """
@@ -46,7 +56,7 @@ def _backend(block=F):
     return NumpyBackend(sample_rate=SR, block_size=block)
 
 
-def _rig(params=None, with_cv=False):
+def _rig(params=None, with_cv=False, block=F):
     """oscillator -> resampler (optionally lfo -> pitch_cv), compiled.
 
     Returns (patch, src, rs, cvsrc, backend). DSP is driven by calling
@@ -61,7 +71,7 @@ def _rig(params=None, with_cv=False):
     if with_cv:
         cvsrc = patch.add_module("lfo")
         patch.connect(cvsrc.id, "cv", rs.id, "pitch_cv")
-    b = _backend()
+    b = _backend(block)
     b.compile(patch)
     return patch, src, rs, cvsrc, b
 
@@ -104,6 +114,7 @@ class TestModel:
             "cv_depth": 12.0,
             "glide": 0.0,
             "mix": 1.0,
+            "window": 200.0,
         }
 
     def test_ports_and_signal_kinds(self):
@@ -469,6 +480,174 @@ def _mag_at(y, hz, width=8.0):
     fr = np.fft.rfftfreq(len(yp), 1.0 / SR)
     band = (fr >= hz - width) & (fr <= hz + width)
     return float(spec[band].max())
+
+
+# ----- Window param -----------------------------------------------------------
+
+
+def _lag_of(full):
+    """Measured unity-passthrough latency: index of the first audible sample."""
+    return int(np.argmax(np.abs(full) > 1e-6))
+
+
+class TestWindow:
+    def test_default_is_200ms_with_legacy_latency(self):
+        # `window` defaults to 200 ms -- the old fixed constant -- so the
+        # unity latency is the legacy half-window, and the output is the
+        # bit-exact delayed passthrough from there.
+        sig = np.random.RandomState(21).randn(40 * F).astype(np.float32)
+        p, s, r, _, b = _rig({})
+        full = _run(b, p, s, r, sig)
+        lag = _lag_of(full)
+        assert lag == int(0.5 * int(0.2 * SR)) - F
+        assert np.array_equal(full[lag:], sig[: full.shape[0] - lag])
+
+    def test_explicit_default_bit_identical_to_unset(self):
+        sig = np.random.RandomState(22).randn(20 * F).astype(np.float32)
+        p1, s1, r1, _, b1 = _rig({"semitones": 7.0})
+        p2, s2, r2, _, b2 = _rig({"semitones": 7.0, "window": 200.0})
+        assert np.array_equal(
+            _run(b1, p1, s1, r1, sig), _run(b2, p2, s2, r2, sig)
+        )
+
+    def test_window_sets_latency(self):
+        # Latency is half the window: 100 ms -> 2205 samples at 44.1k,
+        # 1000 ms -> 11025.
+        sig = np.random.RandomState(23).randn(120 * F).astype(np.float32)
+        for w in (100.0, 1000.0):
+            p, s, r, _, b = _rig({"window": w})
+            lag = _lag_of(_run(b, p, s, r, sig))
+            assert lag == int(0.5 * int((w / 1000.0) * SR)) - F
+
+    def test_window_floored_by_block_size(self):
+        # The ring never shrinks below 4 blocks: at block 512, 20 ms
+        # (882 samples) floors to 2048 -> 1024 samples of latency.
+        sig = np.random.RandomState(24).randn(40 * F).astype(np.float32)
+        p, s, r, _, b = _rig({"window": 20.0})
+        assert _lag_of(_run(b, p, s, r, sig)) == 2 * F - F
+
+    def test_window_clamped_low(self):
+        # Below-range values behave as 20 ms, bit-for-bit. Small block so
+        # the block floor doesn't mask the clamp (at 128, unclamped 5 ms
+        # would floor to 512 samples, clamped 20 ms is 882).
+        blk = 128
+        sig = np.random.RandomState(25).randn(200 * blk).astype(np.float32)
+        p1, s1, r1, _, b1 = _rig({"semitones": 4.0, "window": 5.0}, block=blk)
+        p2, s2, r2, _, b2 = _rig({"semitones": 4.0, "window": 20.0}, block=blk)
+        assert np.array_equal(
+            _run(b1, p1, s1, r1, sig, block=blk),
+            _run(b2, p2, s2, r2, sig, block=blk),
+        )
+
+    def test_window_clamped_high(self):
+        # Above-range values behave as 2000 ms, bit-for-bit.
+        sig = np.random.RandomState(26).randn(150 * F).astype(np.float32)
+        p1, s1, r1, _, b1 = _rig({"semitones": 4.0, "window": 99999.0})
+        p2, s2, r2, _, b2 = _rig({"semitones": 4.0, "window": 2000.0})
+        assert np.array_equal(
+            _run(b1, p1, s1, r1, sig), _run(b2, p2, s2, r2, sig)
+        )
+
+    def test_small_window_still_declicks(self):
+        # A tight 40 ms window at block 128 wraps far more often than
+        # the default; every seam must still ride a crossfade, so the
+        # sample-to-sample step stays bounded by the tone's own step.
+        blk = 128
+        p, s, r, _, b = _rig({"semitones": 12.0, "window": 40.0}, block=blk)
+        out = _run(b, p, s, r, _tone(440.0, 2.0), block=blk)
+        assert _seam_jumps(b, r) >= 20
+        assert np.all(np.isfinite(out))
+        assert _max_step(out) < 2.5 * (2 * np.pi * 880.0 / SR)
+
+    def test_smaller_window_loops_more_often(self):
+        jumps = {}
+        for w in (50.0, 200.0):
+            p, s, r, _, b = _rig({"semitones": 12.0, "window": w})
+            _run(b, p, s, r, _tone(440.0, 3.0))
+            jumps[w] = _seam_jumps(b, r)
+        assert jumps[50.0] > jumps[200.0]
+
+    def test_grow_mid_stream_keeps_unity_passthrough(self):
+        # Enlarging the window live rebuilds the ring around the same
+        # audio: at unity the delayed passthrough continues bit-exactly
+        # across the change, at the lag it already had (no dropout, no
+        # latency snap).
+        sig = np.random.RandomState(27).randn(60 * F).astype(np.float32)
+        p, s, r, _, b = _rig({"window": 200.0})
+        outs = []
+        for k in range(60):
+            if k == 30:
+                r.params["window"] = 800.0
+            blk = sig[k * F : (k + 1) * F]
+            outs.append(b._render_resampler(r, F, {(s.id, "out"): blk}, p))
+        full = np.concatenate(outs)
+        lag = int(0.5 * int(0.2 * SR)) - F  # the *original* latency
+        assert np.array_equal(full[lag:], sig[: full.shape[0] - lag])
+
+    def test_shrink_mid_stream_keeps_unity_passthrough(self):
+        # A shrink whose new window still covers the head's lag also
+        # keeps the passthrough bit-exact (the kept tail contains the
+        # content under the head).
+        sig = np.random.RandomState(28).randn(80 * F).astype(np.float32)
+        p, s, r, _, b = _rig({"window": 400.0})
+        outs = []
+        for k in range(80):
+            if k == 40:
+                r.params["window"] = 250.0
+            blk = sig[k * F : (k + 1) * F]
+            outs.append(b._render_resampler(r, F, {(s.id, "out"): blk}, p))
+        full = np.concatenate(outs)
+        lag = int(0.5 * int(0.4 * SR)) - F
+        assert np.array_equal(full[lag:], sig[: full.shape[0] - lag])
+
+    def test_hard_shrink_recovers(self):
+        # Shrink far below the head's drifted lag while pitched down --
+        # the tail under the head is genuinely gone. The clamp lands the
+        # head inside the guard band, the ordinary seam machinery
+        # re-centres it under a crossfade, and the stream stays finite,
+        # in-window, and audibly alive.
+        p, s, r, _, b = _rig({"semitones": -12.0, "window": 1500.0})
+        sig = _tone(440.0, 4.0)
+        outs = []
+        for k in range(len(sig) // F):
+            if k == 172:  # ~2 s in; the lag has drifted well past 100 ms
+                r.params["window"] = 100.0
+            blk = sig[k * F : (k + 1) * F]
+            outs.append(b._render_resampler(r, F, {(s.id, "out"): blk}, p))
+        full = np.concatenate(outs)
+        assert np.all(np.isfinite(full))
+        L_new = max(int(0.1 * SR), 4 * F)
+        assert np.all(b._state[r.id]["delay"] < L_new)
+        tail = full[-SR // 2 :]
+        assert np.sqrt(np.mean(tail**2)) > 0.1
+
+    def test_window_change_preserves_seam_counter(self):
+        # seam_jumps is an observable; a window tweak must not reset it.
+        p, s, r, _, b = _rig({"semitones": 12.0})
+        sig = _tone(440.0, 2.0)
+        for k in range(len(sig) // F):
+            blk = sig[k * F : (k + 1) * F]
+            b._render_resampler(r, F, {(s.id, "out"): blk}, p)
+        before = _seam_jumps(b, r)
+        assert before > 0
+        r.params["window"] = 400.0
+        b._render_resampler(r, F, {(s.id, "out"): sig[:F]}, p)
+        assert _seam_jumps(b, r) >= before
+
+    def test_window_voice_matches_mono(self):
+        sig = np.random.RandomState(29).randn(20 * F).astype(np.float32)
+        p1, s1, r1, _, b1 = _rig({"semitones": 5.0, "window": 80.0})
+        mono = _run(b1, p1, s1, r1, sig)
+        p2, s2, r2, _, b2 = _rig({"semitones": 5.0, "window": 80.0})
+        voice = _run(b2, p2, s2, r2, np.tile(sig, (2, 1)))
+        assert np.array_equal(voice[0], mono)
+
+    def test_window_json_round_trip(self):
+        patch = Patch()
+        patch.add_module("resampler", params={"window": 350.0})
+        restored = Patch.from_dict(patch.to_dict())
+        rs = next(m for m in restored if m.TYPE == "resampler")
+        assert rs.params["window"] == 350.0
 
 
 # ----- Integration -----------------------------------------------------------

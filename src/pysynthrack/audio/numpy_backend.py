@@ -5587,12 +5587,18 @@ class NumpyBackend(AudioBackend):
 
     # ----- Resampler rendering --------------------------------------------
 
-    # Looping-buffer window for the varispeed read head, in seconds. The
-    # read head trails the write head inside this window and wraps within
-    # it, so the module keeps sounding forever on a continuous signal.
-    # Longer = subtler loop texture but more latency; this latency is the
-    # unavoidable cost of varispeed on a live stream.
-    _RESAMP_WINDOW_SEC = 0.2
+    # Looping-buffer window for the varispeed read head: the ``window``
+    # param, in milliseconds, clamped to this range (engine-level, like
+    # ``mix``). The read head trails the write head inside the window
+    # and wraps within it, so the module keeps sounding forever on a
+    # continuous signal. Longer = subtler loop texture but more latency
+    # (the latency is half the window); shorter = tighter latency but a
+    # stronger granular-repeat texture on non-unity shifts. That latency
+    # is the unavoidable cost of varispeed on a live stream. The
+    # frames*4 floor below still applies, so very small windows are
+    # floored by the audio block size.
+    _RESAMP_WINDOW_MS_MIN = 20.0
+    _RESAMP_WINDOW_MS_MAX = 2000.0
     # The read head starts this fraction of the window behind the write
     # head. Centred (1/2) gives symmetric runway for pitch up (delay
     # shrinks) and pitch down (delay grows) before the first loop wrap.
@@ -5704,11 +5710,51 @@ class NumpyBackend(AudioBackend):
         """
         V = src.shape[0]
         sr = self.sample_rate
-        L = int(self._RESAMP_WINDOW_SEC * sr)
+        window_ms = float(module.params.get("window", 200.0))
+        window_ms = min(
+            max(window_ms, self._RESAMP_WINDOW_MS_MIN),
+            self._RESAMP_WINDOW_MS_MAX,
+        )
+        # 200.0/1000.0 is the same double as the old 0.2 literal, so the
+        # default window reproduces the pre-param L bit-for-bit.
+        L = int((window_ms / 1000.0) * sr)
         L = max(L, frames * 4, 8)   # always comfortably larger than a block
         span = L - 1                # loop span; keeps both interp taps valid
 
         state = self._state.setdefault(module.id, {})
+        old = state.get("buf")
+        if (
+            old is not None
+            and old.shape[0] == V
+            and old.shape[1] != L
+            and "xf_rem" in state
+        ):
+            # The ``window`` param changed mid-stream (same voice count):
+            # rebuild the ring at the new length, preserving the most
+            # recent audio so a slider drag doesn't punch a hole in the
+            # sound. Sample at lag ``l`` moves from ``(w - l) % oldL`` to
+            # ``L - l`` with the new write head at 0, so every head keeps
+            # its absolute lag (clamped into the new window). If the new
+            # geometry leaves a head inside a guard band, the ordinary
+            # seam machinery re-centres it under an equal-power crossfade
+            # on this very block. Only a shrink below a head's lag loses
+            # the content under it (the tail it was reading no longer
+            # exists); that one step rides the seam crossfade too, just
+            # with new-window content.
+            oldL = old.shape[1]
+            keep = min(oldL, L)
+            w = int(state["write_idx"])
+            src_idx = (w + oldL - keep + np.arange(keep)) % oldL
+            newbuf = np.zeros((V, L), dtype=np.float64)
+            newbuf[:, L - keep:] = old[:, src_idx]
+            state["buf"] = newbuf
+            state["write_idx"] = 0
+            np.clip(state["delay"], 1.0, float(L - 1), out=state["delay"])
+            # In-flight seam fades reference the old geometry; drop them
+            # (their old tap would read relocated content).
+            state["xf_rem"][:] = 0
+            state["xf_len"][:] = 1
+            state["xf_off"][:] = 0.0
         needs_reinit = (
             "buf" not in state or state["buf"].shape != (V, L)
         )

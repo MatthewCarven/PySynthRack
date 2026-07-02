@@ -734,6 +734,7 @@ and lo-fi tape effects.
 | `cv_depth` | `12.0` | 0 … 48 st/unit | Semitones per unit of `pitch_cv` (12 = one octave per unit, 1V/oct-style). |
 | `glide` | `0.0` | 0 … 5 s | Portamento time for pitch changes (0 = instant). |
 | `mix` | `1.0` | 0 … 1 | Dry/wet blend. The dry tap is latency-compensated to line up with unity-pitch wet, so the blend is coherent (no slapback). |
+| `window` | `200.0` | 20 … 2000 ms | Looping-buffer window. Latency is half of it, so shorter = tighter live latency but a stronger loop texture; longer = subtler texture on big shifts. Floored at 4 audio blocks; live changes keep the recent audio (no dropout). |
 
 **How it works.** Pitch is summed in semitone space
 (`st = semitones + cents/100 + cv_depth · pitch_cv`), optionally glided
@@ -750,8 +751,13 @@ buffer edge it jumps half a span back toward the centre under a short
 equal-power crossfade, instead of splicing audio a window apart with a
 click. At unity ratio the head never drifts, no jump ever fires, and
 the output stays a bit-exact delayed passthrough. That buffer also means
-a fixed latency (~90 ms) — the unavoidable price of varispeed on a live
-signal, and what lets you glide and modulate the pitch freely. The path
+latency — half the `window` param (~100 ms at the 200 ms default) — the
+unavoidable price of varispeed on a live signal, and what lets you glide
+and modulate the pitch freely. `window` is the trade-off knob: shorten
+it toward 20 ms for tight live-input latency at the cost of a stronger,
+more granular loop texture; stretch it toward 2 s to make the texture
+subtler on big shifts. Changing it live rebuilds the ring around the
+most recent audio, so a slider drag doesn't punch a hole in the sound. The path
 is shape-polymorphic like [Filter](#filter) / [Crossover](#crossover):
 a mono input runs one buffer, a voice-aware `(V, F)` input runs V
 independent buffers with per-voice read heads (a single voice row is

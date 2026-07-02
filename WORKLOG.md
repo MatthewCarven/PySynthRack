@@ -5744,3 +5744,52 @@ mixed-content 16-voice grid chained over 8 blocks, frames=1 chaining,
 split-vs-whole continuity, block-path-engages regression guard,
 instant-attack fallback correctness, state-key shape compatibility.
 Suite: 1292 in-sandbox (was 1257), zero skips.
+
+## 2026-07-03 — resampler: `window` param (size / low-latency knob)
+
+Matthew picked the resampler window-size follow-up off the TODO. The
+looping-buffer window was a fixed backend constant (0.2 s); it's now a
+per-module param.
+
+`window` (ms, 20–2000, default 200): the looping-buffer length. Latency
+is half the window, so this is also the low-latency knob — shorten
+toward 20 ms for tight live input (stronger granular-repeat texture on
+non-unity shifts, seams loop proportionally more often), stretch toward
+2 s for the subtlest texture on big shifts. Engine-level clamp like
+`mix`; the existing frames*4 ring floor still applies, so tiny windows
+are floored by the block size (at block 512 the effective minimum is
+~46 ms / ~23 ms latency). 200.0/1000.0 is the same double as the old
+0.2 literal, so the default render is bit-identical to the pre-param
+engine. Everything downstream — guard band, dry-tap lag, crossfade
+runway — already derived from L and just follows.
+
+Live changes don't reinit. A same-voice-count length change rebuilds
+the ring preserving the most recent min(old, new) samples — sample at
+lag l moves to index L-l with the write head at 0 — and each head keeps
+its absolute lag, clamped into the new window. If the new geometry
+leaves a head inside a guard band, the ordinary seam machinery
+re-centres it under an equal-power crossfade on that very block;
+in-flight fades are dropped (their old tap would read relocated
+content). Proof of the mapping: growing 200→800 ms and shrinking
+400→250 ms mid-stream at unity both continue the delayed passthrough
+*bit-exactly* across the change. Only a shrink below a head's drifted
+lag loses the content under it (genuinely gone); that step rides the
+seam crossfade too, just with new-window content. Voice-count changes
+still full-reinit as before.
+
+UI: drag_float 20–2000 "%.0f ms" in the resampler branch, parallel to
+pitch_shifter's grain_size.
+
+Tests: 14 new in TestWindow — default = legacy latency + bit-identical
+render (explicit 200.0 vs unset); latency scales with window
+(closed-form: int(0.5·L) minus one block — the head's lag is carried
+against the post-write head); block-size floor; both clamps bit-exact;
+tight-window seams still crossfaded (bounded step at 40 ms / block
+128); smaller window loops more often; grow/shrink mid-stream bit-exact
+passthrough continuity; hard-shrink recovery (finite, in-window,
+audibly alive); seam_jumps preserved across a change; voice row == mono
+at a non-default window; JSON round-trip. Suite: 1306 in-sandbox, zero
+skips (was 1292).
+
+Docs: MODULES.md param row + latency prose; module docstring; TODO
+follow-up line updated.

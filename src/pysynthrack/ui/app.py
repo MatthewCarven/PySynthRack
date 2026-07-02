@@ -721,6 +721,21 @@ class App:
                     user_data=user_data,
                 )
                 return
+            if param_name == "window":
+                # Looping-buffer window: latency (half of it) vs loop
+                # texture. 200 ms is the old fixed behaviour.
+                dpg.add_drag_float(
+                    label=param_name,
+                    default_value=float(current),
+                    speed=2.0,
+                    min_value=20.0,
+                    max_value=2000.0,
+                    format="%.0f ms",
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
             if param_name == "mix":
                 dpg.add_slider_float(
                     label=param_name,

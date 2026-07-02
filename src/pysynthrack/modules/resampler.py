@@ -18,14 +18,21 @@ semitones one CV unit is worth (default 12 = one octave per unit, i.e.
 
 How it stays alive on a live signal: a resampler reading at a different
 rate than it's fed can't keep a continuous stream in sync forever, so
-internally it runs a short **looping buffer** of recent audio. The read
-head wraps within that window, so the module keeps making sound
-indefinitely on any source — a live oscillator, the mic, the file
-player — at the cost of a faint granular-repeat texture on extreme
-shifts. Each wrap of that window is a short equal-power crossfade
-rather than a splice, so the loop seam doesn't click. The unavoidable consequence of varispeed is a little latency
-(the read head trails the write head); that buffer is what lets you
-glide and modulate the pitch freely.
+internally it runs a short **looping buffer** of recent audio — the
+``window`` param, in milliseconds. The read head wraps within that
+window, so the module keeps making sound indefinitely on any source — a
+live oscillator, the mic, the file player — at the cost of a faint
+granular-repeat texture on extreme shifts. Each wrap of that window is
+a short equal-power crossfade rather than a splice, so the loop seam
+doesn't click. The unavoidable consequence of varispeed is a little
+latency — half the window (the read head trails the write head); that
+buffer is what lets you glide and modulate the pitch freely. ``window``
+is the trade-off knob: shorten it toward 20 ms for tight live-input
+latency (the loop texture gets stronger and more granular), stretch it
+toward 2 s for the subtlest texture on big shifts (latency grows to
+match). The default 200 ms (~100 ms latency) is the old fixed
+behaviour. Changing it live keeps the most recent audio, so tweaking
+the slider doesn't punch a hole in the sound.
 
 ``glide`` smooths pitch changes: with it above zero, slider and CV jumps
 ramp instead of stepping, giving portamento and tape-stop sweeps. At 0
@@ -87,6 +94,12 @@ class Resampler(Module):
         mix: Dry/wet blend (0 = dry, 1 = fully wet, default 1.0). The
             dry tap is latency-compensated to line up with unity-pitch
             wet, so the blend is coherent.
+        window: Looping-buffer window in milliseconds (20-2000, default
+            200). Latency is half the window, so shorter = tighter
+            latency but a stronger granular-repeat texture on non-unity
+            shifts; longer = subtler texture, more latency. Floored at
+            four audio blocks. Changing it live keeps the most recent
+            audio, so a slider drag doesn't drop out.
 
     Ports:
         in (in, audio): signal to transpose. Unpatched -> silence.
@@ -102,6 +115,7 @@ class Resampler(Module):
         "cv_depth": 12.0,
         "glide": 0.0,
         "mix": 1.0,
+        "window": 200.0,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),

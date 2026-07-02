@@ -79,10 +79,11 @@ The recurring threads hoisted from shipped entries' follow-up notes; full
 context under the matching entry in TODO-ARCHIVE.md. (Each archived module
 entry also carries its own smaller follow-ups list.)
 
-- [ ] Resampler: window-size / low-latency param; anti-alias LP before big
-      up-shifts; `pitch_cv` could normal to a constant; WSOLA-style
-      seam-position search (a blind crossfade can hit a brief anti-phase dip
-      on tonal material).
+- [ ] Resampler: anti-alias LP before big up-shifts; `pitch_cv` could
+      normal to a constant; WSOLA-style seam-position search (a blind
+      crossfade can hit a brief anti-phase dip on tonal material).
+      (~~window-size / low-latency param~~ — shipped 2026-07-03 as the
+      `window` param, 20–2000 ms.)
 - [ ] PitchShifter: vectorize the per-voice grain search if profiled hot;
       transient detection to sharpen attacks.
 - [ ] Sample-and-hold: `slew` param; track-and-hold mode; normal `in` to the
