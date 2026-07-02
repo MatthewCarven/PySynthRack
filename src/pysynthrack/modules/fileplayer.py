@@ -1,10 +1,12 @@
 """FilePlayer — stream a WAV file into the patch as a stereo audio source.
 
 A *source* module: no inputs, two audio outputs (``left`` / ``right``). The
-active backend decodes the whole file into memory once (resampling to the
-engine's sample rate when the file's native rate differs), then streams it
-block by block — so steady-state playback is just an array slice with no
-per-block disk I/O.
+active backend decodes the file on a *background thread* (resampling to the
+engine's sample rate when the file's native rate differs) and playback
+starts as soon as ~0.5 s is buffered — so pointing the player at the audio
+track of a two-hour video never stalls the audio thread. Steady-state
+playback is just an array slice with no per-block disk I/O; if the playhead
+ever catches a still-running decode it pauses and resumes seamlessly.
 
 Channel handling. A mono file is duplicated to both outputs; a stereo file
 maps its two channels to ``left`` / ``right``; a file with more than two
@@ -32,6 +34,11 @@ Parameters:
     armed: When False the player outputs silence and parks its playhead at
         the start, so toggling it back on replays from the top. Lets you
         keep the module patched without it sounding on every take.
+    playing: Tape-transport pause. When False the playhead holds exactly
+        where it is and the outputs go silent; back to True resumes from
+        the same spot. Driven by the node's Play / Stop buttons (Rewind
+        seeks to 0:00 whether playing or paused, without touching this
+        param). Contrast with ``armed``, which parks at the start.
 """
 from __future__ import annotations
 
@@ -50,6 +57,7 @@ class FilePlayer(Module):
         "gain": 1.0,
         "loop": False,
         "armed": True,
+        "playing": True,
     }
     INPUT_PORTS: list[Port] = []  # source — no inputs
     OUTPUT_PORTS = [

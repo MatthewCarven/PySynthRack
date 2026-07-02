@@ -5,6 +5,13 @@ All headless: the renderer is exercised directly via
 so no PortAudio device is needed. WAV fixtures are written to ``tmp_path``
 with ``scipy.io.wavfile`` and compared against the backend's own decode
 (``_load_wav``) to sidestep PCM-quantisation ambiguity.
+
+Decoding is asynchronous (a background StreamingDecoder is kicked at
+compile()), so tests that want deterministic full-file playback call
+``wait_for_file_decodes()`` after compile — the same hook an offline
+bounce would use. Streaming-specific behaviour (prebuffer gate, underrun
+hold, loop-waits-for-total) is driven with a duck-typed fake decoder
+injected into the module's state.
 """
 from __future__ import annotations
 
@@ -51,7 +58,13 @@ class TestModuleShape:
 
     def test_default_params(self):
         fp = all_module_types()["file_player"](1)
-        assert fp.params == {"path": "", "gain": 1.0, "loop": False, "armed": True}
+        assert fp.params == {
+            "path": "",
+            "gain": 1.0,
+            "loop": False,
+            "armed": True,
+            "playing": True,
+        }
 
 
 class TestDecode:
@@ -87,6 +100,7 @@ class TestPlayback:
         patch = Patch()
         fp = patch.add_module("file_player", params={"path": str(wav)})
         be.compile(patch)
+        assert be.wait_for_file_decodes()
 
         b0 = _ports(be, fp, patch, 512)
         assert np.array_equal(b0["left"], ref[0][0:512])
@@ -107,6 +121,7 @@ class TestPlayback:
         patch = Patch()
         fp = patch.add_module("file_player", params={"path": str(wav), "loop": True})
         be.compile(patch)
+        assert be.wait_for_file_decodes()
 
         acc = np.concatenate([_ports(be, fp, patch, 512)["left"] for _ in range(3)])
         # 1536 samples of a 1000-sample loop == the file tiled twice, sliced.
@@ -121,6 +136,7 @@ class TestPlayback:
         patch = Patch()
         fp = patch.add_module("file_player", params={"path": str(wav), "gain": 0.5})
         be.compile(patch)
+        assert be.wait_for_file_decodes()
         b = _ports(be, fp, patch, 512)
         assert np.allclose(b["left"], ref[0][:512] * 0.5, atol=1e-6)
         assert np.allclose(b["right"], ref[1][:512] * 0.5, atol=1e-6)
@@ -132,6 +148,7 @@ class TestPlayback:
         patch = Patch()
         fp = patch.add_module("file_player", params={"path": str(wav), "armed": False})
         be.compile(patch)
+        assert be.wait_for_file_decodes()
         b = _ports(be, fp, patch, 256)
         assert np.all(b["left"] == 0.0) and np.all(b["right"] == 0.0)
         assert be._state[fp.id]["pos"] == 0  # re-arm will replay from the top
@@ -141,6 +158,7 @@ class TestPlayback:
         patch = Patch()
         fp = patch.add_module("file_player", params={"path": str(tmp_path / "x.wav")})
         be.compile(patch)
+        be.wait_for_file_decodes()  # finishes as failed; render must be silence
         b = _ports(be, fp, patch, 512)
         assert set(b.keys()) == {"left", "right"}
         assert np.all(b["left"] == 0.0) and np.all(b["right"] == 0.0)
@@ -154,14 +172,24 @@ class TestPlayback:
         patch = Patch()
         fp = patch.add_module("file_player", params={"path": str(a)})
         be.compile(patch)
+        assert be.wait_for_file_decodes()
         _ports(be, fp, patch, 512)  # advance playhead into the ramp
         assert be._state[fp.id]["pos"] == 512
 
         fp.params["path"] = str(b_)  # user repoints the node
         ref_b = be._load_wav(str(b_), SR)
-        out = _ports(be, fp, patch, 512)
+        kick = _ports(be, fp, patch, 512)  # this block kicks the new decode
         assert be._state[fp.id]["path"] == str(b_)
-        assert np.array_equal(out["left"], ref_b[0][0:512])  # fresh file from frame 0
+        assert be.wait_for_file_decodes()
+        if be._state[fp.id]["pos"] == 0:
+            # The usual case: the decode hadn't landed when the kick block
+            # rendered, so it was silence; the next block starts the file.
+            assert np.all(kick["left"] == 0.0)
+            kick = _ports(be, fp, patch, 512)
+        # else: a tiny WAV can finish decoding before the kick block even
+        # reads the watermark — it then plays immediately. Either way the
+        # fresh file must start from frame 0.
+        assert np.array_equal(kick["left"], ref_b[0][0:512])
 
 
 class TestStopReset:
@@ -172,6 +200,7 @@ class TestStopReset:
         patch = Patch()
         fp = patch.add_module("file_player", params={"path": str(wav)})
         be.compile(patch)
+        assert be.wait_for_file_decodes()
         _ports(be, fp, patch, 512)
         assert be._state[fp.id]["pos"] == 512
 
@@ -211,6 +240,7 @@ class TestChainIntoCrossover:
 
         be = NumpyBackend(sample_rate=SR, block_size=512)
         be.compile(patch)
+        assert be.wait_for_file_decodes()
         last = None
         for _ in range(8):
             last = be.render_block(512)
@@ -227,10 +257,13 @@ class TestPositionReadout:
         patch = Patch()
         fp = patch.add_module("file_player", params={"path": str(wav)})
         be.compile(patch)
+        assert be.wait_for_file_decodes()
 
-        # Before the first render the file isn't decoded yet: the entry
-        # is absent (UI reads it with .get and shows 0:00 / 0:00).
-        assert be.snapshot_file_positions().get(fp.id, (0.0, 0.0)) == (0.0, 0.0)
+        # compile() kicked the decode, so the total is known before the
+        # first render; the playhead hasn't moved yet.
+        elapsed, total = be.snapshot_file_positions()[fp.id]
+        assert elapsed == 0.0
+        assert abs(total - 4410 / SR) < 1e-9
 
         _ports(be, fp, patch, 441)  # one block = 441 frames = 0.01 s
         elapsed, total = be.snapshot_file_positions()[fp.id]
@@ -249,6 +282,7 @@ class TestPositionReadout:
         patch = Patch()
         fp = patch.add_module("file_player", params={"path": str(wav)})
         be.compile(patch)
+        assert be.wait_for_file_decodes()
         for _ in range(5):  # 5 * 512 frames >> 1000-sample file
             _ports(be, fp, patch, 512)
         elapsed, total = be.snapshot_file_positions()[fp.id]
@@ -260,6 +294,7 @@ class TestPositionReadout:
         patch = Patch()
         fp = patch.add_module("file_player", params={"path": str(tmp_path / "x.wav")})
         be.compile(patch)
+        be.wait_for_file_decodes()
         _ports(be, fp, patch, 512)
         assert be.snapshot_file_positions()[fp.id] == (0.0, 0.0)
 
@@ -270,6 +305,7 @@ class TestPositionReadout:
         patch = Patch()
         fp = patch.add_module("file_player", params={"path": str(wav)})
         be.compile(patch)
+        assert be.wait_for_file_decodes()
         _ports(be, fp, patch, 512)
         assert be.snapshot_file_positions()[fp.id][0] > 0.0
         be._running = True
@@ -278,3 +314,169 @@ class TestPositionReadout:
         elapsed, total = be.snapshot_file_positions()[fp.id]
         assert elapsed == 0.0           # playhead rewound
         assert abs(total - 2000 / SR) < 1e-9  # length still known (samples kept)
+
+
+# ----- transport (Play/Stop/Rewind) and streaming decode ---------------------
+
+
+class _FakeDecoder:
+    """Duck-typed stand-in for media.StreamingDecoder.
+
+    Lets a test hold the decode at an arbitrary watermark to exercise the
+    renderer's prebuffer gate, underrun hold, and loop-wrap-waits-for-total
+    behaviour without racing a real worker thread.
+    """
+
+    def __init__(self, samples, ready, done=False):
+        self.buffer = samples
+        self.frames_ready = int(ready)
+        self.done = bool(done)
+        self.failed = False
+        self.total_frames = samples.shape[1] if done else None
+
+    def finish(self):
+        self.total_frames = self.frames_ready
+        self.done = True
+
+    def close(self):
+        pass
+
+    def wait(self, timeout=None):
+        return self.done and not self.failed
+
+
+def _compiled_player(tmp_path, n=1000, **params):
+    wav = tmp_path / "ramp.wav"
+    _write_stereo_ramp(wav, n=n)
+    be = NumpyBackend(sample_rate=SR, block_size=512)
+    patch = Patch()
+    fp = patch.add_module("file_player", params={"path": str(wav), **params})
+    be.compile(patch)
+    assert be.wait_for_file_decodes()
+    return be, patch, fp, be._load_wav(str(wav), SR)
+
+
+class TestTransport:
+    def test_pause_holds_position_then_resumes(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=2000)
+        _ports(be, fp, patch, 512)
+        assert be._state[fp.id]["pos"] == 512
+
+        fp.params["playing"] = False  # Stop button
+        b = _ports(be, fp, patch, 512)
+        assert np.all(b["left"] == 0.0) and np.all(b["right"] == 0.0)
+        assert be._state[fp.id]["pos"] == 512  # held, not parked at 0
+
+        fp.params["playing"] = True  # Play button
+        b = _ports(be, fp, patch, 512)
+        assert np.array_equal(b["left"], ref[0][512:1024])  # resumed in place
+
+    def test_rewind_while_playing_restarts_next_block(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=2000)
+        _ports(be, fp, patch, 512)
+        be.rewind_file_player(fp.id)
+        b = _ports(be, fp, patch, 512)
+        assert np.array_equal(b["left"], ref[0][0:512])
+
+    def test_rewind_while_paused_takes_effect_silently(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=2000)
+        _ports(be, fp, patch, 512)
+        fp.params["playing"] = False
+        be.rewind_file_player(fp.id)
+        b = _ports(be, fp, patch, 512)  # paused: silence, but the seek lands
+        assert np.all(b["left"] == 0.0)
+        assert be._state[fp.id]["pos"] == 0
+        fp.params["playing"] = True
+        b = _ports(be, fp, patch, 512)
+        assert np.array_equal(b["left"], ref[0][0:512])
+
+    def test_rewind_ignores_non_file_player_ids(self, tmp_path):
+        be, patch, fp, _ = _compiled_player(tmp_path)
+        be.rewind_file_player(999999)  # unknown id: silently ignored
+        assert be._state[fp.id].get("seek") is None
+
+    def test_disarm_still_parks_at_start_and_clears_seek(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=2000)
+        _ports(be, fp, patch, 512)
+        be.rewind_file_player(fp.id)
+        fp.params["armed"] = False
+        b = _ports(be, fp, patch, 512)
+        assert np.all(b["left"] == 0.0)
+        assert be._state[fp.id]["pos"] == 0
+        assert be._state[fp.id]["seek"] is None
+
+
+class TestStreamingPlayback:
+    def test_prebuffer_gates_start_until_ready_or_done(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=1000)
+        st = be._state[fp.id]
+        # Pretend the decode is still running with under half a second in.
+        st["decoder"] = fake = _FakeDecoder(ref, ready=1000, done=False)
+        st["pos"] = 0
+        b = _ports(be, fp, patch, 512)
+        assert np.all(b["left"] == 0.0)  # gated: 1000 < 0.5 s of frames
+        assert be._state[fp.id]["pos"] == 0
+        fake.finish()  # decode completed -> short file plays regardless
+        b = _ports(be, fp, patch, 512)
+        assert np.array_equal(b["left"], ref[0][0:512])
+
+    def test_underrun_holds_then_resumes_without_skipping(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=1000)
+        st = be._state[fp.id]
+        st["decoder"] = fake = _FakeDecoder(ref, ready=300, done=False)
+        st["pos"] = 100  # mid-file: the prebuffer gate no longer applies
+        b = _ports(be, fp, patch, 512)
+        assert np.array_equal(b["left"][:200], ref[0][100:300])  # what existed
+        assert np.all(b["left"][200:] == 0.0)                    # then held
+        assert st["pos"] == 300  # caught the writer, did NOT run past it
+        fake.frames_ready = 1000
+        fake.finish()
+        b = _ports(be, fp, patch, 512)
+        assert np.array_equal(b["left"], ref[0][300:812])  # resumed, no skip
+
+    def test_loop_plays_linearly_until_total_known_then_wraps(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=1000, loop=True)
+        st = be._state[fp.id]
+        st["decoder"] = fake = _FakeDecoder(ref, ready=600, done=False)
+        st["pos"] = 500
+        b = _ports(be, fp, patch, 512)
+        assert np.array_equal(b["left"][:100], ref[0][500:600])
+        assert np.all(b["left"][100:] == 0.0)  # no wrap: total still unknown
+        assert st["pos"] == 600
+        fake.frames_ready = 1000
+        fake.finish()  # total known: modular wrap from here on
+        b = _ports(be, fp, patch, 512)
+        assert np.array_equal(b["left"], np.tile(ref[0], 2)[600:1112])
+
+    def test_streaming_decoder_full_decode_matches_load_wav(self, tmp_path):
+        from pysynthrack.audio import media
+
+        wav = tmp_path / "ramp.wav"
+        _write_stereo_ramp(wav, n=3000)
+        ref = NumpyBackend._load_wav(str(wav), SR)
+        dec = media.StreamingDecoder(str(wav), SR, full_decode=NumpyBackend._load_wav)
+        assert dec.wait(5.0)
+        assert dec.done and not dec.failed
+        assert dec.total_frames == ref.shape[1]
+        assert np.array_equal(dec.buffer[:, : dec.total_frames], ref)
+
+    def test_streaming_decoder_missing_file_fails_cleanly(self, tmp_path):
+        from pysynthrack.audio import media
+
+        dec = media.StreamingDecoder(
+            str(tmp_path / "nope.wav"), SR, full_decode=NumpyBackend._load_wav
+        )
+        assert not dec.wait(5.0)
+        assert dec.done and dec.failed and dec.frames_ready == 0
+
+    def test_readout_total_grows_with_watermark_while_decoding(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=1000)
+        st = be._state[fp.id]
+        st["decoder"] = fake = _FakeDecoder(ref, ready=441, done=False)
+        st["pos"] = 0
+        elapsed, total = be.snapshot_file_positions()[fp.id]
+        assert abs(total - 441 / SR) < 1e-9  # buffered length while streaming
+        fake.frames_ready = 1000
+        fake.finish()
+        elapsed, total = be.snapshot_file_positions()[fp.id]
+        assert abs(total - 1000 / SR) < 1e-9  # true duration once done

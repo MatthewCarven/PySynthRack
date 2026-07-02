@@ -348,9 +348,13 @@ include `device`, `channel`, `octave_shift`, `velocity_sensitive`,
 Streams an **audio file** into the patch as a stereo audio source — so a
 recorded track can be split and used as sound or modulation. WAV always
 works (no extra deps); with ffmpeg present it also reads mp3/flac/ogg/m4a
-and the **audio track of video files** (mp4/mkv/mov/webm). Decoded once
-into memory (resampled to the engine rate if needed), then streamed block
-by block.
+and the **audio track of video files** (mp4/mkv/mov/webm). Decoding runs on
+a **background thread** (kicked at compile, resampled to the engine rate if
+needed): playback starts once ~0.5 s is buffered, so even a feature-length
+video never stalls the audio thread. If the playhead ever catches a
+still-running decode it holds in place and resumes seamlessly; a `loop`
+plays linearly until the full length is known, then wraps. Once decoded,
+steady-state playback is an in-memory array slice — no per-block disk I/O.
 
 **Ports**
 
@@ -367,15 +371,24 @@ by block.
 | `gain` | `1.0` | 0…2 | Linear gain on both channels. |
 | `loop` | `false` | bool | `true` repeats seamlessly; `false` (default) plays once then silence until restart/re-arm. |
 | `armed` | `true` | bool | `false` outputs silence and parks the playhead at the start, so re-arming replays from the top. |
+| `playing` | `true` | bool | Tape-transport pause: `false` holds the playhead in place (silent); `true` resumes from the same spot. Driven by the node's **Play**/**Stop** buttons. |
+
+**Transport.** The node carries tape-style buttons: **Play** resumes,
+**Stop** pauses in place (both drive the `playing` param and its checkbox),
+and **|<** rewinds to 0:00 — honoured at the next block boundary whether
+playing or paused. `armed` remains the coarser control (off = silent *and*
+parked at the start). One-shots also rewind when the audio transport stops.
 
 **Notes.** A **Browse...** button beside the path field opens a file picker
 (audio + video formats) and writes the chosen path back into the field; the
-player re-decodes on the next block. Non-WAV formats are decoded by ffmpeg,
-found either from the `[media]` extra (`pip install -e ".[media]"`, a
-bundled binary that also travels inside the packaged exe) or a system
-`ffmpeg` on PATH; without ffmpeg, non-WAV files play silence. The node also
-shows a live `elapsed / total` time readout. One-shots rewind when the
-transport stops. See `examples/file_crossover_split.json`
+player starts a fresh background decode on the next block. Non-WAV formats
+are decoded by ffmpeg, found either from the `[media]` extra
+(`pip install -e ".[media]"`, a bundled binary that also travels inside the
+packaged exe) or a system `ffmpeg` on PATH; without ffmpeg, non-WAV files
+play silence. The node shows a live `elapsed / total` readout; while a long
+file is still decoding, the total is the buffered length so far and grows
+until the decode completes (a free loading indicator). See
+`examples/file_crossover_split.json`
 (track → crossover → AudioToCV → oscillator/CVToFrequency).
 
 #### `mic_input`

@@ -452,3 +452,13 @@ open to a better scheme if one turns up.
       7 category submenus via per-class `CATEGORY` +
       `grouped_module_types()`; MODULES.md index recategorised (+ missing
       phaser row added); 5 tests.
+
+- [x] **FilePlayer streaming / off-thread decode + transport** — DONE
+      2026-07-03 (the ffmpeg-decode follow-up above). media.StreamingDecoder
+      (worker thread, chunked ffmpeg pipe, lock-free watermark); decode
+      kicked at compile, never on the audio thread; ~0.5 s prebuffer,
+      underrun holds + resumes, loop wraps once total known. Tape-transport
+      buttons on the node: Play / Stop (new `playing` param, pauses in
+      place) / |< rewind (backend seek flag, works paused). Readout total
+      grows while decoding. 11 new tests, suite 1206. Still open from that
+      list: node hint showing whether ffmpeg was found.

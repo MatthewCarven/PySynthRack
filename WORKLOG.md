@@ -5505,3 +5505,38 @@ Adding-a-new-module recipe includes CATEGORY, and the index gained the
 missing `phaser` row (drift — it was never added when phaser shipped).
 5 new tests in tests/test_module_categories.py (partition, order,
 inner sort, oddball-to-Other).
+
+## 2026-07-03 — FilePlayer: off-thread streaming decode + tape transport
+
+The last audible wart: pointing a FilePlayer at a big video ran the whole
+ffmpeg decode synchronously INSIDE the first audio render — seconds of
+stalled audio thread. Now decode never touches the audio thread.
+
+`media.StreamingDecoder`: daemon worker fills a growing (2, N) buffer —
+scipy WAV fast path decodes whole-file in the worker; everything else
+streams from ffmpeg's stdout in 256 KiB chunks. `frames_ready` is
+published only after each chunk lands (int/reference stores are atomic
+under the GIL), so the render side needs no lock: read the watermark,
+slice below it. `close()` kills a decode in flight; `wait()` is the
+test/offline hook.
+
+Renderer is consume-only: decoders are kicked at compile() (UI thread) or
+on a live path edit (a thread spawn, safe in the callback). Playback
+gates on ~0.5 s prebuffered (moot once done); catching the writer holds
+the playhead — partial block, silence, resume without skipping; loop
+wraps only once the total is known. compile() closes decoders of dropped
+modules (the disk_writer pattern); stop() keeps them — decoded audio
+survives transport stops.
+
+Tape transport (Matthew's pick over CD-style): new `playing` param
+(default true, old patches unaffected) — Stop pauses holding position,
+Play resumes, |< rewinds via backend.rewind_file_player() (a seek flag
+consumed at block start, the reset_meter_clips pattern) working playing
+or paused. Buttons live on the node next to the playhead readout; the
+readout's total now grows with the decode watermark = free loading bar.
+
+Tests: existing file-player/media tests adapted to the async contract
+(wait_for_file_decodes after compile); 11 new (transport x5, streaming
+x6 incl. real-ffmpeg byte-identity of chunked vs one-shot decode and
+close-kills-decode). Suite 1206 sandbox. decode_with_ffmpeg stays for
+one-shot uses; _decode_audio no longer has render-path callers.

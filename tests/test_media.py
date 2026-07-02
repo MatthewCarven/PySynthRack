@@ -178,11 +178,32 @@ class TestFfmpegIntegration:
         patch.connect(fp.id, "left", spk.id, "in")
         b = NumpyBackend(sample_rate=SR, block_size=512)
         b.compile(patch)
+        assert b.wait_for_file_decodes()
         block = None
         for _ in range(4):
             block = b.render_block(512)
         assert block is not None and np.all(np.isfinite(block))
         assert np.abs(block).max() > 0.0
+
+    def test_streaming_decoder_matches_one_shot_decode(self, tmp_path):
+        # The chunked ffmpeg pipe must land byte-identical audio to the
+        # subprocess.run one-shot path (same command line, same bytes).
+        wav = _write_sine_wav(tmp_path / "s.wav", secs=0.3)
+        flac = self._transcode(wav, str(tmp_path / "s.flac"))
+        ref = media.decode_with_ffmpeg(flac, SR)
+        dec = media.StreamingDecoder(flac, SR)  # no full_decode: force ffmpeg
+        assert dec.wait(30.0)
+        assert dec.done and not dec.failed
+        assert dec.total_frames == ref.shape[1]
+        assert np.array_equal(dec.buffer[:, : dec.total_frames], ref)
+
+    def test_streaming_decoder_close_kills_decode(self, tmp_path):
+        wav = _write_sine_wav(tmp_path / "s.wav", secs=0.3)
+        flac = self._transcode(wav, str(tmp_path / "s.flac"))
+        dec = media.StreamingDecoder(flac, SR)
+        dec.close()  # abort immediately (path-change / recompile case)
+        dec.wait(30.0)
+        assert dec.done  # worker exits rather than hanging
 
     def test_video_audio_extraction(self, tmp_path):
         # Synthesize a tiny video with a tone, then pull its audio track.

@@ -351,14 +351,35 @@ class App:
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                     self._add_param_widget(module, param_name, default)
 
-            # FilePlayer: a live 'elapsed / total' playhead readout. Audio
-            # outputs carry no CV meter, so this text is the one bit of
-            # transport feedback on the node; _update_file_positions ticks
-            # it each frame.
+            # FilePlayer: tape-style transport buttons plus a live
+            # 'elapsed / total' playhead readout (_update_file_positions
+            # ticks it each frame; while a long file is still decoding the
+            # total shows the buffered length growing). Play resumes,
+            # Stop pauses in place (the ``playing`` param), |< rewinds to
+            # 0:00 whether playing or paused.
             if module.TYPE == "file_player":
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                    label = dpg.add_text("0:00 / 0:00")
-                    self._file_pos_labels[module.id] = label
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(
+                            label="|<",
+                            width=28,
+                            callback=self._on_file_transport,
+                            user_data=(module.id, "rewind"),
+                        )
+                        dpg.add_button(
+                            label="Play",
+                            width=44,
+                            callback=self._on_file_transport,
+                            user_data=(module.id, "play"),
+                        )
+                        dpg.add_button(
+                            label="Stop",
+                            width=44,
+                            callback=self._on_file_transport,
+                            user_data=(module.id, "stop"),
+                        )
+                        label = dpg.add_text("0:00 / 0:00")
+                        self._file_pos_labels[module.id] = label
 
             # Meter: one dBFS level display (-90..0) per channel, driven
             # each frame from the backend's indicator triples. Each is a
@@ -420,6 +441,19 @@ class App:
                     callback=self._show_wav_dialog,
                     user_data=module.id,
                 )
+            return
+
+        if module.TYPE == "file_player" and param_name == "playing":
+            # Same param the Play/Stop transport buttons drive; an explicit
+            # tag lets their callback keep this checkbox in sync (the
+            # mirror of the Browse button writing back into the path field).
+            dpg.add_checkbox(
+                label=param_name,
+                default_value=bool(current),
+                tag=f"fileplayer_playing_{module.id}",
+                callback=self._on_param_changed,
+                user_data=user_data,
+            )
             return
 
         if module.TYPE == "cv_gates":
@@ -1461,6 +1495,32 @@ class App:
             self.backend.set_param(module_id, param_name, app_data)
         except Exception as exc:
             self._set_status(f"Param error: {exc}")
+
+    def _on_file_transport(self, sender, app_data, user_data) -> None:
+        """A FilePlayer transport button: (module_id, 'play'|'stop'|'rewind').
+
+        Play/Stop drive the ``playing`` param (pause keeps the playhead;
+        the renderer holds position while False) and mirror the value into
+        the node's checkbox. Rewind asks the backend to seek to 0:00 at
+        the next block boundary — a state poke, not a param, so it works
+        identically while playing or paused (backends without the hook,
+        i.e. the pyo stub, no-op).
+        """
+        module_id, action = user_data
+        if action == "rewind":
+            rewind = getattr(self.backend, "rewind_file_player", None)
+            if rewind is not None:
+                rewind(module_id)
+            return
+        playing = action == "play"
+        try:
+            self.backend.set_param(module_id, "playing", playing)
+        except Exception as exc:
+            self._set_status(f"Param error: {exc}")
+            return
+        tag = f"fileplayer_playing_{module_id}"
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, playing)
 
     def _show_wav_dialog(self, sender, app_data, user_data) -> None:
         """A FilePlayer Browse button was clicked: open the WAV picker."""

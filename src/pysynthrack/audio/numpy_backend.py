@@ -521,12 +521,40 @@ class NumpyBackend(AudioBackend):
                     # the worker would leak across recompiles.
                     if self._state_types.get(mid) == "disk_writer":
                         self._close_disk_writer_state(self._state[mid])
+                    # Likewise a file_player mid-decode: kill its ffmpeg
+                    # and let the worker thread exit before dropping it.
+                    if self._state_types.get(mid) == "file_player":
+                        dec = self._state[mid].get("decoder")
+                        if dec is not None:
+                            dec.close()
                     self._state.pop(mid, None)
                     if mid not in live_types:
                         self._state_types.pop(mid, None)
             # Record the current type for every live module so the next
             # compile can compare against it.
             self._state_types = dict(live_types)
+
+            # FilePlayer lifecycle: kick each player's background decode
+            # NOW, on the compile (UI) thread, so by the time the stream
+            # renders its first block the file is usually already sounding
+            # — and a big video's ffmpeg decode never runs on (or blocks)
+            # the audio thread. Path unchanged -> keep the existing
+            # decoder and its decoded audio.
+            for mid, m in patch.modules.items():
+                if m.TYPE != "file_player":
+                    continue
+                st = self._state.setdefault(
+                    mid, {"path": None, "decoder": None, "pos": 0, "seek": None}
+                )
+                fp_path = str(m.params.get("path", ""))
+                if st.get("decoder") is None or st.get("path") != fp_path:
+                    old_dec = st.get("decoder")
+                    if old_dec is not None:
+                        old_dec.close()
+                    st["path"] = fp_path
+                    st["decoder"] = self._start_file_decoder(fp_path)
+                    st["pos"] = 0
+                    st["seek"] = None
 
             # MIDIInput lifecycle: ensure every midi_input module in the new
             # patch has its mido port open, and close ports for any
@@ -989,13 +1017,16 @@ class NumpyBackend(AudioBackend):
         """GUI hook: each ``file_player``'s playhead as ``(elapsed, total)``
         seconds, keyed by module id.
 
-        ``total`` is ``0.0`` until the file has been decoded (lazily, on the
-        first render) and for an empty/unreadable path; ``elapsed`` is
-        clamped to ``total`` once a one-shot has run off the end. The lock
-        is taken only to copy the state mapping so a concurrent ``compile``
-        can't resize it mid-iteration -- ``pos`` itself is written by the
-        audio thread without the lock, but an int read is atomic under the
-        GIL and a marginally stale playhead is harmless for a readout.
+        While a file is still decoding, ``total`` is the *buffered* length
+        so far — the readout's right-hand number grows as ffmpeg works
+        through a long file, which doubles as a free loading indicator —
+        and becomes the true duration once the decode finishes. ``0.0``
+        for an empty/unreadable path; ``elapsed`` is clamped to ``total``
+        once a one-shot has run off the end. The lock is taken only to
+        copy the state mapping so a concurrent ``compile`` can't resize it
+        mid-iteration -- ``pos`` itself is written by the audio thread
+        without the lock, but an int read is atomic under the GIL and a
+        marginally stale playhead is harmless for a readout.
         """
         with self._lock:
             items = list(self._state.items())
@@ -1005,11 +1036,14 @@ class NumpyBackend(AudioBackend):
         for mid, st in items:
             if types.get(mid) != "file_player":
                 continue
-            samples = st.get("samples")
-            if samples is None or samples.shape[1] == 0:
+            dec = st.get("decoder")
+            if dec is None or dec.failed:
                 out[mid] = (0.0, 0.0)
                 continue
-            n = samples.shape[1]
+            n = int(dec.total_frames) if dec.done else int(dec.frames_ready)
+            if n == 0:
+                out[mid] = (0.0, 0.0)
+                continue
             elapsed = min(int(st.get("pos", 0)), n) / sr
             out[mid] = (elapsed, n / sr)
         return out
@@ -5938,63 +5972,147 @@ class NumpyBackend(AudioBackend):
             in_channels = 1
         return in_device, in_channels
 
-    def _render_file_player(self, module, frames: int, buffers=None, patch=None):
-        """Stream a decoded WAV file to the ``left`` / ``right`` audio outs.
+    # Frames of decoded audio required before a still-decoding file starts
+    # sounding from the top. Once the decoder reports ``done`` the gate is
+    # moot (a fully decoded short file plays no matter how small it is).
+    _FP_PREBUFFER_SECONDS = 0.5
 
-        Decodes lazily on first use (and re-decodes after a path change)
-        into ``self._state``; every block thereafter is a slice of the
-        in-memory array, so there is no per-block disk I/O. One-shot by
-        default -- ``loop`` wraps the playhead with modular indexing so a
-        block straddling the loop point reads seamlessly. Both ports are
-        always returned (zeros when idle/finished) so downstream wiring is
-        defined whether or not the file is sounding.
+    def _render_file_player(self, module, frames: int, buffers=None, patch=None):
+        """Stream a background-decoded file to the ``left``/``right`` outs.
+
+        The audio thread NEVER decodes: a ``media.StreamingDecoder`` is
+        kicked off-thread at compile() (or here, non-blocking, after a live
+        path edit) and this renderer only consumes what the worker has
+        already published. Playback starts once ~0.5 s is buffered (or the
+        decode has finished, whichever is first); if the playhead ever
+        catches the decoder it holds — partial block, then silence — and
+        resumes when more data lands, so nothing is skipped. ``loop`` wraps
+        with modular indexing only once the total length is known; until
+        then it plays linearly like a one-shot.
+
+        Transport: ``armed`` False silences and parks at the start (the
+        re-arm-replays contract); ``playing`` False holds the playhead
+        where it is (tape-style pause); a pending ``seek`` (the node's
+        Rewind button, via ``rewind_file_player``) is honoured whether
+        playing or paused. Both ports are always returned (zeros when
+        idle) so downstream wiring stays defined.
         """
         state = self._state.setdefault(
-            module.id, {"path": None, "samples": None, "pos": 0}
+            module.id, {"path": None, "decoder": None, "pos": 0, "seek": None}
         )
         path = str(module.params.get("path", ""))
-        if state["samples"] is None or state["path"] != path:
-            # First arrival, or the user pointed at a different file.
+        if state.get("decoder") is None or state.get("path") != path:
+            # First arrival, or a live path edit between compiles. Starting
+            # a decoder is just a thread spawn — safe on the audio thread.
+            old_dec = state.get("decoder")
+            if old_dec is not None:
+                old_dec.close()
             state["path"] = path
-            state["samples"] = self._decode_audio(path, self.sample_rate)
+            state["decoder"] = self._start_file_decoder(path)
             state["pos"] = 0
-
-        armed = bool(module.params.get("armed", True))
-        samples = state["samples"]
-        if not armed or samples is None or samples.shape[1] == 0:
-            if not armed:
-                state["pos"] = 0  # re-arming replays from the top
-            return {
-                "left": np.zeros(frames, dtype=np.float32),
-                "right": np.zeros(frames, dtype=np.float32),
-            }
-
-        n = samples.shape[1]
-        pos = int(state["pos"])
-        gain = float(module.params.get("gain", 1.0))
-        loop = bool(module.params.get("loop", False))
+            state["seek"] = None
 
         left = np.zeros(frames, dtype=np.float32)
         right = np.zeros(frames, dtype=np.float32)
+        silence = {"left": left, "right": right}
 
-        if loop:
+        decoder = state["decoder"]
+        armed = bool(module.params.get("armed", True))
+        if not armed or decoder is None or decoder.failed:
+            if not armed:
+                state["pos"] = 0  # re-arming replays from the top
+                state["seek"] = None
+            return silence
+
+        # A rewind/seek request from the UI thread: consume it whether
+        # playing or paused, so Rewind works as tape transport.
+        seek = state.get("seek")
+        if seek is not None:
+            state["pos"] = int(seek)
+            state["seek"] = None
+
+        if not bool(module.params.get("playing", True)):
+            return silence  # paused: hold the playhead, output silence
+
+        ready = int(decoder.frames_ready)
+        done = bool(decoder.done)
+        pos = int(state["pos"])
+        if ready == 0:
+            return silence
+        if pos == 0 and not done:
+            # Prebuffer gate at the very start only — steady-state decode
+            # outruns realtime by a wide margin, so mid-file underruns are
+            # already the rare case and get the hold-and-resume treatment.
+            if ready < int(self.sample_rate * self._FP_PREBUFFER_SECONDS):
+                return silence
+
+        samples = decoder.buffer
+        gain = float(module.params.get("gain", 1.0))
+        loop = bool(module.params.get("loop", False))
+
+        if loop and done:
+            n = int(decoder.total_frames)
             idx = (np.arange(frames) + pos) % n
             left[:] = samples[0, idx]
             right[:] = samples[1, idx]
             state["pos"] = (pos + frames) % n
         else:
-            if pos < n:
-                take = min(frames, n - pos)
+            # Linear playback bounded by the decode watermark. Covers the
+            # one-shot case (park at the end once done) and the
+            # still-decoding case for both modes (hold at ``ready`` and
+            # resume when more frames land; a loop wraps only once the
+            # total is known).
+            if pos < ready:
+                take = min(frames, ready - pos)
                 left[:take] = samples[0, pos:pos + take]
                 right[:take] = samples[1, pos:pos + take]
-                # Park at n once finished -> silence on every later block.
                 state["pos"] = pos + take
-            # else: already past the end; both buffers stay zero.
+            # else: parked (one-shot done) or waiting on the decoder.
 
         if gain != 1.0:
             left *= gain
             right *= gain
         return {"left": left, "right": right}
+
+    def _start_file_decoder(self, path):
+        """Spawn a background decoder for ``path`` (None for an empty path)."""
+        if not path:
+            return None
+        return media.StreamingDecoder(
+            path, self.sample_rate, full_decode=self._load_wav
+        )
+
+    def rewind_file_player(self, module_id: int) -> None:
+        """UI hook: seek a file_player back to 0:00 (playing or paused).
+
+        Sets a flag the renderer consumes at the next block boundary, so
+        the jump is block-aligned and thread-safe (one reference store,
+        atomic under the GIL) — same pattern as ``reset_meter_clips``.
+        """
+        state = self._state.get(module_id)
+        if state is not None and self._state_types.get(module_id) == "file_player":
+            state["seek"] = 0
+
+    def wait_for_file_decodes(self, timeout: float = 10.0) -> bool:
+        """Block until every file_player decode finishes. Tests/offline only.
+
+        Never call from the audio thread. Returns True when every decoder
+        reached ``done`` without failing (an empty path counts as trivially
+        ready, matching its render-silence contract).
+        """
+        import time as _time
+
+        deadline = _time.monotonic() + float(timeout)
+        ok = True
+        for mid, st in list(self._state.items()):
+            if self._state_types.get(mid) != "file_player":
+                continue
+            dec = st.get("decoder")
+            if dec is None:
+                continue
+            remaining = max(0.0, deadline - _time.monotonic())
+            ok = dec.wait(remaining) and ok
+        return ok
 
     # ----- distortion -------------------------------------------------------
 
