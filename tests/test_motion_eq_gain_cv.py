@@ -76,11 +76,11 @@ class TestGainCVModel:
         p = Patch()
         m = p.add_module("motion_eq")
         names = [pt.name for pt in m.input_ports]
-        assert names == ["in",
-                         "band1_freq_cv", "band2_freq_cv",
-                         "band3_freq_cv", "band4_freq_cv",
-                         "band1_gain_cv", "band2_gain_cv",
-                         "band3_gain_cv", "band4_gain_cv"]
+        assert names[:9] == ["in",
+                             "band1_freq_cv", "band2_freq_cv",
+                             "band3_freq_cv", "band4_freq_cv",
+                             "band1_gain_cv", "band2_gain_cv",
+                             "band3_gain_cv", "band4_gain_cv"]
         assert all(pt.signal_kind == "cv"
                    for pt in m.input_ports if pt.name.endswith("_gain_cv"))
         assert m.params["gain_cv_depth"] == 6.0

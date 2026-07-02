@@ -316,8 +316,24 @@ open to a better scheme if one turns up.
           static (block-mean proven); voice == mono. 13 tests
           `tests/test_motion_eq_gain_cv.py`. Example `motion_eq_breathe.json`
           (two bands breathing over a reverb darkening on `damping_cv`).
-          Follow-ups: per-band Q CV would complete the set; a `band{i}_gain_cv`
-          per-sample mode if anyone wants tremolo-rate breathing.
+          Follow-ups: per-band Q CV would complete the set - DONE 2026-07-02,
+          see below; a `band{i}_gain_cv` per-sample mode if anyone wants
+          tremolo-rate breathing.
+        - [x] **Per-band Q CV** - DONE 2026-07-02 (Matthew's pick; the per-band
+          CV set is now COMPLETE: freq + gain + Q, 12 CV jacks + `in`).
+          Four `band{i}_q_cv` inputs, **multiplicative** like the freq sweep -
+          Q is ratio-like (0.1-20), so the natural unit is a *doubling*:
+          `q_i * 2^(q_cv_depth * mean cv)`, block-meaned, shared `q_cv_depth`
+          default 1.0. No new clamp: rides `_peq_coeffs`'s existing (0.1, 20)
+          clip (the same rail the static param rides - both clip-rail tests
+          are bit-identical equivalences). `qs_override` joins freqs/gains on
+          `_render_parametric_eq_mono/_voice`. 14 tests
+          `tests/test_motion_eq_q_cv.py`. Example `motion_eq_focus.json`
+          (saw drone, two +8 dB bells whose Q two slow LFOs sweep 0.625-10 -
+          broad tone-shape snaps into resonant formant-like stings; peak
+          tuned to 0.73 at the EQ / 0.44 at the speaker). Follow-ups: that
+          per-sample gain-CV mode; nothing else - the module is fully
+          animated.
 
   - [x] **`sweep_eq`** — DONE 2026-07-02. Shipped with a **switchable
         `mode`** (Matthew's call): `bandpass` (default, classic wah),

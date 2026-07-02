@@ -492,8 +492,10 @@ class App:
             # (Parametric/Motion) EQ bands: ``band{i}_freq`` (Hz),
             # ``band{i}_gain`` (dB, 0 = flat), ``band{i}_q`` (width);
             # MotionEQ adds a shared ``cv_depth`` (oct/unit) scaling its
-            # per-band ``freq_cv`` sweeps and a shared ``gain_cv_depth``
-            # (dB/unit) scaling its per-band ``gain_cv`` pushes.
+            # per-band ``freq_cv`` sweeps, a shared ``gain_cv_depth``
+            # (dB/unit) scaling its per-band ``gain_cv`` pushes, and a
+            # shared ``q_cv_depth`` (Q doublings/unit) scaling its
+            # per-band ``q_cv`` squeezes.
             # Distinct ranges from the generic numeric fallbacks below.
             if param_name.endswith("_freq"):
                 dpg.add_drag_float(
@@ -543,6 +545,13 @@ class App:
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=0.1,
                     min_value=0.0, max_value=18.0, format="%.1f dB/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "q_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f dbl/unit",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

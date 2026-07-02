@@ -5268,3 +5268,40 @@ MODULES.md: motion_eq + reverb sections, module index rows, and two new
 rows in the CV-depth conventions table. UI: gain_cv_depth drag
 (0–18, "%.1f dB/unit") in the shared EQ block; reverb cv_depth comment
 now names all three targets. No pyo change (types already stubbed).
+
+## 2026-07-02 - motion_eq per-band Q CV (the set completes)
+
+Matthew took the flagged follow-up same-day: `band{i}_q_cv` x4, and the
+motion_eq's per-band CV set is complete - freq, gain, Q, twelve CV
+jacks on one EQ.
+
+Design call (house rule: natural unit per domain): Q is ratio-like
+(0.1-20 spans two decades), so additive CV would mean one CV unit is a
+tickle at Q 10 and a catastrophe at Q 0.5. The natural unit is a
+**doubling**, i.e. the freq-sweep convention: `q_i * 2^(q_cv_depth *
+mean cv)`, block-meaned, one shared `q_cv_depth` (default 1.0 - a
+bipolar LFO at full depth sweeps half-to-double). No new clamp code:
+the result rides `_peq_coeffs`'s existing (0.1, 20) Q clip, the same
+rail the static param rides - which makes both clip-rail tests exact
+bit-identical equivalences rather than approximations.
+
+Implementation is the third verse of the same song: `qs_override`
+joins `freqs_override`/`gains_override` on
+`_render_parametric_eq_mono/_voice` (None = bit-identical), and
+`_render_motion_eq` builds all three override lists. 14 tests in
+`tests/test_motion_eq_q_cv.py` (power-of-two exact equivalences, depth
+scale/disable, both rails, alternating +/-1 block-mean proof, band
+independence, skirt-tone attenuation >40% when a CV narrows Q 0.7 to
+11.2, voice row == mono). Port/param exact assertions updated (15
+params, 13 input ports).
+
+Example `motion_eq_focus.json`: 110 Hz saw drone, two +8 dB bells at
+500/2000 Hz whose Q two slow LFOs sweep 0.625-10 - the broad tone-shape
+periodically snaps into vocal, formant-like stings. First cut peaked at
+2.9 (two wide +9 dB bells overlap -> +18 dB, the classic headroom
+trap); tuned to amp 0.2 / +8 dB / base Q 2.5 / depth 2.0 -> peak 0.73
+at the EQ, 0.44 at the speaker.
+
+MODULES.md: ports/params rows, conventions-table row
+(motion_eq.band{i}_q_cv | 1.0 shared | Q doublings), index row now says
+x4 per family. UI: q_cv_depth drag 0-4 "%.2f dbl/unit".

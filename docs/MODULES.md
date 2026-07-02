@@ -95,6 +95,7 @@ The full map:
 | `sweep_eq.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
 | `motion_eq.band{i}_freq_cv` | `1.0` (shared) | octaves | `freq_i · 2^(d·mean cv)` |
 | `motion_eq.band{i}_gain_cv` | `6.0` (shared, `gain_cv_depth`) | dB | `gain_i + d·mean cv` (clamped ±24) |
+| `motion_eq.band{i}_q_cv` | `1.0` (shared, `q_cv_depth`) | Q doublings | `q_i · 2^(d·mean cv)` (clipped 0.1…20) |
 | `chorus.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `flanger.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `phaser.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
@@ -193,7 +194,7 @@ Every module type, its category, and its ports at a glance.
 | [`crossover`](#crossover) | Processor | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
 | [`parametric_eq`](#parametric_eq) | Processor | `in` (audio) → `out` (audio) |
 | [`sweep_eq`](#sweep_eq) | Processor | `in` (audio), `freq_cv` (cv) → `out` (audio) |
-| [`motion_eq`](#motion_eq) | Processor | `in` (audio), `band1_freq_cv`…`band4_freq_cv`, `band1_gain_cv`…`band4_gain_cv` (cv) → `out` (audio) |
+| [`motion_eq`](#motion_eq) | Processor | `in` (audio), `band{i}_freq_cv`, `band{i}_gain_cv`, `band{i}_q_cv` ×4 (cv) → `out` (audio) |
 | [`tilt_eq`](#tilt_eq) | Processor | `in` (audio), `tilt_cv` (cv) → `out` (audio) |
 | [`vca`](#vca) | Processor | `audio` (audio), `cv` (cv) → `out` (audio) |
 | [`resampler`](#resampler) | Processor | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
@@ -564,9 +565,10 @@ A **4-band parametric EQ whose band centres you sweep with CV** — the full
 "animated EQ". Four peaking bells like [parametric_eq](#parametric_eq), but
 each band has its own CV input (`band1_freq_cv` … `band4_freq_cv`) that slides
 *that band's* centre frequency, and a second (`band1_gain_cv` …
-`band4_gain_cv`) that pushes *that band's gain* in dB. Patch four
+`band4_gain_cv`) that pushes *that band's gain* in dB, and a third
+(`band1_q_cv` … `band4_q_cv`) that squeezes *that band's width*. Patch four
 LFOs/envelopes in and four peaks/notches glide independently around the
-spectrum — or breathe in and out.
+spectrum — breathe in and out, snap into resonant focus and relax.
 
 **Ports**
 
@@ -575,9 +577,10 @@ spectrum — or breathe in and out.
 | `in` | in | audio | Signal to EQ. |
 | `band1_freq_cv` … `band4_freq_cv` | in | cv | Each sweeps its band's centre 1 V/oct × `cv_depth`; optional per band. |
 | `band1_gain_cv` … `band4_gain_cv` | in | cv | Each adds `gain_cv_depth` dB per CV unit to its band's gain (clamped ±24 dB); optional per band. |
+| `band1_q_cv` … `band4_q_cv` | in | cv | Each scales its band's Q by `2^(q_cv_depth·cv)` (doublings; the cascade clips 0.1…20); optional per band. |
 | `out` | out | audio | Equalised signal. |
 
-**Parameters** (per band `i` in 1..4, plus shared `cv_depth` / `gain_cv_depth`)
+**Parameters** (per band `i` in 1..4, plus shared `cv_depth` / `gain_cv_depth` / `q_cv_depth`)
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
@@ -586,8 +589,9 @@ spectrum — or breathe in and out.
 | `band{i}_q` | `1.0` | 0.1 … 20 | Band width. |
 | `cv_depth` | `1.0` | octaves / CV unit | **Shared** — octaves each `band{i}_freq_cv` sweeps its band (1 V/oct). Per-band sensitivity is reachable with a [CVScale](#cv_scale) on any input. |
 | `gain_cv_depth` | `6.0` | 0 … 18 dB / CV unit | **Shared** — dB each `band{i}_gain_cv` adds to its band's gain (additive, block-meaned, clamped ±24 dB), the [tilt_eq](#tilt_eq) convention. 0 disables the gain CVs. |
+| `q_cv_depth` | `1.0` | 0 … 4 doublings / CV unit | **Shared** — Q doublings each `band{i}_q_cv` applies to its band (multiplicative like the freq sweep — Q is ratio-like, so the natural unit is a doubling). 0 disables the Q CVs. |
 
-**Patching.** Q is static; frequency and gain are the animated dimensions. With
+**Patching.** All three band dimensions are now animated. With
 nothing patched, `motion_eq` is bit-identical to a [parametric_eq](#parametric_eq)
 of the same params (an unpatched band stays at its static centre). Reuses
 ParametricEQ's exact peaking cascade, so a 0 dB band is exactly transparent and

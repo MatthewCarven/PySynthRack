@@ -75,12 +75,15 @@ class TestMotionEQModel:
             assert f"band{i}_gain" in m.params
             assert f"band{i}_q" in m.params
         assert m.params["gain_cv_depth"] == 6.0
-        assert len(m.params) == 14  # 4*3 band params + cv_depth + gain_cv_depth
+        assert m.params["q_cv_depth"] == 1.0
+        assert len(m.params) == 15  # 4*3 band params + 3 shared depths
         names = [p.name for p in m.input_ports]
         assert names == ["in", "band1_freq_cv", "band2_freq_cv",
                          "band3_freq_cv", "band4_freq_cv",
                          "band1_gain_cv", "band2_gain_cv",
-                         "band3_gain_cv", "band4_gain_cv"]
+                         "band3_gain_cv", "band4_gain_cv",
+                         "band1_q_cv", "band2_q_cv",
+                         "band3_q_cv", "band4_q_cv"]
         assert m.input_ports[0].signal_kind == "audio"
         assert all(p.signal_kind == "cv" for p in m.input_ports[1:])
         assert [p.name for p in m.output_ports] == ["out"]

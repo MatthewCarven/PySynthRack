@@ -3943,7 +3943,7 @@ class NumpyBackend(AudioBackend):
         return self._render_parametric_eq_mono(module, frames, src)
 
     def _render_parametric_eq_mono(self, module, frames, src, freqs_override=None,
-                                   gains_override=None):
+                                   gains_override=None, qs_override=None):
         """Mono path -- N cascaded peaking biquads via ``lfilter``.
 
         Same state design as ``_render_filter_mono`` (filter
@@ -3961,6 +3961,8 @@ class NumpyBackend(AudioBackend):
             freqs = freqs_override  # MotionEQ: per-band CV-swept centres
         if gains_override is not None:
             gains = gains_override  # MotionEQ: per-band CV-pushed gains
+        if qs_override is not None:
+            qs = qs_override  # MotionEQ: per-band CV-squeezed Qs
         n_bands = len(freqs)
         b0, b1, b2, a1n, a2n = self._peq_coeffs(freqs, gains, qs)
 
@@ -4008,7 +4010,7 @@ class NumpyBackend(AudioBackend):
         return x.astype(np.float32)
 
     def _render_parametric_eq_voice(self, module, frames, src, freqs_override=None,
-                                    gains_override=None):
+                                    gains_override=None, qs_override=None):
         """Voice-aware path -- V parallel cascades, output ``(V, F)``.
 
         The cascade is the mono path vectorized across voices. Because
@@ -4025,6 +4027,8 @@ class NumpyBackend(AudioBackend):
             freqs = freqs_override  # MotionEQ: per-band CV-swept centres
         if gains_override is not None:
             gains = gains_override  # MotionEQ: per-band CV-pushed gains
+        if qs_override is not None:
+            qs = qs_override  # MotionEQ: per-band CV-squeezed Qs
         n_bands = len(freqs)
         b0, b1, b2, a1n, a2n = self._peq_coeffs(freqs, gains, qs)
 
@@ -4083,11 +4087,13 @@ class NumpyBackend(AudioBackend):
         ``band{i}_freq * 2 ** (cv_depth * mean(band{i}_freq_cv))`` and
         the gain is
         ``band{i}_gain + gain_cv_depth * mean(band{i}_gain_cv)`` (dB,
-        clamped +/-24), both block-meaned (one coefficient set per
-        block, shared across voices -- the Crossover's macro-sweep
-        policy). Q stays static. An unpatched CV leaves that band at
-        its static value, so with nothing patched MotionEQ is
-        bit-identical to a ParametricEQ with the same params.
+        clamped +/-24), and the Q is
+        ``band{i}_q * 2 ** (q_cv_depth * mean(band{i}_q_cv))`` (riding
+        the cascade's 0.1..20 clip), all block-meaned (one coefficient
+        set per block, shared across voices -- the Crossover's
+        macro-sweep policy). An unpatched CV leaves that band at its
+        static value, so with nothing patched MotionEQ is bit-identical
+        to a ParametricEQ with the same params.
         """
         src = self._input_buffer(
             patch, buffers, module.id, "in", collapse=False
@@ -4097,7 +4103,8 @@ class NumpyBackend(AudioBackend):
 
         cv_depth = float(module.params.get("cv_depth", 1.0))
         gain_cv_depth = float(module.params.get("gain_cv_depth", 6.0))
-        base_freqs, base_gains, _qs = self._peq_band_params(module)
+        q_cv_depth = float(module.params.get("q_cv_depth", 1.0))
+        base_freqs, base_gains, base_qs = self._peq_band_params(module)
         mod_freqs = []
         for i, base in enumerate(base_freqs, start=1):
             cv = self._input_buffer(
@@ -4121,14 +4128,30 @@ class NumpyBackend(AudioBackend):
                 base = min(max(base, -24.0), 24.0)
             mod_gains.append(base)
 
+        # Per-band Q CV: multiplicative like the freq sweep -- Q is a
+        # ratio-like quantity, so the natural unit is a doubling
+        # (q * 2**(q_cv_depth * mean cv)), block-meaned. No clamp here:
+        # _peq_coeffs already clips Q to (0.1, 20), the same rail the
+        # static param rides. Unpatched = exact static Q.
+        mod_qs = []
+        for i, base in enumerate(base_qs, start=1):
+            cv = self._input_buffer(
+                patch, buffers, module.id, f"band{i}_q_cv"
+            )
+            if cv is not None and cv.size > 0:
+                base = base * float(2.0 ** (q_cv_depth * float(np.mean(cv))))
+            mod_qs.append(base)
+
         if src.ndim == 2:
             return self._render_parametric_eq_voice(
                 module, frames, src,
                 freqs_override=mod_freqs, gains_override=mod_gains,
+                qs_override=mod_qs,
             )
         return self._render_parametric_eq_mono(
             module, frames, src,
             freqs_override=mod_freqs, gains_override=mod_gains,
+            qs_override=mod_qs,
         )
 
     # ----- SweepEQ rendering ----------------------------------------------
