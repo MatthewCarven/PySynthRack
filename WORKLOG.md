@@ -5702,3 +5702,45 @@ Suite: 1239 sandbox (+18 mido skips) expected, was 1231.
 Docs: MODULES.md table row + section after `sequencer`. No example patch
 yet — sequencer_melody.json applies verbatim (swap the type) — candidate
 follow-up if wanted.
+
+## 2026-07-03 — audio_to_cv: per-sample follower loop vectorized
+
+Matthew asked for the audio_to_cv per-sample loop vectorization (the TODO
+line had it filed as "genuinely recursive — not run-splittable like the
+ADSR was", cold path until a follower-heavy patch profiles hot).
+
+The recurrence picks attack vs release by comparing the input against its
+own evolving state, so it isn't one lfilter call. But each step is
+max(comboA, comboR) of the previous level when attack >= release (min when
+inverted), which buys two exact-arithmetic facts: any fixed attack/release
+pattern solved as a linear time-varying one-pole brackets the true
+trajectory from one side, and re-deriving the pattern from a solved
+trajectory iterates monotonically INTO the true one — a self-consistent
+pattern is the exact solution, not an approximation. The fixed-pattern
+solve vectorizes as y = P*(l0 + cumsum(b/P)) with P = cumprod(1-c): all
+terms nonnegative (rectified input), no cancellation; cumprod underflow
+bounded by a chunked variant + a coefficient guard (> 1-1e-4, i.e. time
+constants under ~0.1 samples, incl. the ms<=0 instant clamp) that takes
+the old loop instead. Convergence typically 2-6 rounds (spike: mean ~4,
+p95 12, max 18 at 0.01 ms attack on a 110 Hz sine; cap 24). One wrinkle:
+plateaus (DC, saturated bursts) can flip razor-tie comparisons forever
+while values sit still — solved by also accepting two consecutive
+trajectories equal after the float32 cast.
+
+Both shape branches now run the shared block solve on (V, F); the original
+loops survive verbatim as _audio_to_cv_loop_mono/_voice, the fallback for
+degenerate coefs / non-finite input (NaN semantics stay the loop's) /
+hypothetical non-convergence. Spike + suite: bit-identical to the old
+loops after the float32 cast on every tested signal x coefficient pair
+(documented drift class is the ADSR-rewrite's — float64 reassociation
+below float32 resolution; tests pin < 1e-6). In-repo timing (sandbox,
+F=512): mono ~102 -> ~86 us/blk (1.2x, renderer overhead dominates);
+16-voice ~1.27 -> ~0.33 ms/blk (3.9x, 10.9% -> 2.8% of the 11.6 ms
+budget — the voice loop was the actual target).
+
+Tests: 35 new in TestAudioToCVBlockEquivalence — verbatim old loops as
+oracles (filter-slice convention): 5-param x 5-signal mono grid + 5-param
+mixed-content 16-voice grid chained over 8 blocks, frames=1 chaining,
+split-vs-whole continuity, block-path-engages regression guard,
+instant-attack fallback correctness, state-key shape compatibility.
+Suite: 1292 in-sandbox (was 1257), zero skips.

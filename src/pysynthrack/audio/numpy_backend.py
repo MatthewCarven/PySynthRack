@@ -3152,14 +3152,33 @@ class NumpyBackend(AudioBackend):
 
     # ----- AudioToCV rendering --------------------------------------------
 
+    # Block-path tuning for the envelope follower's vectorized solve.
+    #
+    # _ATC_COEF_MAX: a smoothing coefficient above this (time constant
+    #   under ~0.1 samples, i.e. attack/release below ~0.003 ms — also
+    #   the ms<=0 "instant" clamp at exactly 1.0) makes the cumprod
+    #   solve numerically degenerate, so those settings take the
+    #   per-sample loop instead.
+    # _ATC_CHUNK / _ATC_MIN_TAIL_P: the fixed-pattern solve divides by a
+    #   running cumprod, which decays monotonically; the whole-block
+    #   single shot is used while the block's final cumprod stays above
+    #   _ATC_MIN_TAIL_P, otherwise the solve runs in _ATC_CHUNK-sample
+    #   chunks, which bounds the decay to (1e-4)**64 = 1e-256 per chunk
+    #   — clear of float64 underflow with headroom.
+    # _ATC_MAX_ITER: pattern fixed-point iterations before conceding to
+    #   the loop. The 2026-07-03 spike measured mean ~4 / p95 12 across
+    #   sines, noise, AM, bursts, and DC at musical and extreme
+    #   coefficient pairs; the observed max was 18, on the pathological
+    #   corner of a 0.01 ms attack following a 110 Hz sine. The cap is
+    #   correctness insurance, not a tuning knob — capping out just
+    #   means the loop renders that block.
+    _ATC_COEF_MAX = 1.0 - 1e-4
+    _ATC_CHUNK = 64
+    _ATC_MIN_TAIL_P = 1e-250
+    _ATC_MAX_ITER = 24
+
     def _render_audio_to_cv(self, module, frames: int, buffers, patch) -> np.ndarray:
         """Envelope follower: rectify input + asymmetric one-pole smoothing.
-
-        Per-sample state (the smoother's current level feeds back into
-        the next sample), so the DSP loop runs in Python -- same pattern
-        as the scalar biquad in ``_render_filter_mono`` and the S&H
-        branch in ``_render_lfo``. At 512-sample blocks the cost is in
-        the same ballpark as those modules.
 
         Coefficients are derived from time constants:
 
@@ -3169,13 +3188,19 @@ class NumpyBackend(AudioBackend):
         a target below uses ``release_coef``. Zero or negative time
         constants are clamped to "instant" (coef = 1.0).
 
+        The smoother's state feeds back into the next sample, and which
+        coefficient applies depends on comparing the input against that
+        evolving state — so unlike the biquads this is not expressible
+        as one ``lfilter`` call. Both shape branches instead run the
+        vectorized fixed-point solve in :meth:`_audio_to_cv_block`
+        (details there), with the original per-sample loop kept as the
+        fallback for degenerate coefficients.
+
         Voice-aware. Branches on the audio input's ``ndim``:
 
           * 1D ``(F,)`` audio -> scalar smoother state, output ``(F,)``.
           * 2D ``(V, F)`` audio -> per-voice smoother state stored as a
-            length-V vector, output ``(V, F)``. Per-sample updates are
-            vectorized across voices: three V-wide numpy ops per
-            sample, no per-voice Python loop.
+            length-V vector, output ``(V, F)``.
 
         Missing audio in -> silence out and the smoother state is left
         as-is (so reconnecting the cable doesn't snap back from a stale
@@ -3210,22 +3235,37 @@ class NumpyBackend(AudioBackend):
     def _render_audio_to_cv_mono(
         self, module, frames, audio_in, attack_coef, release_coef, gain
     ):
-        """Scalar follower state, single smoother. Output ``(F,)``."""
+        """Scalar follower state, single smoother. Output ``(F,)``.
+
+        Runs the shared block solve on a one-row view; falls back to
+        the per-sample loop when the solve declines (degenerate
+        coefficients, non-finite input, or a hypothetical pattern
+        non-convergence). Equivalence with the old loop is pinned by
+        ``TestAudioToCVBlockEquivalence`` against a verbatim oracle.
+        """
         state = self._state.setdefault(module.id, {"level": 0.0})
         # Discard voice-branch state if we previously rendered (V, F).
         if "level_arr" in state:
             state.clear()
             state["level"] = 0.0
 
-        out = np.empty(frames, dtype=np.float32)
         level = float(state["level"])
         abs_in = np.abs(audio_in).astype(np.float64)
-        for n in range(frames):
-            target = float(abs_in[n])
-            coef = attack_coef if target > level else release_coef
-            level += coef * (target - level)
-            out[n] = level
-        state["level"] = level
+        y = self._audio_to_cv_block(
+            abs_in[None, :],
+            np.array([level], dtype=np.float64),
+            attack_coef,
+            release_coef,
+        )
+        if y is None:
+            out64, level = self._audio_to_cv_loop_mono(
+                abs_in, level, attack_coef, release_coef
+            )
+        else:
+            out64 = y[0]
+            level = float(out64[-1]) if frames else level
+        state["level"] = float(level)
+        out = out64.astype(np.float32)
         return (out * gain).astype(np.float32)
 
     def _render_audio_to_cv_voice(
@@ -3233,10 +3273,10 @@ class NumpyBackend(AudioBackend):
     ):
         """Per-voice follower state. Output ``(V, F)``.
 
-        ``audio_in`` is ``(V, F)``. Per-sample updates run vectorized
-        across voices: ``abs`` + ``where`` + IIR step are each one
-        numpy op over the length-V state vector, then we write a row
-        of the output. F serial steps, no Python loop over voices.
+        ``audio_in`` is ``(V, F)``. The shared block solve handles all
+        voices at once (independent rows, one pattern array); the old
+        sample-loop-with-voice-vectorized-steps survives only as the
+        fallback for degenerate coefficients.
         """
         V = audio_in.shape[0]
         state = self._state.setdefault(module.id, {})
@@ -3248,16 +3288,178 @@ class NumpyBackend(AudioBackend):
             state.clear()
             state["level_arr"] = np.zeros(V, dtype=np.float64)
 
-        level = state["level_arr"]  # (V,) -- mutated across the loop.
-        out = np.empty((V, frames), dtype=np.float32)
+        level = state["level_arr"]  # (V,)
         abs_in = np.abs(audio_in).astype(np.float64)
+        y = self._audio_to_cv_block(abs_in, level, attack_coef, release_coef)
+        if y is None:
+            out64, level = self._audio_to_cv_loop_voice(
+                abs_in, level, attack_coef, release_coef
+            )
+        else:
+            out64 = y
+            if frames:
+                level = y[:, -1].copy()
+        state["level_arr"] = level
+        out = out64.astype(np.float32)
+        return (out * gain).astype(np.float32)
+
+    def _audio_to_cv_block(self, t, level0, attack_coef, release_coef):
+        """Vectorized asymmetric one-pole via monotone pattern iteration.
+
+        ``t`` is the rectified input ``(V, F)`` float64 (mono passes a
+        one-row view), ``level0`` the carried per-row state ``(V,)``.
+        Returns the float64 trajectory ``(V, F)``, or ``None`` to tell
+        the caller to take the per-sample loop instead.
+
+        Why this shape: the recurrence
+
+            level[n] = level[n-1] + c[n] * (t[n] - level[n-1]),
+            c[n] = attack if t[n] > level[n-1] else release
+
+        picks its coefficient by comparing against its own evolving
+        state, so no single fixed filter computes it. But each step is
+        ``max(combo_A, combo_R)(level[n-1])`` when attack >= release
+        (``min`` when attack < release), because the two convex combos
+        differ by ``(A - R) * (t - level)``. Two consequences, both in
+        exact arithmetic:
+
+          * solving ANY fixed coefficient pattern as a linear
+            time-varying one-pole brackets the true trajectory from
+            below (above for A < R);
+          * re-deriving the pattern from a solved trajectory and
+            solving again moves monotonically toward the true
+            trajectory, and a self-consistent pattern IS the true
+            solution, exactly.
+
+        So: guess a pattern (attack wherever the rectified input rises
+        above its predecessor), solve, re-derive, repeat until the
+        pattern stops changing — typically 2-6 iterations, each a
+        handful of whole-array numpy ops. One extra stop condition:
+        where the trajectory plateaus (DC, a saturated burst), the
+        solved level can alternate by one float64 ulp between
+        iterations, flipping razor-tie comparisons forever without the
+        values moving — so two consecutive trajectories that are equal
+        after the float32 cast also count as converged (the output is
+        identical either way, and the carried float64 state differs by
+        ulps at most). The fixed-pattern solve
+
+            y[n] = a[n] * y[n-1] + b[n],  a = 1 - c,  b = c * t
+
+        vectorizes as ``y = P * (l0 + cumsum(b / P))`` with
+        ``P = cumprod(a)``. Every term is nonnegative (rectified
+        input, level in [0, max]), so there is no cancellation; the
+        only hazard is ``P`` underflowing, which the chunked variant
+        in :meth:`_audio_to_cv_solve` bounds and the ``_ATC_COEF_MAX``
+        guard cuts off entirely.
+
+        Float caveat (same class as the ADSR voice rewrite): the solve
+        reassociates the arithmetic, so trajectories can differ from
+        the loop's by float64 round-off — orders of magnitude below
+        the float32 resolution that leaves the renderer. The
+        equivalence tests pin this at < 1e-6 after the cast; the
+        2026-07-03 spike observed max diff 0.0 (bit-identical after
+        the cast) across the whole signal x coefficient grid. In-repo
+        renderer timing (sandbox, F=512, 1 kHz sine): mono ~102 ->
+        ~86 us/block (~1.2x — renderer overhead dominates mono);
+        16-voice ~1.27 -> ~0.33 ms/block (~3.9x, 10.9% -> 2.8% of the
+        11.6 ms block budget — the voice loop was the actual target).
+
+        Declines (returns ``None``) when: either coefficient exceeds
+        ``_ATC_COEF_MAX`` (includes the ms<=0 instant clamp at 1.0,
+        where ``a = 0`` breaks the cumprod algebra), the input is not
+        finite (the loop is the defined NaN semantics), the pattern
+        has not settled after ``_ATC_MAX_ITER`` rounds, or the result
+        is non-finite (belt and braces).
+        """
+        if (
+            attack_coef > self._ATC_COEF_MAX
+            or release_coef > self._ATC_COEF_MAX
+            or not np.isfinite(t).all()
+        ):
+            return None
+        l0 = level0[:, None]
+        if attack_coef == release_coef:
+            # Plain time-invariant one-pole: one solve, no iteration.
+            y = self._audio_to_cv_solve(
+                np.full_like(t, 1.0 - attack_coef), attack_coef * t, l0
+            )
+            return y if np.isfinite(y).all() else None
+
+        prev = np.empty_like(t)
+        prev[:, 0:1] = l0
+        prev[:, 1:] = t[:, :-1]
+        pattern = np.where(t > prev, attack_coef, release_coef)
+        y_prev32 = None
+        for _ in range(self._ATC_MAX_ITER):
+            y = self._audio_to_cv_solve(1.0 - pattern, pattern * t, l0)
+            prev[:, 1:] = y[:, :-1]
+            new_pattern = np.where(t > prev, attack_coef, release_coef)
+            y32 = y.astype(np.float32)
+            if np.array_equal(new_pattern, pattern) or (
+                y_prev32 is not None and np.array_equal(y32, y_prev32)
+            ):
+                return y if np.isfinite(y).all() else None
+            pattern = new_pattern
+            y_prev32 = y32
+        return None
+
+    def _audio_to_cv_solve(self, a, b, l0):
+        """Exact linear time-varying one-pole ``y[n] = a[n]*y[n-1] + b[n]``.
+
+        Whole-block cumprod/cumsum when the running product stays above
+        ``_ATC_MIN_TAIL_P`` (always true for musical time constants:
+        even a 0.02 ms attack keeps the 512-sample tail around 1e-100);
+        otherwise the same algebra chunk by chunk, carrying the level
+        across chunk seams. ``a`` and ``b`` are ``(V, F)``; ``l0`` is
+        ``(V, 1)``.
+        """
+        P = np.cumprod(a, axis=-1)
+        if P.size == 0 or float(P[..., -1].min()) > self._ATC_MIN_TAIL_P:
+            return P * (l0 + np.cumsum(b / P, axis=-1))
+        F = a.shape[-1]
+        out = np.empty_like(a)
+        cur = l0
+        pos = 0
+        while pos < F:
+            end = min(pos + self._ATC_CHUNK, F)
+            Pc = np.cumprod(a[..., pos:end], axis=-1)
+            out[..., pos:end] = Pc * (
+                cur + np.cumsum(b[..., pos:end] / Pc, axis=-1)
+            )
+            cur = out[..., end - 1 : end]
+            pos = end
+        return out
+
+    def _audio_to_cv_loop_mono(self, abs_in, level, attack_coef, release_coef):
+        """Per-sample reference loop (pre-vectorization semantics).
+
+        Fallback for the degenerate corners the block solve declines.
+        Returns ``(trajectory_f64, final_level)``.
+        """
+        frames = abs_in.shape[0]
+        out = np.empty(frames, dtype=np.float64)
+        for n in range(frames):
+            target = float(abs_in[n])
+            coef = attack_coef if target > level else release_coef
+            level += coef * (target - level)
+            out[n] = level
+        return out, level
+
+    def _audio_to_cv_loop_voice(self, abs_in, level, attack_coef, release_coef):
+        """Per-sample voice loop (pre-vectorization semantics).
+
+        Vectorized across voices per sample, serial in time — the shape
+        the voice branch always had. Fallback only.
+        Returns ``(trajectory_f64, final_level_arr)``.
+        """
+        V, frames = abs_in.shape
+        out = np.empty((V, frames), dtype=np.float64)
         for n in range(frames):
             target = abs_in[:, n]  # (V,)
             coef = np.where(target > level, attack_coef, release_coef)
             level = level + coef * (target - level)
             out[:, n] = level
-        state["level_arr"] = level
-        return (out * gain).astype(np.float32)
+        return out, level
 
     # ----- CVToAudio rendering --------------------------------------------
 

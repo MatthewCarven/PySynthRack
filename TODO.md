@@ -60,9 +60,10 @@ Living list of what's next. Edit freely.
   - [ ] Slice 6 — re-profile on native Windows for the real numbers; update
         WORKLOG/TODO; decide whether filter vectorization can be marked done.
 
-- [ ] `_render_audio_to_cv_voice` still has a per-sample Python loop (asymmetric one-pole,
-      genuinely recursive — not run-splittable like the ADSR was). Cold path today; revisit
-      only if follower-heavy patches profile hot.
+- [x] ~~`_render_audio_to_cv_voice` per-sample Python loop~~ — **shipped 2026-07-03**
+      (Matthew's pick). Monotone pattern fixed-point solve (exact on convergence, loop kept
+      as fallback + oracle): voice 3.9x (10.9% -> 2.8% of block budget), mono 1.2x,
+      bit-identical after the float32 cast. 35 equivalence tests; suite 1292 sandbox.
 
 - [ ] Patch presets palette (factory + user banks)
 

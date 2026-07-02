@@ -324,3 +324,283 @@ class TestAudioToCVIntegration:
         # Should produce audible output (oscillator at amp 0.8 through
         # a lowpass at 800 Hz still passes plenty of fundamental).
         assert peak > 0.05, f"chain produced near-silence: peak={peak:.4f}"
+
+
+def _reference_audio_to_cv_mono(blocks, attack_coef, release_coef, gain):
+    """The pre-vectorization per-sample mono loop, kept verbatim as the
+    oracle (scalar float64 state, float32 per-sample store, gain on the
+    way out) — the exact body `_render_audio_to_cv_mono` had before the
+    block solve replaced it."""
+    level = 0.0
+    outs = []
+    for audio_in in blocks:
+        frames = len(audio_in)
+        out = np.empty(frames, dtype=np.float32)
+        abs_in = np.abs(audio_in).astype(np.float64)
+        for n in range(frames):
+            target = float(abs_in[n])
+            coef = attack_coef if target > level else release_coef
+            level += coef * (target - level)
+            out[n] = level
+        outs.append((out * gain).astype(np.float32))
+    return np.concatenate(outs)
+
+
+def _reference_audio_to_cv_voice(blocks, attack_coef, release_coef, gain):
+    """The pre-vectorization per-sample voice loop, verbatim oracle:
+    (V,) float64 state, per-sample np.where across voices."""
+    V = blocks[0].shape[0]
+    level = np.zeros(V, dtype=np.float64)
+    outs = []
+    for audio_in in blocks:
+        frames = audio_in.shape[1]
+        out = np.empty((V, frames), dtype=np.float32)
+        abs_in = np.abs(audio_in).astype(np.float64)
+        for n in range(frames):
+            target = abs_in[:, n]
+            coef = np.where(target > level, attack_coef, release_coef)
+            level = level + coef * (target - level)
+            out[:, n] = level
+        outs.append((out * gain).astype(np.float32))
+    return np.concatenate(outs, axis=1)
+
+
+def _coefs(attack_ms, release_ms, sr=44100):
+    """Coefficient derivation identical to the renderer's."""
+    attack_coef = 1.0 if attack_ms <= 0.0 else 1.0 - math.exp(
+        -1.0 / (max(attack_ms, 1e-6) * 1e-3 * sr)
+    )
+    release_coef = 1.0 if release_ms <= 0.0 else 1.0 - math.exp(
+        -1.0 / (max(release_ms, 1e-6) * 1e-3 * sr)
+    )
+    return attack_coef, release_coef
+
+
+def _test_signal(name, n, sr=44100, seed=0xA2C):
+    t = np.arange(n)
+    if name == "sine110":
+        return np.sin(2 * np.pi * 110 * t / sr).astype(np.float32)
+    if name == "sine8k":
+        return (0.7 * np.sin(2 * np.pi * 8000 * t / sr)).astype(np.float32)
+    if name == "noise":
+        rng = np.random.default_rng(seed)
+        return rng.standard_normal(n).astype(np.float32)
+    if name == "am440":
+        am = np.sin(2 * np.pi * 3 * t / sr) * np.sin(2 * np.pi * 440 * t / sr)
+        return am.astype(np.float32)
+    if name == "burst":
+        sig = np.zeros(n, dtype=np.float32)
+        sig[: n // 8] = 1.0
+        return sig
+    raise ValueError(name)
+
+
+class TestAudioToCVBlockEquivalence:
+    """The vectorized block solve must match the old per-sample loop.
+
+    Same contract as the filter-vectorization equivalence suites: the
+    verbatim old loop is the oracle, tolerance 1e-6 on the float32
+    output (the solve reassociates float64 arithmetic, so bit-identity
+    is not promised — observed drift is orders of magnitude below the
+    cast).
+    """
+
+    PARAM_GRID = [
+        (5.0, 100.0),    # defaults, attack < release (max form)
+        (100.0, 5.0),    # inverted, release < attack (min form)
+        (0.5, 10.0),     # tight follower
+        (10.0, 10.0),    # equal coefficients (single-solve fast path)
+        (0.1, 50.0),     # sub-ms attack, still block-path legal
+    ]
+    SIGNALS = ["sine110", "sine8k", "noise", "am440", "burst"]
+
+    @pytest.mark.parametrize("attack_ms,release_ms", PARAM_GRID)
+    @pytest.mark.parametrize("signal", SIGNALS)
+    def test_mono_multiblock_equivalence(self, attack_ms, release_ms, signal):
+        sr, F, NB = 44100, 512, 8
+        patch = Patch()
+        atc = patch.add_module(
+            "audio_to_cv",
+            params={"attack_ms": attack_ms, "release_ms": release_ms, "gain": 1.5},
+        )
+        backend = NumpyBackend(sample_rate=sr, block_size=F)
+        backend.compile(patch)
+        attack_coef, release_coef = _coefs(attack_ms, release_ms, sr)
+
+        sig = _test_signal(signal, F * NB, sr)
+        blocks = [sig[i * F : (i + 1) * F] for i in range(NB)]
+        got = np.concatenate(
+            [
+                backend._render_audio_to_cv_mono(
+                    atc, F, b, attack_coef, release_coef, 1.5
+                )
+                for b in blocks
+            ]
+        )
+        ref = _reference_audio_to_cv_mono(blocks, attack_coef, release_coef, 1.5)
+        assert got.dtype == np.float32
+        assert np.max(np.abs(got.astype(np.float64) - ref.astype(np.float64))) < 1e-6
+
+    @pytest.mark.parametrize("attack_ms,release_ms", PARAM_GRID)
+    def test_voice_multiblock_equivalence(self, attack_ms, release_ms):
+        """16 voices with deliberately different content per row —
+        silence, DC, sines, noise — chained across 8 blocks."""
+        sr, V, F, NB = 44100, 16, 512, 8
+        patch = Patch()
+        atc = patch.add_module("audio_to_cv")
+        backend = NumpyBackend(sample_rate=sr, block_size=F)
+        backend.compile(patch)
+        attack_coef, release_coef = _coefs(attack_ms, release_ms, sr)
+
+        rng = np.random.default_rng(0xCB)
+        n = np.arange(F * NB)
+        rows = np.empty((V, F * NB), dtype=np.float32)
+        for v in range(V):
+            kind = v % 4
+            if kind == 0:
+                rows[v] = 0.0
+            elif kind == 1:
+                rows[v] = 0.25 + 0.05 * v
+            elif kind == 2:
+                rows[v] = np.sin(2 * np.pi * (110 * (v + 1)) * n / sr)
+            else:
+                rows[v] = rng.standard_normal(F * NB) * 0.5
+        blocks = [rows[:, i * F : (i + 1) * F] for i in range(NB)]
+        got = np.concatenate(
+            [
+                backend._render_audio_to_cv_voice(
+                    atc, F, b, attack_coef, release_coef, 1.0
+                )
+                for b in blocks
+            ],
+            axis=1,
+        )
+        ref = _reference_audio_to_cv_voice(blocks, attack_coef, release_coef, 1.0)
+        assert got.shape == (V, F * NB)
+        assert np.max(np.abs(got.astype(np.float64) - ref.astype(np.float64))) < 1e-6
+
+    def test_single_sample_blocks(self):
+        """frames=1 chained: the block engine converges in one round
+        (the first sample's branch depends only on carried state) and
+        must chain identically to the loop."""
+        sr = 44100
+        patch = Patch()
+        atc = patch.add_module("audio_to_cv")
+        backend = NumpyBackend(sample_rate=sr, block_size=512)
+        backend.compile(patch)
+        attack_coef, release_coef = _coefs(1.0, 20.0, sr)
+        rng = np.random.default_rng(3)
+        ones = [rng.standard_normal(1).astype(np.float32) for _ in range(64)]
+        got = np.concatenate(
+            [
+                backend._render_audio_to_cv_mono(
+                    atc, 1, b, attack_coef, release_coef, 1.0
+                )
+                for b in ones
+            ]
+        )
+        ref = _reference_audio_to_cv_mono(ones, attack_coef, release_coef, 1.0)
+        assert np.max(np.abs(got.astype(np.float64) - ref.astype(np.float64))) < 1e-6
+
+    def test_split_render_matches_whole_render(self):
+        """Intrinsic continuity, no oracle: two 512-sample renders back
+        to back equal one 1024-sample render."""
+        sr = 44100
+        sig = _test_signal("am440", 1024, sr)
+        attack_coef, release_coef = _coefs(5.0, 100.0, sr)
+
+        def fresh():
+            patch = Patch()
+            atc = patch.add_module("audio_to_cv")
+            backend = NumpyBackend(sample_rate=sr, block_size=512)
+            backend.compile(patch)
+            return backend, atc
+
+        b1, a1 = fresh()
+        split = np.concatenate(
+            [
+                b1._render_audio_to_cv_mono(
+                    a1, 512, sig[:512], attack_coef, release_coef, 1.0
+                ),
+                b1._render_audio_to_cv_mono(
+                    a1, 512, sig[512:], attack_coef, release_coef, 1.0
+                ),
+            ]
+        )
+        b2, a2 = fresh()
+        whole = b2._render_audio_to_cv_mono(
+            a2, 1024, sig, attack_coef, release_coef, 1.0
+        )
+        assert np.max(np.abs(split.astype(np.float64) - whole.astype(np.float64))) < 1e-6
+
+    def test_block_path_actually_engages(self):
+        """Regression guard: at default settings the solve must accept
+        the work (a silent always-fallback would pass every equivalence
+        test while quietly reverting the speedup)."""
+        patch = Patch()
+        patch.add_module("audio_to_cv")
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        attack_coef, release_coef = _coefs(5.0, 100.0)
+        t = np.abs(_test_signal("sine110", 512)).astype(np.float64)
+        y = backend._audio_to_cv_block(
+            t[None, :], np.zeros(1), attack_coef, release_coef
+        )
+        assert y is not None
+        assert y.shape == (1, 512)
+
+    def test_instant_attack_declines_to_loop_and_stays_correct(self):
+        """attack_ms=0 clamps the coefficient to 1.0 — the solve must
+        decline (cumprod algebra breaks at a=0) and the renderer must
+        still match the oracle through the loop fallback."""
+        sr = 44100
+        attack_coef, release_coef = _coefs(0.0, 100.0, sr)
+        assert attack_coef == 1.0
+        patch = Patch()
+        atc = patch.add_module("audio_to_cv")
+        backend = NumpyBackend(sample_rate=sr, block_size=256)
+        backend.compile(patch)
+
+        t = np.abs(_test_signal("noise", 256)).astype(np.float64)
+        assert (
+            backend._audio_to_cv_block(
+                t[None, :], np.zeros(1), attack_coef, release_coef
+            )
+            is None
+        )
+
+        sig = _test_signal("noise", 256 * 4, sr)
+        blocks = [sig[i * 256 : (i + 1) * 256] for i in range(4)]
+        got = np.concatenate(
+            [
+                backend._render_audio_to_cv_mono(
+                    atc, 256, b, attack_coef, release_coef, 1.0
+                )
+                for b in blocks
+            ]
+        )
+        ref = _reference_audio_to_cv_mono(blocks, attack_coef, release_coef, 1.0)
+        assert np.max(np.abs(got.astype(np.float64) - ref.astype(np.float64))) < 1e-6
+
+    def test_state_key_shapes_preserved(self):
+        """Snapshot compatibility: mono renders still leave a scalar
+        ``level``, voice renders a ``(V,)`` ``level_arr`` — the keys the
+        rest of the suite (and any saved introspection) relies on."""
+        patch = Patch()
+        atc = patch.add_module("audio_to_cv")
+        backend = NumpyBackend(sample_rate=44100, block_size=64)
+        backend.compile(patch)
+        attack_coef, release_coef = _coefs(5.0, 100.0)
+        backend._render_audio_to_cv_mono(
+            atc, 64, np.ones(64, dtype=np.float32), attack_coef, release_coef, 1.0
+        )
+        assert isinstance(backend._state[atc.id]["level"], float)
+        backend._render_audio_to_cv_voice(
+            atc,
+            64,
+            np.ones((16, 64), dtype=np.float32),
+            attack_coef,
+            release_coef,
+            1.0,
+        )
+        arr = backend._state[atc.id]["level_arr"]
+        assert arr.shape == (16,)
