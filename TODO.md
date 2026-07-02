@@ -443,11 +443,6 @@ open to a better scheme if one turns up.
       pre-CV dicts load). Example `motion_eq_breathe.json` LFOs it at 0.05 Hz
       (the hall darkens and re-opens). `size` remains the one no-CV param.
 
-- [ ] **Reverb / mixer CV (lowest priority).** The other two static processors.
-      Reverb `mix`/`size`/`decay` CV for swelling or morphing spaces could be
-      nice; a voltage-controlled `mixer` (per-channel gain CV) is largely
-      redundant with putting a `vca` on each channel, so likely skip it.
-
 - [x] **Group the Add-module menu** — DONE 2026-07-03. 47 flat entries →
       7 category submenus via per-class `CATEGORY` +
       `grouped_module_types()`; MODULES.md index recategorised (+ missing

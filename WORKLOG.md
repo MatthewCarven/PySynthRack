@@ -5540,3 +5540,27 @@ Tests: existing file-player/media tests adapted to the async contract
 x6 incl. real-ffmpeg byte-identity of chunked vs one-shot decode and
 close-kills-decode). Suite 1206 sandbox. decode_with_ffmpeg stays for
 one-shot uses; _decode_audio no longer has render-path callers.
+
+## 2026-07-03 — Housekeeping audit (docs + repo state)
+
+Doc sweep after the FilePlayer push: WORKLOG, TODO and MODULES.md are all
+current through streaming + transport (transport params documented, index
+row present, TODO items ticked). Two fixes and one find:
+
+- TODO.md: removed the stale open item “Reverb / mixer CV (lowest
+  priority)” — superseded by the DONE entries directly above it
+  (decay/damping/mix_cv + per-channel gain{i}_cv, shipped 2026-07-02).
+- .gitignore: added pytest-cache-files-*/ ; the sandbox pytest cache dir
+  pytest-cache-files-ow898o_9/ is TRACKED and needs git rm -r --cached
+  (Matthew's side).
+- FOUND: the mount working tree carried pre-streaming versions of the five
+  FilePlayer-commit files (media.py, numpy_backend.py, fileplayer.py,
+  app.py, test_file_player.py) — git diff showed −625 lines vs HEAD 39e8e6c,
+  i.e. StreamingDecoder + transport missing from the checkout while
+  HEAD == origin/main is correct. Running the app from this folder would run
+  the OLD FilePlayer. Handed a targeted git restore to Matthew (targeted so
+  the doc edits above survive).
+
+Compaction verdict: WORKLOG is 5.5k lines (append-only history — fine);
+TODO still carries every completed v0.1–v0.4 item (~350 of 460 lines are
+[x]) — offered to archive completed eras into a TODO-ARCHIVE.md if wanted.
