@@ -9,7 +9,9 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
-- [ ] **Filter vectorization** (optional — only if patches grow past current
+- [x] **Filter vectorization** — **thread CLOSED 2026-07-03** (slice 6 verdict
+      below; every per-sample biquad recurrence now runs in C). Originally:
+      (optional — only if patches grow past current
       headroom). `_render_filter_voice` is the dominant remaining cost as a
       per-sample biquad loop. Decision (2026-06-09): use `scipy.signal.lfilter` —
       pure-numpy voice batching is already spent (the voice axis is vectorized; only
@@ -67,13 +69,27 @@ Living list of what's next. Edit freely.
         11.6 ms block budget, now 1.8%. 9 new tests in
         TestCrossoverLfilterEquivalence with the verbatim old loops as oracles;
         suite 1315 sandbox (+18 mido).
-  - [ ] Slice 6 ← NEXT — re-profile on native Windows for the real numbers; update
-        WORKLOG/TODO; decide whether filter vectorization can be marked done.
+  - [x] Slice 6 — **shipped 2026-07-03 (close-out).** Native re-profile on both
+        Windows boxes at 24287c0. Main machine (py 3.12.13/np 2.4.5): worst block
+        12% of budget, 0/8000 over — like-for-like vs the 2026-06-07 close-out,
+        mean 29–33% → 4.9–8.9%, worst 42% → 12%. Oldbeast (py 3.14.4/np 2.4.6):
+        means 33–64%, p99 under budget everywhere, but blep-scenario tail spikes
+        breach (worst 121%, 4/8000 over) — a capacity question for that box, not
+        a filter question (see Later item). Verdict: filter vectorization DONE,
+        thread closed; pyo ladder stays resolved at step 2 on the primary box.
 
 - [x] ~~`_render_audio_to_cv_voice` per-sample Python loop~~ — **shipped 2026-07-03**
       (Matthew's pick). Monotone pattern fixed-point solve (exact on convergence, loop kept
       as fallback + oracle): voice 3.9x (10.9% -> 2.8% of block budget), mono 1.2x,
       bit-identical after the float32 cast. 35 equivalence tests; suite 1292 sandbox.
+
+- [ ] Oldbeast real-time headroom (only if it becomes a real playing target):
+      2026-07-03 profile at 24287c0 — means 33–64% of budget, p99 fits in every
+      scenario, but blep-scenario tail spikes breach (worst 121.1%, 4/8000 blocks
+      over). Levers, cheapest first: block size 512→1024 (doubles the budget),
+      voice cap, a 3.12 venv. Note pyo can't install there anyway (3.14, no
+      Windows wheels past 3.12, no MSVC). Filter/ADSR are not the cost — the
+      remaining per-block time is osc paths + voice infrastructure.
 
 - [ ] Patch presets palette (factory + user banks)
 

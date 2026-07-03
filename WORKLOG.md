@@ -5886,3 +5886,60 @@ Suite: 1315 in-sandbox (+18 mido skips), was 1306.
 
 Slice 6 (native-Windows re-profile) is now NEXT and closes the filter
 vectorization thread.
+
+
+## 2026-07-03 — filter vectorization slice 6 (close-out): native re-profile, two machines
+
+Matthew ran tools/profile_numpy.py on both Windows boxes, both verified
+at 24287c0 (post-slice-5). Same protocol as the 2026-06-07 runs: 512
+frames @ 44100 Hz, 11.61 ms budget, 16-voice chord, 2000 timed blocks
+per scenario.
+
+Main machine (python 3.12.13, numpy 2.4.5, Windows AMD64):
+
+    saw (naive)          mean 0.564 ms   4.9%   worst  9.2%   0/2000 over
+    saw_blep             mean 1.000 ms   8.6%   worst 10.1%   0/2000
+    saw_wt               mean 0.872 ms   7.5%   worst 11.6%   0/2000
+    saw_blep + LFO mod   mean 1.028 ms   8.9%   worst 11.3%   0/2000
+
+Worst block anywhere: 12% of budget. Like-for-like vs the 2026-06-07
+close-out on the same box (post-ADSR-vectorization, pre-filter-slices):
+mean 29–33% → 4.9–8.9%, worst 42% → 12%, still zero misses. The
+vectorization ladder (ADSR → filter slices 3/4 → crossover slice 5 →
+audio_to_cv) has taken the standard chord scenario from "one block shy
+of the deadline" (pre-ADSR: 97–102% mean) to under a tenth of budget.
+
+Oldbeast (ID10TError-desktop, python 3.14.4, numpy 2.4.6, Windows
+AMD64, PowerShell 7.6.3 — note the interpreter/numpy skew vs the main
+box):
+
+    saw (naive)          mean 3.830 ms  33.0%   worst  56.2%   0/2000 over
+    saw_blep             mean 7.132 ms  61.4%   worst 121.1%   2/2000
+    saw_wt               mean 6.369 ms  54.9%   worst  87.4%   0/2000
+    saw_blep + LFO mod   mean 7.383 ms  63.6%   worst 102.5%   2/2000
+
+The profiler's verdict line calls this a "real performance case" for
+pyo; we read it narrower. Means fit (33–64%), p99 fits in every
+scenario (worst p99 9.79 ms vs 11.61 budget) — it's tail spikes that
+breach, 4 blocks in 8000. And pyo can't even install on oldbeast: it
+runs Python 3.14 and pyo/rtmidi have no Windows wheels past 3.12 (no
+MSVC on that box either — the same constraint that pins the build venv
+to 3.12). If oldbeast ever becomes a real playing target the practical
+levers are, cheapest first: block size 512→1024 (doubles the budget per
+block), a voice cap, or a 3.12 venv. Filed under Later; not a filter
+question — the remaining per-block cost on both machines sits in the
+oscillator paths and voice infrastructure, not the (now C-speed)
+recurrences.
+
+Decision: **filter vectorization is DONE and the thread is closed.**
+Slices 1–6 all landed: spike, scipy dep, filter mono (slice 3), filter
+voice (slice 4), crossover cascade (slice 5), native re-profile (this
+entry). The pyo ladder stays resolved at step 2 on the primary machine
+— no performance case (worst block 12%); the 2026-06-06 deferral
+stands unchanged.
+
+One recorded caveat: the profiler's scenarios predate the crossover
+(16-voice osc → filter → ADSR chord), so slice 5's path isn't in these
+numbers — its sandbox timing (34.2x voice, 60.9% → 1.8% of budget)
+lives in the slice-5 entry. Adding a crossover scenario to the tool is
+a candidate follow-up if native crossover numbers are ever wanted.
