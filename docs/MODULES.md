@@ -213,6 +213,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`chorus`](#chorus) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`flanger`](#flanger) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`phaser`](#phaser) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
+| [`vocoder`](#vocoder) | Effects | `mod`,`carrier` (audio) → `out` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
 | [`adsr`](#adsr) | Modulation | `gate` (gate) → `cv` (cv) |
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
@@ -1224,6 +1225,58 @@ a slow LFO drifting the sweep rate through `rate_cv`).
 resonant, vocal sweep and `stages` for a deeper one; feed a slow envelope or
 LFO into `rate_cv` for an auto-phaser that breathes. For the harder,
 metallic jet-sweep reach for its sibling the [`flanger`](#flanger).
+
+#### `vocoder`
+
+A **channel vocoder** — one signal wears the spectral shape of another (the
+classic robot voice). The **modulator** (`mod`, usually a voice from
+[`mic_input`](#mic_input) or [`file_player`](#file_player)) and the
+**carrier** (`carrier`, usually a synth — a fat saw chord, [`noise`](#noise),
+strings) are each split into the same `bands` log-spaced bands by two
+matched banks of bandpass filters. Per band, an **envelope follower**
+measures the modulator's level and that level becomes the gain of the
+carrier's matching band; the bands are summed and the carrier "talks".
+Speech intelligibility lives in those slow band envelopes, not in the
+voice's pitch — the output's pitch is the **carrier's** (play a chord and
+the voice speaks in harmony). Consonants (*s*, *t*, *k*) are noise bursts
+the bands can't see, so a dedicated **hiss** path — a high-band follower
+above the band range gating filtered noise — rides them into the output.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `mod` | in | audio | The modulator — the voice whose spectral envelope is measured (voice sources summed to mono). Unpatched → the bands all close. |
+| `carrier` | in | audio | The carrier — the instrument being shaped (voice sources summed to mono). Unpatched → silence. |
+| `out` | out | audio | The vocoded result, mono. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `bands` | `16` | 8 / 12 / 16 / 24 | Band count. Fewer = lo-fi robot; more = clearer speech. |
+| `freq_lo` | `120` | 50 … 500 Hz | Centre of the lowest band. |
+| `freq_hi` | `7500` | 2000 … 12000 Hz | Centre of the highest band (band centres are log-spaced between the two). |
+| `width` | `1.0` | 0.3 … 3 | Every band's bandwidth, as a multiple of the adjacent-band spacing. Narrow = precise/robotic; wide = smeared/soft. |
+| `attack` | `4` | 0.1 … 100 ms | Follower attack — fast catches consonant onsets. |
+| `release` | `60` | 1 … 500 ms | Follower release — long blurs words into a pad-like wash. |
+| `hiss` | `0.4` | 0 … 1 | Sibilance/noise path level. Raise until *s* and *t* cut through. |
+| `gain` | `1.0` | 0 … 4 | Wet-path makeup gain (never touches the dry carrier). |
+| `mix` | `1.0` | 0 … 1 | Dry carrier ↔ vocoded. `0` is a bit-exact carrier passthrough; normally played fully wet. |
+
+All filter memory (two DF-I band banks + the two sibilance highpasses), the
+follower levels and the noise generator's stream position carry across
+blocks, so the render is exactly **block-size independent** (bit-identical
+at 512 / 4096 / 160). The follower bank — all bands plus the sibilance row —
+runs as **one** call to the [`audio_to_cv`](#audio_to_cv) monotone-pattern
+block solve. See `examples/vocoder_robot_choir.json` (mic → `mod`, two
+detuned saws → [`combiner`](#combiner) → `carrier` — speak and the chord
+talks; use headphones with an open mic).
+
+**Patching.** `mic → vocoder.mod`, `saws/chord → vocoder.carrier`,
+`vocoder → speaker`. A drum loop into `mod` gates a pad rhythmically;
+[`noise`](#noise) as the carrier whispers; long `release` + wide `width`
+turns speech into a droning vowel pad.
 
 ---
 

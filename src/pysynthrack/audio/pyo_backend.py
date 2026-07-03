@@ -223,6 +223,7 @@ class PyoBackend(AudioBackend):
             "clock",
             "sequencer",
             "fader_seq",
+            "vocoder",
         ):
             # v0.3+ routing / bridge / CV-oscillator modules. The numpy
             # backend is the real implementation; pyo support arrives

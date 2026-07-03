@@ -5943,3 +5943,55 @@ One recorded caveat: the profiler's scenarios predate the crossover
 numbers — its sandbox timing (34.2x voice, 60.9% → 1.8% of budget)
 lives in the slice-5 entry. Adding a crossover scenario to the tool is
 a candidate follow-up if native crossover numbers are ever wanted.
+
+## 2026-07-03 — vocoder: channel vocoder (Matthew's ask, scoped to the full bank)
+
+Matthew asked for a vocoder and floated a simpler "track the loudest
+frequency" version with a "width" option. Scoping call (his picks): the
+**full channel vocoder** — the simple follower is an auto-wah, not a
+talker — with **selectable 8/12/16/24 bands** and a **sibilance (hiss)
+path** in v1. His "width" idea survives intact as the band-bandwidth
+knob.
+
+New module `vocoder` (Effects): `mod` + `carrier` audio in (both
+mono-summed, the modulation-trio collapse rule), mono `out`. Two matched
+banks of RBJ constant-peak bandpasses at log-spaced centres
+(`freq_lo`..`freq_hi`), Q derived from the adjacent-band spacing ×
+`width` (1.0 = bands meet at −3 dB). The modulator's rectified band
+outputs drive per-band asymmetric followers (`attack`/`release`);
+those envelopes gain the carrier's matching bands; sum = wet. `hiss`:
+a 5 kHz RBJ highpass on the modulator feeds one more follower row that
+gates matching highpassed uniform noise into the wet sum — consonants
+ride in on noise. `gain` is wet-only makeup; `mix` 0 = bit-exact
+carrier passthrough (states still advance, so riding the knob up
+doesn't snap from stale filters).
+
+Implementation reuse, the pleasant part: the filter banks carry the
+parametric_eq **DF-I raw-history** state pattern (coefficient-
+independent, so live edits of width/range/bands behave), one biquad
+helper (`_vocoder_biquad`) shared by all four filter groups; and the
+whole follower bank — N bands + the sibilance row — is **one call** to
+the audio_to_cv monotone-pattern block solve (`_audio_to_cv_block`),
+rows being independent. The noise source is a persisted per-module
+`default_rng` — a *stream*, so any block split draws the identical
+sequence. Net result, tested: **bit-identical output at any block
+size** (8192 vs 512 vs 160).
+
+28 tests in `tests/test_vocoder.py` (model/kind walls, no-carrier and
+no-modulator silences, mix=0 bit-exactness, envelope gating on/off
+ratio, band selectivity via FFT, width leakage ordering, gain
+linearity, hiss-path HF energy, release-tail ordering, bands snapping
+8/12/16/24 + live count change, extreme-settings boundedness, zero
+frames, block independence ×3, voice-sum + single-voice ≡ mono,
+compiled-graph integration). Suite 1343 + 18 mido skips in the sandbox
+(the skips are the known missing-mido thing; Matthew's venv runs 0).
+
+UI: param panel special-case (bands combo, Hz/ms drags, sliders) next
+to the phaser block. pyo: silent stub, added to the TYPE list. Example
+`examples/vocoder_robot_choir.json` — mic → mod, two `saw_blep`s a
+fifth apart (amp 0.25 each, headroom rule) → combiner → carrier;
+speak and the chord talks. Docs: MODULES.md index row + catalogue
+entry.
+
+Deviation note (working agreement): none — built off-mount via clone +
+patch per protocol.

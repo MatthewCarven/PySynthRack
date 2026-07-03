@@ -1022,6 +1022,79 @@ class App:
                 )
                 return
 
+        if module.TYPE == "vocoder":
+            # Channel vocoder. ``bands`` is the analysis/synthesis band
+            # count (8 lo-fi robot .. 24 clear speech); ``freq_lo``/
+            # ``freq_hi`` bound the log-spaced band centres; ``width``
+            # scales every band's bandwidth (narrow = robotic, wide =
+            # smeared); ``attack``/``release`` set the follower speed;
+            # ``hiss`` is the sibilance/noise path level (consonants);
+            # ``gain`` is wet-path makeup; ``mix`` is dry carrier <->
+            # vocoded (normally played fully wet).
+            if param_name == "bands":
+                dpg.add_combo(
+                    label=param_name, items=["8", "12", "16", "24"],
+                    default_value=str(int(round(float(current)))),
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "freq_lo":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=50.0, max_value=500.0, format="%.0f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "freq_hi":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=10.0,
+                    min_value=2000.0, max_value=12000.0, format="%.0f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "width":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.3, max_value=3.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "attack":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.1,
+                    min_value=0.1, max_value=100.0, format="%.1f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "release":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=1.0, max_value=500.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "hiss":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "gain":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=4.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "mix":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "stereo_speaker_output":
             # The stereo sink. ``pan`` places a mono source
             # (constant-power) or balances a stereo pair; ``width`` is

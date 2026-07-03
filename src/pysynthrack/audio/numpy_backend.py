@@ -1164,6 +1164,8 @@ class NumpyBackend(AudioBackend):
             return self._render_flanger(module, frames, buffers, patch)
         if module.TYPE == "phaser":
             return self._render_phaser(module, frames, buffers, patch)
+        if module.TYPE == "vocoder":
+            return self._render_vocoder(module, frames, buffers, patch)
         if module.TYPE == "delay":
             return self._render_delay(module, frames, buffers, patch)
         if module.TYPE == "reverb":
@@ -5501,6 +5503,191 @@ class NumpyBackend(AudioBackend):
     # Shortest delay, in samples. >= 2 keeps both linear-interpolation taps
     # strictly behind the write head (never reads the sample being written).
     _DELAY_MIN_SAMP = 2.0
+
+
+    # ----- Vocoder rendering ------------------------------------------------
+
+    _VOCODER_BANDS = (8, 12, 16, 24)
+    _VOCODER_SIBILANCE_HZ = 5000.0   # hiss-path highpass corner
+
+    def _render_vocoder(self, module, frames: int, buffers, patch):
+        """Channel vocoder: two matched bandpass banks + per-band followers.
+
+        The modulator and the carrier (both summed to mono -- you vocode
+        the mix, the same collapse rule as the modulation trio) each run
+        through N parallel RBJ constant-peak bandpasses built from the
+        same coefficients. The modulator's rectified band outputs feed
+        the asymmetric one-pole follower bank -- all N bands plus the
+        sibilance row are independent rows, so the whole bank is ONE
+        call to the AudioToCV monotone-pattern block solve
+        (:meth:`_audio_to_cv_block`), with the per-sample loop as its
+        usual degenerate-coefficient fallback. The carrier's band
+        outputs are multiplied by those envelopes and summed.
+
+        The hiss path is the same trick one band further up: the
+        modulator through a highpass at ~5 kHz -> follower -> gates a
+        matching highpassed white-noise stream into the wet sum,
+        restoring the consonants the bands can't see.
+
+        State per module: DF-I history ``(x1, x2, y1, y2)`` as ``(N,)``
+        arrays for each bank (the parametric_eq pattern -- raw history
+        is coefficient-independent, so live edits of width/range/bands
+        behave cleanly), scalar DF-I history for the two highpasses,
+        the ``(N+1,)`` follower levels, and the noise Generator (a
+        stream, so any block split draws the identical sequence).
+        Everything carries across blocks -> block-size independent.
+        ``mix=0`` returns the carrier bit-exact (states still advance,
+        so riding the mix knob up doesn't snap from stale filters).
+        """
+        carrier = self._input_buffer(patch, buffers, module.id, "carrier")
+        if carrier is None:
+            return np.zeros(frames, dtype=np.float32)
+        mod = self._input_buffer(patch, buffers, module.id, "mod")
+
+        n_bands = int(round(float(module.params.get("bands", 16))))
+        if n_bands not in self._VOCODER_BANDS:
+            n_bands = min(self._VOCODER_BANDS, key=lambda v: abs(v - n_bands))
+        freq_lo = min(max(float(module.params.get("freq_lo", 120.0)), 50.0), 500.0)
+        freq_hi = min(max(float(module.params.get("freq_hi", 7500.0)), 2000.0), 12000.0)
+        freq_hi = min(freq_hi, 0.45 * self.sample_rate)
+        width = min(max(float(module.params.get("width", 1.0)), 0.3), 3.0)
+        attack_ms = min(max(float(module.params.get("attack", 4.0)), 0.1), 100.0)
+        release_ms = min(max(float(module.params.get("release", 60.0)), 1.0), 500.0)
+        hiss = min(max(float(module.params.get("hiss", 0.4)), 0.0), 1.0)
+        gain = min(max(float(module.params.get("gain", 1.0)), 0.0), 4.0)
+        mix = min(max(float(module.params.get("mix", 1.0)), 0.0), 1.0)
+
+        state = self._state.setdefault(module.id, {})
+        if state.get("n_bands") != n_bands:
+            state.clear()
+            state["n_bands"] = n_bands
+            for bank in ("m", "c"):                      # mod / carrier banks
+                for k in ("x1", "x2", "y1", "y2"):
+                    state[bank + k] = np.zeros(n_bands, dtype=np.float64)
+            for hp in ("hm", "hn"):                      # mod / noise highpass
+                for k in ("x1", "x2", "y1", "y2"):
+                    state[hp + k] = np.zeros(1, dtype=np.float64)
+            state["env"] = np.zeros(n_bands + 1, dtype=np.float64)
+            state["rng"] = np.random.default_rng(0xB0C0DE + module.id)
+
+        if frames == 0:
+            return np.empty(0, dtype=np.float32)
+
+        dry = carrier.astype(np.float32, copy=True)      # (F,)
+        car64 = carrier.astype(np.float64)
+        mod64 = (
+            np.zeros(frames, dtype=np.float64)
+            if mod is None
+            else mod.astype(np.float64)
+        )
+
+        # Band layout: log-spaced centres, Q from the adjacent-band
+        # spacing scaled by ``width`` (width 1 = bands meet at their
+        # -3 dB points; wider = overlap, narrower = gaps).
+        centres = np.geomspace(freq_lo, max(freq_hi, freq_lo * 1.5), n_bands)
+        ratio = centres[-1] / centres[0]
+        bw_oct = np.log2(ratio) / max(n_bands - 1, 1) * width
+        q = 1.0 / (2.0 * np.sinh(0.5 * np.log(2.0) * bw_oct))
+        q = min(max(float(q), 0.5), 40.0)
+
+        b0, b1, b2, a1n, a2n = self._vocoder_bp_coeffs(centres, q)
+
+        mod_bands = np.empty((n_bands, frames), dtype=np.float64)
+        car_bands = np.empty((n_bands, frames), dtype=np.float64)
+        for k in range(n_bands):
+            bk = np.array([b0[k], b1[k], b2[k]])
+            ak = np.array([1.0, a1n[k], a2n[k]])
+            mod_bands[k] = self._vocoder_biquad(
+                state, "m", k, bk, ak, mod64, frames
+            )
+            car_bands[k] = self._vocoder_biquad(
+                state, "c", k, bk, ak, car64, frames
+            )
+
+        # Sibilance detector + noise colour: one shared highpass design.
+        hb, ha = self._vocoder_hp_coeffs(self._VOCODER_SIBILANCE_HZ)
+        sib = self._vocoder_biquad(
+            state, "h", 0, hb, ha, mod64, frames, key_prefix="hm"
+        )
+        noise = state["rng"].uniform(-1.0, 1.0, frames)
+        noise_hp = self._vocoder_biquad(
+            state, "h", 0, hb, ha, noise, frames, key_prefix="hn"
+        )
+
+        # Follower bank: N band rows + the sibilance row, one solve.
+        sr = self.sample_rate
+        att = 1.0 - float(np.exp(-1.0 / (attack_ms * 1e-3 * sr)))
+        rel = 1.0 - float(np.exp(-1.0 / (release_ms * 1e-3 * sr)))
+        t = np.abs(np.vstack([mod_bands, sib[None, :]]))     # (N+1, F)
+        level = state["env"]
+        env = self._audio_to_cv_block(t, level, att, rel)
+        if env is None:
+            env, level = self._audio_to_cv_loop_voice(t, level, att, rel)
+        else:
+            level = env[:, -1].copy()
+        state["env"] = level
+
+        wet = (car_bands * env[:n_bands]).sum(axis=0)
+        wet += hiss * env[n_bands] * noise_hp
+        wet *= gain
+
+        if mix <= 0.0:
+            return dry
+        out = (1.0 - mix) * dry.astype(np.float64) + mix * wet
+        return out.astype(np.float32)
+
+    def _vocoder_biquad(
+        self, state, bank, k, b, a, x, frames, key_prefix=None
+    ):
+        """One biquad over ``x`` with the house DF-I history carry.
+
+        ``state[prefix + {x1,x2,y1,y2}][k]`` holds the raw DF-I history
+        for slot ``k`` of the named bank; it's converted to the
+        transposed-DF-II ``zi`` (the lfiltic identity, inlined -- the
+        same lines as parametric_eq), the biquad runs in C via
+        ``lfilter``, and the new history is read off the tails.
+        """
+        p = key_prefix or bank
+        x1 = state[p + "x1"]; x2 = state[p + "x2"]
+        y1 = state[p + "y1"]; y2 = state[p + "y2"]
+        zi = np.array(
+            [
+                b[1] * x1[k] + b[2] * x2[k] - a[1] * y1[k] - a[2] * y2[k],
+                b[2] * x1[k] - a[2] * y1[k],
+            ],
+            dtype=np.float64,
+        )
+        out = lfilter(b, a, x, zi=zi)[0]
+        new_x1 = x[-1]
+        new_x2 = x[-2] if frames >= 2 else x1[k]
+        new_y1 = out[-1]
+        new_y2 = out[-2] if frames >= 2 else y1[k]
+        x1[k] = new_x1; x2[k] = new_x2
+        y1[k] = new_y1; y2[k] = new_y2
+        return out
+
+    def _vocoder_bp_coeffs(self, centres, q):
+        """RBJ constant-0dB-peak bandpass coefficients, vectorized over bands."""
+        w0 = 2.0 * np.pi * centres / self.sample_rate
+        alpha = np.sin(w0) / (2.0 * q)
+        a0 = 1.0 + alpha
+        b0 = alpha / a0
+        b1 = np.zeros_like(b0)
+        b2 = -alpha / a0
+        a1n = (-2.0 * np.cos(w0)) / a0
+        a2n = (1.0 - alpha) / a0
+        return b0, b1, b2, a1n, a2n
+
+    def _vocoder_hp_coeffs(self, freq):
+        """RBJ highpass (Q = 0.707) at ``freq``, as (b, a) arrays."""
+        freq = min(freq, 0.45 * self.sample_rate)
+        w0 = 2.0 * np.pi * freq / self.sample_rate
+        cw = np.cos(w0)
+        alpha = np.sin(w0) / (2.0 * 0.70710678)
+        a0 = 1.0 + alpha
+        b = np.array([(1 + cw) / 2, -(1 + cw), (1 + cw) / 2]) / a0
+        a = np.array([1.0, (-2.0 * cw) / a0, (1.0 - alpha) / a0])
+        return b, a
 
     def _render_delay(self, module, frames: int, buffers, patch) -> np.ndarray:
         """Analog-voiced feedback delay (echo) with a damped feedback path.

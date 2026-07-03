@@ -57,6 +57,7 @@ from .fader_seq import FaderSeq
 from .sweep_eq import SweepEQ
 from .tilt_eq import TiltEQ
 from .vca import VCA
+from .vocoder import Vocoder
 
 __all__ = [
     "ADEnvelope",
@@ -105,5 +106,6 @@ __all__ = [
     "SpeakerOutput",
     "StereoSpeakerOutput",
     "VCA",
+    "Vocoder",
     "Waveshaper",
 ]

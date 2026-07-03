@@ -1,0 +1,97 @@
+{
+ "version": 1,
+ "next_id": 7,
+ "modules": [
+  {
+   "id": 1,
+   "type": "mic_input",
+   "name": "mic_input",
+   "params": {
+    "device": "",
+    "gain": 1.0
+   }
+  },
+  {
+   "id": 2,
+   "type": "oscillator",
+   "name": "oscillator",
+   "params": {
+    "waveform": "saw_blep",
+    "freq": 110.0,
+    "amp": 0.25
+   }
+  },
+  {
+   "id": 3,
+   "type": "oscillator",
+   "name": "oscillator",
+   "params": {
+    "waveform": "saw_blep",
+    "freq": 164.81,
+    "amp": 0.25
+   }
+  },
+  {
+   "id": 4,
+   "type": "combiner",
+   "name": "combiner",
+   "params": {}
+  },
+  {
+   "id": 5,
+   "type": "vocoder",
+   "name": "vocoder",
+   "params": {
+    "bands": 16,
+    "freq_lo": 120.0,
+    "freq_hi": 7500.0,
+    "width": 1.0,
+    "attack": 4.0,
+    "release": 60.0,
+    "hiss": 0.4,
+    "gain": 1.5,
+    "mix": 1.0
+   }
+  },
+  {
+   "id": 6,
+   "type": "speaker_output",
+   "name": "speaker_output",
+   "params": {
+    "gain": 0.8
+   }
+  }
+ ],
+ "cables": [
+  {
+   "src_module_id": 1,
+   "src_port": "left",
+   "dst_module_id": 5,
+   "dst_port": "mod"
+  },
+  {
+   "src_module_id": 2,
+   "src_port": "out",
+   "dst_module_id": 4,
+   "dst_port": "in1"
+  },
+  {
+   "src_module_id": 3,
+   "src_port": "out",
+   "dst_module_id": 4,
+   "dst_port": "in2"
+  },
+  {
+   "src_module_id": 4,
+   "src_port": "out",
+   "dst_module_id": 5,
+   "dst_port": "carrier"
+  },
+  {
+   "src_module_id": 5,
+   "src_port": "out",
+   "dst_module_id": 6,
+   "dst_port": "in"
+  }
+ ]
+}

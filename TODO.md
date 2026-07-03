@@ -9,6 +9,11 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **Vocoder** — shipped 2026-07-03 (channel vocoder: 8/12/16/24 bands,
+      width/attack/release, hiss sibilance path, mix=0 bit-exact carrier).
+      Possible follow-ups: stereo out (decorrelated odd/even bands), a
+      `formant` band-shift knob (analysis centres offset from synthesis),
+      carrier normal to `noise` when unpatched, per-band level trims.
 - [x] **Filter vectorization** — **thread CLOSED 2026-07-03** (slice 6 verdict
       below; every per-sample biquad recurrence now runs in C). Originally:
       (optional — only if patches grow past current
