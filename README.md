@@ -55,6 +55,8 @@ https://drive.google.com/file/d/1BsgRBylvy4ngGPuNp09A66T-OATiMogK/view?usp=shari
 Ultra New Version
 https://drive.google.com/file/d/1XRuWLhmSIns1rs8PRUg1TmpmDwLoh5uX/view?usp=drive_link
 
+<img width="591" height="22" alt="image" src="https://github.com/user-attachments/assets/e14b3a37-ca71-45c5-ae1e-bf146f146680" />
+
 
 ## Installation (Windows)
 
