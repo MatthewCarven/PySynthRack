@@ -52,6 +52,9 @@ https://drive.google.com/file/d/1BsgRBylvy4ngGPuNp09A66T-OATiMogK/view?usp=shari
 
 <img width="589" height="20" alt="image" src="https://github.com/user-attachments/assets/51c1cad6-5c5a-439c-b0fc-377bb706036f" />
 
+Ultra New Version
+https://drive.google.com/file/d/1XRuWLhmSIns1rs8PRUg1TmpmDwLoh5uX/view?usp=drive_link
+
 
 ## Installation (Windows)
 
