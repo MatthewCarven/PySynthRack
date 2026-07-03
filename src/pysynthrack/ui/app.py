@@ -37,6 +37,7 @@ from ..modules.midiinput import (
 from ..modules.micinput import available_input_devices as mic_available_devices
 from ..modules.fader_seq import FADER_RANGE_ST
 from ..modules.sequencer import MAX_STEPS as SEQ_MAX_STEPS
+from ..modules.compressor import DETECTOR_MODES
 from ..modules.distortion import DISTORTION_MODES
 from ..modules.meter import METER_MODES
 from ..modules.waveshaper import WAVESHAPER_MODES
@@ -1336,6 +1337,19 @@ class App:
             dpg.add_combo(
                 label=param_name,
                 items=items,
+                default_value=str(current),
+                width=120,
+                callback=self._on_param_changed,
+                user_data=user_data,
+            )
+            return
+
+        if param_name == "detector":
+            # Compressor level detector: peak (instantaneous) or rms
+            # (~10 ms energy window).
+            dpg.add_combo(
+                label=param_name,
+                items=list(DETECTOR_MODES),
                 default_value=str(current),
                 width=120,
                 callback=self._on_param_changed,

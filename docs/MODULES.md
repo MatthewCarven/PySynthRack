@@ -104,6 +104,7 @@ The full map:
 | `delay.time_cv` | `50.0` | ms | `time + d·cv` |
 | `loudness.level_cv` | `1.0` | level (0…1) | `level + d·mean cv` |
 | `tilt_eq.tilt_cv` | `6.0` | dB | `tilt + d·mean cv` |
+| `compressor.threshold_cv` | `12.0` | dB | `threshold + d·mean cv` |
 | `reverb.decay_cv` / `reverb.damping_cv` / `reverb.mix_cv` | `1.0` (shared) | level (0…1) | `decay/damping/mix + d·mean cv` |
 | `mixer.gain{i}_cv` | — (multiplier) | linear, per-sample | `in_i · gain_i · cv_i` |
 
@@ -207,6 +208,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv) → `out` (audio) |
 | [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
+| [`compressor`](#compressor) | Effects | `in`,`sidechain` (audio), `threshold_cv` (cv) → `out` (audio), `gr` (cv) |
 | [`loudness`](#loudness) | Filters & EQ | `in` (audio), `level_cv` (cv) → `out` (audio) |
 | [`distortion`](#distortion) | Effects | `in` (audio), `drive_cv` (cv) → `out` (audio) |
 | [`waveshaper`](#waveshaper) | Effects | `in` (audio), `fold_cv` (cv) → `out` (audio) |
@@ -931,6 +933,63 @@ in a big hall, spread across both speakers).
 `damping` up) for an ambient wash behind a sparse line; short + bright for
 a subtle glue. Pure sustained tones can still ring a touch — v1 has no
 tail modulation yet.
+
+#### `compressor`
+
+A **feed-forward compressor** — the rack's dynamics processor. It watches a
+detector signal and, whenever it rises above the `threshold`, turns the gain
+down by a fraction set by `ratio` (2:1 halves every dB over the line; 20:1 is
+effectively a limiter). `attack` / `release` set how fast the gain chases the
+level, `knee` softens the bend around the threshold, `gain` is the make-up
+boost, and `mix` blends the compressed signal back against the dry one for
+**parallel** (New York) compression.
+
+The detector normally listens to `in` (ordinary feed-forward), but patch a
+signal into `sidechain` and it gain-controls `in` while listening to *that* —
+the classic **ducking** trick (a kick in a pad's sidechain pumps a hole for
+the low end). Unpatched, `sidechain` is normalled to `in`. `detector` picks
+`peak` (instantaneous, transient-accurate) or `rms` (~10 ms energy window,
+loudness-like).
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to compress. Unpatched → silence. |
+| `sidechain` | in | audio | External detector key. Normalled to `in` when unpatched. |
+| `threshold_cv` | in | cv | Added to `threshold` (block-meaned), scaled by `threshold_cv_depth`. Optional. |
+| `out` | out | audio | Compressed (and optionally parallel-mixed) signal. |
+| `gr` | out | cv | Applied gain reduction, `applied_gain − 1` (0 … −1). Patch for ducking/metering. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `threshold` | `-18.0` | −60 … 0 dB | Level above which compression starts. |
+| `ratio` | `2.0` | 1 … 20 | Compression ratio. 1 = off; 20 ≈ limiting. |
+| `attack` | `10.0` | 0.1 … 250 ms | Gain fall time toward deeper reduction. |
+| `release` | `120.0` | 5 … 2500 ms | Gain recovery time. |
+| `knee` | `6.0` | 0 … 24 dB | Soft-knee width (0 = hard knee). |
+| `gain` | `0.0` | 0 … 24 dB | Make-up gain applied after compression. |
+| `mix` | `1.0` | 0 … 1 | Dry/wet. 1 = fully compressed; <1 = parallel. |
+| `detector` | `rms` | peak / rms | Level detection: instantaneous peak or ~10 ms RMS. |
+| `threshold_cv_depth` | `12.0` | dB/unit | dB of threshold shift per `threshold_cv` unit. |
+
+Detector on the sidechain → level in dB → soft-knee gain computer (log domain)
+→ attack/release smoothing of the gain reduction (the same vectorized monotone
+one-pole the [`audio_to_cv`](#audio_to_cv) follower uses) → linear multiply,
+make-up and parallel mix. Zero latency, so `mix` needs no delay compensation.
+With `ratio` = 1, `gain` = 0 and `mix` = 1 it **short-circuits to a bit-exact
+passthrough** (the detector is skipped). Shape-polymorphic like the other
+effects — a `(V, F)` input compresses per voice, a single row bit-identical to
+mono; a mono sidechain broadcasts across voices. The `gr` output mirrors the
+applied gain (`applied_gain = gr + 1`). See `examples/sidechain_pump.json`
+(a kick ducking a pad).
+
+**Patching.** Even out a bass or vocal (`rms`, ratio ~3, soft knee, make-up to
+taste); pump a pad from a kick via the `sidechain`; smash drums in parallel
+(`mix` ~0.3); or drive `gr` into a VCA / any `*_cv` to duck a whole group in
+lock-step.
 
 #### `loudness`
 

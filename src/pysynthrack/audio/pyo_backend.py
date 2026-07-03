@@ -211,6 +211,7 @@ class PyoBackend(AudioBackend):
             "chorus",
             "flanger",
             "phaser",
+            "compressor",
             "delay",
             "reverb",
             "loudness",

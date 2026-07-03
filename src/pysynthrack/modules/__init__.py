@@ -13,6 +13,7 @@ from .audiotocv import AudioToCV
 from .chorus import Chorus
 from .clock import Clock
 from .combiner import Combiner
+from .compressor import Compressor
 from .constant import Constant
 from .crossover import Crossover
 from .cvcombiner import CVCombiner
@@ -66,6 +67,7 @@ __all__ = [
     "Chorus",
     "Clock",
     "Combiner",
+    "Compressor",
     "Constant",
     "Crossover",
     "CVCombiner",

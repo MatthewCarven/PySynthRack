@@ -1172,6 +1172,8 @@ class NumpyBackend(AudioBackend):
             return self._render_reverb(module, frames, buffers, patch)
         if module.TYPE == "loudness":
             return self._render_loudness(module, frames, buffers, patch)
+        if module.TYPE == "compressor":
+            return self._render_compressor(module, frames, buffers, patch)
         if module.TYPE == "distortion":
             return self._render_distortion(module, frames, buffers, patch)
         if module.TYPE == "waveshaper":
@@ -4941,6 +4943,206 @@ class NumpyBackend(AudioBackend):
     _REVERB_BASE = (1103, 1321, 1543, 1759, 1987, 2203, 2423, 2647)
     _REVERB_OUT = 0.30   # wet output trim (tuned so wet ~ dry level)
     _CHORUS_MAX_MS = 40.0  # longest chorus delay (ms); sizes the ring
+
+    # ----- Compressor rendering -------------------------------------------
+
+    # RMS detector averaging window (ms): ~10 ms hears a few cycles of a
+    # bass note as one loudness without smearing transients across the beat.
+    _COMP_RMS_MS = 10.0
+    # dB-conversion floor so a silent block never hits log10(0). -180 dBFS
+    # sits far below any musical signal.
+    _COMP_LEVEL_FLOOR = 1e-9
+
+    @staticmethod
+    def _compressor_reduction_db(level_db, threshold, ratio, knee):
+        """Static gain computer: input level (dB) -> gain reduction (dB >= 0).
+
+        The standard soft-knee compressor law, returning the *positive*
+        attenuation to apply (0 = no reduction). With slope
+        ``s = 1 - 1/ratio`` (0 at ratio 1, -> 1 as ratio -> inf), knee
+        width ``W`` dB centred on the threshold, and ``over = level - T``:
+
+          * ``2*over < -W``   -> below the knee   -> 0
+          * ``2*|over| <= W``  -> inside the knee  -> ``s*(over + W/2)**2/(2W)``
+          * else              -> above the knee   -> ``s*over``
+
+        The pieces meet with matching value and slope at the knee edges
+        (C1-continuous); ``W = 0`` collapses to the hard-knee hinge.
+        Vectorized over ``level_db`` (any shape), so a whole ``(V, F)``
+        block resolves in one pass with no Python loop.
+        """
+        over = level_db - threshold
+        slope = 1.0 - 1.0 / ratio
+        W = float(knee)
+        if W > 0.0:
+            return np.select(
+                [2.0 * over < -W, 2.0 * over <= W],
+                [np.zeros_like(over), slope * (over + 0.5 * W) ** 2 / (2.0 * W)],
+                default=slope * over,
+            )
+        return np.where(over > 0.0, slope * over, 0.0)
+
+    def _render_compressor(self, module, frames: int, buffers, patch):
+        """Feed-forward compressor with external sidechain (see modules/compressor.py).
+
+        Shape-polymorphic like the other effects. Branches on the ``in``
+        audio's ndim: 1D ``(F,)`` -> single detector + gain smoother,
+        ``(F,)`` out; 2D ``(V, F)`` -> per-voice state, ``(V, F)`` out. The
+        mono path is the ``V == 1`` case of the same core, so a single voice
+        row is bit-identical to mono.
+
+        Emits two outputs: ``out`` (the gain-applied, optionally parallel-
+        mixed audio) and ``gr`` (applied gain reduction as a 0..-1 CV,
+        ``applied_gain - 1``).
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        if src is None:
+            z = np.zeros(frames, dtype=np.float32)
+            return {"out": z, "gr": z.copy()}
+
+        ratio = float(module.params.get("ratio", 2.0))
+        makeup_db = float(module.params.get("gain", 0.0))
+        mix = float(module.params.get("mix", 1.0))
+
+        # Neutral short-circuit: ratio 1 (no reduction) + no make-up + fully
+        # wet -> the signal is untouched, so skip the detector entirely and
+        # hand back a bit-exact copy of the input (gr = 0).
+        if ratio == 1.0 and makeup_db == 0.0 and mix == 1.0:
+            out = src.astype(np.float32, copy=True)
+            return {"out": out, "gr": np.zeros_like(out)}
+
+        # Sidechain key: normalled to ``in`` when unpatched (ordinary
+        # feed-forward); an external cable overrides it.
+        key = self._input_buffer(
+            patch, buffers, module.id, "sidechain", collapse=False
+        )
+
+        # threshold_cv: block-meaned dB offset (one value per block), like the
+        # rack's other dB-domain CV macros.
+        threshold = float(module.params.get("threshold", -18.0))
+        tcv = self._input_buffer(patch, buffers, module.id, "threshold_cv")
+        if tcv is not None and tcv.size:
+            depth = float(module.params.get("threshold_cv_depth", 12.0))
+            threshold += depth * float(np.mean(tcv))
+
+        if src.ndim == 2:
+            V = src.shape[0]
+            key = self._compressor_align_key(key, src, V)
+            return self._render_compressor_core(module, frames, src, key, threshold)
+
+        # Mono. A 2D key collapses to the summed mix (you key off the whole
+        # signal, not one voice); an absent key normals to ``in``.
+        if key is None:
+            key = src
+        elif key.ndim == 2:
+            key = key.sum(axis=0)
+        res = self._render_compressor_core(
+            module, frames, src[np.newaxis, :], key[np.newaxis, :], threshold
+        )
+        return {"out": res["out"][0], "gr": res["gr"][0]}
+
+    @staticmethod
+    def _compressor_align_key(key, src, V):
+        """Broadcast the optional sidechain key onto the ``in`` voice shape."""
+        if key is None:
+            return src  # normalled: each voice keys off its own signal
+        if key.ndim == 1:
+            return np.broadcast_to(key, (V, key.shape[0]))
+        if key.shape[0] == V:
+            return key
+        if key.shape[0] == 1:
+            return np.broadcast_to(key, (V, key.shape[1]))
+        return np.broadcast_to(key.mean(axis=0), (V, key.shape[1]))
+
+    def _render_compressor_core(self, module, frames, src, key, threshold):
+        """Shared ``(V, F)`` feed-forward compressor engine.
+
+        Detector on ``key`` -> level in dB -> gain computer (log-domain soft
+        knee) -> attack/release smoothing of the *gain reduction* -> linear
+        multiply of ``src`` + make-up + parallel mix. Zero latency, so
+        ``mix`` needs no delay compensation.
+
+        The gain smoothing reuses the envelope follower's vectorized
+        asymmetric one-pole: the reduction (in dB, >= 0) rises when
+        compression deepens -> attack, and falls when it eases -> release,
+        which is exactly the "attack where the target rises above the
+        state" recurrence :meth:`_audio_to_cv_block` solves as a monotone
+        fixed point. Reduction is non-negative, so the solve's no-
+        cancellation precondition holds. Both the RMS detector one-pole
+        (via ``lfilter`` + carried ``zi``) and the gain smoother carry
+        per-voice state, so the render is block-size independent (bit-exact
+        for the detector; to float64 round-off for the reassociated gain
+        solve, like the follower).
+        """
+        V = src.shape[0]
+        sr = self.sample_rate
+
+        ratio = max(float(module.params.get("ratio", 2.0)), 1.0)
+        attack_ms = float(module.params.get("attack", 10.0))
+        release_ms = float(module.params.get("release", 120.0))
+        knee = max(float(module.params.get("knee", 6.0)), 0.0)
+        makeup_db = float(module.params.get("gain", 0.0))
+        mix = min(max(float(module.params.get("mix", 1.0)), 0.0), 1.0)
+        detector = str(module.params.get("detector", "rms"))
+
+        state = self._state.setdefault(module.id, {})
+        if "red" not in state or state["red"].shape[0] != V:
+            state.clear()
+            state["red"] = np.zeros(V, dtype=np.float64)  # carried reduction (dB)
+            state["ms"] = np.zeros(V, dtype=np.float64)   # carried RMS mean-square
+
+        if frames == 0:
+            e = np.empty((V, 0), dtype=np.float32)
+            return {"out": e, "gr": e.copy()}
+
+        x = src.astype(np.float64)  # gain is applied to this
+        k = key.astype(np.float64)  # the detector reads this
+
+        # --- detector: key -> linear level (V, F) ---
+        if detector == "rms":
+            tau = self._COMP_RMS_MS * 1e-3
+            a = 1.0 - float(np.exp(-1.0 / (max(tau, 1e-9) * sr)))
+            a = min(max(a, 0.0), 1.0)
+            zi = ((1.0 - a) * state["ms"])[:, np.newaxis]  # (V, 1)
+            ms = lfilter([a], [1.0, -(1.0 - a)], k * k, axis=-1, zi=zi)[0]
+            state["ms"] = ms[:, -1].copy()
+            level = np.sqrt(np.maximum(ms, 0.0))
+        else:  # peak: instantaneous rectified level, no detector smoothing
+            level = np.abs(k)
+
+        level_db = 20.0 * np.log10(np.maximum(level, self._COMP_LEVEL_FLOOR))
+
+        # --- gain computer: level -> target reduction (dB >= 0) ---
+        red_target = self._compressor_reduction_db(level_db, threshold, ratio, knee)
+
+        # --- attack/release smoothing of the reduction envelope ---
+        attack_coef = 1.0 if attack_ms <= 0.0 else 1.0 - float(
+            np.exp(-1.0 / (max(attack_ms, 1e-6) * 1e-3 * sr))
+        )
+        release_coef = 1.0 if release_ms <= 0.0 else 1.0 - float(
+            np.exp(-1.0 / (max(release_ms, 1e-6) * 1e-3 * sr))
+        )
+        level0 = state["red"]
+        y = self._audio_to_cv_block(red_target, level0, attack_coef, release_coef)
+        if y is None:
+            # Degenerate coefficients (instant clamp / non-finite): the
+            # per-sample reference loop defines the corner semantics.
+            red, level0 = self._audio_to_cv_loop_voice(
+                red_target, level0.copy(), attack_coef, release_coef
+            )
+            state["red"] = level0
+        else:
+            red = y
+            state["red"] = y[:, -1].copy()
+
+        # --- apply: reduction (dB) -> linear gain, make-up, parallel mix ---
+        g = np.power(10.0, -red / 20.0)  # applied gain, <= 1
+        makeup = 10.0 ** (makeup_db / 20.0)
+        wet = x * g * makeup
+        out = x * (1.0 - mix) + wet * mix
+        gr = g - 1.0  # applied gain reduction as a 0..-1 CV
+
+        return {"out": out.astype(np.float32), "gr": gr.astype(np.float32)}
 
     def _render_reverb(self, module, frames: int, buffers, patch):
         """Stereo FDN reverb: mono in -> decorrelated out_l / out_r.
