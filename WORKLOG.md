@@ -5829,3 +5829,60 @@ leaves stats untouched, start()-style reset, snapshot shape. Injection
 mirrors test_backend_crash.py (monkeypatched render_block, direct
 _fill_output calls — no PortAudio). Suite: 1324 in-sandbox, zero skips
 (was 1306).
+
+
+## 2026-07-03 — filter vectorization slice 5: crossover → per-stage lfilter
+
+Matthew picked slice 5 off the TODO (crossover was the last per-sample
+biquad cascade standing). The LR4 split runs four biquad stages — LP1,
+LP2 in series and HP1, HP2 in series — and the old renderer walked them
+sample by sample in Python, mono and (V,)-broadcast voice variants.
+
+Design follows slices 3/4 verbatim: persisted state stays the raw DF-I
+history (x1, x2, y1, y2) per stage — coefficient-independent, so
+per-block freq_cv coefficient changes behave exactly as the old loop —
+converted to transposed-DF-II zi at block start (lfiltic identity,
+inlined) and read back off the stage input/output buffer tails after.
+State keys unchanged (mono scalars / voice `*_arr` (V,) float64), so
+snapshots and the mono↔voice reinit contract carry over untouched.
+
+One deliberate deviation from the TODO line's suggestion: per-stage
+`lfilter` (4 calls), NOT one `sosfilt` over the 2-section cascade. The
+TODO said “sosfilt fits”, and it does for the output — but sosfilt only
+returns the final signal, and the intermediate stage-1 output's tails
+ARE the DF-I history slice 5 needs to persist (stage 1's y-side, stage
+2's x-side). Recovering them algebraically from sosfilt's zf is possible
+(a2 is bounded ≥ ~0.17 by the fixed Butterworth Q) but divides by a2
+and costs bit-exactness. Per-stage calls read the tails straight off the
+buffers; intermediates stay float64 between stages exactly like the
+loop. Voice shape: coefficients are scalar by design (block-mean freq),
+so each stage is ONE lfilter call across all 16 rows with zi (V, 2) —
+the shared-coefficient shape from slice 4.
+
+Equivalence, spiked then pinned in tests: bit-identical after the f32
+cast on noise grids (static + per-block-swept freqs, frames=1, voice
+mixed content). The spike found one razor case the filter slices never
+hit: a pure sine's HIGH branch lands at ~1e-7 magnitudes where DF-I vs
+transposed-DF-II float64 reassociation flips a float32 ulp — max drift
+~5e-13 absolute, every differing sample below ~−130 dBFS in the oracle
+(so slices 3/4's “max err 0.0” was signal-dependent luck, not a
+structural property; same documented drift class as the ADSR rewrite).
+Tests assert < 1e-6 per house convention plus an explicit
+drift-confinement pin (differing samples must sit below 1e-5 ≈
+−100 dBFS in the oracle).
+
+Timing (sandbox, F=512): mono 0.278 → 0.039 ms/blk (7.1x); 16-voice
+7.065 → 0.206 ms/blk (34.2x) — the old voice cascade was eating 60.9%
+of the 11.6 ms block budget on its own, easily the most expensive
+render path in the rack; now 1.8%.
+
+Tests: 9 new in TestCrossoverLfilterEquivalence — verbatim old mono +
+voice loops as oracles (filter-slice convention): noise multiblock
+static + swept, frames=1 mono + voice, split-vs-whole intrinsic
+continuity, sine drift confinement, voice mixed-content grid with
+exact-silence rows, mono↔voice reinit (post-reinit render == fresh
+module bit-for-bit), state-key compatibility pin.
+Suite: 1315 in-sandbox (+18 mido skips), was 1306.
+
+Slice 6 (native-Windows re-profile) is now NEXT and closes the filter
+vectorization thread.

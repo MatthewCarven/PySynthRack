@@ -336,3 +336,310 @@ class TestCrossoverFreqCVVoice:
                 continue
             assert float(np.max(np.abs(voice["low"][i]))) == 0.0
             assert float(np.max(np.abs(voice["high"][i]))) == 0.0
+
+
+def _reference_crossover_mono(backend, blocks, freqs):
+    """The pre-slice-5 per-sample cascade, kept verbatim as the oracle.
+
+    This is the exact mono implementation ``_render_crossover_mono``
+    used before filter vectorization slice 5 replaced it with per-stage
+    ``scipy.signal.lfilter`` calls: scalar Python recurrence through the
+    four biquad stages (LP1, LP2, HP1, HP2), float64 math, float32
+    outputs, raw per-stage (x1, x2, y1, y2) history carried across
+    blocks and coefficients recomputed per block.
+    """
+    lp1_x1 = lp1_x2 = lp1_y1 = lp1_y2 = 0.0
+    lp2_x1 = lp2_x2 = lp2_y1 = lp2_y2 = 0.0
+    hp1_x1 = hp1_x2 = hp1_y1 = hp1_y2 = 0.0
+    hp2_x1 = hp2_x2 = hp2_y1 = hp2_y2 = 0.0
+    lows, highs = [], []
+    for src, freq in zip(blocks, freqs):
+        lp_b0, lp_b1, lp_b2, hp_b0, hp_b1, hp_b2, a1n, a2n = (
+            backend._crossover_coeffs(freq)
+        )
+        frames = len(src)
+        low = np.empty(frames, dtype=np.float32)
+        high = np.empty(frames, dtype=np.float32)
+        for n in range(frames):
+            x = float(src[n])
+            # LP stage 1
+            y = lp_b0 * x + lp_b1 * lp1_x1 + lp_b2 * lp1_x2 - a1n * lp1_y1 - a2n * lp1_y2
+            lp1_x2 = lp1_x1; lp1_x1 = x
+            lp1_y2 = lp1_y1; lp1_y1 = y
+            # LP stage 2
+            z = lp_b0 * y + lp_b1 * lp2_x1 + lp_b2 * lp2_x2 - a1n * lp2_y1 - a2n * lp2_y2
+            lp2_x2 = lp2_x1; lp2_x1 = y
+            lp2_y2 = lp2_y1; lp2_y1 = z
+            low[n] = z
+            # HP stage 1
+            u = hp_b0 * x + hp_b1 * hp1_x1 + hp_b2 * hp1_x2 - a1n * hp1_y1 - a2n * hp1_y2
+            hp1_x2 = hp1_x1; hp1_x1 = x
+            hp1_y2 = hp1_y1; hp1_y1 = u
+            # HP stage 2
+            v = hp_b0 * u + hp_b1 * hp2_x1 + hp_b2 * hp2_x2 - a1n * hp2_y1 - a2n * hp2_y2
+            hp2_x2 = hp2_x1; hp2_x1 = u
+            hp2_y2 = hp2_y1; hp2_y1 = v
+            high[n] = v
+        lows.append(low)
+        highs.append(high)
+    return np.concatenate(lows), np.concatenate(highs)
+
+
+def _reference_crossover_voice(backend, blocks, freqs):
+    """The pre-slice-5 per-sample voice cascade, verbatim as the oracle.
+
+    (V,) numpy arrays for the per-stage history, scalar coefficients
+    broadcast across voices, serial in time -- exactly the loop
+    ``_render_crossover_voice`` ran before slice 5.
+    """
+    V = blocks[0].shape[0]
+    st = {}
+    for k in (
+        "lp1_x1", "lp1_x2", "lp1_y1", "lp1_y2",
+        "lp2_x1", "lp2_x2", "lp2_y1", "lp2_y2",
+        "hp1_x1", "hp1_x2", "hp1_y1", "hp1_y2",
+        "hp2_x1", "hp2_x2", "hp2_y1", "hp2_y2",
+    ):
+        st[k] = np.zeros(V, dtype=np.float64)
+    lows, highs = [], []
+    for src, freq in zip(blocks, freqs):
+        lp_b0, lp_b1, lp_b2, hp_b0, hp_b1, hp_b2, a1n, a2n = (
+            backend._crossover_coeffs(freq)
+        )
+        frames = src.shape[1]
+        low = np.empty((V, frames), dtype=np.float32)
+        high = np.empty((V, frames), dtype=np.float32)
+        lp1_x1 = st["lp1_x1"]; lp1_x2 = st["lp1_x2"]
+        lp1_y1 = st["lp1_y1"]; lp1_y2 = st["lp1_y2"]
+        lp2_x1 = st["lp2_x1"]; lp2_x2 = st["lp2_x2"]
+        lp2_y1 = st["lp2_y1"]; lp2_y2 = st["lp2_y2"]
+        hp1_x1 = st["hp1_x1"]; hp1_x2 = st["hp1_x2"]
+        hp1_y1 = st["hp1_y1"]; hp1_y2 = st["hp1_y2"]
+        hp2_x1 = st["hp2_x1"]; hp2_x2 = st["hp2_x2"]
+        hp2_y1 = st["hp2_y1"]; hp2_y2 = st["hp2_y2"]
+        for n in range(frames):
+            x = src[:, n].astype(np.float64)
+            y = lp_b0 * x + lp_b1 * lp1_x1 + lp_b2 * lp1_x2 - a1n * lp1_y1 - a2n * lp1_y2
+            lp1_x2 = lp1_x1; lp1_x1 = x
+            lp1_y2 = lp1_y1; lp1_y1 = y
+            z = lp_b0 * y + lp_b1 * lp2_x1 + lp_b2 * lp2_x2 - a1n * lp2_y1 - a2n * lp2_y2
+            lp2_x2 = lp2_x1; lp2_x1 = y
+            lp2_y2 = lp2_y1; lp2_y1 = z
+            low[:, n] = z
+            u = hp_b0 * x + hp_b1 * hp1_x1 + hp_b2 * hp1_x2 - a1n * hp1_y1 - a2n * hp1_y2
+            hp1_x2 = hp1_x1; hp1_x1 = x
+            hp1_y2 = hp1_y1; hp1_y1 = u
+            v = hp_b0 * u + hp_b1 * hp2_x1 + hp_b2 * hp2_x2 - a1n * hp2_y1 - a2n * hp2_y2
+            hp2_x2 = hp2_x1; hp2_x1 = u
+            hp2_y2 = hp2_y1; hp2_y1 = v
+            high[:, n] = v
+        st["lp1_x1"] = lp1_x1; st["lp1_x2"] = lp1_x2
+        st["lp1_y1"] = lp1_y1; st["lp1_y2"] = lp1_y2
+        st["lp2_x1"] = lp2_x1; st["lp2_x2"] = lp2_x2
+        st["lp2_y1"] = lp2_y1; st["lp2_y2"] = lp2_y2
+        st["hp1_x1"] = hp1_x1; st["hp1_x2"] = hp1_x2
+        st["hp1_y1"] = hp1_y1; st["hp1_y2"] = hp1_y2
+        st["hp2_x1"] = hp2_x1; st["hp2_x2"] = hp2_x2
+        st["hp2_y1"] = hp2_y1; st["hp2_y2"] = hp2_y2
+        lows.append(low)
+        highs.append(high)
+    return np.concatenate(lows, axis=-1), np.concatenate(highs, axis=-1)
+
+
+def _fresh_xo(frames=512):
+    patch = Patch()
+    xo = patch.add_module("crossover")
+    backend = NumpyBackend(sample_rate=SR, block_size=frames)
+    return backend, xo
+
+
+def _run_new_mono(backend, xo, blocks, freqs):
+    lows, highs = [], []
+    for b, f in zip(blocks, freqs):
+        out = backend._render_crossover_mono(xo, len(b), b, f)
+        lows.append(out["low"]); highs.append(out["high"])
+    return np.concatenate(lows), np.concatenate(highs)
+
+
+def _run_new_voice(backend, xo, blocks, freqs):
+    lows, highs = [], []
+    for b, f in zip(blocks, freqs):
+        out = backend._render_crossover_voice(xo, b.shape[1], b, f)
+        lows.append(out["low"]); highs.append(out["high"])
+    return np.concatenate(lows, axis=-1), np.concatenate(highs, axis=-1)
+
+
+_SWEEP = (500.0, 800.0, 1000.0, 2500.0, 150.0, 8000.0, 20.0, 19845.0)
+
+
+class TestCrossoverLfilterEquivalence:
+    """Slice 5: the per-stage-lfilter paths must match the old cascade.
+
+    Same contract as the filter slices: raw coefficient-independent
+    DF-I history carried across blocks, so per-block freq(-cv) changes
+    reproduce the old loop. On noise the match is bit-identical after
+    the float32 cast; on pure sines the high branch drifts by <= ~5e-13
+    absolute, confined to samples below ~-130 dBFS (float64
+    reassociation between DF-I and transposed DF-II -- the documented
+    ADSR-rewrite drift class). We assert < 1e-6 rather than == so a
+    future scipy that reorders float ops doesn't break the suite
+    spuriously, plus one test pinning the drift's confinement.
+    """
+
+    def test_multiblock_equivalence_static_freq(self):
+        backend, xo = _fresh_xo()
+        rng = np.random.default_rng(42)
+        blocks = [
+            (rng.standard_normal(512) * 0.5).astype(np.float32) for _ in range(8)
+        ]
+        freqs = [1000.0] * 8
+        gl, gh = _run_new_mono(backend, xo, blocks, freqs)
+        rl, rh = _reference_crossover_mono(backend, blocks, freqs)
+        assert gl.dtype == np.float32 and gh.dtype == np.float32
+        assert np.max(np.abs(gl.astype(np.float64) - rl.astype(np.float64))) < 1e-6
+        assert np.max(np.abs(gh.astype(np.float64) - rh.astype(np.float64))) < 1e-6
+
+    def test_equivalence_with_per_block_freq_sweep(self):
+        """Coefficients change between blocks (the freq_cv cadence);
+        raw-history carry must reproduce the old loop -- this is the
+        case a persisted zf would get wrong."""
+        backend, xo = _fresh_xo()
+        rng = np.random.default_rng(7)
+        blocks = [
+            (rng.standard_normal(512) * 0.5).astype(np.float32) for _ in range(8)
+        ]
+        gl, gh = _run_new_mono(backend, xo, blocks, _SWEEP)
+        rl, rh = _reference_crossover_mono(backend, blocks, _SWEEP)
+        assert np.max(np.abs(gl.astype(np.float64) - rl.astype(np.float64))) < 1e-6
+        assert np.max(np.abs(gh.astype(np.float64) - rh.astype(np.float64))) < 1e-6
+
+    def test_single_sample_blocks(self):
+        """frames=1 exercises the history-tail edge case (x2/y2 must
+        come from the carried state, not the one-sample buffer)."""
+        backend, xo = _fresh_xo()
+        rng = np.random.default_rng(3)
+        ones = [rng.standard_normal(1).astype(np.float32) for _ in range(64)]
+        freqs = [1000.0 + 100.0 * i for i in range(64)]
+        gl, gh = _run_new_mono(backend, xo, ones, freqs)
+        rl, rh = _reference_crossover_mono(backend, ones, freqs)
+        assert np.max(np.abs(gl.astype(np.float64) - rl.astype(np.float64))) < 1e-6
+        assert np.max(np.abs(gh.astype(np.float64) - rh.astype(np.float64))) < 1e-6
+
+    def test_split_render_matches_whole_render(self):
+        """Intrinsic continuity check, no oracle: two 512-sample blocks
+        back to back must equal the same 1024 samples in one call."""
+        rng = np.random.default_rng(11)
+        big = (rng.standard_normal(1024) * 0.5).astype(np.float32)
+        b1, x1 = _fresh_xo()
+        sl, sh = _run_new_mono(b1, x1, [big[:512], big[512:]], [700.0, 700.0])
+        b2, x2 = _fresh_xo()
+        wl, wh = _run_new_mono(b2, x2, [big], [700.0])
+        assert np.max(np.abs(sl.astype(np.float64) - wl.astype(np.float64))) < 1e-6
+        assert np.max(np.abs(sh.astype(np.float64) - wh.astype(np.float64))) < 1e-6
+
+    def test_sine_drift_confined_below_audibility(self):
+        """The razor case the noise grids miss: a pure 110 Hz sine's
+        high branch lands at ~1e-7 magnitudes where DF-I vs transposed-
+        DF-II float64 reassociation can flip a float32 ulp. Pin that
+        any differing sample sits below ~-100 dBFS in the oracle."""
+        backend, xo = _fresh_xo()
+        t = np.arange(512 * 8) / SR
+        sine = (0.5 * np.sin(2 * np.pi * 110.0 * t)).astype(np.float32)
+        blocks = [sine[i * 512:(i + 1) * 512] for i in range(8)]
+        gl, gh = _run_new_mono(backend, xo, blocks, _SWEEP)
+        rl, rh = _reference_crossover_mono(backend, blocks, _SWEEP)
+        assert np.max(np.abs(gl.astype(np.float64) - rl.astype(np.float64))) < 1e-6
+        assert np.max(np.abs(gh.astype(np.float64) - rh.astype(np.float64))) < 1e-6
+        differing = gh != rh
+        if np.any(differing):
+            assert np.max(np.abs(rh[differing])) < 1e-5
+
+    def test_voice_multiblock_mixed_content(self):
+        """16 voices -- sines, noise, and silent rows -- through a
+        per-block freq sweep; one lfilter call per stage must match
+        the old (V,)-broadcast per-sample loop."""
+        backend, xo = _fresh_xo()
+        rng = np.random.default_rng(42)
+        V, total = 16, 512 * 8
+        t = np.arange(total) / SR
+        vb = np.empty((V, total), dtype=np.float32)
+        for v in range(V):
+            if v % 3 == 0:
+                vb[v] = (0.5 * np.sin(2 * np.pi * (110.0 * (v + 1)) * t)).astype(
+                    np.float32
+                )
+            elif v % 3 == 1:
+                vb[v] = (rng.standard_normal(total) * 0.3).astype(np.float32)
+            else:
+                vb[v] = 0.0
+        blocks = [vb[:, i * 512:(i + 1) * 512] for i in range(8)]
+        gl, gh = _run_new_voice(backend, xo, blocks, _SWEEP)
+        rl, rh = _reference_crossover_voice(backend, blocks, _SWEEP)
+        assert gl.shape == (V, total) and gh.shape == (V, total)
+        assert np.max(np.abs(gl.astype(np.float64) - rl.astype(np.float64))) < 1e-6
+        assert np.max(np.abs(gh.astype(np.float64) - rh.astype(np.float64))) < 1e-6
+        # Silent rows must stay exactly silent (no cross-voice leakage).
+        for v in range(2, V, 3):
+            assert float(np.max(np.abs(gl[v]))) == 0.0
+            assert float(np.max(np.abs(gh[v]))) == 0.0
+
+    def test_voice_single_sample_blocks(self):
+        """frames=1 in the voice shape -- exercises the array-tail
+        shift and the carry aliasing (x2_arr rebound to old x1_arr)."""
+        backend, xo = _fresh_xo()
+        rng = np.random.default_rng(5)
+        ones = [
+            (rng.standard_normal((16, 1)) * 0.5).astype(np.float32)
+            for _ in range(48)
+        ]
+        freqs = [500.0 * (1.0 + 0.05 * i) for i in range(48)]
+        gl, gh = _run_new_voice(backend, xo, ones, freqs)
+        rl, rh = _reference_crossover_voice(backend, ones, freqs)
+        assert np.max(np.abs(gl.astype(np.float64) - rl.astype(np.float64))) < 1e-6
+        assert np.max(np.abs(gh.astype(np.float64) - rh.astype(np.float64))) < 1e-6
+
+    def test_mono_voice_reinit_shape_switch(self):
+        """Mono -> voice -> mono renders on one module id must reinit
+        state to the new shape each time (no stale-shape crash), same
+        contract as before slice 5."""
+        backend, xo = _fresh_xo(256)
+        rng = np.random.default_rng(9)
+        mono_blk = rng.standard_normal(256).astype(np.float32)
+        voice_blk = rng.standard_normal((16, 256)).astype(np.float32)
+        out_m = backend._render_crossover_mono(xo, 256, mono_blk, 1000.0)
+        assert out_m["low"].shape == (256,)
+        out_v = backend._render_crossover_voice(xo, 256, voice_blk, 1000.0)
+        assert out_v["low"].shape == (16, 256)
+        out_m2 = backend._render_crossover_mono(xo, 256, mono_blk, 1000.0)
+        assert out_m2["low"].shape == (256,)
+        # Post-reinit mono render matches a fresh module bit-for-bit.
+        b2, x2 = _fresh_xo(256)
+        fresh = b2._render_crossover_mono(x2, 256, mono_blk, 1000.0)
+        assert np.array_equal(out_m2["low"], fresh["low"])
+        assert np.array_equal(out_m2["high"], fresh["high"])
+
+    def test_state_keys_unchanged(self):
+        """Persisted-state key names survive slice 5 (mono scalars,
+        voice ``*_arr`` float64 arrays) -- the same compatibility pin
+        the audio_to_cv vectorization carries."""
+        backend, xo = _fresh_xo(64)
+        blk = np.ones(64, dtype=np.float32)
+        backend._render_crossover_mono(xo, 64, blk, 1000.0)
+        st = backend._state[xo.id]
+        assert set(st) == {
+            f"{stg}_{fld}"
+            for stg in ("lp1", "lp2", "hp1", "hp2")
+            for fld in ("x1", "x2", "y1", "y2")
+        }
+        assert all(isinstance(v, float) for v in st.values())
+        vblk = np.ones((16, 64), dtype=np.float32)
+        backend._render_crossover_voice(xo, 64, vblk, 1000.0)
+        st = backend._state[xo.id]
+        assert set(st) == {
+            f"{stg}_{fld}_arr"
+            for stg in ("lp1", "lp2", "hp1", "hp2")
+            for fld in ("x1", "x2", "y1", "y2")
+        }
+        assert all(
+            v.dtype == np.float64 and v.shape == (16,) for v in st.values()
+        )

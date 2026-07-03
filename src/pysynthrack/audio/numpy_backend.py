@@ -4167,11 +4167,36 @@ class NumpyBackend(AudioBackend):
         return lp_b0, lp_b1, lp_b2, hp_b0, hp_b1, hp_b2, a1n, a2n
 
     def _render_crossover_mono(self, module, frames, src, freq):
-        """Mono fast path -- scalar state, output 1D low + high.
+        """Mono fast path -- per-stage ``scipy.signal.lfilter``, 1D out.
 
-        Functionally unchanged from the pre-slice-3b.2 implementation;
-        the scalar inner loop is exactly the same so every existing
-        Crossover test passes bit-for-bit identically.
+        Filter vectorization slice 5: the per-sample Python cascade is
+        gone; each of the four biquad stages (LP1, LP2, HP1, HP2) is
+        one lfilter call running its time recurrence in C (~7x on the
+        2026-07-03 spike). Same state design as ``_render_filter_mono``
+        (slice 3): persisted state stays the raw DF-I history
+        ``(x1, x2, y1, y2)`` per stage -- coefficient-independent, so a
+        block-mean freq_cv that changes the coefficients between blocks
+        behaves exactly as the old loop -- converted to the equivalent
+        transposed-DF-II ``zi`` at block start (the lfiltic identity,
+        inlined) and read back off the stage input/output buffer tails
+        after.
+
+        Why per-stage lfilter and not one ``sosfilt`` over the 2-section
+        cascade: sosfilt returns only the final output, but the
+        intermediate stage-1 signal's tails ARE the coefficient-
+        independent DF-I history for stage 1's outputs and stage 2's
+        inputs. Recovering them algebraically from sosfilt's ``zf``
+        divides by a2 and costs bit-exactness; running the stages
+        separately reads them straight off the buffers. The
+        intermediates stay float64 between stages, exactly like the
+        old loop.
+
+        Equivalence vs the old loop (``TestCrossoverLfilterEquivalence``):
+        bit-identical after the float32 cast on noise across static and
+        per-block-swept freqs; on pure sines the high branch shows
+        <= ~5e-13 absolute drift confined to samples below ~-130 dBFS
+        (float64 reassociation between DF-I and transposed DF-II -- the
+        ADSR-rewrite drift class; tests pin < 1e-6).
         """
         state = self._state.setdefault(
             module.id,
@@ -4195,70 +4220,71 @@ class NumpyBackend(AudioBackend):
                 }
             )
 
+        if frames == 0:
+            empty = np.empty(0, dtype=np.float32)
+            return {"low": empty, "high": empty.copy()}
+
         lp_b0, lp_b1, lp_b2, hp_b0, hp_b1, hp_b2, a1n, a2n = (
             self._crossover_coeffs(freq)
         )
+        a = np.array([1.0, a1n, a2n])
+        lp_b = np.array([lp_b0, lp_b1, lp_b2])
+        hp_b = np.array([hp_b0, hp_b1, hp_b2])
+        x = src.astype(np.float64)
 
-        low = np.empty(frames, dtype=np.float32)
-        high = np.empty(frames, dtype=np.float32)
+        def zi(b, stg):
+            # lfiltic identity: DF-I history -> transposed-DF-II zi.
+            return np.array(
+                [
+                    b[1] * state[stg + "_x1"] + b[2] * state[stg + "_x2"]
+                    - a1n * state[stg + "_y1"] - a2n * state[stg + "_y2"],
+                    b[2] * state[stg + "_x1"] - a2n * state[stg + "_y1"],
+                ],
+                dtype=np.float64,
+            )
 
-        lp1_x1 = state["lp1_x1"]; lp1_x2 = state["lp1_x2"]
-        lp1_y1 = state["lp1_y1"]; lp1_y2 = state["lp1_y2"]
-        lp2_x1 = state["lp2_x1"]; lp2_x2 = state["lp2_x2"]
-        lp2_y1 = state["lp2_y1"]; lp2_y2 = state["lp2_y2"]
-        hp1_x1 = state["hp1_x1"]; hp1_x2 = state["hp1_x2"]
-        hp1_y1 = state["hp1_y1"]; hp1_y2 = state["hp1_y2"]
-        hp2_x1 = state["hp2_x1"]; hp2_x2 = state["hp2_x2"]
-        hp2_y1 = state["hp2_y1"]; hp2_y2 = state["hp2_y2"]
+        def carry(stg, xin, yout):
+            # Read the DF-I history back off the buffer tails; a
+            # 1-frame block shifts the carried x1/y1 into x2/y2.
+            state[stg + "_x2"] = (
+                float(xin[-2]) if frames >= 2 else state[stg + "_x1"]
+            )
+            state[stg + "_x1"] = float(xin[-1])
+            state[stg + "_y2"] = (
+                float(yout[-2]) if frames >= 2 else state[stg + "_y1"]
+            )
+            state[stg + "_y1"] = float(yout[-1])
 
-        for n in range(frames):
-            x = float(src[n])
-            # LP stage 1
-            y = lp_b0 * x + lp_b1 * lp1_x1 + lp_b2 * lp1_x2 - a1n * lp1_y1 - a2n * lp1_y2
-            lp1_x2 = lp1_x1; lp1_x1 = x
-            lp1_y2 = lp1_y1; lp1_y1 = y
-            # LP stage 2
-            z = lp_b0 * y + lp_b1 * lp2_x1 + lp_b2 * lp2_x2 - a1n * lp2_y1 - a2n * lp2_y2
-            lp2_x2 = lp2_x1; lp2_x1 = y
-            lp2_y2 = lp2_y1; lp2_y1 = z
-            low[n] = z
-            # HP stage 1
-            u = hp_b0 * x + hp_b1 * hp1_x1 + hp_b2 * hp1_x2 - a1n * hp1_y1 - a2n * hp1_y2
-            hp1_x2 = hp1_x1; hp1_x1 = x
-            hp1_y2 = hp1_y1; hp1_y1 = u
-            # HP stage 2
-            v = hp_b0 * u + hp_b1 * hp2_x1 + hp_b2 * hp2_x2 - a1n * hp2_y1 - a2n * hp2_y2
-            hp2_x2 = hp2_x1; hp2_x1 = u
-            hp2_y2 = hp2_y1; hp2_y1 = v
-            high[n] = v
+        lp1, _ = lfilter(lp_b, a, x, zi=zi(lp_b, "lp1"))
+        lp2, _ = lfilter(lp_b, a, lp1, zi=zi(lp_b, "lp2"))
+        hp1, _ = lfilter(hp_b, a, x, zi=zi(hp_b, "hp1"))
+        hp2, _ = lfilter(hp_b, a, hp1, zi=zi(hp_b, "hp2"))
+        carry("lp1", x, lp1)
+        carry("lp2", lp1, lp2)
+        carry("hp1", x, hp1)
+        carry("hp2", hp1, hp2)
 
-        state["lp1_x1"] = lp1_x1; state["lp1_x2"] = lp1_x2
-        state["lp1_y1"] = lp1_y1; state["lp1_y2"] = lp1_y2
-        state["lp2_x1"] = lp2_x1; state["lp2_x2"] = lp2_x2
-        state["lp2_y1"] = lp2_y1; state["lp2_y2"] = lp2_y2
-        state["hp1_x1"] = hp1_x1; state["hp1_x2"] = hp1_x2
-        state["hp1_y1"] = hp1_y1; state["hp1_y2"] = hp1_y2
-        state["hp2_x1"] = hp2_x1; state["hp2_x2"] = hp2_x2
-        state["hp2_y1"] = hp2_y1; state["hp2_y2"] = hp2_y2
-
-        return {"low": low, "high": high}
+        return {
+            "low": lp2.astype(np.float32),
+            "high": hp2.astype(np.float32),
+        }
 
     def _render_crossover_voice(self, module, frames, src, freq):
-        """Voice-aware path -- V parallel cascaded biquads, output (V, F).
+        """Voice-aware path -- per-stage lfilter over (V, F), (V, F) out.
 
-        Inner per-sample loop is still serial in time (cascaded biquads
-        are causal); the per-voice updates inside each sample are
-        vectorized across V via numpy broadcasting. The inner recurrence
-        is identical to the mono path -- the only difference is that
-        ``x``, the intermediate stage outputs, and the (x1, x2, y1, y2)
-        memories are ``(V,)`` arrays. Coefficients stay scalar because
-        the (block-mean) crossover freq is one number per block, so the
-        same coefficients apply to every voice; broadcast handles it.
+        Filter vectorization slice 5, voice shape (~34x on the
+        2026-07-03 spike; the old per-sample voice cascade was the
+        single most expensive render path at 61% of the 11.6 ms block
+        budget). Coefficients are scalar by design (block-mean freq,
+        see ``_render_crossover``), so one lfilter call per stage
+        filters all V rows along the time axis with ``zi`` of shape
+        (V, 2) -- the same shared-coefficient shape as filter slice 4.
 
-        For V=16 and frames=512 the per-iteration cost is essentially
-        identical to the mono path -- numpy makes a (V,)-wide multiply-
-        add basically free at this size, same trade-off as the filter
-        voice path.
+        State design and the per-stage-vs-sosfilt rationale are the
+        mono path's (see ``_render_crossover_mono``), vectorized: the
+        persisted DF-I history is one (V,) float64 array per stage
+        field, the zi conversion and tail read-back are the same two
+        lfiltic-identity expressions broadcast across V.
         """
         V = src.shape[0]
         state = self._state.setdefault(module.id, {})
@@ -4280,53 +4306,55 @@ class NumpyBackend(AudioBackend):
             ):
                 state[k] = np.zeros(V, dtype=np.float64)
 
+        if frames == 0:
+            empty = np.empty((V, 0), dtype=np.float32)
+            return {"low": empty, "high": empty.copy()}
+
         lp_b0, lp_b1, lp_b2, hp_b0, hp_b1, hp_b2, a1n, a2n = (
             self._crossover_coeffs(freq)
         )
+        a = np.array([1.0, a1n, a2n])
+        lp_b = np.array([lp_b0, lp_b1, lp_b2])
+        hp_b = np.array([hp_b0, hp_b1, hp_b2])
+        x = src.astype(np.float64)
 
-        low = np.empty((V, frames), dtype=np.float32)
-        high = np.empty((V, frames), dtype=np.float32)
+        def zi(b, stg):
+            # lfiltic identity broadcast across V -> (V, 2).
+            return np.stack(
+                [
+                    b[1] * state[stg + "_x1_arr"] + b[2] * state[stg + "_x2_arr"]
+                    - a1n * state[stg + "_y1_arr"] - a2n * state[stg + "_y2_arr"],
+                    b[2] * state[stg + "_x1_arr"] - a2n * state[stg + "_y1_arr"],
+                ],
+                axis=-1,
+            )
 
-        lp1_x1 = state["lp1_x1_arr"]; lp1_x2 = state["lp1_x2_arr"]
-        lp1_y1 = state["lp1_y1_arr"]; lp1_y2 = state["lp1_y2_arr"]
-        lp2_x1 = state["lp2_x1_arr"]; lp2_x2 = state["lp2_x2_arr"]
-        lp2_y1 = state["lp2_y1_arr"]; lp2_y2 = state["lp2_y2_arr"]
-        hp1_x1 = state["hp1_x1_arr"]; hp1_x2 = state["hp1_x2_arr"]
-        hp1_y1 = state["hp1_y1_arr"]; hp1_y2 = state["hp1_y2_arr"]
-        hp2_x1 = state["hp2_x1_arr"]; hp2_x2 = state["hp2_x2_arr"]
-        hp2_y1 = state["hp2_y1_arr"]; hp2_y2 = state["hp2_y2_arr"]
+        def carry(stg, xin, yout):
+            # .copy() so the carried (V,) tails don't pin the whole
+            # (V, F) block buffers alive as views.
+            state[stg + "_x2_arr"] = (
+                xin[:, -2].copy() if frames >= 2 else state[stg + "_x1_arr"]
+            )
+            state[stg + "_x1_arr"] = xin[:, -1].copy()
+            state[stg + "_y2_arr"] = (
+                yout[:, -2].copy() if frames >= 2 else state[stg + "_y1_arr"]
+            )
+            state[stg + "_y1_arr"] = yout[:, -1].copy()
 
-        for n in range(frames):
-            x = src[:, n].astype(np.float64)  # (V,)
-            # LP stage 1
-            y = lp_b0 * x + lp_b1 * lp1_x1 + lp_b2 * lp1_x2 - a1n * lp1_y1 - a2n * lp1_y2
-            lp1_x2 = lp1_x1; lp1_x1 = x
-            lp1_y2 = lp1_y1; lp1_y1 = y
-            # LP stage 2
-            z = lp_b0 * y + lp_b1 * lp2_x1 + lp_b2 * lp2_x2 - a1n * lp2_y1 - a2n * lp2_y2
-            lp2_x2 = lp2_x1; lp2_x1 = y
-            lp2_y2 = lp2_y1; lp2_y1 = z
-            low[:, n] = z
-            # HP stage 1
-            u = hp_b0 * x + hp_b1 * hp1_x1 + hp_b2 * hp1_x2 - a1n * hp1_y1 - a2n * hp1_y2
-            hp1_x2 = hp1_x1; hp1_x1 = x
-            hp1_y2 = hp1_y1; hp1_y1 = u
-            # HP stage 2
-            v = hp_b0 * u + hp_b1 * hp2_x1 + hp_b2 * hp2_x2 - a1n * hp2_y1 - a2n * hp2_y2
-            hp2_x2 = hp2_x1; hp2_x1 = u
-            hp2_y2 = hp2_y1; hp2_y1 = v
-            high[:, n] = v
+        lp1, _ = lfilter(lp_b, a, x, axis=-1, zi=zi(lp_b, "lp1"))
+        lp2, _ = lfilter(lp_b, a, lp1, axis=-1, zi=zi(lp_b, "lp2"))
+        hp1, _ = lfilter(hp_b, a, x, axis=-1, zi=zi(hp_b, "hp1"))
+        hp2, _ = lfilter(hp_b, a, hp1, axis=-1, zi=zi(hp_b, "hp2"))
+        carry("lp1", x, lp1)
+        carry("lp2", lp1, lp2)
+        carry("hp1", x, hp1)
+        carry("hp2", hp1, hp2)
 
-        state["lp1_x1_arr"] = lp1_x1; state["lp1_x2_arr"] = lp1_x2
-        state["lp1_y1_arr"] = lp1_y1; state["lp1_y2_arr"] = lp1_y2
-        state["lp2_x1_arr"] = lp2_x1; state["lp2_x2_arr"] = lp2_x2
-        state["lp2_y1_arr"] = lp2_y1; state["lp2_y2_arr"] = lp2_y2
-        state["hp1_x1_arr"] = hp1_x1; state["hp1_x2_arr"] = hp1_x2
-        state["hp1_y1_arr"] = hp1_y1; state["hp1_y2_arr"] = hp1_y2
-        state["hp2_x1_arr"] = hp2_x1; state["hp2_x2_arr"] = hp2_x2
-        state["hp2_y1_arr"] = hp2_y1; state["hp2_y2_arr"] = hp2_y2
+        return {
+            "low": lp2.astype(np.float32),
+            "high": hp2.astype(np.float32),
+        }
 
-        return {"low": low, "high": high}
 
     # ----- ParametricEQ rendering -----------------------------------------
 

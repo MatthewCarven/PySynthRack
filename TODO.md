@@ -55,9 +55,19 @@ Living list of what's next. Edit freely.
         reinit). Sandbox timing: shared 0.06 ms/blk (~33x vs 1.98), per-voice
         0.19 ms/blk (~10x). 9 new tests in TestFilterVoiceLfilterEquivalence with
         the verbatim old voice loop as oracle; suite 419 (+18 mido).
-  - [ ] **Slice 5 ← NEXT** (optional, separable) — crossover: same cascaded-biquad shape, sosfilt
-        fits. Own slice, own tests; droppable without affecting the filter work.
-  - [ ] Slice 6 — re-profile on native Windows for the real numbers; update
+  - [x] Slice 5 — **shipped 2026-07-03.** Crossover cascade → per-stage lfilter
+        (4 calls: LP1/LP2/HP1/HP2), NOT one sosfilt over the 2-section cascade —
+        sosfilt can't return the intermediate stage signal whose tails are the
+        coefficient-independent DF-I history (recovering it from zf divides by a2
+        and costs bit-exactness). Same raw-history state design as slices 3/4,
+        keys unchanged. Bit-identical on noise; pure-sine high branch drifts
+        ≤ ~5e-13, confined below ~−130 dBFS (the ADSR-rewrite float64
+        reassociation class; tests pin < 1e-6 + drift confinement). Sandbox
+        timing: mono 7.1x, voice 34.2x — the old voice cascade was 60.9% of the
+        11.6 ms block budget, now 1.8%. 9 new tests in
+        TestCrossoverLfilterEquivalence with the verbatim old loops as oracles;
+        suite 1315 sandbox (+18 mido).
+  - [ ] Slice 6 ← NEXT — re-profile on native Windows for the real numbers; update
         WORKLOG/TODO; decide whether filter vectorization can be marked done.
 
 - [x] ~~`_render_audio_to_cv_voice` per-sample Python loop~~ — **shipped 2026-07-03**
