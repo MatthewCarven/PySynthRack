@@ -1158,6 +1158,57 @@ class App:
                 )
                 return
 
+        if module.TYPE == "noise_gate":
+            # Hold-and-hysteresis downward gate. ``threshold`` is the open
+            # level (dBFS; at -80 the gate is a bit-exact bypass);
+            # ``hysteresis`` is the dB the level must fall below it to close
+            # (anti-chatter Schmitt gap); ``attack`` / ``release`` are the
+            # open / close ramps; ``hold`` keeps it open through brief dips;
+            # ``range`` is how far a closed gate ducks (-80 = full mute,
+            # higher = expander-style).
+            if param_name == "threshold":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-80.0, max_value=0.0, format="%.1f dBFS",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "hysteresis":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=24.0, format="%.1f dB",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "attack":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.1,
+                    min_value=0.1, max_value=50.0, format="%.1f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "hold":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=0.0, max_value=500.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "release":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=2.0,
+                    min_value=5.0, max_value=2000.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "range":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-80.0, max_value=0.0, format="%.1f dB",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "distortion":
             # Drive pedal. ``drive`` pushes the signal into the curve;
             # ``tone`` is the post-distortion low-pass in Hz (20 kHz =

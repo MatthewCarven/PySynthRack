@@ -1,0 +1,67 @@
+{
+    "version": 1,
+    "next_id": 5,
+    "modules": [
+        {
+            "id": 1,
+            "type": "oscillator",
+            "name": "saw",
+            "params": {
+                "waveform": "saw",
+                "freq": 220.0,
+                "amp": 0.4
+            }
+        },
+        {
+            "id": 2,
+            "type": "lfo",
+            "name": "tremolo",
+            "params": {
+                "waveform": "sine",
+                "rate": 2.0,
+                "bipolar": false
+            }
+        },
+        {
+            "id": 3,
+            "type": "noise_gate",
+            "name": "chop",
+            "params": {
+                "threshold": -15.0,
+                "hysteresis": 6.0,
+                "attack": 2.0,
+                "hold": 20.0,
+                "release": 120.0,
+                "range": -80.0
+            }
+        },
+        {
+            "id": 4,
+            "type": "speaker_output",
+            "name": "out",
+            "params": {
+                "gain": 1.0
+            }
+        }
+    ],
+    "cables": [
+        {
+            "src_module_id": 2,
+            "src_port": "cv",
+            "dst_module_id": 1,
+            "dst_port": "amp_cv"
+        },
+        {
+            "src_module_id": 1,
+            "src_port": "out",
+            "dst_module_id": 3,
+            "dst_port": "in"
+        },
+        {
+            "src_module_id": 3,
+            "src_port": "out",
+            "dst_module_id": 4,
+            "dst_port": "in"
+        }
+    ]
+}

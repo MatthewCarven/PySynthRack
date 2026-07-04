@@ -1176,6 +1176,8 @@ class NumpyBackend(AudioBackend):
             return self._render_compressor(module, frames, buffers, patch)
         if module.TYPE == "limiter":
             return self._render_limiter(module, frames, buffers, patch)
+        if module.TYPE == "noise_gate":
+            return self._render_noise_gate(module, frames, buffers, patch)
         if module.TYPE == "distortion":
             return self._render_distortion(module, frames, buffers, patch)
         if module.TYPE == "waveshaper":
@@ -5263,6 +5265,206 @@ class NumpyBackend(AudioBackend):
 
         state["hist"] = buf[:, frames:].copy()
         return out.astype(np.float32)
+
+    # ----- Noise gate ------------------------------------------------------
+
+    # Threshold / range floor in dB: at this minimum the control is a
+    # bypass -- threshold here means "always open", range here means
+    # "full mute" (linear gain 0 rather than 10**(-80/20)).
+    _GATE_THRESHOLD_MIN = -80.0
+    # |key| floor before the dB conversion, so a silent key is a finite
+    # (very negative) dB level instead of -inf.
+    _GATE_LEVEL_FLOOR = 1e-9
+    # Detector = an instant-attack, one-pole-release peak follower on the
+    # rectified key. The release smooths the within-cycle dips of the
+    # rectified waveform so the Schmitt sees an envelope, not the carrier;
+    # 10 ms holds the envelope up between peaks down to ~50 Hz. Opening is
+    # instant (the follower jumps to each new peak) so transients aren't
+    # missed -- the *gain* attack/release shapes the audible edges.
+    _GATE_DET_RELEASE_MS = 10.0
+
+    def _render_noise_gate(self, module, frames: int, buffers, patch):
+        """Hold-and-hysteresis downward gate (see modules/noise_gate.py).
+
+        Shape-polymorphic like the other effects. Branches on the ``in``
+        audio's ndim: 1D ``(F,)`` -> single detector + gate state machine +
+        gain smoother, ``(F,)`` out; 2D ``(V, F)`` -> per-voice state,
+        ``(V, F)`` out. The mono path is the ``V == 1`` case of the same
+        core, so a single voice row is bit-identical to mono.
+
+        Emits ``out`` (the gated audio) and ``open`` (a 0/1 gate CV that is
+        high exactly while the gate is open -- a free gate-extractor).
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        if src is None:
+            z = np.zeros(frames, dtype=np.float32)
+            return {"out": z, "open": z.copy()}
+
+        # Neutral bypass: threshold at its floor -> always open -> the
+        # signal passes untouched, so skip the detector entirely and hand
+        # back a bit-exact copy of the input (open = 1 throughout).
+        threshold = float(module.params.get("threshold", -45.0))
+        if threshold <= self._GATE_THRESHOLD_MIN:
+            out = src.astype(np.float32, copy=True)
+            return {"out": out, "open": np.ones_like(out)}
+
+        # Sidechain key: normalled to ``in`` when unpatched; an external
+        # cable keys the gate off that signal instead (still gating ``in``).
+        key = self._input_buffer(
+            patch, buffers, module.id, "sidechain", collapse=False
+        )
+
+        if src.ndim == 2:
+            V = src.shape[0]
+            key = self._gate_align_key(key, src, V)
+            return self._render_noise_gate_core(module, frames, src, key)
+
+        # Mono. A 2D key collapses to the summed mix (key off the whole
+        # signal, not one voice); an absent key normals to ``in``.
+        if key is None:
+            key = src
+        elif key.ndim == 2:
+            key = key.sum(axis=0)
+        res = self._render_noise_gate_core(
+            module, frames, src[np.newaxis, :], key[np.newaxis, :]
+        )
+        return {"out": res["out"][0], "open": res["open"][0]}
+
+    @staticmethod
+    def _gate_align_key(key, src, V):
+        """Broadcast the optional sidechain key onto the ``in`` voice shape.
+
+        Same policy as the compressor's sidechain alignment: unpatched
+        normals to ``in`` (each voice keys off itself); a mono key
+        broadcasts to every voice; a matching ``(V, F)`` key keys per
+        voice; any other voice count collapses to its mean.
+        """
+        if key is None:
+            return src
+        if key.ndim == 1:
+            return np.broadcast_to(key, (V, key.shape[0]))
+        if key.shape[0] == V:
+            return key
+        if key.shape[0] == 1:
+            return np.broadcast_to(key, (V, key.shape[1]))
+        return np.broadcast_to(key.mean(axis=0), (V, key.shape[1]))
+
+    def _render_noise_gate_core(self, module, frames, src, key):
+        """Shared ``(V, F)`` gate engine: detector -> Schmitt+hold -> gain.
+
+        A single per-sample voice loop (vectorized across voices, serial in
+        time -- the same shape the limiter's release envelope uses) carries
+        four pieces of per-voice state across blocks:
+
+          * ``env``  -- the peak-follower detector level (linear),
+          * ``open`` -- the Schmitt gate state (bool),
+          * ``hold`` -- samples of hold remaining, and
+          * ``gain`` -- the smoothed applied gain.
+
+        Because every stage is a plain sample-by-sample recurrence with its
+        state carried exactly, the render is **block-size independent and
+        bit-exact** (no reassociation, unlike the compressor's vectorized
+        gain solve): a big-block render equals a many-small-block render to
+        the last bit. The loop is O(F) Python per block; vectorizing the
+        Schmitt/hold timer is a possible future optimisation (as the
+        envelope follower's own loop was later vectorized).
+
+        Gate logic per sample: the follower opens instantly to a new peak
+        and releases with a one-pole; the Schmitt opens above ``threshold``
+        and only closes ``hysteresis`` dB below it; ``hold`` keeps it open
+        for a minimum time after the level drops under the close threshold;
+        the decision drives a target gain of 1 (open) or the ``range`` floor
+        (closed), which the attack/release one-pole ramps toward.
+        """
+        V = src.shape[0]
+        sr = self.sample_rate
+
+        threshold = float(module.params.get("threshold", -45.0))
+        hysteresis = max(float(module.params.get("hysteresis", 4.0)), 0.0)
+        attack_ms = float(module.params.get("attack", 1.0))
+        hold_ms = max(float(module.params.get("hold", 40.0)), 0.0)
+        release_ms = float(module.params.get("release", 150.0))
+        range_db = float(module.params.get("range", -80.0))
+
+        open_thr = threshold
+        close_thr = threshold - hysteresis
+        # range at its floor means a hard mute (gain 0); above it, a
+        # linear duck to 10**(range/20) -- the expander-style gentle gate.
+        floor = (
+            0.0 if range_db <= self._GATE_THRESHOLD_MIN
+            else 10.0 ** (range_db / 20.0)
+        )
+        hold_samples = float(max(int(round(hold_ms * 1e-3 * sr)), 0))
+
+        det_rel = 1.0 - float(
+            np.exp(-1.0 / (max(self._GATE_DET_RELEASE_MS, 1e-6) * 1e-3 * sr))
+        )
+        atk = 1.0 if attack_ms <= 0.0 else 1.0 - float(
+            np.exp(-1.0 / (max(attack_ms, 1e-6) * 1e-3 * sr))
+        )
+        rel = 1.0 if release_ms <= 0.0 else 1.0 - float(
+            np.exp(-1.0 / (max(release_ms, 1e-6) * 1e-3 * sr))
+        )
+
+        state = self._state.setdefault(module.id, {})
+        if "gain" not in state or state["gain"].shape[0] != V:
+            state.clear()
+            state["env"] = np.zeros(V, dtype=np.float64)   # detector level
+            state["open"] = np.zeros(V, dtype=bool)        # Schmitt state
+            state["hold"] = np.zeros(V, dtype=np.float64)  # hold remaining
+            # Gate powers up closed: gain starts at the (current) floor.
+            state["gain"] = np.full(V, float(floor), dtype=np.float64)
+
+        if frames == 0:
+            e = np.empty((V, 0), dtype=np.float32)
+            return {"out": e, "open": e.copy()}
+
+        x = src.astype(np.float64)
+        k = np.abs(key.astype(np.float64))
+
+        env = state["env"]
+        is_open = state["open"]
+        hold_ctr = state["hold"]
+        gain = state["gain"]
+        floor_v = float(floor)
+
+        gate_open = np.empty((V, frames), dtype=bool)
+        g_out = np.empty((V, frames), dtype=np.float64)
+
+        for n in range(frames):
+            a = k[:, n]
+            # Peak follower: instant attack (jump to a new peak), one-pole
+            # release (decay toward the current rectified sample).
+            env = np.where(a > env, a, env + det_rel * (a - env))
+            env_db = 20.0 * np.log10(np.maximum(env, self._GATE_LEVEL_FLOOR))
+
+            hot = env_db > open_thr        # rise above -> open
+            quiet = env_db < close_thr     # fall below close thr -> may close
+            is_open = is_open | hot
+            # While the level supports "open" (>= close thr), keep the hold
+            # timer primed; only a genuine dip below it spends the timer.
+            hold_ctr = np.where(is_open & ~quiet, hold_samples, hold_ctr)
+            counting = is_open & quiet & (hold_ctr > 0.0)
+            hold_ctr = np.where(counting, hold_ctr - 1.0, hold_ctr)
+            close_now = is_open & quiet & (hold_ctr <= 0.0)
+            is_open = is_open & ~close_now
+            gate_open[:, n] = is_open
+
+            # Ramp the gain toward its target (1 open / floor closed):
+            # attack coefficient while rising (opening), release while
+            # falling (closing) -- the asymmetric one-pole.
+            target = np.where(is_open, 1.0, floor_v)
+            coef = np.where(target > gain, atk, rel)
+            gain = gain + coef * (target - gain)
+            g_out[:, n] = gain
+
+        state["env"] = env
+        state["open"] = is_open
+        state["hold"] = hold_ctr
+        state["gain"] = gain
+
+        out = (x * g_out).astype(np.float32)
+        return {"out": out, "open": gate_open.astype(np.float32)}
 
     def _render_reverb(self, module, frames: int, buffers, patch):
         """Stereo FDN reverb: mono in -> decorrelated out_l / out_r.

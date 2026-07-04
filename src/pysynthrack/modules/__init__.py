@@ -40,6 +40,7 @@ from .midiinput import MIDIInput
 from .mixer import Mixer
 from .motion_eq import MotionEQ
 from .noise import Noise
+from .noise_gate import NoiseGate
 from .oscillator import Oscillator
 from .parametric_eq import ParametricEQ
 from .phaser import Phaser
@@ -95,6 +96,7 @@ __all__ = [
     "Mixer",
     "MotionEQ",
     "Noise",
+    "NoiseGate",
     "Oscillator",
     "ParametricEQ",
     "Phaser",
