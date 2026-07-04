@@ -217,6 +217,7 @@ class PyoBackend(AudioBackend):
             "transient_shaper",
             "delay",
             "reverb",
+            "ring_mod",
             "loudness",
             "distortion",
             "waveshaper",

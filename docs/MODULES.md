@@ -99,6 +99,7 @@ The full map:
 | `chorus.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `flanger.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `phaser.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
+| `ring_mod.freq_cv` | `1.0` (`freq_cv_depth`) | octaves | `freq · 2^(freq_cv_depth·cv[n])`, per-sample (internal carrier; bypassed when `carrier` patched) |
 | `resampler.pitch_cv` | `12.0` | semitones | `st + d·cv` (semitone space) |
 | `pitch_shifter.pitch_cv` | `12.0` | semitones | `st + d·mean cv` |
 | `delay.time_cv` | `50.0` | ms | `time + d·cv` |
@@ -213,6 +214,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`loudness`](#loudness) | Filters & EQ | `in` (audio), `level_cv` (cv) → `out` (audio) |
 | [`distortion`](#distortion) | Effects | `in` (audio), `drive_cv` (cv) → `out` (audio) |
 | [`waveshaper`](#waveshaper) | Effects | `in` (audio), `fold_cv` (cv) → `out` (audio) |
+| [`ring_mod`](#ring_mod) | Effects | `in`,`carrier` (audio), `freq_cv` (cv) → `out` (audio) |
 | [`chorus`](#chorus) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`flanger`](#flanger) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`phaser`](#phaser) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
@@ -1174,6 +1176,59 @@ through *exactly* (modulo the oversampler's tiny FIR ripple).
 Shape-polymorphic, per-voice state, block-size independent. See
 `examples/waveshaper_fold_drone.json` (a pure 110 Hz sine, fold swept
 1→7 by a 0.08 Hz LFO with a touch of symmetry — timbre that breathes).
+
+---
+
+#### `ring_mod`
+
+A **ring modulator** — the metallic, inharmonic corner of the rack. A
+[`vca`](#vca) multiplies audio by a (mostly positive) control voltage; a
+ring mod multiplies audio by another *bipolar audio* signal, the
+**carrier**, and the product keeps only the **sum and difference**
+frequencies of the two inputs — none of the originals. A 200 Hz tone
+against a 440 Hz carrier rings at 240 and 640 Hz; because those sidebands
+rarely line up with the input's own harmonics, the ear hears *inharmonic*
+metal — bells, gongs, the Dalek growl, clangorous sci-fi textures.
+
+The carrier is either **external** — patch any audio source into
+`carrier` for classic two-oscillator ring mod — or, when `carrier` is
+unpatched, an **internal sine** at `freq`, so the module is
+self-contained: drop it after an [`oscillator`](#oscillator) and dial the
+metal in. The internal sine is a per-voice phase-accumulated oscillator,
+swept 1 V/oct by `freq_cv × freq_cv_depth`. `mix` blends dry against the
+modulated signal; `mix = 0` is a **bit-exact dry passthrough**.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to modulate. Voice-aware; a single voice row is bit-identical to mono. Unpatched → silence. |
+| `carrier` | in | audio | External carrier. Unpatched → internal sine at `freq`; patched → the two signals multiply and `freq` / `freq_cv` are bypassed. |
+| `freq_cv` | in | cv | 1 V/oct pitch of the internal carrier, scaled by `freq_cv_depth` (per-sample). Optional; ignored with an external carrier. |
+| `out` | out | audio | `in` × carrier, blended with dry by `mix`. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `freq` | `440.0` | 1 … 5000 Hz | Internal-carrier pitch. Ignored while `carrier` is patched. |
+| `freq_cv_depth` | `1.0` | 0 … 4 oct/unit | Octaves the internal carrier shifts per `freq_cv` unit (1 V/oct). 0 disables the sweep. |
+| `mix` | `1.0` | 0 … 1 | Dry/wet. 0 = bit-exact passthrough. |
+
+**How it works.** `out = in × carrier`, blended as
+`(1−mix)·in + mix·(in·carrier)`. The internal carrier integrates phase
+per sample from `freq · 2^(freq_cv_depth · freq_cv)`, with per-voice
+phase held in state so a swept carrier stays continuous across blocks; an
+**exclusive prefix sum** puts a fresh module's first sample at phase 0 (a
+deterministic, testable sine). Shape-polymorphic — the `(V, F)` core runs
+with `V = 1` for mono, so one voice row is bit-identical to mono and
+voices stay independent. `mix = 0` short-circuits to the input untouched
+(no phase advance). The dry and external-carrier paths are exactly
+block-size independent; the internal sine matches across block sizes to
+within float phase-wrap rounding (< 1e-6). See `examples/ring_mod_bells.json`
+(a mallet-plucked sine rung by a 523 Hz internal carrier into tuned
+bells). Pairs with the planned `fm_op` and `modal` modules as the
+inharmonic corner of the rack.
 
 ---
 

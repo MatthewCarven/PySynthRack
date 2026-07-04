@@ -845,6 +845,33 @@ class App:
                 )
                 return
 
+        if module.TYPE == "ring_mod":
+            # Ring modulator: ``freq`` sets the internal sine carrier's
+            # pitch (Hz) when ``carrier`` is unpatched; ``freq_cv_depth``
+            # scales freq_cv (octaves per unit, 1 V/oct); ``mix`` is
+            # dry/wet (0 = bit-exact dry).
+            if param_name == "freq":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=1.0, max_value=5000.0, format="%.1f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "freq_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f oct/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "mix":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "chorus":
             # Stereo chorus: rate is the LFO speed (Hz); depth is the
             # sweep amount (0..1); voices sets how many detuned copies;

@@ -1182,6 +1182,8 @@ class NumpyBackend(AudioBackend):
             return self._render_transient_shaper(module, frames, buffers, patch)
         if module.TYPE == "distortion":
             return self._render_distortion(module, frames, buffers, patch)
+        if module.TYPE == "ring_mod":
+            return self._render_ring_mod(module, frames, buffers, patch)
         if module.TYPE == "waveshaper":
             return self._render_waveshaper(module, frames, buffers, patch)
         if module.TYPE == "resampler":
@@ -7341,6 +7343,114 @@ class NumpyBackend(AudioBackend):
             return (np.tanh(drive * u + c) - tc) / np.maximum(pos_rail, neg_rail)
         # soft (default)
         return np.tanh(drive * u) / np.tanh(drive)
+
+    # ----- ring modulator ----------------------------------------------------
+
+    def _render_ring_mod(self, module, frames: int, buffers, patch):
+        """Ring modulator: ``out = in x carrier``.
+
+        The carrier is an external audio cable on ``carrier`` when patched,
+        otherwise an internal per-voice phase-accumulated sine at ``freq``
+        (1 V/oct via ``freq_cv`` x ``freq_cv_depth``). Multiplying two
+        signals keeps only their sum/difference frequencies -> the metallic,
+        inharmonic bell/robot timbre.
+
+        Shape-polymorphic: the ``(V, F)`` core runs with ``V == 1`` for a
+        mono ``in``, so a single voice row is bit-identical to the mono
+        render, and per-voice carrier phase keeps voices independent.
+        ``mix`` <= 0 returns the input untouched (bit-exact dry, no phase
+        advance), the same contract as chorus/distortion. The dry and
+        external-carrier paths are exactly block-size independent; the
+        internal sine integrates phase per sample (continuous across
+        blocks) and matches across block sizes to within float phase-wrap
+        rounding.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        if src is None or src.size == 0:
+            return np.zeros(frames, dtype=np.float32)
+
+        mix = min(max(float(module.params.get("mix", 1.0)), 0.0), 1.0)
+        if mix <= 0.0:
+            return src  # bit-exact dry bypass (no carrier, no phase advance)
+
+        was_mono = src.ndim == 1
+        x = np.atleast_2d(src).astype(np.float64)          # (V, F)
+        v = x.shape[0]
+
+        carrier = self._input_buffer(
+            patch, buffers, module.id, "carrier", collapse=False
+        )
+        if carrier is not None and carrier.size:
+            c = self._ring_match_voices(carrier, v, frames)     # external
+        else:
+            c = self._ring_internal_carrier(module, frames, v, patch, buffers)
+
+        wet = x * c
+        if mix >= 1.0:
+            out = wet
+        else:
+            out = (1.0 - mix) * x + mix * wet
+
+        out32 = out.astype(np.float32)
+        return out32[0] if was_mono else out32
+
+    @staticmethod
+    def _ring_match_voices(buf, v, frames):
+        """Coerce an input buffer to ``(v, frames)`` float64.
+
+        A mono ``(F,)`` / single-row buffer broadcasts across voices; a
+        buffer with ``v`` rows is used as-is; a mismatched voice count is
+        summed to mono then broadcast (summing a modulator's voltages is
+        the least-surprising fallback, mirroring the delay's ``time_cv``
+        rule). The frame axis is trimmed / zero-padded to ``frames`` so an
+        odd-length isolated render stays in bounds.
+        """
+        c = np.atleast_2d(np.asarray(buf, dtype=np.float64))
+        if c.shape[0] == v:
+            pass
+        elif c.shape[0] == 1:
+            c = np.broadcast_to(c, (v, c.shape[1]))
+        else:
+            c = np.broadcast_to(c.sum(axis=0, keepdims=True), (v, c.shape[1]))
+        if c.shape[1] > frames:
+            c = c[:, :frames]
+        elif c.shape[1] < frames:
+            c = np.pad(c, ((0, 0), (0, frames - c.shape[1])))
+        return c
+
+    def _ring_internal_carrier(self, module, frames, v, patch, buffers):
+        """Per-voice phase-accumulated internal sine carrier, ``(v, F)``.
+
+        Instantaneous frequency = ``freq`` x 2 ** (``freq_cv_depth`` x
+        ``freq_cv``), integrated per sample (true 1 V/oct carrier FM) with
+        per-voice phase persisted in ``self._state`` so a swept carrier
+        stays continuous across blocks. Phase is an exclusive prefix sum,
+        so the first sample of a fresh module sits at phase 0 (sin -> 0):
+        a deterministic, testable starting waveform.
+        """
+        sr = self.sample_rate
+        freq = min(max(float(module.params.get("freq", 440.0)), 1.0), 5000.0)
+        depth = float(module.params.get("freq_cv_depth", 1.0))
+
+        freq_cv = self._input_buffer(
+            patch, buffers, module.id, "freq_cv", collapse=False
+        )
+
+        state = self._state.setdefault(module.id, {})
+        ph0 = state.get("phase")
+        if ph0 is None or ph0.shape[0] != v:
+            ph0 = np.zeros(v, dtype=np.float64)
+
+        if freq_cv is None or not getattr(freq_cv, "size", 0) or depth == 0.0:
+            inc = np.full((v, frames), freq / sr, dtype=np.float64)
+        else:
+            cv = self._ring_match_voices(freq_cv, v, frames)
+            inc = (freq * np.power(2.0, depth * cv)) / sr           # (v, F)
+
+        csum = np.cumsum(inc, axis=1)                               # inclusive
+        phases = (ph0[:, None] + csum - inc) % 1.0                  # exclusive
+        state["phase"] = (ph0 + csum[:, -1]) % 1.0
+        return np.sin(2.0 * np.pi * phases)
 
     def _render_distortion(self, module, frames: int, buffers, patch):
         """Drive pedal: 4x-oversampled saturation with tone and mix.

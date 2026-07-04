@@ -46,6 +46,7 @@ from .parametric_eq import ParametricEQ
 from .phaser import Phaser
 from .resampler import Resampler
 from .reverb import Reverb
+from .ring_mod import RingMod
 from .pitch_shifter import PitchShifter
 from .output import (
     LeftSpeakerOutput,
@@ -103,6 +104,7 @@ __all__ = [
     "Phaser",
     "Resampler",
     "Reverb",
+    "RingMod",
     "PitchShifter",
     "RightSpeakerOutput",
     "SampleHold",

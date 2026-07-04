@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "next_id": 7,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "Clock (120 BPM)",
+      "params": {"bpm": 120.0, "division": 2.0, "pulse_width": 0.5}
+    },
+    {
+      "id": 2,
+      "type": "oscillator",
+      "name": "Bell tone",
+      "params": {"waveform": "sine", "freq": 440.0, "amp": 0.3}
+    },
+    {
+      "id": 3,
+      "type": "adsr",
+      "name": "Mallet env",
+      "params": {"attack": 0.002, "decay": 0.28, "sustain": 0.0, "release": 0.2}
+    },
+    {
+      "id": 4,
+      "type": "vca",
+      "name": "VCA",
+      "params": {}
+    },
+    {
+      "id": 5,
+      "type": "ring_mod",
+      "name": "Ring (metallic)",
+      "params": {"freq": 523.25, "freq_cv_depth": 1.0, "mix": 0.85}
+    },
+    {
+      "id": 6,
+      "type": "speaker_output",
+      "name": "speaker_output",
+      "params": {"gain": 0.7}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 3, "dst_port": "gate"},
+    {"src_module_id": 2, "src_port": "out", "dst_module_id": 4, "dst_port": "audio"},
+    {"src_module_id": 3, "src_port": "cv", "dst_module_id": 4, "dst_port": "cv"},
+    {"src_module_id": 4, "src_port": "out", "dst_module_id": 5, "dst_port": "in"},
+    {"src_module_id": 5, "src_port": "out", "dst_module_id": 6, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 80], "2": [40, 320], "3": [300, 80],
+      "4": [560, 200], "5": [820, 200], "6": [1080, 200]
+    }
+  }
+}
