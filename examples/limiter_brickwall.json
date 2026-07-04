@@ -1,0 +1,76 @@
+{
+    "version": 1,
+    "next_id": 6,
+    "modules": [
+        {
+            "id": 1,
+            "type": "oscillator",
+            "name": "saw_low",
+            "params": {
+                "waveform": "saw",
+                "freq": 110.0,
+                "amp": 0.5
+            }
+        },
+        {
+            "id": 2,
+            "type": "oscillator",
+            "name": "saw_fifth",
+            "params": {
+                "waveform": "saw",
+                "freq": 165.0,
+                "amp": 0.5
+            }
+        },
+        {
+            "id": 3,
+            "type": "combiner",
+            "name": "sum",
+            "params": {}
+        },
+        {
+            "id": 4,
+            "type": "limiter",
+            "name": "brickwall",
+            "params": {
+                "ceiling": -1.0,
+                "release": 80.0,
+                "lookahead": 5.0
+            }
+        },
+        {
+            "id": 5,
+            "type": "speaker_output",
+            "name": "out",
+            "params": {
+                "gain": 1.0
+            }
+        }
+    ],
+    "cables": [
+        {
+            "src_module_id": 1,
+            "src_port": "out",
+            "dst_module_id": 3,
+            "dst_port": "in1"
+        },
+        {
+            "src_module_id": 2,
+            "src_port": "out",
+            "dst_module_id": 3,
+            "dst_port": "in2"
+        },
+        {
+            "src_module_id": 3,
+            "src_port": "out",
+            "dst_module_id": 4,
+            "dst_port": "in"
+        },
+        {
+            "src_module_id": 4,
+            "src_port": "out",
+            "dst_module_id": 5,
+            "dst_port": "in"
+        }
+    ]
+}

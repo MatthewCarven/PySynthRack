@@ -32,6 +32,7 @@ from .filter import Filter
 from .flanger import Flanger
 from .keyboard import Keyboard
 from .lfo import LFO
+from .limiter import Limiter
 from .loudness import Loudness
 from .micinput import MicInput
 from .meter import Meter
@@ -86,6 +87,7 @@ __all__ = [
     "Keyboard",
     "LeftSpeakerOutput",
     "LFO",
+    "Limiter",
     "Loudness",
     "MicInput",
     "Meter",

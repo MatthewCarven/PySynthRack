@@ -1174,6 +1174,8 @@ class NumpyBackend(AudioBackend):
             return self._render_loudness(module, frames, buffers, patch)
         if module.TYPE == "compressor":
             return self._render_compressor(module, frames, buffers, patch)
+        if module.TYPE == "limiter":
+            return self._render_limiter(module, frames, buffers, patch)
         if module.TYPE == "distortion":
             return self._render_distortion(module, frames, buffers, patch)
         if module.TYPE == "waveshaper":
@@ -5143,6 +5145,124 @@ class NumpyBackend(AudioBackend):
         gr = g - 1.0  # applied gain reduction as a 0..-1 CV
 
         return {"out": out.astype(np.float32), "gr": gr.astype(np.float32)}
+
+    # Limiter: |x| floor so the C/|x| gain never divides by zero.
+    _LIM_LEVEL_FLOOR = 1e-9
+
+    def _render_limiter(self, module, frames: int, buffers, patch):
+        """Brickwall lookahead peak limiter (see modules/limiter.py).
+
+        Shape-polymorphic like the other effects: 1D ``(F,)`` in -> one
+        detector + gain envelope + delay line, ``(F,)`` out; 2D ``(V, F)``
+        in -> per-voice state, ``(V, F)`` out. The mono path is the
+        ``V == 1`` case of the same core, so a single voice row is
+        bit-identical to mono.
+
+        Fixed latency of ``L = round(lookahead_ms * sr / 1000)`` samples
+        (clamped to >= 1): the audio is delayed by L while the gain is
+        computed L samples ahead, so the attack ramp lands on each peak.
+        The latency is constant for a given ``lookahead`` and independent
+        of block size.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        if src is None:
+            return np.zeros(frames, dtype=np.float32)
+
+        sr = self.sample_rate
+        ceiling_db = float(module.params.get("ceiling", -1.0))
+        release_ms = float(module.params.get("release", 80.0))
+        lookahead_ms = float(module.params.get("lookahead", 5.0))
+
+        ceiling = float(10.0 ** (ceiling_db / 20.0))  # linear ceiling
+        look = max(int(round(lookahead_ms * 1e-3 * sr)), 1)  # latency in samples
+
+        if src.ndim == 2:
+            return self._render_limiter_core(module, frames, src, ceiling, look, release_ms)
+        res = self._render_limiter_core(
+            module, frames, src[np.newaxis, :], ceiling, look, release_ms
+        )
+        return res[0]
+
+    def _render_limiter_core(self, module, frames, src, ceiling, look, release_ms):
+        """Shared ``(V, F)`` lookahead-limiter engine.
+
+        Pipeline, per voice: instantaneous target gain
+        ``t = min(1, ceiling/|x|)`` -> slope-limited lookahead anticipation
+        (the gain ramps down at <= 1/look per sample so it reaches the
+        target exactly on the peak) -> one-pole release (instant on the way
+        down, ``release``-paced on the way up) -> a final per-sample clamp
+        to ``ceiling/|x|`` that makes the wall hard to the last ULP ->
+        multiply into the ``look``-delayed audio.
+
+        State carried across blocks (per voice): the ``look``-sample
+        audio/detector history (the delay line + lookahead) and the release
+        gain-reduction level. So the render is block-size independent:
+        latency is exactly ``look`` regardless of block size, and the
+        signal matches a single big-block render to float round-off (the
+        anticipation's min-scan reassociates the ``+ i/look`` term, like the
+        compressor's gain solve).
+        """
+        V = src.shape[0]
+        sr = self.sample_rate
+
+        state = self._state.setdefault(module.id, {})
+        if "hist" not in state or state["hist"].shape != (V, look):
+            state.clear()
+            # Delay line + lookahead buffer, and the carried release reduction.
+            state["hist"] = np.zeros((V, look), dtype=np.float64)
+            state["red"] = np.zeros(V, dtype=np.float64)
+
+        if frames == 0:
+            return np.empty((V, 0), dtype=np.float32)
+
+        x = src.astype(np.float64)
+        buf = np.concatenate([state["hist"], x], axis=1)  # (V, look + F)
+        M = buf.shape[1]
+        absb = np.abs(buf)
+
+        # Neutral short-circuit: nothing in the buffer reaches the ceiling
+        # and the release envelope is fully open -> gain is identically 1,
+        # so the output is the look-delayed input, bit-exact.
+        if not state["red"].any() and float(absb.max(initial=0.0)) <= ceiling:
+            out = buf[:, :frames].astype(np.float32)
+            state["hist"] = buf[:, frames:].copy()
+            return out
+
+        # Instantaneous target gain t = min(1, ceiling/|x|), <= 1.
+        t = np.minimum(1.0, ceiling / np.maximum(absb, self._LIM_LEVEL_FLOOR))
+
+        # Lookahead anticipation: A[i] = min_j (t[i+j] + j/look) -- a linear
+        # ramp of slope 1/look into each dip that lands on the trough.
+        # Computed as a reversed running min: reverse t, take the minimum
+        # accumulate of (t' - q/look), add q/look back, reverse again. Every
+        # emitted sample (i < F) has its whole forward window inside buf, so
+        # its anticipation is exact; only the non-emitted tail sees an edge.
+        slope = 1.0 / look
+        q = np.arange(M, dtype=np.float64)
+        mc = np.minimum.accumulate(t[:, ::-1] - q * slope, axis=1)
+        A = (mc + q * slope)[:, ::-1][:, :frames]  # (V, F), <= t
+
+        # One-pole release on the gain *reduction* (red = 1 - gain): it rises
+        # instantly to meet a deeper dip (attack_coef 1.0) and falls back
+        # with the release one-pole. Instant attack breaks the vectorized
+        # solver's algebra (coef 1 -> a = 0), so this uses the per-sample
+        # voice loop -- the same fallback the compressor's smoother uses.
+        rel_coef = 1.0 if release_ms <= 0.0 else 1.0 - float(
+            np.exp(-1.0 / (max(release_ms, 1e-6) * 1e-3 * sr))
+        )
+        red, red_final = self._audio_to_cv_loop_voice(
+            1.0 - A, state["red"].copy(), 1.0, rel_coef
+        )
+        state["red"] = red_final
+        g = 1.0 - red  # (V, F), <= A <= t
+
+        # Hard ceiling to the last ULP, then apply to the delayed audio.
+        delayed = buf[:, :frames]  # x delayed by look
+        g = np.minimum(g, ceiling / np.maximum(np.abs(delayed), self._LIM_LEVEL_FLOOR))
+        out = g * delayed
+
+        state["hist"] = buf[:, frames:].copy()
+        return out.astype(np.float32)
 
     def _render_reverb(self, module, frames: int, buffers, patch):
         """Stereo FDN reverb: mono in -> decorrelated out_l / out_r.

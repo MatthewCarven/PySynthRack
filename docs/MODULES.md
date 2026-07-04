@@ -209,6 +209,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv) → `out` (audio) |
 | [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`compressor`](#compressor) | Effects | `in`,`sidechain` (audio), `threshold_cv` (cv) → `out` (audio), `gr` (cv) |
+| [`limiter`](#limiter) | Effects | `in` (audio) → `out` (audio) |
 | [`loudness`](#loudness) | Filters & EQ | `in` (audio), `level_cv` (cv) → `out` (audio) |
 | [`distortion`](#distortion) | Effects | `in` (audio), `drive_cv` (cv) → `out` (audio) |
 | [`waveshaper`](#waveshaper) | Effects | `in` (audio), `fold_cv` (cv) → `out` (audio) |
@@ -990,6 +991,52 @@ applied gain (`applied_gain = gr + 1`). See `examples/sidechain_pump.json`
 taste); pump a pad from a kick via the `sidechain`; smash drums in parallel
 (`mix` ~0.3); or drive `gr` into a VCA / any `*_cv` to duck a whole group in
 lock-step.
+
+#### `limiter`
+
+A **brickwall lookahead limiter** — the "demo can't clip" module. Where the
+[`compressor`](#compressor) eases gain down by a *ratio* around a threshold, the
+limiter is an absolute wall: whatever it takes to keep the output at or under
+`ceiling`, it does. It **delays the audio by `lookahead`** and watches the
+un-delayed signal, so by the time a loud sample reaches the output the gain has
+already ramped down to meet it — the descent is spread linearly across the
+lookahead window and lands exactly on the peak, so there's no hard corner.
+After the peak, gain recovers with a one-pole `release`.
+
+Because the audio is delayed, the limiter has a **fixed latency equal to the
+lookahead** — `round(lookahead_ms · sr / 1000)` samples, constant for a given
+`lookahead` and independent of block size, so a parallel dry path elsewhere can
+be compensated by the same amount.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to limit. Unpatched → silence. |
+| `out` | out | audio | Limited signal, delayed by `lookahead`. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `ceiling` | `-1.0` | −20 … 0 dBFS | Hard output ceiling; the peak never exceeds it. |
+| `release` | `80.0` | 20 … 1000 ms | One-pole gain recovery time after a peak. |
+| `lookahead` | `5.0` | 1 … 10 ms | Attack-ramp window; also the fixed processing latency. |
+
+Instantaneous target gain `min(1, ceiling/|x|)` → slope-limited lookahead
+anticipation (the gain ramps at ≤ 1/`look` per sample so it lands on the
+trough) → one-pole release (instant on the way down, `release`-paced on the way
+up) → a final per-sample clamp to `ceiling/|x|` that keeps the wall hard to the
+last ULP → multiply into the delayed audio. Under the ceiling the gain is
+exactly 1.0 and the output is a **bit-exact (delayed) passthrough**.
+Shape-polymorphic like the other effects — a `(V, F)` input limits per voice
+(no cross-voice ducking), a single row bit-identical to mono. See
+`examples/limiter_brickwall.json` (two saws summed hot, held at −1 dBFS).
+
+**Patching.** Drop one in front of the [`speaker_output`](#speaker_output) as a
+master safety net; pull `ceiling` down a dB and drive the input harder for
+transparent loudness; or tame a spiky source before a stage that assumes
+headroom. It is the last link in the chain — place it after any make-up gain.
 
 #### `loudness`
 

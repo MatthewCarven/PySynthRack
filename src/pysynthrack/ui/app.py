@@ -1131,6 +1131,33 @@ class App:
                 )
                 return
 
+        if module.TYPE == "limiter":
+            # Brickwall lookahead limiter. ``ceiling`` is the hard output
+            # ceiling in dBFS (the output peak never exceeds it); ``release``
+            # is the one-pole recovery time; ``lookahead`` is the attack
+            # window, which also sets the module's fixed processing latency.
+            if param_name == "ceiling":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-20.0, max_value=0.0, format="%.1f dBFS",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "release":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=20.0, max_value=1000.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "lookahead":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=1.0, max_value=10.0, format="%.1f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "distortion":
             # Drive pedal. ``drive`` pushes the signal into the curve;
             # ``tone`` is the post-distortion low-pass in Hz (20 kHz =
