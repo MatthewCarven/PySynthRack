@@ -100,6 +100,7 @@ The full map:
 | `flanger.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `phaser.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `ring_mod.freq_cv` | `1.0` (`freq_cv_depth`) | octaves | `freq · 2^(freq_cv_depth·cv[n])`, per-sample (internal carrier; bypassed when `carrier` patched) |
+| `freq_shifter.shift_cv` | `200.0` (`shift_cv_depth`) | Hz (linear, additive) | `shift + shift_cv_depth·cv[n]`, per-sample; a shift adds Hz, not V/oct; clamped ±Nyquist |
 | `resampler.pitch_cv` | `12.0` | semitones | `st + d·cv` (semitone space) |
 | `pitch_shifter.pitch_cv` | `12.0` | semitones | `st + d·mean cv` |
 | `delay.time_cv` | `50.0` | ms | `time + d·cv` |
@@ -215,6 +216,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`distortion`](#distortion) | Effects | `in` (audio), `drive_cv` (cv) → `out` (audio) |
 | [`waveshaper`](#waveshaper) | Effects | `in` (audio), `fold_cv` (cv) → `out` (audio) |
 | [`ring_mod`](#ring_mod) | Effects | `in`,`carrier` (audio), `freq_cv` (cv) → `out` (audio) |
+| [`freq_shifter`](#freq_shifter) | Effects | `in` (audio), `shift_cv` (cv) → `out_up`,`out_down` (audio) |
 | [`chorus`](#chorus) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`flanger`](#flanger) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`phaser`](#phaser) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
@@ -1229,6 +1231,75 @@ within float phase-wrap rounding (< 1e-6). See `examples/ring_mod_bells.json`
 (a mallet-plucked sine rung by a 523 Hz internal carrier into tuned
 bells). Pairs with the planned `fm_op` and `modal` modules as the
 inharmonic corner of the rack.
+
+---
+
+#### `freq_shifter`
+
+A **frequency shifter** — the *other* inharmonic corner of the rack,
+beside [`ring_mod`](#ring_mod). Where a [`pitch_shifter`](#pitch_shifter)
+*multiplies* every partial's frequency by a ratio (harmonics stay
+harmonic — the same note, higher or lower), a frequency shifter **adds a
+fixed number of hertz to every partial**. A 100/200/300 Hz series shifted
+up 50 Hz becomes 150/250/350 — no longer integer multiples of any
+fundamental, so the ear stops hearing "a note" and hears metallic,
+inharmonic clang. Small shifts give slow phasing and a hollow "detune
+that never resolves"; larger shifts give bells and robots; and with
+`feedback` the endlessly re-shifted signal becomes the classic
+**barberpole / Shepard** glide that seems to rise (or fall) forever.
+
+The shift is done the analog **Bode/Moog** way — single-sideband
+modulation. The input is split into a quadrature (90°) pair by a 255-tap
+FIR **Hilbert transformer** to form its analytic signal, which is then
+rotated by a complex sine at the shift frequency. The two real
+projections of that rotation are the **two sidebands at once**: `out_up`
+moves every partial *up* by `shift` Hz, `out_down` *down* by the same
+amount (the mirror-image conjugate sideband). Patch whichever you want,
+or both into L/R for a shimmering, decorrelated spread from a mono
+source.
+
+The Hilbert FIR has a fixed group delay of 127 samples (~2.9 ms), so the
+wet runs that far behind the input; the dry in the `mix` blend is
+delay-matched, so at `shift = 0` the wet *is* the delayed dry and the
+blend is transparent rather than combing.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to shift. Voice-aware; a single voice row is bit-identical to mono. Unpatched → silence. |
+| `shift_cv` | in | cv | **Linear-Hz** shift modulation (not 1 V/oct — a shift is an addition), scaled by `shift_cv_depth`, per-sample. Optional. |
+| `out_up` | out | audio | Every partial shifted **up** by `shift` Hz. |
+| `out_down` | out | audio | Every partial shifted **down** by `shift` Hz (the opposite sideband). |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `shift` | `0.0` | −2000 … +2000 Hz | Hz added to every partial. Positive raises `out_up` / lowers `out_down`; negative swaps them. 0 → the wet is the delay-matched dry. |
+| `shift_cv_depth` | `200.0` | Hz / CV unit | Hz of shift per `shift_cv` unit (linear, additive). 0 disables the CV. |
+| `mix` | `1.0` | 0 … 1 | Dry/wet. 0 = bit-exact dry passthrough on both outputs. |
+| `feedback` | `0.0` | 0 … 0.9 | Recirculates `out_up` (the shifted, wet signal) into the input — the barberpole/endless-shift comb. 0 = a clean single shift. |
+
+**How it works.** The analytic signal `a = x_d + j·H{x}` is built from a
+255-tap Type-III (antisymmetric, integer group delay) Hilbert FIR —
+Hamming-windowed for a flat passband and > 55 dB opposite-sideband
+rejection across the band, crucially holding down to low frequencies
+where wider windows (Blackman, Kaiser) collapse against the Type-III DC
+null. `out_up = x_d·cos φ − x_h·sin φ` and `out_down = x_d·cos φ +
+x_h·sin φ`, where φ integrates `2π·shift/sr` per sample (held per voice
+across blocks, exclusive-prefix so a fresh module starts at φ = 0).
+Shape-polymorphic — the `(V, F)` core runs with `V = 1` for mono, so one
+voice row is bit-identical to mono and voices stay independent. `mix = 0`
+short-circuits to the input untouched (no latency, no state advance). The
+block is processed in fixed 127-sample chunks so the `feedback`
+recirculation only ever reads already-computed output: the recurrence is
+causal and boundary-independent, making the result **block-size
+independent** (bit-exact with no feedback, to < 1e-6 with). See
+`examples/freq_shifter_barberpole.json` (a saw drone shifted with
+feedback into a rising stereo shimmer). Pairs with [`ring_mod`](#ring_mod):
+ring mod keeps the *sum and difference* of two signals, the frequency
+shifter keeps *one shifted sideband* of one.
 
 ---
 

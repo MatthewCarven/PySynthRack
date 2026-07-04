@@ -30,6 +30,7 @@ from .diskwriter import DiskWriter
 from .fileplayer import FilePlayer
 from .filter import Filter
 from .flanger import Flanger
+from .freq_shifter import FreqShifter
 from .keyboard import Keyboard
 from .lfo import LFO
 from .limiter import Limiter
@@ -87,6 +88,7 @@ __all__ = [
     "FilePlayer",
     "Filter",
     "Flanger",
+    "FreqShifter",
     "Keyboard",
     "LeftSpeakerOutput",
     "LFO",

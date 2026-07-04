@@ -84,6 +84,33 @@ _OS_LATENCY = 2 * ((_OS_TAPS - 1) // 2) // _OS_FACTOR
 _OS_FIR = firwin(_OS_TAPS, 0.9 / _OS_FACTOR)  # band edge ~10% under base Nyquist
 
 
+def _design_fs_hilbert(numtaps):
+    """Windowed Type-III FIR Hilbert transformer (odd length).
+
+    Antisymmetric with an *integer* group delay of ``(numtaps-1)//2``
+    samples. The ideal impulse response ``2/(pi n)`` (nonzero on odd taps
+    only) is Hamming-windowed: a flat passband and > 55 dB opposite-
+    sideband rejection right across the audio band -- crucially holding
+    that rejection down to low frequencies, where wider windows (Blackman,
+    Kaiser) collapse against the Type-III DC null.
+    """
+    n = np.arange(numtaps) - (numtaps - 1) / 2.0
+    h = np.zeros(numtaps)
+    nz = n != 0
+    h[nz] = (1.0 - np.cos(np.pi * n[nz])) / (np.pi * n[nz])
+    h *= np.hamming(numtaps)
+    return h
+
+
+# FreqShifter (Bode single-sideband) Hilbert pair. 255 taps -> an integer
+# group delay of 127 samples (~2.9 ms @ 44.1k), which is the module's wet
+# latency; the dry path is delay-matched in the ``mix`` blend so a shift of
+# 0 Hz stays phase-coherent instead of combing.
+_FS_TAPS = 255
+_FS_LATENCY = (_FS_TAPS - 1) // 2
+_FS_HILBERT = _design_fs_hilbert(_FS_TAPS)
+
+
 class _Oversampler4:
     """Streaming 4x up/down pair for one module's voice bank.
 
@@ -1184,6 +1211,8 @@ class NumpyBackend(AudioBackend):
             return self._render_distortion(module, frames, buffers, patch)
         if module.TYPE == "ring_mod":
             return self._render_ring_mod(module, frames, buffers, patch)
+        if module.TYPE == "freq_shifter":
+            return self._render_freq_shifter(module, frames, buffers, patch)
         if module.TYPE == "waveshaper":
             return self._render_waveshaper(module, frames, buffers, patch)
         if module.TYPE == "resampler":
@@ -7451,6 +7480,141 @@ class NumpyBackend(AudioBackend):
         phases = (ph0[:, None] + csum - inc) % 1.0                  # exclusive
         state["phase"] = (ph0 + csum[:, -1]) % 1.0
         return np.sin(2.0 * np.pi * phases)
+
+    def _render_freq_shifter(self, module, frames: int, buffers, patch):
+        """Bode single-sideband frequency shifter -> up/down sidebands.
+
+        The input is split into an analytic (quadrature) pair by a 255-tap
+        Type-III FIR Hilbert transformer (group delay ``_FS_LATENCY`` = 127
+        samples, ~2.9 ms) and rotated by a complex sine at the shift
+        frequency. The two real projections of that rotation are the two
+        sidebands: ``out_up`` moves every partial *up* by ``shift`` Hz,
+        ``out_down`` *down* by the same amount (the conjugate sideband).
+        Because the shift is an addition of hertz, not a ratio, harmonic
+        input becomes inharmonic -- the metallic/barberpole character.
+
+        Shape-polymorphic: the ``(V, F)`` core runs with ``V == 1`` for a
+        mono ``in``, so a single voice row is bit-identical to the mono
+        render; per-voice Hilbert / delay-line / carrier-phase state keeps
+        voices independent. ``mix`` <= 0 returns the input untouched on
+        both outputs (bit-exact dry, no latency, no state advance) -- the
+        chorus/ring_mod contract. Otherwise the wet is 127 samples late and
+        the dry is delay-matched, so at ``shift == 0`` the wet *is* the
+        delayed dry and the blend is transparent.
+
+        Processed in fixed ``_FS_LATENCY``-sample chunks so the ``feedback``
+        recirculation of ``out_up`` only ever reads already-computed output:
+        the recurrence is causal and boundary-independent, which makes the
+        result block-size independent (bit-exact after the float32 cast, the
+        FIR streamed via ``lfilter`` with carried ``zi``). ``feedback`` is
+        clamped to 0.9 for a bounded loop.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        z = np.zeros(frames, dtype=np.float32)
+        if src is None or src.size == 0:
+            return {"out_up": z, "out_down": z.copy()}
+
+        mix = min(max(float(module.params.get("mix", 1.0)), 0.0), 1.0)
+        if mix <= 0.0:
+            return {"out_up": src, "out_down": src}  # bit-exact dry bypass
+
+        was_mono = src.ndim == 1
+        x = np.atleast_2d(src).astype(np.float64)              # (V, F)
+        v, F = x.shape
+        if F == 0:
+            return {"out_up": z, "out_down": z.copy()}
+
+        sr = self.sample_rate
+        shift = min(max(float(module.params.get("shift", 0.0)), -2000.0), 2000.0)
+        depth = float(module.params.get("shift_cv_depth", 200.0))
+        feedback = min(max(float(module.params.get("feedback", 0.0)), 0.0), 0.9)
+
+        # Instantaneous shift in Hz, (V, F). ``shift_cv`` is a LINEAR Hz
+        # control (a shift is an addition, not a 1 V/oct ratio), scaled by
+        # ``shift_cv_depth``. Clamp the total below Nyquist so a hot CV
+        # can't drive the rotation into gross aliasing.
+        cv = self._input_buffer(patch, buffers, module.id, "shift_cv", collapse=False)
+        if cv is not None and getattr(cv, "size", 0) and depth != 0.0:
+            c = self._ring_match_voices(cv, v, F)
+            shift_hz = shift + depth * c
+        else:
+            shift_hz = np.full((v, F), shift, dtype=np.float64)
+        nyq = 0.5 * sr
+        np.clip(shift_hz, -nyq, nyq, out=shift_hz)
+        omega = (2.0 * np.pi / sr) * shift_hz                  # rad/sample
+
+        h = _FS_HILBERT
+        L = _FS_LATENCY
+        state = self._state.setdefault(module.id, {})
+        if state.get("v") != v:
+            state.clear()
+            state["v"] = v
+            state["zi"] = np.zeros((v, len(h) - 1), dtype=np.float64)
+            state["real"] = np.zeros((v, L), dtype=np.float64)   # delayed x_in
+            state["dry"] = np.zeros((v, L), dtype=np.float64)    # delayed orig in
+            state["fb"] = np.zeros((v, L), dtype=np.float64)     # last L out_up
+            state["phase"] = np.zeros(v, dtype=np.float64)       # carrier phase
+
+        zi = state["zi"]
+        real = state["real"]
+        dry_line = state["dry"]
+        fb_line = state["fb"]
+        phase = state["phase"]
+
+        up = np.empty((v, F), dtype=np.float64)
+        down = np.empty((v, F), dtype=np.float64)
+        drybuf = np.empty((v, F), dtype=np.float64)
+        j = 0
+        while j < F:
+            cl = min(L, F - j)
+            in_c = x[:, j:j + cl]
+            om_c = omega[:, j:j + cl]
+            # cl <= L, so out_up[n-L] for this chunk sits entirely in
+            # fb_line -- the loop only reads already-computed output.
+            if feedback != 0.0:
+                x_in = in_c + feedback * fb_line[:, :cl]
+            else:
+                x_in = in_c
+            # analytic pair: streamed Hilbert + the L-delayed real of x_in.
+            x_h, zi = lfilter(h, [1.0], x_in, axis=-1, zi=zi)
+            rbuf = np.concatenate([real, x_in], axis=-1)
+            x_d = rbuf[:, :cl]
+            real = rbuf[:, cl:]
+            # carrier phase, exclusive prefix so a fresh module starts at 0.
+            cumo = np.cumsum(om_c, axis=-1)
+            ph = phase[:, None] + cumo - om_c
+            cph = np.cos(ph)
+            sph = np.sin(ph)
+            phase = (phase + cumo[:, -1]) % (2.0 * np.pi)
+            up_c = x_d * cph - x_h * sph
+            down_c = x_d * cph + x_h * sph
+            up[:, j:j + cl] = up_c
+            down[:, j:j + cl] = down_c
+            # advance the dry (original ``in``) delay line for the mix.
+            dbuf = np.concatenate([dry_line, in_c], axis=-1)
+            drybuf[:, j:j + cl] = dbuf[:, :cl]
+            dry_line = dbuf[:, cl:]
+            if feedback != 0.0:
+                fb_line = np.concatenate([fb_line, up_c], axis=-1)[:, -L:]
+            j += cl
+
+        state["zi"] = zi
+        state["real"] = real
+        state["dry"] = dry_line
+        state["fb"] = fb_line
+        state["phase"] = phase
+
+        if mix >= 1.0:
+            out_up, out_down = up, down
+        else:
+            out_up = (1.0 - mix) * drybuf + mix * up
+            out_down = (1.0 - mix) * drybuf + mix * down
+
+        up32 = out_up.astype(np.float32)
+        down32 = out_down.astype(np.float32)
+        if was_mono:
+            return {"out_up": up32[0], "out_down": down32[0]}
+        return {"out_up": up32, "out_down": down32}
 
     def _render_distortion(self, module, frames: int, buffers, patch):
         """Drive pedal: 4x-oversampled saturation with tone and mix.

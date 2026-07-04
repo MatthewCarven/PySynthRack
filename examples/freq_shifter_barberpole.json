@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    {
+      "id": 1,
+      "type": "oscillator",
+      "name": "Saw drone",
+      "params": {"waveform": "saw", "freq": 110.0, "amp": 0.2}
+    },
+    {
+      "id": 2,
+      "type": "freq_shifter",
+      "name": "Barberpole shift",
+      "params": {"shift": 55.0, "shift_cv_depth": 200.0, "mix": 1.0, "feedback": 0.6}
+    },
+    {
+      "id": 3,
+      "type": "left_speaker_output",
+      "name": "left_speaker_output",
+      "params": {"gain": 0.6}
+    },
+    {
+      "id": 4,
+      "type": "right_speaker_output",
+      "name": "right_speaker_output",
+      "params": {"gain": 0.6}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "in"},
+    {"src_module_id": 2, "src_port": "out_up", "dst_module_id": 3, "dst_port": "in"},
+    {"src_module_id": 2, "src_port": "out_down", "dst_module_id": 4, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 200], "2": [340, 200], "3": [660, 100], "4": [660, 320]
+    }
+  }
+}

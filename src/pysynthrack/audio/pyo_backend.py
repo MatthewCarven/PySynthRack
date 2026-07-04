@@ -218,6 +218,7 @@ class PyoBackend(AudioBackend):
             "delay",
             "reverb",
             "ring_mod",
+            "freq_shifter",
             "loudness",
             "distortion",
             "waveshaper",
