@@ -59,6 +59,7 @@ from .sequencer import Sequencer
 from .fader_seq import FaderSeq
 from .sweep_eq import SweepEQ
 from .tilt_eq import TiltEQ
+from .transient_shaper import TransientShaper
 from .vca import VCA
 from .vocoder import Vocoder
 
@@ -109,6 +110,7 @@ __all__ = [
     "Sequencer",
     "SweepEQ",
     "TiltEQ",
+    "TransientShaper",
     "SpeakerOutput",
     "StereoSpeakerOutput",
     "VCA",

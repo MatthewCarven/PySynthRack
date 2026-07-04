@@ -1178,6 +1178,8 @@ class NumpyBackend(AudioBackend):
             return self._render_limiter(module, frames, buffers, patch)
         if module.TYPE == "noise_gate":
             return self._render_noise_gate(module, frames, buffers, patch)
+        if module.TYPE == "transient_shaper":
+            return self._render_transient_shaper(module, frames, buffers, patch)
         if module.TYPE == "distortion":
             return self._render_distortion(module, frames, buffers, patch)
         if module.TYPE == "waveshaper":
@@ -5465,6 +5467,159 @@ class NumpyBackend(AudioBackend):
 
         out = (x * g_out).astype(np.float32)
         return {"out": out, "open": gate_open.astype(np.float32)}
+
+    # ----- Transient shaper -----------------------------------------------
+
+    # dB-conversion floor so a silent block never hits log10(0); -180 dBFS,
+    # far below any musical signal (matches the compressor/gate floor).
+    _TS_LEVEL_FLOOR = 1e-9
+    # The attack/sustain knobs run -1..+1 and top out at +/- this many dB.
+    _TS_MAX_DB = 12.0
+    # Soft-saturation scale (dB) mapping the follower difference onto a 0..1
+    # activation: a difference of _TS_SENS_DB gives ~63% of full effect, so
+    # a few dB of transient already reaches most of the knob's range.
+    _TS_SENS_DB = 4.0
+    # Gain-smoothing one-pole time constant (ms) applied before the multiply
+    # so a sharp transient's gain step doesn't zipper.
+    _TS_SMOOTH_MS = 2.0
+    # Per-``speed`` (fast_ms, slow_ms) follower time constants. Fast follower
+    # tracks the onset; slow follower lags, so their dB gap is the transient.
+    _TS_SPEEDS = {
+        "fast": (0.5, 20.0),
+        "med": (2.0, 50.0),
+        "slow": (5.0, 120.0),
+    }
+
+    @staticmethod
+    def _ts_coef(ms, sr):
+        """One-pole smoothing coefficient for a time constant in ms.
+
+        ``ms <= 0`` clamps to an instant follower (coef 1.0); otherwise the
+        standard ``1 - exp(-1 / (tau * sr))``, the same conversion the
+        compressor and gate use.
+        """
+        if ms <= 0.0:
+            return 1.0
+        return 1.0 - float(np.exp(-1.0 / (max(ms, 1e-6) * 1e-3 * sr)))
+
+    def _ts_follow(self, t, level0, coef):
+        """Symmetric one-pole follower via the shared fixed-point core.
+
+        Reuses :meth:`_audio_to_cv_block` with the same coefficient for
+        attack and release, which makes it take the time-invariant one-pole
+        branch (a single vectorized solve, no pattern iteration); the
+        per-sample voice loop is the fallback for the degenerate corners the
+        block solve declines. ``t`` is the ``(V, F)`` float64 input (the
+        rectified signal for the detectors, the linear gain for the
+        smoother), ``level0`` the carried per-voice state ``(V,)``. Returns
+        the ``(V, F)`` trajectory.
+        """
+        y = self._audio_to_cv_block(t, level0, coef, coef)
+        if y is None:
+            y, _ = self._audio_to_cv_loop_voice(t, level0.copy(), coef, coef)
+        return y
+
+    def _render_transient_shaper(self, module, frames: int, buffers, patch):
+        """Threshold-free attack/sustain shaper (see modules/transient_shaper.py).
+
+        Shape-polymorphic like the other effects. Branches on the ``in``
+        audio's ndim: 1D ``(F,)`` -> single follower pair + gain smoother,
+        ``(F,)`` out; 2D ``(V, F)`` -> per-voice state, ``(V, F)`` out. The
+        mono path is the ``V == 1`` case of the same core, so a single voice
+        row is bit-identical to mono.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        if src is None:
+            return np.zeros(frames, dtype=np.float32)
+
+        attack = float(module.params.get("attack", 0.0))
+        sustain = float(module.params.get("sustain", 0.0))
+
+        # Neutral short-circuit: no attack/sustain move -> unity gain
+        # everywhere, so skip the followers and hand back a bit-exact copy of
+        # the input. Independent of ``speed`` and voice count.
+        if attack == 0.0 and sustain == 0.0:
+            return src.astype(np.float32, copy=True)
+
+        if src.ndim == 2:
+            return self._render_transient_shaper_core(module, frames, src)
+        return self._render_transient_shaper_core(
+            module, frames, src[np.newaxis, :]
+        )[0]
+
+    def _render_transient_shaper_core(self, module, frames, src):
+        """Shared ``(V, F)`` transient-shaper engine.
+
+        Two envelope followers (fast, slow) on ``|in|`` via the shared
+        follower core; their difference in dB isolates the transient
+        (positive on attacks, negative on decays, ~zero in steady state).
+        The positive part scales the ``attack`` gain and the negative part
+        the ``sustain`` gain -- each soft-saturated to top out near
+        +/- ``_TS_MAX_DB`` -- the two sum in dB, a short one-pole smooths the
+        linear gain, and it multiplies ``src``.
+
+        Threshold-free / level-invariant: the control signal is a dB
+        *difference* (i.e. a ratio), so scaling the input leaves the gain
+        unchanged above the log floor. Both followers and the gain smoother
+        carry per-voice state, so the render is block-size independent to
+        float64 round-off -- the shared follower's reassociated cumprod
+        solve, the same class as the compressor's gain smoother (< 1e-6
+        after the float32 cast), not the bit-exact per-sample recurrence the
+        gate uses.
+        """
+        V = src.shape[0]
+        sr = self.sample_rate
+
+        attack = float(module.params.get("attack", 0.0))
+        sustain = float(module.params.get("sustain", 0.0))
+        speed = str(module.params.get("speed", "med"))
+        fast_ms, slow_ms = self._TS_SPEEDS.get(speed, self._TS_SPEEDS["med"])
+
+        state = self._state.setdefault(module.id, {})
+        if "fast" not in state or state["fast"].shape[0] != V:
+            state["fast"] = np.zeros(V, dtype=np.float64)   # fast follower level
+            state["slow"] = np.zeros(V, dtype=np.float64)   # slow follower level
+            state["gain"] = np.ones(V, dtype=np.float64)    # smoothed applied gain
+
+        if frames == 0:
+            return np.empty((V, 0), dtype=np.float32)
+
+        x = src.astype(np.float64)
+        rect = np.abs(x)
+
+        fast_coef = self._ts_coef(fast_ms, sr)
+        slow_coef = self._ts_coef(slow_ms, sr)
+        fast_env = self._ts_follow(rect, state["fast"], fast_coef)
+        slow_env = self._ts_follow(rect, state["slow"], slow_coef)
+        state["fast"] = fast_env[:, -1].copy()
+        state["slow"] = slow_env[:, -1].copy()
+
+        # dB difference isolates the transient; being a ratio it is
+        # level-invariant, which is what makes the shaper threshold-free.
+        fast_db = 20.0 * np.log10(np.maximum(fast_env, self._TS_LEVEL_FLOOR))
+        slow_db = 20.0 * np.log10(np.maximum(slow_env, self._TS_LEVEL_FLOOR))
+        diff = fast_db - slow_db
+
+        # positive part -> attack gain, negative part -> sustain gain; soft-
+        # saturated so each knob approaches +/- _TS_MAX_DB at a strong
+        # transient and is exactly 0 in its off-region (diff of the wrong
+        # sign), so ``attack`` moves only onsets and ``sustain`` only tails.
+        atk_act = 1.0 - np.exp(-np.maximum(diff, 0.0) / self._TS_SENS_DB)
+        sus_act = 1.0 - np.exp(-np.maximum(-diff, 0.0) / self._TS_SENS_DB)
+        gain_db = (
+            attack * self._TS_MAX_DB * atk_act
+            + sustain * self._TS_MAX_DB * sus_act
+        )
+        target = np.power(10.0, gain_db / 20.0)
+
+        # smooth the linear gain (short one-pole) before multiplying; the
+        # smoother's input is already level-invariant, so the smoothed gain
+        # is too.
+        smooth_coef = self._ts_coef(self._TS_SMOOTH_MS, sr)
+        gain = self._ts_follow(target, state["gain"], smooth_coef)
+        state["gain"] = gain[:, -1].copy()
+
+        return (x * gain).astype(np.float32)
 
     def _render_reverb(self, module, frames: int, buffers, patch):
         """Stereo FDN reverb: mono in -> decorrelated out_l / out_r.

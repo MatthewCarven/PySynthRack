@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "next_id": 8,
+  "modules": [
+    { "id": 1, "type": "lfo", "name": "clock", "params": { "waveform": "square", "rate": 3.0, "depth": 1.0, "bipolar": false } },
+    { "id": 2, "type": "schmitt", "name": "schmitt", "params": { "high": 0.6, "low": 0.4 } },
+    { "id": 3, "type": "ad_envelope", "name": "AD (pluck)", "params": { "attack": 0.002, "decay": 0.35 } },
+    { "id": 4, "type": "oscillator", "name": "saw 110", "params": { "waveform": "saw", "freq": 110.0, "amp": 0.4 } },
+    { "id": 5, "type": "vca", "name": "vca", "params": {} },
+    { "id": 6, "type": "transient_shaper", "name": "snap", "params": { "attack": 0.8, "sustain": -0.3, "speed": "fast" } },
+    { "id": 7, "type": "speaker_output", "name": "speaker_output", "params": { "gain": 0.7 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "cv",   "dst_module_id": 2, "dst_port": "in" },
+    { "src_module_id": 2, "src_port": "gate", "dst_module_id": 3, "dst_port": "trig" },
+    { "src_module_id": 4, "src_port": "out",  "dst_module_id": 5, "dst_port": "audio" },
+    { "src_module_id": 3, "src_port": "cv",   "dst_module_id": 5, "dst_port": "cv" },
+    { "src_module_id": 5, "src_port": "out",  "dst_module_id": 6, "dst_port": "in" },
+    { "src_module_id": 6, "src_port": "out",  "dst_module_id": 7, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 320], "2": [320, 320], "3": [600, 320],
+      "4": [40, 60],  "5": [600, 60],  "6": [880, 60], "7": [1160, 60]
+    }
+  }
+}

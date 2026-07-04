@@ -214,6 +214,7 @@ class PyoBackend(AudioBackend):
             "compressor",
             "limiter",
             "noise_gate",
+            "transient_shaper",
             "delay",
             "reverb",
             "loudness",
