@@ -218,6 +218,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`ring_mod`](#ring_mod) | Effects | `in`,`carrier` (audio), `freq_cv` (cv) → `out` (audio) |
 | [`freq_shifter`](#freq_shifter) | Effects | `in` (audio), `shift_cv` (cv) → `out_up`,`out_down` (audio) |
 | [`bitcrusher`](#bitcrusher) | Effects | `in` (audio) → `out` (audio) |
+| [`tape`](#tape) | Effects | `in` (audio) → `out` (audio) |
 | [`chorus`](#chorus) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`flanger`](#flanger) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`phaser`](#phaser) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
@@ -1354,6 +1355,73 @@ equals the dry input — a bit-exact passthrough at any `mix` (with
 for mono, so one voice row is bit-identical to mono and voices stay
 independent. See `examples/bitcrusher_lofi.json` (a plucked saw line
 crushed to a crunchy 8-bit / quarter-rate lo-fi lead).
+
+---
+
+#### `tape`
+
+**"Put it on tape"** — wow, flutter, drift, saturation, hiss and a head
+bump in a single pass: the sound of running a signal through an analog
+tape machine. Six independent flavours of that character, layered in the
+order a real deck imposes them:
+
+- **wow** — slow (~1 Hz) pitch sway, from a worn capstan or off-centre
+  reel; a moving tape speed is a moving pitch, so the sound drifts gently
+  sharp and flat.
+- **flutter** — fast (~9 Hz) pitch waver *plus a little noise* (scrape
+  flutter): a shimmer rather than a sway.
+- **drift** — very slow, non-periodic speed wander; the pitch centre
+  ambles around over seconds.
+- **sat** — tape saturation, a soft `tanh` curve on the shared 4x
+  oversampling path (so the added harmonics don't alias): warmth low,
+  crunch high.
+- **hiss** — a calibrated noise floor, from off up to −30 dB.
+- **bump** — the *head bump*, a broad low-shelf lift around 60 Hz that
+  makes tape "sound bigger" down low.
+
+The wow/flutter/drift together modulate one short **fractional-delay
+line** (a moving delay is a moving pitch); its fixed ~10 ms nominal delay
+is latency-compensated in the dry path, so `mix` blends dry against wet
+without combing.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to tape. Voice-aware; a single voice row is bit-identical to mono. Unpatched → silence. |
+| `out` | out | audio | Taped (and dry-blended) signal. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `wow` | `0.0` | 0 … 1 | Depth of the slow (~1 Hz) pitch sway. |
+| `flutter` | `0.0` | 0 … 1 | Depth of the fast (~9 Hz) waver (with a little noise). |
+| `drift` | `0.0` | 0 … 1 | Amount of slow random speed wander. |
+| `sat` | `0.0` | 0 … 1 | Tape-saturation drive (`tanh`, 4x oversampled). |
+| `hiss` | `-80.0` | −80 (off) … −30 dB | Noise-floor level. Lives in the wet path, so it scales with `mix`. |
+| `bump` | `0.0` | 0 … 6 dB | Low-shelf head bump around 60 Hz. |
+| `mix` | `1.0` | 0 … 1 | Dry/wet. 0 = bit-exact dry passthrough. |
+
+**How it works.** Signal flow is `in → wow/flutter/drift-modulated
+fractional delay → saturation → + hiss → head-bump low shelf → mix with
+the latency-matched dry`. The delay line reuses the chorus core (write
+the whole block, then read fractional taps behind the write head); with
+no feedback every read references an already-written sample, so the
+render vectorises and is **exactly block-size independent**. The
+wow/flutter LFOs carry their phase in state; the drift, flutter noise and
+hiss are each a *single* seeded generator drawn one sample per output
+sample and streamed through one-pole / biquad filters with carried state
+— so every stochastic path is block-size independent too, and a patch
+renders identically every time. One tape path is modelled: the modulation
+and hiss are **shared** across a polyphonic input's voices (each voice
+keeps its own delay line, oversampler and shelf state, so they never
+cross-talk), and a single voice row is bit-identical to the mono render.
+Neutral is `wow = flutter = drift = sat = bump = 0` with `hiss` off — a
+**bit-exact passthrough** (a freshly added Tape does nothing until you
+turn a knob); `mix = 0` is likewise bit-exact dry. See
+`examples/tape_cassette.json` (a plucked riff run through a wobbly,
+saturated old cassette).
 
 ---
 

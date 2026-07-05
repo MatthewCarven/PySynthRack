@@ -61,6 +61,7 @@ from .schmitt import Schmitt
 from .sequencer import Sequencer
 from .fader_seq import FaderSeq
 from .sweep_eq import SweepEQ
+from .tape import Tape
 from .tilt_eq import TiltEQ
 from .transient_shaper import TransientShaper
 from .vca import VCA
@@ -115,6 +116,7 @@ __all__ = [
     "Schmitt",
     "Sequencer",
     "SweepEQ",
+    "Tape",
     "TiltEQ",
     "TransientShaper",
     "SpeakerOutput",

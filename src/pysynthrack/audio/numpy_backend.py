@@ -1217,6 +1217,8 @@ class NumpyBackend(AudioBackend):
             return self._render_bitcrusher(module, frames, buffers, patch)
         if module.TYPE == "waveshaper":
             return self._render_waveshaper(module, frames, buffers, patch)
+        if module.TYPE == "tape":
+            return self._render_tape(module, frames, buffers, patch)
         if module.TYPE == "resampler":
             return self._render_resampler(module, frames, buffers, patch)
         if module.TYPE == "pitch_shifter":
@@ -7953,6 +7955,204 @@ class NumpyBackend(AudioBackend):
 
         out32 = out.astype(np.float32)
         return {"out": out32[0] if was_mono else out32}
+
+    # ----- Tape rendering --------------------------------------------------
+
+    # Fixed nominal delay of the tape head gap (ms). Wow/flutter/drift sway
+    # the *read* around this centre; the dry path is delayed by the same
+    # amount (plus any oversampler latency) so ``mix`` stays phase-coherent
+    # instead of combing.
+    _TAPE_NOMINAL_MS = 10.0
+    # Longest delay the line can address (ms) -> sizes the ring and caps the
+    # modulated read (nominal + the summed wow/flutter/drift throw, with room).
+    _TAPE_MAX_MS = 24.0
+    _TAPE_MIN_SAMP = 2.0            # read floor: both interp taps stay behind write
+    # Peak modulation throw (ms) at full depth, per source.
+    _TAPE_WOW_MS = 2.5
+    _TAPE_FLUT_MS = 0.5
+    _TAPE_DRIFT_MS = 3.0
+    # Nominal modulation rates (Hz).
+    _TAPE_WOW_HZ = 1.0
+    _TAPE_FLUT_HZ = 9.0
+    _TAPE_DRIFT_HZ = 0.35          # one-pole corner of the drift random-walk
+    _TAPE_FLUT_LP_HZ = 18.0        # one-pole corner shaping the flutter noise
+    _TAPE_FLUT_NOISE = 0.35        # noise fraction of the flutter modulation
+    # Saturation drive at ``sat == 1`` (tanh on the shared 4x OS path).
+    _TAPE_SAT_DRIVE_MAX = 6.0
+    # Head-bump low shelf.
+    _TAPE_BUMP_HZ = 60.0
+    _TAPE_BUMP_MAX_DB = 6.0
+    # ``hiss`` (dB): at/below OFF it is disabled; otherwise up to MAX.
+    _TAPE_HISS_OFF_DB = -80.0
+    _TAPE_HISS_MAX_DB = -30.0
+    # Seeded, reproducible noise streams (offset by module.id). drift, flutter
+    # and hiss each get their OWN generator, so every stream is an independent
+    # 1:1 draw per output sample -> exactly block-size independent.
+    _TAPE_DRIFT_SEED = 0x7A9E0
+    _TAPE_FLUT_SEED = 0x7A9E1
+    _TAPE_HISS_SEED = 0x7A9E2
+
+    def _render_tape(self, module, frames: int, buffers, patch):
+        """Tape character: wow/flutter/drift + saturation + hiss + head bump.
+
+        Signal flow ``in -> wow/flutter/drift-modulated fractional delay ->
+        saturation -> + hiss -> head-bump low shelf -> mix with the
+        latency-matched dry``. The delay line reuses the chorus core (write
+        the whole block, then read fractional taps at ``absidx - delay``);
+        with no feedback every read references an already-written sample, so
+        the whole render vectorises and is exactly block-size independent.
+        The wow/flutter sines carry their phase in state; the drift, flutter
+        noise and hiss are each a *single* seeded generator drawn one sample
+        per output sample and streamed through one-pole/biquad filters with
+        carried ``zi`` -- so every stochastic path is block-size independent
+        too. One tape path is modelled: the modulation and hiss are shared
+        across a polyphonic input's voices (each voice keeps its own delay
+        line, oversampler and shelf state, so they never cross-talk), and a
+        single voice row is bit-identical to the mono render.
+
+        Neutral (``wow = flutter = drift = sat = bump = 0`` and ``hiss``
+        off) short-circuits to a bit-exact passthrough with no state
+        advance; ``mix <= 0`` is likewise bit-exact dry.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        if src is None or src.size == 0:
+            return np.zeros(frames, dtype=np.float32)
+
+        wow = min(max(float(module.params.get("wow", 0.0)), 0.0), 1.0)
+        flutter = min(max(float(module.params.get("flutter", 0.0)), 0.0), 1.0)
+        drift = min(max(float(module.params.get("drift", 0.0)), 0.0), 1.0)
+        sat = min(max(float(module.params.get("sat", 0.0)), 0.0), 1.0)
+        hiss_db = float(module.params.get("hiss", self._TAPE_HISS_OFF_DB))
+        bump_db = min(max(float(module.params.get("bump", 0.0)), 0.0),
+                      self._TAPE_BUMP_MAX_DB)
+        mix = min(max(float(module.params.get("mix", 1.0)), 0.0), 1.0)
+
+        sat_active = sat > 0.0
+        hiss_active = hiss_db > self._TAPE_HISS_OFF_DB
+        mod_active = wow > 0.0 or flutter > 0.0 or drift > 0.0
+        bump_active = bump_db > 0.0
+
+        # Bit-exact dry: the blend keeps nothing wet, or the whole box is
+        # neutral (a freshly added Tape is transparent). No state advance.
+        if mix <= 0.0:
+            return src
+        if not (mod_active or sat_active or hiss_active or bump_active):
+            return src
+
+        was_mono = src.ndim == 1
+        x = np.atleast_2d(src).astype(np.float64)          # (V, F)
+        v = x.shape[0]
+        sr = self.sample_rate
+
+        D = int(round(self._TAPE_NOMINAL_MS * sr / 1000.0))
+        L = int(self._TAPE_MAX_MS * sr / 1000.0) + frames + 4
+        comp = D + (_OS_LATENCY if sat_active else 0)      # dry latency comp
+
+        state = self._state.setdefault(module.id, {})
+        buf = state.get("buf")
+        if (buf is None or buf.shape != (v, L) or state.get("comp") != comp):
+            state.clear()
+            state["buf"] = np.zeros((v, L), dtype=np.float64)
+            state["write_idx"] = 0
+            state["wow_ph"] = 0.0
+            state["flut_ph"] = 0.0
+            state["flut_zi"] = np.zeros(1)
+            state["drift_zi"] = np.zeros(1)
+            state["shelf"] = {}
+            state["dry_tail"] = np.zeros((v, comp))
+            state["comp"] = comp
+            state["os4"] = _Oversampler4(v)
+            mid = int(module.id)
+            state["rng_drift"] = np.random.default_rng(self._TAPE_DRIFT_SEED + mid)
+            state["rng_flut"] = np.random.default_rng(self._TAPE_FLUT_SEED + mid)
+            state["rng_hiss"] = np.random.default_rng(self._TAPE_HISS_SEED + mid)
+
+        if frames == 0:
+            e = np.empty((v, 0), dtype=np.float32)
+            return e[0] if was_mono else e
+
+        buf = state["buf"]
+        wp = int(state["write_idx"])
+        n = np.arange(frames, dtype=np.float64)
+
+        # --- modulation (shared across voices: one tape path) -------------
+        # wow: slow sine.
+        wow_inc = self._TAPE_WOW_HZ / sr
+        wow_lfo = np.sin(2.0 * np.pi * (state["wow_ph"] + n * wow_inc))
+        state["wow_ph"] = float((state["wow_ph"] + frames * wow_inc) % 1.0)
+
+        # flutter: fast sine + a little low-passed (band-limited) noise.
+        flut_inc = self._TAPE_FLUT_HZ / sr
+        flut_lfo = np.sin(2.0 * np.pi * (state["flut_ph"] + n * flut_inc))
+        state["flut_ph"] = float((state["flut_ph"] + frames * flut_inc) % 1.0)
+        fn = state["rng_flut"].standard_normal(frames)
+        kf = 1.0 - math.exp(-2.0 * math.pi * self._TAPE_FLUT_LP_HZ / sr)
+        fn, state["flut_zi"] = lfilter([kf], [1.0, kf - 1.0], fn, zi=state["flut_zi"])
+        fn = fn * math.sqrt((2.0 - kf) / kf)               # -> ~unit std
+        flut_sig = ((1.0 - self._TAPE_FLUT_NOISE) * flut_lfo
+                    + self._TAPE_FLUT_NOISE * fn)
+
+        # drift: slow random walk = heavily low-passed white noise, unit-ish
+        # std, hard-bounded so the read can never cross the write head.
+        dn = state["rng_drift"].standard_normal(frames)
+        kd = 1.0 - math.exp(-2.0 * math.pi * self._TAPE_DRIFT_HZ / sr)
+        dn, state["drift_zi"] = lfilter([kd], [1.0, kd - 1.0], dn, zi=state["drift_zi"])
+        drift_sig = np.clip(dn * math.sqrt((2.0 - kd) / kd), -1.0, 1.0)
+
+        wow_s = self._TAPE_WOW_MS * sr / 1000.0
+        flut_s = self._TAPE_FLUT_MS * sr / 1000.0
+        drift_s = self._TAPE_DRIFT_MS * sr / 1000.0
+        m = (wow * wow_s * wow_lfo
+             + flutter * flut_s * flut_sig
+             + drift * drift_s * drift_sig)                # (F,) samples
+
+        delay = D + m
+        np.clip(delay, self._TAPE_MIN_SAMP, float(L - 2), out=delay)
+
+        # --- fractional-delay read (chorus core; no feedback) -------------
+        absidx = wp + np.arange(frames)
+        buf[:, absidx % L] = x
+        rp = absidx - delay                                # (F,)
+        i0 = np.floor(rp).astype(np.int64)
+        frac = rp - i0
+        tap = (buf[:, i0 % L] * (1.0 - frac)
+               + buf[:, (i0 + 1) % L] * frac)              # (V, F)
+        state["write_idx"] = int((wp + frames) % L)
+
+        wet = tap
+        # --- saturation (4x-oversampled tanh) -----------------------------
+        if sat_active:
+            drive = sat * self._TAPE_SAT_DRIVE_MAX
+            os4 = state["os4"]
+            wet = os4.down(self._dist_curve("soft", drive, os4.up(wet)))
+
+        # --- hiss (calibrated noise floor, lives in the wet path) ---------
+        if hiss_active:
+            amp = 10.0 ** (min(hiss_db, self._TAPE_HISS_MAX_DB) / 20.0)
+            hn = state["rng_hiss"].standard_normal(frames) * amp
+            wet = wet + hn[None, :]
+
+        # --- head-bump low shelf (~60 Hz), streaming per voice ------------
+        if bump_active:
+            b0, b1, b2, a1n, a2n = self._loud_shelf(
+                self._TAPE_BUMP_HZ, bump_db, True
+            )
+            sh = state["shelf"]
+            if sh.get("zi") is None or sh["zi"].shape[0] != v or sh.get("g") != bump_db:
+                sh["zi"] = np.zeros((v, 2))
+                sh["g"] = bump_db
+            wet, sh["zi"] = lfilter(
+                [b0, b1, b2], [1.0, a1n, a2n], wet, axis=-1, zi=sh["zi"]
+            )
+
+        # --- mix against the latency-matched dry (tail always advances) ---
+        both = np.concatenate([state["dry_tail"], x], axis=-1)
+        dry = both[:, :frames]
+        state["dry_tail"] = both[:, frames:]
+        out = wet if mix >= 1.0 else (1.0 - mix) * dry + mix * wet
+
+        out32 = out.astype(np.float32)
+        return out32[0] if was_mono else out32
 
     # Meter fall time: seconds for the peak bar to drop ~20 dB (a factor of
     # ten). The per-meter ``release`` param overrides this default. The fall

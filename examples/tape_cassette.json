@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "next_id": 8,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "Clock (92 BPM)",
+      "params": {"bpm": 92.0, "division": 2.0, "pulse_width": 0.5}
+    },
+    {
+      "id": 2,
+      "type": "sequencer",
+      "name": "Wonky riff",
+      "params": {
+        "steps": 8,
+        "step1_pitch": 0.0, "step1_on": true,
+        "step2_pitch": 12.0, "step2_on": true,
+        "step3_pitch": 7.0, "step3_on": true,
+        "step4_pitch": 10.0, "step4_on": false,
+        "step5_pitch": 3.0, "step5_on": true,
+        "step6_pitch": 7.0, "step6_on": true,
+        "step7_pitch": 0.0, "step7_on": true,
+        "step8_pitch": 5.0, "step8_on": true
+      }
+    },
+    {
+      "id": 3,
+      "type": "oscillator",
+      "name": "Saw (backed off)",
+      "params": {"waveform": "saw", "freq": 130.81, "amp": 0.4}
+    },
+    {
+      "id": 4,
+      "type": "adsr",
+      "name": "Pluck env",
+      "params": {"attack": 0.005, "decay": 0.18, "sustain": 0.35, "release": 0.12}
+    },
+    {
+      "id": 5,
+      "type": "vca",
+      "name": "VCA",
+      "params": {}
+    },
+    {
+      "id": 6,
+      "type": "tape",
+      "name": "Old cassette",
+      "params": {
+        "wow": 0.5, "flutter": 0.35, "drift": 0.3,
+        "sat": 0.45, "hiss": -48.0, "bump": 3.5, "mix": 0.7
+      }
+    },
+    {
+      "id": 7,
+      "type": "speaker_output",
+      "name": "speaker_output",
+      "params": {"gain": 0.8}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "clock"},
+    {"src_module_id": 2, "src_port": "cv", "dst_module_id": 3, "dst_port": "freq_cv"},
+    {"src_module_id": 2, "src_port": "gate", "dst_module_id": 4, "dst_port": "gate"},
+    {"src_module_id": 3, "src_port": "out", "dst_module_id": 5, "dst_port": "audio"},
+    {"src_module_id": 4, "src_port": "cv", "dst_module_id": 5, "dst_port": "cv"},
+    {"src_module_id": 5, "src_port": "out", "dst_module_id": 6, "dst_port": "in"},
+    {"src_module_id": 6, "src_port": "out", "dst_module_id": 7, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 80], "2": [280, 80], "3": [40, 320], "4": [560, 80],
+      "5": [560, 320], "6": [820, 200], "7": [1080, 200]
+    }
+  }
+}

@@ -220,6 +220,7 @@ class PyoBackend(AudioBackend):
             "ring_mod",
             "freq_shifter",
             "bitcrusher",
+            "tape",
             "loudness",
             "distortion",
             "waveshaper",
