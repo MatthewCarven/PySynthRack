@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "next_id": 4,
+  "modules": [
+    {
+      "id": 1,
+      "type": "oscillator",
+      "name": "Tri source",
+      "params": {
+        "waveform": "triangle",
+        "freq": 220.0,
+        "amp": 0.4
+      }
+    },
+    {
+      "id": 2,
+      "type": "convolver",
+      "name": "Convolver — Browse an IR",
+      "params": {
+        "gain": 1.0,
+        "mix": 0.5
+      }
+    },
+    {
+      "id": 3,
+      "type": "stereo_speaker_output",
+      "name": "Stereo out",
+      "params": {
+        "gain": 0.7,
+        "pan": 0.0,
+        "width": 1.0
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "out_l",
+      "dst_module_id": 3,
+      "dst_port": "in_l"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "out_r",
+      "dst_module_id": 3,
+      "dst_port": "in_r"
+    }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [80, 160],
+      "2": [400, 160],
+      "3": [760, 160]
+    }
+  }
+}

@@ -16,6 +16,7 @@ from .clock import Clock
 from .combiner import Combiner
 from .compressor import Compressor
 from .constant import Constant
+from .convolver import Convolver
 from .crossover import Crossover
 from .cvcombiner import CVCombiner
 from .cvoffset import CVOffset
@@ -77,6 +78,7 @@ __all__ = [
     "Combiner",
     "Compressor",
     "Constant",
+    "Convolver",
     "Crossover",
     "CVCombiner",
     "CVGates",

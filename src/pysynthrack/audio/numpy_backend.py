@@ -414,6 +414,81 @@ class _GrainShifter:
         return src[d0 % self.Lin] * (1.0 - df) + src[(d0 + 1) % self.Lin] * df
 
 
+class _PartitionedConvolver:
+    """Uniformly-partitioned FFT convolution for one IR channel (overlap-save).
+
+    Built for a *fixed* render block size ``B``. The IR is split into
+    ``P = ceil(L / B)`` block-sized partitions, each transformed once at
+    construction to a length ``N = 2B`` rfft (a B-sample block convolved with
+    a B-sample partition is linear length ``2B - 1``, so ``N = 2B`` holds it
+    with no time-aliasing). Each :meth:`process` call transforms the 2B window
+    ``[previous block | current block]`` once, pushes that spectrum onto a
+    frequency-domain delay line (FDL) of the last ``P`` input spectra,
+    accumulates ``sum_p H[p] * FDL[p]`` (the frequency-domain multiply-add
+    that *is* the partitioned convolution), inverse-transforms, and keeps the
+    valid last-B overlap-save half.
+
+    The overlap-save core is intrinsically zero-latency; a one-block output
+    register defers each result by exactly one block, so the convolver
+    presents a clean, fixed **one-block (B-sample) latency** that the module
+    reports and delay-matches its dry path against. Everything is float64
+    internally (numpy's FFT upcasts regardless); the caller casts the result.
+
+    ``process`` is exact linear convolution for a given ``B`` up to FFT
+    round-off, so streaming a signal through it equals
+    ``scipy.signal.fftconvolve`` of the whole input to ~1e-6 -- the oracle the
+    tests hold it to. Block size only changes the FFT round-off, never the
+    math, so results across block sizes agree to the same tolerance (pinned,
+    not bit-exact, because ``N = 2B`` differs).
+    """
+
+    __slots__ = ("B", "N", "L", "P", "H", "fdl", "prev_in", "out_reg")
+
+    def __init__(self, ir, block: int) -> None:
+        B = max(1, int(block))
+        self.B = B
+        self.N = 2 * B
+        ir = np.asarray(ir, dtype=np.float64).ravel()
+        if ir.size == 0:
+            ir = np.zeros(1, dtype=np.float64)
+        self.L = int(ir.size)
+        P = max(1, (self.L + B - 1) // B)  # ceil(L / B)
+        self.P = P
+        bins = B + 1  # rfft length for an N = 2B transform
+        H = np.zeros((P, bins), dtype=np.complex128)
+        buf = np.zeros(self.N, dtype=np.float64)
+        for p in range(P):
+            seg = ir[p * B:(p + 1) * B]
+            buf[:] = 0.0
+            buf[:seg.size] = seg
+            H[p] = np.fft.rfft(buf)
+        self.H = H
+        self.fdl = np.zeros((P, bins), dtype=np.complex128)
+        self.prev_in = np.zeros(B, dtype=np.float64)
+        self.out_reg = np.zeros(B, dtype=np.float64)
+
+    def process(self, x) -> np.ndarray:
+        """Convolve one length-B block; return length-B, delayed by one block."""
+        B = self.B
+        w = np.empty(self.N, dtype=np.float64)
+        w[:B] = self.prev_in
+        w[B:] = x
+        X = np.fft.rfft(w)
+        # Advance the frequency-domain delay line: newest spectrum at row 0.
+        # np.roll returns a fresh array, so this is safe (an in-place slice
+        # shift over overlapping memory is not). P is small; a ring-pointer
+        # rewrite is a documented follow-up if the DSP budget calls for it.
+        self.fdl = np.roll(self.fdl, 1, axis=0)
+        self.fdl[0] = X
+        acc = np.einsum("pk,pk->k", self.H, self.fdl)
+        y = np.fft.irfft(acc, n=self.N)
+        valid = y[B:]  # overlap-save: the last B samples are alias-free
+        out = self.out_reg
+        self.out_reg = valid
+        self.prev_in = np.array(x, dtype=np.float64, copy=True)
+        return out
+
+
 class NumpyBackend(AudioBackend):
     """Pure-Python fallback. Slower than pyo but works wherever numpy does."""
 
@@ -1219,6 +1294,8 @@ class NumpyBackend(AudioBackend):
             return self._render_waveshaper(module, frames, buffers, patch)
         if module.TYPE == "tape":
             return self._render_tape(module, frames, buffers, patch)
+        if module.TYPE == "convolver":
+            return self._render_convolver(module, frames, buffers, patch)
         if module.TYPE == "resampler":
             return self._render_resampler(module, frames, buffers, patch)
         if module.TYPE == "pitch_shifter":
@@ -8153,6 +8230,80 @@ class NumpyBackend(AudioBackend):
 
         out32 = out.astype(np.float32)
         return out32[0] if was_mono else out32
+
+    def _render_convolver(self, module, frames: int, buffers, patch):
+        """Partitioned-FFT convolution (IR reverb / cab): mono core, stereo outs.
+
+        Voices are summed to mono before convolving -- convolution is linear,
+        so per-voice-then-sum equals sum-then-convolve, and the mono sum is
+        far cheaper (one FFT stream, not V). The wet path carries a fixed
+        one-block latency (a block is buffered before it can transform); the
+        dry path is delay-matched by the same block inside ``mix`` so dry and
+        wet stay phase-coherent and the module presents one clean block of
+        latency.
+
+        Slice 1: the IR defaults to a unit impulse (transparent insert) until
+        a file loader lands. ``gain`` trims the wet only, so ``mix = 0`` is a
+        bit-exact dry bypass (and skips the FFT) whatever ``gain`` is. Both
+        outputs carry the same mono result until stereo IRs load.
+        """
+        state = self._state.setdefault(
+            module.id,
+            {"engine": None, "dry_prev": None, "block": None,
+             "ir": None, "_ir_id": None},
+        )
+
+        # Mono dry (collapse=True sums any voice rows: convolution is linear).
+        src = self._input_buffer(patch, buffers, module.id, "in")
+        if src is None:
+            x = np.zeros(frames, dtype=np.float32)
+        else:
+            x = np.asarray(src, dtype=np.float32).reshape(-1)
+            if x.shape[0] < frames:  # defensive; buffers are frames-long
+                x = np.concatenate(
+                    [x, np.zeros(frames - x.shape[0], dtype=np.float32)]
+                )
+            elif x.shape[0] > frames:
+                x = x[:frames]
+
+        # IR (slice 1: unit impulse == transparent insert until a file loads).
+        ir = state.get("ir")
+        if ir is None:
+            ir = np.array([1.0], dtype=np.float64)
+            state["ir"] = ir
+        # (Re)build the engine on first use, a block-size change, or a new IR.
+        eng = state.get("engine")
+        if (eng is None or state.get("block") != frames
+                or state.get("_ir_id") != id(ir)):
+            eng = _PartitionedConvolver(ir, frames)
+            state["engine"] = eng
+            state["block"] = frames
+            state["_ir_id"] = id(ir)
+            state["dry_prev"] = np.zeros(frames, dtype=np.float32)
+
+        # Dry delayed by one block (== engine latency) to align with the wet.
+        dry_prev = state.get("dry_prev")
+        if dry_prev is None or dry_prev.shape[0] != frames:
+            dry_prev = np.zeros(frames, dtype=np.float32)
+        dry_delayed = dry_prev
+        state["dry_prev"] = x
+
+        mix = float(module.params.get("mix", 1.0))
+        # Neutral bypass: mix <= 0 -> bit-exact delayed dry, FFT skipped.
+        if mix <= 0.0:
+            out = np.array(dry_delayed, dtype=np.float32, copy=True)
+            return {"out_l": out, "out_r": np.array(out, copy=True)}
+
+        gain = float(module.params.get("gain", 1.0))
+        wet = eng.process(x).astype(np.float32)
+        if gain != 1.0:
+            wet = wet * np.float32(gain)
+        if mix >= 1.0:
+            out = np.ascontiguousarray(wet, dtype=np.float32)
+        else:
+            out = (np.float32(mix) * wet
+                   + np.float32(1.0 - mix) * dry_delayed).astype(np.float32)
+        return {"out_l": out, "out_r": np.array(out, copy=True)}
 
     # Meter fall time: seconds for the peak bar to drop ~20 dB (a factor of
     # ten). The per-meter ``release`` param overrides this default. The fall

@@ -221,6 +221,7 @@ class PyoBackend(AudioBackend):
             "freq_shifter",
             "bitcrusher",
             "tape",
+            "convolver",
             "loudness",
             "distortion",
             "waveshaper",
