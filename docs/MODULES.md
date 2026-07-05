@@ -217,6 +217,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`waveshaper`](#waveshaper) | Effects | `in` (audio), `fold_cv` (cv) → `out` (audio) |
 | [`ring_mod`](#ring_mod) | Effects | `in`,`carrier` (audio), `freq_cv` (cv) → `out` (audio) |
 | [`freq_shifter`](#freq_shifter) | Effects | `in` (audio), `shift_cv` (cv) → `out_up`,`out_down` (audio) |
+| [`bitcrusher`](#bitcrusher) | Effects | `in` (audio) → `out` (audio) |
 | [`chorus`](#chorus) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`flanger`](#flanger) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`phaser`](#phaser) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
@@ -1300,6 +1301,59 @@ independent** (bit-exact with no feedback, to < 1e-6 with). See
 feedback into a rising stereo shimmer). Pairs with [`ring_mod`](#ring_mod):
 ring mod keeps the *sum and difference* of two signals, the frequency
 shifter keeps *one shifted sideband* of one.
+
+---
+
+#### `bitcrusher`
+
+A **bitcrusher** — the lo-fi "digital destruction" box, two independent
+kinds of degradation in one module. **Bit reduction** requantizes each
+sample to a coarser word length (a mid-tread quantizer snapping to
+`2^bits` levels); at 24 bits it is transparent, at 8 bits you hear grainy
+quantization hiss, at 1–3 bits the waveform collapses into buzzy digital
+fuzz. **Sample-rate reduction** holds every `rate_div`-th sample and
+throws the rest away — a sample-and-hold downsample with *no* anti-imaging
+filter, so the discarded content folds back as aliasing, and that harsh,
+metallic alias *is* the sound (the classic early-sampler / Aphex crunch).
+
+`jitter` wobbles the hold length randomly around `rate_div` on a seeded
+stream for a "broken converter" smear (inert unless `rate_div > 1`).
+`mix` blends dry against crushed (`mix = 0` is a bit-exact dry
+passthrough), and `dc_filter` runs a gentle one-pole high-pass on the
+output to strip any offset the crushing introduces.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to crush. Voice-aware; a single voice row is bit-identical to mono. Unpatched → silence. |
+| `out` | out | audio | Crushed (and dry-blended) signal. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `bits` | `24` | 1 … 24 | Quantizer word length. `round(x·2^(bits−1))/2^(bits−1)`. 24 skips the quantizer (bit-exact). |
+| `rate_div` | `1` | 1 … 64 | Sample-hold decimation factor (hold every Nth sample, deliberately aliased). 1 skips decimation. |
+| `jitter` | `0.0` | 0 … 1 | Random hold-length wobble around `rate_div` (seeded, reproducible). No effect unless `rate_div > 1`. |
+| `mix` | `1.0` | 0 … 1 | Dry/wet. 0 = bit-exact passthrough. |
+| `dc_filter` | `False` | on/off | One-pole DC blocker on the crushed signal. Off by default. |
+
+**How it works.** Signal flow is `in → decimate → quantize → [dc filter]
+→ mix`. The quantizer is pointwise; decimation is a sample-and-hold
+located by integer division of the global sample index (`//N`) when
+`jitter = 0`, or by `searchsorted` over a seeded stream of wobbled hold
+lengths when it is not (quantize and decimate commute, so their order is
+immaterial to the result). The hold phase — the global sample offset, the
+per-voice held value, and the jitter boundary stream — lives in state, so
+holds stay continuous across block joins; every path (quantize, decimate,
+jitter, DC filter) is **exactly block-size independent**. Neutral is
+`bits = 24 ∧ rate_div = 1`: both crush ops are skipped, so the wet path
+equals the dry input — a bit-exact passthrough at any `mix` (with
+`dc_filter` off). Shape-polymorphic — the `(V, F)` core runs with `V = 1`
+for mono, so one voice row is bit-identical to mono and voices stay
+independent. See `examples/bitcrusher_lofi.json` (a plucked saw line
+crushed to a crunchy 8-bit / quarter-rate lo-fi lead).
 
 ---
 

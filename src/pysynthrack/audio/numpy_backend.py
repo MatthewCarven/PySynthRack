@@ -1213,6 +1213,8 @@ class NumpyBackend(AudioBackend):
             return self._render_ring_mod(module, frames, buffers, patch)
         if module.TYPE == "freq_shifter":
             return self._render_freq_shifter(module, frames, buffers, patch)
+        if module.TYPE == "bitcrusher":
+            return self._render_bitcrusher(module, frames, buffers, patch)
         if module.TYPE == "waveshaper":
             return self._render_waveshaper(module, frames, buffers, patch)
         if module.TYPE == "resampler":
@@ -7374,6 +7376,169 @@ class NumpyBackend(AudioBackend):
         return np.tanh(drive * u) / np.tanh(drive)
 
     # ----- ring modulator ----------------------------------------------------
+
+    # Base seed for the jitter RNG. Combined with the module id so two
+    # bitcrushers wobble on independent but individually reproducible
+    # streams (a fresh render re-seeds from here, hence deterministic).
+    _BITCRUSHER_JITTER_SEED = 0x0B17C
+
+    def _render_bitcrusher(self, module, frames: int, buffers, patch):
+        """Bitcrusher: mid-tread bit-depth quantize + sample-hold decimation.
+
+        Signal flow ``in -> decimate -> quantize -> [dc filter] -> mix``.
+        Both crush stages are skipped at their neutral settings, so
+        ``bits == 24`` and ``rate_div == 1`` (with ``dc_filter`` off)
+        returns the input untouched -- a bit-exact passthrough at any
+        ``mix``; ``mix <= 0`` is likewise bit-exact dry. Quantize is a
+        pointwise ``round(x*2^(bits-1))/2^(bits-1)``; decimation is a
+        deliberately aliased sample-and-hold (no anti-image filter). The
+        hold phase (a global sample offset plus the per-voice held value,
+        and the seeded jitter boundary stream) lives in ``self._state``,
+        so holds stay continuous across block joins and every path here is
+        *exactly* block-size independent. Shape-polymorphic: the ``(V, F)``
+        core runs with ``V == 1`` for a mono ``in``, so one voice row is
+        bit-identical to the mono render and voices stay independent.
+        """
+        src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        if src is None or src.size == 0:
+            return np.zeros(frames, dtype=np.float32)
+
+        bits = int(round(float(module.params.get("bits", 24))))
+        rate_div = int(round(float(module.params.get("rate_div", 1))))
+        jitter = min(max(float(module.params.get("jitter", 0.0)), 0.0), 1.0)
+        mix = min(max(float(module.params.get("mix", 1.0)), 0.0), 1.0)
+        dc_filter = bool(module.params.get("dc_filter", False))
+
+        bits = min(max(bits, 1), 24)
+        rate_div = min(max(rate_div, 1), 64)
+
+        quant_active = bits < 24
+        decim_active = rate_div > 1
+
+        # Bit-exact dry: mix folds everything to the input, or there is
+        # simply nothing to do (both crush ops skipped, no DC filter).
+        if mix <= 0.0:
+            return src
+        if not quant_active and not decim_active and not dc_filter:
+            return src
+
+        was_mono = src.ndim == 1
+        x = np.atleast_2d(src).astype(np.float64)          # (V, F)
+        v = x.shape[0]
+
+        wet = x
+        if decim_active:
+            wet = self._bitcrush_decimate(module, wet, rate_div, jitter, v, frames)
+        if quant_active:
+            levels = 2.0 ** (bits - 1)
+            wet = np.round(wet * levels) / levels
+        if dc_filter:
+            wet = self._bitcrush_dcblock(module, wet, v)
+
+        if mix >= 1.0:
+            out = wet
+        else:
+            out = (1.0 - mix) * x + mix * wet
+
+        out32 = out.astype(np.float32)
+        return out32[0] if was_mono else out32
+
+    def _bitcrush_decimate(self, module, x, N, jitter, v, frames):
+        """Sample-and-hold decimation: hold every ~N-th input sample.
+
+        Deliberately aliased -- there is no anti-image filter, because the
+        folded-back content is the whole point of the sound. With
+        ``jitter == 0`` the holds are perfectly periodic and located by
+        integer division of the global sample index (``//N``); with
+        jitter the hold length wobbles around ``N`` on a seeded stream and
+        boundaries are located by ``searchsorted`` over their cumulative
+        sum. Either way the value that spans a block boundary is carried
+        per voice in ``self._state`` (with the global sample ``offset``),
+        so the result is exactly block-size independent.
+        """
+        state = self._state.setdefault(module.id, {})
+        offset = int(state.get("dec_offset", 0))
+        held = state.get("dec_held")
+        if held is None or held.shape[0] != v:
+            held = np.zeros(v, dtype=np.float64)
+            # a voice-count change invalidates any jitter boundary stream
+            state.pop("dec_bounds", None)
+            state.pop("dec_rng", None)
+
+        g = offset + np.arange(frames)                     # global indices
+
+        if jitter <= 0.0:
+            src_global = (g // N) * N
+        else:
+            bounds = state.get("dec_bounds")
+            rng = state.get("dec_rng")
+            if bounds is None or rng is None:
+                rng = np.random.default_rng(
+                    self._BITCRUSHER_JITTER_SEED + int(module.id)
+                )
+                # first hold starts at the active boundary at/under offset
+                bounds = [(offset // N) * N]
+            last = bounds[-1]
+            limit = offset + frames - 1
+            while last <= limit:
+                # hold length wobbles in [1, ~2N], symmetric around N
+                step = int(round(N * (1.0 + jitter * (2.0 * rng.random() - 1.0))))
+                if step < 1:
+                    step = 1
+                last += step
+                bounds.append(last)
+            barr = np.asarray(bounds, dtype=np.int64)
+            idx = np.searchsorted(barr, g, side="right") - 1
+            src_global = barr[idx]
+            # prune boundaries below the one still in effect (bound memory)
+            active = int(barr[idx[-1]])
+            keep = int(np.searchsorted(barr, active, side="left"))
+            state["dec_bounds"] = bounds[keep:]
+            state["dec_rng"] = rng
+
+        src_local = src_global - offset                    # <= frames - 1
+        neg = src_local < 0
+        gather = x[:, np.clip(src_local, 0, frames - 1)]   # (V, F)
+        out = np.where(neg[None, :], held[:, None], gather)
+
+        state["dec_offset"] = offset + frames
+        state["dec_held"] = out[:, -1].copy()
+        return out
+
+    def _bitcrush_dcblock(self, module, wet, v):
+        """One-pole DC blocker on the crushed signal.
+
+        ``y[n] = x[n] - x[n-1] + R*y[n-1]`` with the pole ``R`` set from a
+        ~20 Hz high-pass corner, stripping any offset the quantizer /
+        decimator introduces. Per-voice ``x[n-1]`` / ``y[n-1]`` persist in
+        ``self._state`` and the recurrence runs sample-serially, so it is
+        exact and block-size independent (off by default -- the only
+        per-sample loop here, paid for only when enabled).
+        """
+        sr = float(self.sample_rate)
+        R = float(np.exp(-2.0 * np.pi * 20.0 / sr))        # ~20 Hz corner
+        state = self._state.setdefault(module.id, {})
+        xp = state.get("dc_xprev")
+        yp = state.get("dc_yprev")
+        if xp is None or xp.shape[0] != v:
+            xp = np.zeros(v, dtype=np.float64)
+            yp = np.zeros(v, dtype=np.float64)
+        else:
+            xp = xp.copy()
+            yp = yp.copy()
+
+        frames = wet.shape[1]
+        out = np.empty_like(wet)
+        for n in range(frames):
+            xn = wet[:, n]
+            yn = xn - xp + R * yp
+            out[:, n] = yn
+            xp = xn
+            yp = yn
+
+        state["dc_xprev"] = np.asarray(xp, dtype=np.float64).copy()
+        state["dc_yprev"] = np.asarray(yp, dtype=np.float64).copy()
+        return out
 
     def _render_ring_mod(self, module, frames: int, buffers, patch):
         """Ring modulator: ``out = in x carrier``.

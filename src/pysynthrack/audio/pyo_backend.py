@@ -219,6 +219,7 @@ class PyoBackend(AudioBackend):
             "reverb",
             "ring_mod",
             "freq_shifter",
+            "bitcrusher",
             "loudness",
             "distortion",
             "waveshaper",
