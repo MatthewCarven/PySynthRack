@@ -15,6 +15,7 @@ has to handle the "we couldn't write a crash file" case anyway.
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -111,3 +112,98 @@ def write_crash_report(report: Any, source: str = "unknown") -> Optional[str]:
         return None
 
     return str(path)
+
+
+# ---------------------------------------------------------------------------
+# Global crash logging: route UNCAUGHT crashes to the crash folder.
+#
+# The explicit catch points (ui.app.main for the GUI, numpy_backend for the
+# audio callback) already write their own file with a precise ``source`` tag.
+# ``install_crash_logging`` adds a safety net for everything else -- crashes on
+# worker threads (threading.excepthook) and "exception ignored in __del__"
+# (sys.unraisablehook) -- by registering an observer on the error handler that
+# writes each such report to the same folder.
+#
+# The error handler fires observers for EVERY report it builds, including the
+# ones the explicit sites build. To avoid two files per crash, an explicit site
+# wraps its ``describe_error`` call in ``explicit_write()``; the observer sees
+# the thread-local flag and skips, leaving the explicit write as the single,
+# precisely-tagged file. The flag is thread-local, so a background-thread crash
+# happening during an explicit write on another thread is still captured.
+# ---------------------------------------------------------------------------
+
+_explicit = threading.local()
+_installed = False
+
+
+class explicit_write:
+    """Mark the current thread as performing an explicit crash write.
+
+    Used by the GUI / audio catch points around their ``describe_error`` call
+    so the global observer skips that report (they write their own, precisely
+    tagged, file). Thread-local and re-entrant-safe for our usage.
+    """
+
+    def __enter__(self):
+        _explicit.active = True
+        return self
+
+    def __exit__(self, *exc):
+        _explicit.active = False
+        return False
+
+
+def _crash_observer(report: Any) -> None:
+    """Error-handler observer: persist background / uncaught crash reports.
+
+    Skips reports an explicit catch point is already writing (see
+    ``explicit_write``) so each crash yields exactly one file. Never raises --
+    ``write_crash_report`` never raises, and the handler also guards every
+    observer call.
+    """
+    if getattr(_explicit, "active", False):
+        return
+    write_crash_report(report, source="uncaught")
+
+
+def install_crash_logging() -> bool:
+    """Route uncaught crashes to the crash folder.
+
+    Registers the folder-writing observer and wires the ``threading`` +
+    ``unraisable`` hooks. ``excepthook`` is intentionally left alone: the GUI
+    main thread is handled by ``ui.app.main``'s own try/except (suppress + exit).
+
+    Idempotent; returns True on success, False if wiring failed. Never raises.
+    """
+    global _installed
+    if _installed:
+        return True
+    try:
+        from .error_handler import install, register_observer
+
+        register_observer(_crash_observer)
+        install(
+            hooks=("threading", "unraisable"),
+            style="concise",
+            include_locals=True,
+        )
+        _installed = True
+        return True
+    except Exception:
+        logger.warning("Could not install global crash logging.", exc_info=True)
+        return False
+
+
+def uninstall_crash_logging() -> None:
+    """Reverse ``install_crash_logging`` (restore prior hooks, drop the
+    observer). Mainly for tests and clean shutdown. Never raises."""
+    global _installed
+    try:
+        from .error_handler import uninstall, unregister_observer
+
+        uninstall()
+        unregister_observer(_crash_observer)
+    except Exception:
+        pass
+    finally:
+        _installed = False

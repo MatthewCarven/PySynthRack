@@ -2929,31 +2929,35 @@ class App:
 def main() -> None:
     """GUI entry point with crash protection.
 
-    Wraps ``App().run()`` in a try/except so any uncaught exception (DPG
-    hard-exit territory, viewport setup failures, callback explosions,
-    anything that escapes the per-callback try/except'es scattered
-    through App) gets written out as a heavy crash report to
-    ~/.pysynthrack/crashes/ before the process dies. The user gets a
-    pointer to the file on stderr so they can paste it into a chat for
-    diagnosis.
+    First wires the global uncaught-crash hooks (worker threads /
+    ``__del__`` -> ~/.pysynthrack/crashes/ via ``_crash.install_crash_logging``),
+    then wraps ``App().run()`` so any fatal error (DPG hard-exit territory,
+    viewport setup failures, callback explosions, anything escaping the
+    per-callback try/except'es in App) is captured by the error handler,
+    written to the crash folder, and the process exits **non-zero with a
+    friendly pointer instead of dumping a Python traceback**.
 
-    The crash reporter itself is wrapped in another try/except so a
-    failure inside describe_error or write_crash_report falls back to a
-    plain traceback rather than swallowing the original exception. The
-    final ``raise`` preserves the normal "non-zero exit, traceback in
-    terminal" behaviour - the crash file is additive, not a
-    replacement.
+    Only ``Exception`` is caught, so ``KeyboardInterrupt`` / ``SystemExit``
+    (a normal Ctrl-C or an explicit quit) propagate untouched. The reporter is
+    itself wrapped so a failure inside ``describe_error`` / ``write_crash_report``
+    falls back to a raw traceback rather than hiding the original error.
     """
+    from .. import _crash
+
+    _crash.install_crash_logging()
     try:
         App().run()
-    except BaseException as e:
+    except Exception as e:
         try:
             from ..error_handler import describe_error
-            from .._crash import write_crash_report
-            report = describe_error(e, include_locals=True)
-            path = write_crash_report(report, source="gui")
+
+            # Guard so the global observer doesn't also write this report --
+            # we write it ourselves below with the precise "gui" source tag.
+            with _crash.explicit_write():
+                report = describe_error(e, include_locals=True)
+            path = _crash.write_crash_report(report, source="gui")
             print(
-                f"[pysynthrack] Fatal GUI error: {type(e).__name__}: {e}",
+                f"[pysynthrack] Fatal error: {type(e).__name__}: {e}",
                 file=sys.stderr,
             )
             if path:
@@ -2962,11 +2966,18 @@ def main() -> None:
                     "  Share this file when reporting the bug.",
                     file=sys.stderr,
                 )
-        except BaseException:
-            # Crash reporter itself failed - fall back to a normal
-            # traceback so the user at least sees the original error.
+            else:
+                print(
+                    "[pysynthrack] (Crash report could not be written.)",
+                    file=sys.stderr,
+                )
+        except Exception:
+            # Reporter itself failed - fall back to a raw traceback so the
+            # original error still surfaces somewhere.
             traceback.print_exc()
-        raise
+        # Suppress the traceback, but exit non-zero so scripts / CI still see
+        # the failure.
+        sys.exit(1)
 
 
 if __name__ == "__main__":  # pragma: no cover - GUI entry

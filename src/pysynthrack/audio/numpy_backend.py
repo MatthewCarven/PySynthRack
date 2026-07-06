@@ -1199,8 +1199,12 @@ class NumpyBackend(AudioBackend):
         try:
             import sys as _sys
             from ..error_handler import describe_error
-            from .._crash import write_crash_report
-            report = describe_error(exc, include_locals=True)
+            from .._crash import write_crash_report, explicit_write
+            # Guard so the global crash observer (if installed) doesn't also
+            # write this report -- we write it here with the precise
+            # "audio_callback" source tag.
+            with explicit_write():
+                report = describe_error(exc, include_locals=True)
             path = write_crash_report(report, source="audio_callback")
             if path:
                 print(
