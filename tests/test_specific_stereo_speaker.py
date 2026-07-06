@@ -282,6 +282,90 @@ class TestDeviceOutputRing:
         assert np.all(o == 0.0)
 
 
+class TestLiveDeviceSwitch:
+    """Reconciling secondary streams live, without a Stop/Start.
+
+    _DeviceOutput.open / .close are stubbed so no real PortAudio device is
+    touched; the tests assert the reconcile bookkeeping — which streams open,
+    which close, which are kept.
+    """
+
+    @pytest.fixture
+    def rig(self, monkeypatch):
+        opened, closed = [], []
+        monkeypatch.setattr(
+            _DeviceOutput, "open", lambda self: opened.append(self.device)
+        )
+        monkeypatch.setattr(
+            _DeviceOutput, "close", lambda self: closed.append(self.device)
+        )
+        p = Patch()
+        o = p.add_module("oscillator", params={"amp": 0.4})
+        s = p.add_module(TYPE, params={"device": "A"})
+        p.connect(o.id, "out", s.id, "in_l")
+        b = NumpyBackend(sample_rate=SR, block_size=F)
+        b.compile(p)
+        b._running = True          # simulate a running stream (no PortAudio)
+        b._sync_device_outputs()   # start-equivalent: opens "A"
+        return b, s, opened, closed
+
+    def test_initial_open(self, rig):
+        b, s, opened, closed = rig
+        assert set(b._device_outputs) == {"A"} and opened == ["A"]
+
+    def test_switch_rebuilds_only_the_changed_stream(self, rig):
+        b, s, opened, closed = rig
+        b.set_param(s.id, "device", "B")
+        assert set(b._device_outputs) == {"B"}
+        assert opened == ["A", "B"] and closed == ["A"]
+
+    def test_unrelated_param_leaves_streams_alone(self, rig):
+        b, s, opened, closed = rig
+        opened.clear(); closed.clear()
+        b.set_param(s.id, "pan", 0.5)
+        assert opened == [] and closed == [] and set(b._device_outputs) == {"A"}
+
+    def test_kept_stream_identity_preserved(self, rig):
+        b, s, opened, closed = rig
+        a_obj = b._device_outputs["A"]
+        b.set_param(s.id, "gain", 0.8)     # no device change
+        assert b._device_outputs["A"] is a_obj
+
+    def test_switch_to_default_closes_stream(self, rig):
+        b, s, opened, closed = rig
+        b.set_param(s.id, "device", "")
+        assert b._device_outputs == {} and closed == ["A"]
+
+    def test_no_reconcile_while_stopped(self, rig):
+        b, s, opened, closed = rig
+        b._running = False
+        opened.clear(); closed.clear()
+        b.set_param(s.id, "device", "C")
+        assert opened == [] and closed == [] and set(b._device_outputs) == {"A"}
+
+    def test_open_failure_is_skipped(self, rig, monkeypatch):
+        b, s, opened, closed = rig
+
+        def boom(self):
+            raise RuntimeError("no such device")
+
+        monkeypatch.setattr(_DeviceOutput, "open", boom)
+        b.set_param(s.id, "device", "Dead")   # must not raise
+        assert b._device_outputs == {}         # that sink is silent
+
+    def test_compile_reconciles_added_routed_sink(self, rig):
+        b, s, opened, closed = rig
+        p = Patch()
+        o1 = p.add_module("oscillator", params={"amp": 0.4})
+        s1 = p.add_module(TYPE, params={"device": "A"})
+        o2 = p.add_module("oscillator", params={"amp": 0.4})
+        s2 = p.add_module(TYPE, params={"device": "B"})
+        p.connect(o1.id, "out", s1.id, "in_l")
+        p.connect(o2.id, "out", s2.id, "in_l")
+        b.compile(p)                           # running -> reconcile at end
+        assert set(b._device_outputs) == {"A", "B"}
+
+
 class TestNeutralDefault:
     def test_stereo_pair_passes_bit_exactly(self):
         patch = Patch()

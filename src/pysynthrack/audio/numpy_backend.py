@@ -913,6 +913,12 @@ class NumpyBackend(AudioBackend):
                     logging.getLogger(__name__).warning(
                         "MIDIInput %s start failed: %s", mid, e
                     )
+        # A live recompile may add or remove routed
+        # specific_stereo_speaker_output sinks; reconcile the secondary
+        # streams so they follow without a Stop/Start (outside the render
+        # lock -- a device open must not stall the audio thread).
+        if self._running:
+            self._sync_device_outputs()
 
     @staticmethod
     def _topological_sort(patch: Patch) -> list[int]:
@@ -971,7 +977,7 @@ class NumpyBackend(AudioBackend):
                     callback=self._duplex_callback,
                 )
                 self._stream.start()
-                self._open_device_outputs()
+                self._sync_device_outputs()
                 self._running = True
                 return
             except Exception as e:
@@ -990,7 +996,7 @@ class NumpyBackend(AudioBackend):
             callback=self._audio_callback,
         )
         self._stream.start()
-        self._open_device_outputs()
+        self._sync_device_outputs()
         self._running = True
 
     def stop(self) -> None:
@@ -1029,41 +1035,76 @@ class NumpyBackend(AudioBackend):
             except Exception:
                 pass
 
-    def _open_device_outputs(self) -> None:
-        """Open one secondary OutputStream per distinct device chosen by a
-        specific_stereo_speaker_output sink. Called from start() once the
-        main stream is up. A device that fails to open is logged and skipped
-        -- its sink stays silent (the MicInput duplex-fallback discipline)
-        while the rest of the patch keeps playing. Selection is snapshotted
-        here, so changing a sink's device takes effect on the next Start
-        (the same device-at-start rule MicInput uses)."""
-        self._device_outputs = {}
+    def _wanted_devices(self) -> list[str]:
+        """Distinct non-empty output devices currently selected by
+        specific_stereo_speaker_output sinks, sorted for determinism."""
         if self._patch is None:
-            return
-        devices = sorted({
+            return []
+        return sorted({
             str(m.params.get('device', '')).strip()
             for m in self._patch.modules.values()
             if m.TYPE == self._SPECIFIC_STEREO_SPEAKER
             and str(m.params.get('device', '')).strip()
         })
-        for dev in devices:
+
+    def _sync_device_outputs(self) -> None:
+        """Reconcile the open secondary streams against the sinks' current
+        device selections: open a stream for any newly-chosen device, close
+        any no longer used, and leave the rest running. This is what makes a
+        device change take effect LIVE -- only the affected stream is rebuilt,
+        no Stop/Start. Called at start() (from an empty set, so it opens all)
+        and from set_param / compile while running.
+
+        Runs on the GUI thread. A fresh dict is built and swapped into
+        ``_device_outputs`` in one assignment; the audio thread only ever reads
+        that reference, so it sees the old or the new map whole, never a
+        half-updated one (the meters' no-lock discipline). A removed device's
+        stream is closed only AFTER the swap, so the audio thread has stopped
+        iterating to it; a late push lands in an unread deque, which is
+        harmless. A device that fails to open is logged and skipped (its sink
+        stays silent) and retried on the next change."""
+        wanted = self._wanted_devices()
+        current = self._device_outputs
+        if set(wanted) == set(current):
+            return
+        new: dict[str, Any] = {}
+        for dev in wanted:
+            existing = current.get(dev)
+            if existing is not None:
+                new[dev] = existing            # keep the already-running stream
+                continue
             try:
                 dev_out = _DeviceOutput(dev, self.sample_rate, self.block_size)
                 dev_out.open()
-                self._device_outputs[dev] = dev_out
+                new[dev] = dev_out
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).warning(
                     'specific_stereo_speaker_output: could not open output '
                     'device %r (%s); that sink will be silent.', dev, e,
                 )
+        to_close = [d for dev, d in current.items() if dev not in new]
+        self._device_outputs = new             # atomic swap for the audio thread
+        for d in to_close:
+            d.close()
 
     # ----- live params -----------------------------------------------------
 
     def set_param(self, module_id: int, name: str, value: Any) -> None:
         if self._patch is None or module_id not in self._patch.modules:
             return
-        self._patch.get(module_id).set_param(name, value)
+        module = self._patch.get(module_id)
+        module.set_param(name, value)
+        # Live device switch: when a specific_stereo_speaker_output's
+        # device changes while running, reconcile the secondary streams so
+        # only the affected one is rebuilt -- no Stop/Start. Any other
+        # param (or module type) never touches the stream set.
+        if (
+            self._running
+            and name == 'device'
+            and module.TYPE == self._SPECIFIC_STEREO_SPEAKER
+        ):
+            self._sync_device_outputs()
 
     # ----- audio thread ----------------------------------------------------
 

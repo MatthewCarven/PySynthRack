@@ -2158,10 +2158,13 @@ engine opens one secondary `sounddevice.OutputStream` per distinct
 selected device, the single per-block render is split so each routed
 sink's audio goes to its device bus (summed if several sinks share a
 device), and a small drop-oldest ring buffer hands blocks from the main
-audio callback to each device stream. Selection is snapshotted at
-`start()` (like the MicInput device), so **changing the device takes
-effect on the next Start**; a device that fails to open is logged and
-that sink stays silent while the rest of the patch plays on.
+audio callback to each device stream. **Changing a sink's device takes
+effect live** — the engine reconciles the open streams on the fly,
+rebuilding only the one that changed (opening the new device, closing
+the old if nothing else uses it) with no Stop/Start; adding or removing
+a routed sink reconciles the same way on the next graph edit. A device
+that fails to open is logged and that sink stays silent while the rest
+of the patch plays on.
 
 **Caveat — drift.** The two (or more) `OutputStream`s share samplerate
 and blocksize but run on independent PortAudio clocks, so a second
@@ -2188,7 +2191,7 @@ for; don't rely on it for phase-locked multi-device playback.
 | `pan` | `0.0` | −1 … 1 | Position (mono) or balance (pair). |
 | `width` | `1.0` | 0 … 2 | Mid/side width; pairs only. |
 | `cv_depth` | `1.0` | 0 … 2 | Knob units per CV unit, shared by `pan_cv` and `width_cv`. |
-| `device` | `""` | device name | Target output device; `""` = system default (drains to master). A named device routes the sink to its own OutputStream (applied at Start). |
+| `device` | `""` | device name | Target output device; `""` = system default (drains to master). A named device routes the sink to its own OutputStream; changing it re-routes **live**. |
 
 ---
 
