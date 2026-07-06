@@ -35,6 +35,7 @@ from ..modules.midiinput import (
     compute_velocity_curve,
 )
 from ..modules.micinput import available_input_devices as mic_available_devices
+from ..modules.output import available_output_devices as spk_available_devices
 from ..modules.fader_seq import FADER_RANGE_ST
 from ..modules.sequencer import MAX_STEPS as SEQ_MAX_STEPS
 from ..modules.compressor import DETECTOR_MODES
@@ -1123,7 +1124,9 @@ class App:
                 )
                 return
 
-        if module.TYPE == "stereo_speaker_output":
+        if module.TYPE in (
+            "stereo_speaker_output", "specific_stereo_speaker_output"
+        ):
             # The stereo sink. ``pan`` places a mono source
             # (constant-power) or balances a stereo pair; ``width`` is
             # mid/side (0 mono .. 2 over-wide, pairs only); ``gain`` is
@@ -1493,11 +1496,14 @@ class App:
         # module, or reopen the patch) to refresh after hot-plugging. An
         # empty string at the top is the "auto-pick first available" path,
         # so saved patches that don't pin a device still load and run.
-        if param_name == "device" and module.TYPE in ("midi_input", "mic_input"):
+        if param_name == "device" and module.TYPE in (
+            "midi_input", "mic_input", "specific_stereo_speaker_output"
+        ):
             # Device list snapshot at widget creation, plus a Refresh
             # button that re-enumerates in place after hot-plugging (no
             # more delete+re-add / reopen-the-patch dance). MIDIInput
-            # lists MIDI ports; MicInput lists audio capture devices.
+            # lists MIDI ports; MicInput lists audio capture devices;
+            # SpecificStereoSpeakerOutput lists audio playback devices.
             current_str = str(current)
             items, _ = self._device_combo_items(module.TYPE, current_str)
             with dpg.group(horizontal=True):
@@ -1809,7 +1815,7 @@ class App:
 
     @staticmethod
     def _device_combo_items(module_type: str, current_str: str) -> tuple[list[str], int]:
-        """Build the device-combo item list for a midi_input / mic_input.
+        """Build the device-combo item list for a device-bearing module.
 
         Returns ``(items, n_devices)``. Items always start with
         ``AUTO_DEVICE`` (the "auto-pick first available" empty string)
@@ -1819,6 +1825,8 @@ class App:
         """
         if module_type == "midi_input":
             devices = midi_available_devices()
+        elif module_type == "specific_stereo_speaker_output":
+            devices = spk_available_devices()
         else:
             devices = mic_available_devices()
         items = [AUTO_DEVICE] + devices
@@ -1840,7 +1848,12 @@ class App:
         current_str = str(dpg.get_value(tag))
         items, n = self._device_combo_items(module_type, current_str)
         dpg.configure_item(tag, items=items)
-        kind = "MIDI" if module_type == "midi_input" else "audio input"
+        if module_type == "midi_input":
+            kind = "MIDI"
+        elif module_type == "specific_stereo_speaker_output":
+            kind = "audio output"
+        else:
+            kind = "audio input"
         self._set_status(f"Refreshed {kind} devices: {n} found")
 
     # ----- fader_seq panel ---------------------------------------------------

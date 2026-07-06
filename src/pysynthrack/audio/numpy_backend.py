@@ -1083,9 +1083,14 @@ class NumpyBackend(AudioBackend):
         "left_speaker_output": (True, False),
         "right_speaker_output": (False, True),
     }
-    # The stereo sink is drained separately (pan/width/pan_cv need more
-    # than a channel-flag pair; see _drain_stereo_speaker).
-    _STEREO_SPEAKER = "stereo_speaker_output"
+    # The stereo sinks are drained separately (pan/width/pan_cv need more
+    # than a channel-flag pair; see _drain_stereo_speaker). Both the plain
+    # stereo speaker and the device-targetable specific_stereo_speaker_output
+    # share the drain — the latter's ``device`` is picker-only this slice, so
+    # its audio still lands on the master bus, bit-identically.
+    _STEREO_SPEAKERS = frozenset(
+        {"stereo_speaker_output", "specific_stereo_speaker_output"}
+    )
 
     def render_block(self, frames: int) -> np.ndarray | None:
         """Pure-function rendering of one block. Used by the audio callback
@@ -1132,7 +1137,7 @@ class NumpyBackend(AudioBackend):
 
         out = np.zeros((frames, 2), dtype=np.float32)
         for module in patch.modules.values():
-            if module.TYPE == self._STEREO_SPEAKER:
+            if module.TYPE in self._STEREO_SPEAKERS:
                 self._drain_stereo_speaker(module, frames, buffers, patch, out)
                 continue
             channels = self._SPEAKER_CHANNELS.get(module.TYPE)
@@ -1446,7 +1451,7 @@ class NumpyBackend(AudioBackend):
             return self._render_mic_input(module, frames, buffers, patch)
         if (
             module.TYPE in self._SPEAKER_CHANNELS
-            or module.TYPE == self._STEREO_SPEAKER
+            or module.TYPE in self._STEREO_SPEAKERS
         ):
             return None  # speaker-family sink — drained by the speaker pass
         return None

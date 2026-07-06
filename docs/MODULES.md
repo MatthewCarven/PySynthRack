@@ -245,6 +245,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`left_speaker_output`](#left_speaker_output) | Outputs | `in` (audio) → — |
 | [`right_speaker_output`](#right_speaker_output) | Outputs | `in` (audio) → — |
 | [`stereo_speaker_output`](#stereo_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv` (cv) → — |
+| [`specific_stereo_speaker_output`](#specific_stereo_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv` (cv) → — |
 | [`disk_writer`](#disk_writer) | Outputs | `in` (audio) → — |
 
 ---
@@ -2132,6 +2133,53 @@ position, like Loudness's `level_cv`). See
 chorus, width 1.6, a 0.22 Hz autopan sweeping the voice around the
 room while a 0.06 Hz triangle on `width_cv` breathes the image
 between narrow and wide).
+
+---
+
+#### `specific_stereo_speaker_output`
+
+The **device-targetable stereo speaker**: everything
+[`stereo_speaker_output`](#stereo_speaker_output) does — the same
+`in_l` / `in_r` inputs, the `pan` / `width` / `gain` knobs, and the
+shared-`cv_depth` `pan_cv` / `width_cv` jacks (see that entry for the
+full pan-law / mid-side / CV behaviour) — plus a `device` parameter
+naming the physical output it should play out of. The intent is a
+cue / monitor bus you can pin to headphones while the main mix stays
+on the studio monitors.
+
+**Slice 1 (current build): the picker, not yet the routing.** The
+`device` field is live in the UI — a dropdown snapshotted at widget
+creation with a **Refresh** button, exactly like the
+[`mic_input`](#mic_input) picker but listing audio *playback* devices
+via `available_output_devices()` — and it round-trips through saved
+patches. But the audio still sums into the shared master bus: the
+drain is **bit-identical** to `stereo_speaker_output`, so the sound is
+unchanged and the selected `device` has no audible effect *yet*.
+Actually opening a second `sounddevice.OutputStream` on the chosen
+device and routing this sink there is the follow-up slice; the module
+and its saved selection are in place so patches built now keep their
+`device` when the routing lands. (Caveat noted for that slice: two
+PortAudio streams are not sample-clock-synced, so a second device can
+drift slightly against the main output.)
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in_l` | in | audio | Left / only input. Alone = mono source, constant-power panned. |
+| `in_r` | in | audio | Right input; cabling it switches to stereo balance + width. |
+| `pan_cv` | in | cv | Per-sample pan modulation, scaled by `cv_depth`. Optional. |
+| `width_cv` | in | cv | Per-sample width modulation, same shared `cv_depth`. Optional. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `gain` | `1.0` | 0 … 2 | Output trim, applied after pan/width. |
+| `pan` | `0.0` | −1 … 1 | Position (mono) or balance (pair). |
+| `width` | `1.0` | 0 … 2 | Mid/side width; pairs only. |
+| `cv_depth` | `1.0` | 0 … 2 | Knob units per CV unit, shared by `pan_cv` and `width_cv`. |
+| `device` | `""` | device name | Target output device; `""` = system default. Picker-only this slice. |
 
 ---
 

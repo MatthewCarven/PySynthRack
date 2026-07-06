@@ -55,6 +55,7 @@ from .output import (
     LeftSpeakerOutput,
     RightSpeakerOutput,
     SpeakerOutput,
+    SpecificStereoSpeakerOutput,
     StereoSpeakerOutput,
 )
 from .samplehold import SampleHold
@@ -122,6 +123,7 @@ __all__ = [
     "TiltEQ",
     "TransientShaper",
     "SpeakerOutput",
+    "SpecificStereoSpeakerOutput",
     "StereoSpeakerOutput",
     "VCA",
     "Vocoder",
