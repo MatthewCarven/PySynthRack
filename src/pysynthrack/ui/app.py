@@ -449,7 +449,7 @@ class App:
         current = module.params[param_name]
         user_data = (module.id, param_name)
 
-        if module.TYPE == "file_player" and param_name == "path":
+        if module.TYPE in ("file_player", "convolver") and param_name == "path":
             # Path field + a Browse button that opens the shared WAV
             # dialog. The field keeps an explicit tag so the dialog's
             # callback can write the chosen path back into it; typing a

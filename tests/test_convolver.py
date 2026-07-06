@@ -1,34 +1,41 @@
 """Tests for the Convolver (partitioned-FFT convolution — IR reverb / cab).
 
-Slice 1 is the mono fixed-block core with stereo (duplicated) outs and a
-default unit-impulse IR (a transparent insert until a file loader lands).
+Slice 1 built the mono fixed-block core (default unit-impulse IR = transparent
+insert). Slice 2 adds IR **file loading** (off-thread decode via the FilePlayer
+WAV/ffmpeg path) and **true stereo** (a stereo IR convolves the mono-summed
+input through its two channels into out_l / out_r).
 
 Coverage:
-  - Model: registration, defaults, ports/signal kinds (audio in -> stereo
-    audio out), JSON round-trip, unknown-param rejection, category.
+  - Model: registration, defaults (incl. ``path``), ports, JSON round-trip,
+    unknown-param rejection, category.
   - Engine (``_PartitionedConvolver``): block-for-block equivalence to
-    ``scipy.signal.fftconvolve`` across block sizes and IR lengths (the
-    oracle); a unit impulse is a delayed identity; tail length equals the
-    IR length; the reported latency is exactly one block.
-  - Neutral: the default unit-impulse IR at mix=1 / gain=1 is a passthrough
-    delayed by one block, within 1e-6 (FFT round-trip, not bit-exact);
-    mix=0 is a bit-exact delayed dry bypass; silence stays silence.
-  - Latency: an impulse peaks one block late; latency is constant across
-    block sizes.
-  - Oracle (module): with a real IR injected, the streamed wet output
-    matches ``fftconvolve`` to float32 tolerance; gain trims the wet only;
-    mix blends dry/wet.
-  - Block size: one big block == many small blocks (aligned by each latency)
-    to FFT round-off.
-  - Voice: a single voice row is bit-identical to mono; voices sum before
-    the convolution (linearity).
-  - Integration: osc -> convolver -> speaker renders finite stereo audio.
+    ``scipy.signal.fftconvolve`` across block sizes and IR lengths; a unit
+    impulse is a delayed identity; tail length equals IR length; one-block
+    latency.
+  - Neutral: default (no IR) unit-impulse at mix=1/gain=1 is a one-block
+    delayed passthrough within 1e-6; mix=0 bit-exact delayed dry; silence.
+  - Latency: one block; constant across block sizes.
+  - Module oracle (seeded IR): streamed wet matches ``fftconvolve`` to
+    float32 tolerance; gain trims wet only; mix blends.
+  - Stereo: a seeded stereo IR gives out_l / out_r that each match their own
+    channel's ``fftconvolve`` and differ from each other; a mono IR shares
+    one engine and drives both channels identically.
+  - File load: a real (temp) WAV IR decodes off-thread and convolves; mono
+    file -> equal channels; empty / unreadable path -> transparent; a live
+    ``path`` change adopts the new IR without blocking.
+  - Block size: big == small blocks to FFT round-off.
+  - Voice: single voice row ≡ mono; voices sum before the convolution.
+  - Integration: osc -> convolver -> stereo speaker renders finite audio.
 """
 from __future__ import annotations
+
+import os
+import tempfile
 
 import numpy as np
 import pytest
 from scipy.signal import fftconvolve
+from scipy.io import wavfile
 
 import pysynthrack.modules  # noqa: F401
 from pysynthrack.core import Patch
@@ -37,11 +44,11 @@ from pysynthrack.modules.convolver import Convolver
 
 SR = 44100
 F = 512
+SEED = "__seed__"  # sentinel path for pre-seeded (no-loader) IR tests
 
 
 def _backend(block=F):
     return NumpyBackend(sample_rate=SR, block_size=block)
-
 
 
 def _patch(**params):
@@ -52,11 +59,18 @@ def _patch(**params):
     return patch, osc, conv
 
 
-def _seed_ir(b, module_id, ir):
-    """Pre-seed a convolver's state with a chosen IR (before first render)."""
+def _seed_ir(b, module_id, ir_l, ir_r=None, path=SEED):
+    """Pre-seed a convolver's state with a chosen IR (no loader/thread).
+
+    The module's ``path`` param must equal ``path`` (default SEED) so the
+    renderer treats the IR as already-loaded and never kicks a background
+    load — keeping these tests deterministic.
+    """
+    left = np.asarray(ir_l, dtype=np.float64)
+    right = left if ir_r is None else np.asarray(ir_r, dtype=np.float64)
     b._state[module_id] = {
-        "engine": None, "dry_prev": None, "block": None,
-        "ir": np.asarray(ir, dtype=np.float64), "_ir_id": None,
+        "engine_l": None, "engine_r": None, "ir_l": left, "ir_r": right,
+        "loaded_path": path, "pending": None, "block": None, "dry_prev": None,
     }
 
 
@@ -75,6 +89,14 @@ def _sine(n, freq=440.0, amp=0.5):
     return (amp * np.sin(2 * np.pi * freq * np.arange(n) / SR)).astype(np.float32)
 
 
+def _write_wav(data):
+    """Write ``data`` (1D mono or (N, 2) stereo) to a temp WAV; return path."""
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "ir.wav")
+    wavfile.write(path, SR, np.asarray(data, dtype=np.float32))
+    return path
+
+
 # ----- Model -----------------------------------------------------------------
 
 
@@ -82,7 +104,7 @@ class TestModel:
     def test_register_and_defaults(self):
         conv = Patch().add_module("convolver")
         assert isinstance(conv, Convolver)
-        assert conv.params == {"gain": 1.0, "mix": 1.0}
+        assert conv.params == {"path": "", "gain": 1.0, "mix": 1.0}
 
     def test_ports_and_signal_kinds(self):
         conv = Patch().add_module("convolver")
@@ -93,9 +115,11 @@ class TestModel:
 
     def test_json_round_trip(self):
         patch = Patch()
-        patch.add_module("convolver", params={"gain": 0.5, "mix": 0.25})
+        patch.add_module("convolver", params={"path": "room.wav", "gain": 0.5,
+                                              "mix": 0.25})
         restored = Patch.from_dict(patch.to_dict())
         conv = next(m for m in restored if m.TYPE == "convolver")
+        assert conv.params["path"] == "room.wav"
         assert conv.params["gain"] == 0.5
         assert conv.params["mix"] == 0.25
 
@@ -123,9 +147,7 @@ class TestEngineOracle:
             [eng.process(x[k * block:(k + 1) * block]) for k in range(M // block)]
         )
         ref = fftconvolve(x, ir)[: M - block]
-        # Latency is exactly one block; compare the aligned region.
         assert np.max(np.abs(out[block:M] - ref)) < 1e-6
-        # ...and the first block is the (empty) pipeline fill.
         assert np.max(np.abs(out[:block])) < 1e-9
 
     def test_impulse_is_delayed_identity(self):
@@ -136,7 +158,6 @@ class TestEngineOracle:
         out = np.concatenate(
             [eng.process(x[k * block:(k + 1) * block]) for k in range(8)]
         )
-        # out is x delayed by exactly one block, to FFT round-off.
         assert np.max(np.abs(out[block:] - x[: 7 * block])) < 1e-9
 
     def test_tail_length_matches_ir(self):
@@ -146,12 +167,11 @@ class TestEngineOracle:
         eng = _PartitionedConvolver(ir, block)
         nblk = (len(ir) + 2 * block) // block + 2
         x = np.zeros(nblk * block)
-        x[0] = 1.0  # unit impulse in -> the output IS the IR (delayed one block)
+        x[0] = 1.0
         out = np.concatenate(
             [eng.process(x[k * block:(k + 1) * block]) for k in range(nblk)]
         )
         assert np.max(np.abs(out[block:block + len(ir)] - ir)) < 1e-9
-        # Nothing rings on past the IR's tail.
         assert np.max(np.abs(out[block + len(ir):])) < 1e-9
 
     @pytest.mark.parametrize("block", [128, 512])
@@ -165,32 +185,27 @@ class TestEngineOracle:
         assert int(np.argmax(np.abs(out))) == block // 3 + block
 
 
-# ----- Neutral ---------------------------------------------------------------
+# ----- Neutral (default: no IR -> transparent) ------------------------------
 
 
 class TestNeutral:
-    def test_default_impulse_ir_mix1_is_delayed_passthrough(self):
-        # Fresh convolver: default IR is a unit impulse -> transparent insert.
-        patch, osc, conv = _patch(mix=1.0, gain=1.0)
+    def test_default_no_ir_mix1_is_delayed_passthrough(self):
+        patch, osc, conv = _patch(mix=1.0, gain=1.0)  # path defaults ""
         b = _backend()
         x = _sine(F * 20, freq=440.0, amp=0.6)
-        for port in ("out_l", "out_r"):
-            b2 = _backend()
-            out = _run(b2, conv, patch, osc.id, x, port=port)
-            expected = np.concatenate([np.zeros(F, np.float32), x])[: out.shape[-1]]
-            # Not bit-exact: the FFT round-trip is float, not exact (pinned).
-            assert np.max(np.abs(out - expected)) < 1e-6
-            assert not np.array_equal(out, expected) or np.allclose(out, expected)
+        out = _run(b, conv, patch, osc.id, x)
+        expected = np.concatenate([np.zeros(F, np.float32), x])[: out.shape[-1]]
+        assert np.max(np.abs(out - expected)) < 1e-6
 
     def test_mix0_is_bit_exact_delayed_dry(self):
-        patch, osc, conv = _patch(mix=0.0, gain=1.7)  # gain must not matter at mix=0
+        patch, osc, conv = _patch(mix=0.0, gain=1.7)  # gain must not matter
         b = _backend()
         x = _sine(F * 12, freq=330.0, amp=0.5)
         out = _run(b, conv, patch, osc.id, x)
         expected = np.concatenate([np.zeros(F, np.float32), x])[: out.shape[-1]]
         assert np.array_equal(out, expected)
 
-    def test_both_channels_equal_for_mono_ir(self):
+    def test_default_both_channels_equal(self):
         patch, osc, conv = _patch(mix=1.0)
         b = _backend()
         x = _sine(F * 6, amp=0.4)
@@ -229,21 +244,21 @@ class TestLatency:
             assert int(np.argmax(np.abs(out))) == 5000 + block
 
 
-# ----- Oracle at the module level (real IR injected) ------------------------
+# ----- Module oracle (seeded IR) --------------------------------------------
 
 
 class TestModuleOracle:
     def test_streamed_wet_matches_fftconvolve(self):
         rng = np.random.default_rng(99)
         ir = rng.standard_normal(1500)
-        patch, osc, conv = _patch(mix=1.0, gain=1.0)
+        patch, osc, conv = _patch(path=SEED, mix=1.0, gain=1.0)
         b = _backend()
         _seed_ir(b, conv.id, ir)
         M = F * 20
         x = _sine(M, freq=220.0, amp=0.5)
         out = _run(b, conv, patch, osc.id, x)
         ref = fftconvolve(x.astype(np.float64), ir)[: M - F].astype(np.float32)
-        assert np.max(np.abs(out[F:M] - ref)) < 1e-4  # float32 accumulate
+        assert np.max(np.abs(out[F:M] - ref)) < 1e-4
 
     def test_gain_scales_wet_only(self):
         rng = np.random.default_rng(5)
@@ -251,12 +266,12 @@ class TestModuleOracle:
         x = _sine(F * 10, freq=200.0, amp=0.5)
 
         b1 = _backend()
-        p1, o1, c1 = _patch(mix=1.0, gain=1.0)
+        p1, o1, c1 = _patch(path=SEED, mix=1.0, gain=1.0)
         _seed_ir(b1, c1.id, ir)
         base = _run(b1, c1, p1, o1.id, x)
 
         b2 = _backend()
-        p2, o2, c2 = _patch(mix=1.0, gain=0.25)
+        p2, o2, c2 = _patch(path=SEED, mix=1.0, gain=0.25)
         _seed_ir(b2, c2.id, ir)
         scaled = _run(b2, c2, p2, o2.id, x)
 
@@ -269,7 +284,7 @@ class TestModuleOracle:
 
         def run_mix(m):
             b = _backend()
-            p, o, c = _patch(mix=m, gain=1.0)
+            p, o, c = _patch(path=SEED, mix=m, gain=1.0)
             _seed_ir(b, c.id, ir)
             return _run(b, c, p, o.id, x)
 
@@ -280,12 +295,120 @@ class TestModuleOracle:
         np.testing.assert_allclose(half, expected, atol=1e-6)
 
 
+# ----- Stereo ----------------------------------------------------------------
+
+
+class TestStereo:
+    def test_stereo_ir_channels_match_per_channel_fftconvolve(self):
+        rng = np.random.default_rng(42)
+        ir_l = rng.standard_normal(900)
+        ir_r = rng.standard_normal(1300)
+        M = F * 20
+        x = _sine(M, freq=220.0, amp=0.5)
+
+        b = _backend()
+        p, o, c = _patch(path=SEED, mix=1.0)
+        _seed_ir(b, c.id, ir_l, ir_r)
+        left = _run(b, c, p, o.id, x, port="out_l")
+
+        b2 = _backend()
+        p2, o2, c2 = _patch(path=SEED, mix=1.0)
+        _seed_ir(b2, c2.id, ir_l, ir_r)
+        right = _run(b2, c2, p2, o2.id, x, port="out_r")
+
+        refL = fftconvolve(x.astype(np.float64), ir_l)[: M - F].astype(np.float32)
+        refR = fftconvolve(x.astype(np.float64), ir_r)[: M - F].astype(np.float32)
+        assert np.max(np.abs(left[F:M] - refL)) < 1e-4
+        assert np.max(np.abs(right[F:M] - refR)) < 1e-4
+        # A genuine stereo image: the two channels are clearly different.
+        assert np.max(np.abs(left - right)) > 0.05
+
+    def test_mono_ir_shares_one_engine_and_equal_channels(self):
+        rng = np.random.default_rng(8)
+        ir = rng.standard_normal(500)
+        b = _backend()
+        p, o, c = _patch(path=SEED, mix=1.0)
+        _seed_ir(b, c.id, ir, ir)  # identical channels
+        x = _sine(F * 6, freq=200.0, amp=0.5)
+        res = b._render_convolver(c, F, {(o.id, "out"): x[:F]}, p)
+        st = b._state[c.id]
+        assert st["engine_r"] is st["engine_l"]  # convolved once
+        assert np.array_equal(res["out_l"], res["out_r"])
+
+
+# ----- File load (off-thread decode) ----------------------------------------
+
+
+class TestFileLoad:
+    def test_stereo_wav_loads_and_convolves(self):
+        rng = np.random.default_rng(3)
+        ir = (rng.standard_normal((1200, 2)) * 0.3).astype(np.float32)
+        wav = _write_wav(ir)
+        patch, osc, conv = _patch(path=wav, mix=1.0)
+        b = _backend()
+        b.compile(patch)                       # kicks the background loader
+        assert b.wait_for_ir_loads(timeout=10)
+        M = F * 20
+        x = _sine(M, freq=220.0, amp=0.5)
+        left = _run(b, conv, patch, osc.id, x, port="out_l")
+        refL = fftconvolve(x.astype(np.float64),
+                           ir[:, 0].astype(np.float64))[: M - F].astype(np.float32)
+        # float32 WAV round-trips exactly, so this is just the FFT tolerance.
+        assert np.max(np.abs(left[F:M] - refL)) < 1e-3
+
+    def test_mono_wav_gives_equal_channels(self):
+        rng = np.random.default_rng(4)
+        ir = (rng.standard_normal(800) * 0.3).astype(np.float32)  # mono
+        wav = _write_wav(ir)
+        patch, osc, conv = _patch(path=wav, mix=1.0)
+        b = _backend()
+        b.compile(patch)
+        assert b.wait_for_ir_loads(timeout=10)
+        x = _sine(F * 8, freq=200.0, amp=0.5)
+        left = _run(b, conv, patch, osc.id, x, port="out_l")
+        b2 = _backend()
+        b2.compile(patch)
+        assert b2.wait_for_ir_loads(timeout=10)
+        right = _run(b2, conv, patch, osc.id, x, port="out_r")
+        assert np.array_equal(left, right)
+
+    def test_missing_path_is_transparent(self):
+        patch, osc, conv = _patch(path="/no/such/ir_file_12345.wav", mix=1.0)
+        b = _backend()
+        b.compile(patch)
+        b.wait_for_ir_loads(timeout=10)  # load fails -> stays transparent
+        x = _sine(F * 8, freq=330.0, amp=0.5)
+        out = _run(b, conv, patch, osc.id, x)
+        expected = np.concatenate([np.zeros(F, np.float32), x])[: out.shape[-1]]
+        assert np.max(np.abs(out - expected)) < 1e-6
+
+    def test_live_path_change_adopts_new_ir(self):
+        rng = np.random.default_rng(6)
+        ir = (rng.standard_normal((700, 2)) * 0.3).astype(np.float32)
+        wav = _write_wav(ir)
+        patch, osc, conv = _patch(path="", mix=1.0)
+        b = _backend()
+        x = _sine(F * 6, freq=210.0, amp=0.5)
+
+        # Transparent while no IR is loaded.
+        out_before = _run(b, conv, patch, osc.id, x)
+        expected = np.concatenate([np.zeros(F, np.float32), x])[: out_before.shape[-1]]
+        assert np.max(np.abs(out_before - expected)) < 1e-6
+
+        # Point at an IR live; kick (one block), wait, then it convolves.
+        conv.set_param("path", wav)
+        b._render_convolver(conv, F, {(osc.id, "out"): np.zeros(F, np.float32)}, patch)
+        assert b.wait_for_ir_loads(timeout=10)
+        out_after = _run(b, conv, patch, osc.id, x)
+        # The IR is now audibly applied — no longer a clean passthrough.
+        assert np.max(np.abs(out_after[F:] - x[: out_after.shape[-1] - F])) > 0.05
+
+
 # ----- Block-size independence ----------------------------------------------
 
 
 class TestBlockSize:
     def test_big_block_matches_small_blocks(self):
-        # Impulse IR -> wet is the input delayed by one (block-sized) latency.
         x = _sine(F * 30, freq=277.0, amp=0.6).astype(np.float32)
 
         b_big = _backend(block=F * 30)
@@ -296,7 +419,6 @@ class TestBlockSize:
         p2, o2, c2 = _patch(mix=1.0)
         small = _run(b_small, c2, p2, o2.id, x, block=128)
 
-        # Align each by its own one-block latency, then compare.
         a = big[F * 30:]
         c = small[128:]
         n = min(a.shape[-1], c.shape[-1])
@@ -316,7 +438,7 @@ class TestVoice:
 
         bv = _backend()
         pv, ov, cv = _patch(mix=1.0)
-        voice = _run(bv, cv, pv, ov.id, x[np.newaxis, :])  # (1, T)
+        voice = _run(bv, cv, pv, ov.id, x[np.newaxis, :])
         assert np.array_equal(voice, mono)
 
     def test_voices_sum_before_convolution(self):
@@ -326,7 +448,7 @@ class TestVoice:
 
         bv = _backend()
         pv, ov, cv = _patch(mix=1.0)
-        two = _run(bv, cv, pv, ov.id, np.stack([v0, v1]))  # (2, T)
+        two = _run(bv, cv, pv, ov.id, np.stack([v0, v1]))
 
         bm = _backend()
         pm, om, cm = _patch(mix=1.0)

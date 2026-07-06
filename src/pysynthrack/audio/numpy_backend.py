@@ -489,6 +489,75 @@ class _PartitionedConvolver:
         return out
 
 
+class _IRLoader:
+    """Background IR decode + partition-FFT build for the Convolver.
+
+    IRs load whole (they're short), but the decode (scipy WAV, or ffmpeg for
+    everything else) and the per-channel partition FFTs must never run on the
+    audio thread. Construction spawns a daemon worker that decodes ``path``
+    to a contiguous ``(2, N)`` float32 via ``decode_fn`` (the backend's
+    ``_decode_audio``: WAV fast path then ffmpeg), then builds one
+    ``_PartitionedConvolver`` per IR channel for the given render block size
+    -- sharing a single engine when the two channels are identical (a mono
+    file), so a mono IR convolves once. The consumer polls ``done`` and then
+    reads ``ready`` / ``failed`` + the engines; every field is a plain
+    attribute (atomic under the GIL), so the audio thread needs no lock.
+
+    IRs are not normalised here (a later slice); a hot IR is the user's to
+    trim with ``gain``.
+    """
+
+    def __init__(self, path, target_sr, block, decode_fn) -> None:
+        self.path = str(path)
+        self.target_sr = int(target_sr)
+        self.block = int(block)
+        self._decode_fn = decode_fn
+        self.ready = False
+        self.failed = False
+        self.done = False
+        self.ir_l = None       # (N,) float64
+        self.ir_r = None       # (N,) float64
+        self.engine_l = None   # _PartitionedConvolver
+        self.engine_r = None   # _PartitionedConvolver (is engine_l when mono)
+        self.mono = False
+        self._thread = threading.Thread(
+            target=self._work, daemon=True, name="IRLoad"
+        )
+        self._thread.start()
+
+    def _work(self) -> None:
+        try:
+            stereo = self._decode_fn(self.path, self.target_sr)
+            if stereo is None or stereo.shape[1] == 0:
+                self.failed = True
+                return
+            left = np.ascontiguousarray(stereo[0], dtype=np.float64)
+            right = np.ascontiguousarray(stereo[1], dtype=np.float64)
+            self.mono = bool(np.array_equal(left, right))
+            self.ir_l = left
+            self.ir_r = right
+            self.engine_l = _PartitionedConvolver(left, self.block)
+            self.engine_r = (
+                self.engine_l if self.mono
+                else _PartitionedConvolver(right, self.block)
+            )
+            self.ready = True
+        except Exception as exc:  # pragma: no cover - filesystem/codec-specific
+            print(f"[Convolver] IR load failed for {self.path}: {exc}")
+            self.failed = True
+        finally:
+            self.done = True
+
+    def wait(self, timeout=None) -> bool:
+        """Join the worker (tests / offline render only). True if usable."""
+        self._thread.join(timeout)
+        return self.ready and not self.failed
+
+    def close(self) -> None:
+        """No long-lived resource to kill; the daemon worker exits on its own."""
+        return None
+
+
 class NumpyBackend(AudioBackend):
     """Pure-Python fallback. Slower than pyo but works wherever numpy does."""
 
@@ -640,6 +709,12 @@ class NumpyBackend(AudioBackend):
                         dec = self._state[mid].get("decoder")
                         if dec is not None:
                             dec.close()
+                    # Likewise a convolver mid-IR-load: release its loader
+                    # before dropping the state.
+                    if self._state_types.get(mid) == "convolver":
+                        pend = self._state[mid].get("pending")
+                        if isinstance(pend, dict) and pend.get("loader") is not None:
+                            pend["loader"].close()
                     self._state.pop(mid, None)
                     if mid not in live_types:
                         self._state_types.pop(mid, None)
@@ -668,6 +743,26 @@ class NumpyBackend(AudioBackend):
                     st["decoder"] = self._start_file_decoder(fp_path)
                     st["pos"] = 0
                     st["seek"] = None
+
+            # Convolver lifecycle: kick each convolver's background IR load
+            # NOW, on the compile (UI) thread, so the decode + partition FFTs
+            # never run on (or block) the audio thread. Path unchanged -> keep
+            # the loaded IR (or an in-flight loader) as-is.
+            for mid, m in patch.modules.items():
+                if m.TYPE != "convolver":
+                    continue
+                st = self._state.setdefault(mid, self._new_convolver_state())
+                cv_path = str(m.params.get("path", ""))
+                pend = st.get("pending")
+                if cv_path and cv_path != st.get("loaded_path") and (
+                    pend is None or pend.get("path") != cv_path
+                ):
+                    if pend is not None and pend.get("loader") is not None:
+                        pend["loader"].close()
+                    st["pending"] = {
+                        "path": cv_path,
+                        "loader": self._start_ir_loader(cv_path, self.block_size),
+                    }
 
             # MIDIInput lifecycle: ensure every midi_input module in the new
             # patch has its mido port open, and close ports for any
@@ -8232,28 +8327,82 @@ class NumpyBackend(AudioBackend):
         return out32[0] if was_mono else out32
 
     def _render_convolver(self, module, frames: int, buffers, patch):
-        """Partitioned-FFT convolution (IR reverb / cab): mono core, stereo outs.
+        """Partitioned-FFT convolution (IR reverb / cab): mono-in, stereo out.
 
         Voices are summed to mono before convolving -- convolution is linear,
         so per-voice-then-sum equals sum-then-convolve, and the mono sum is
-        far cheaper (one FFT stream, not V). The wet path carries a fixed
-        one-block latency (a block is buffered before it can transform); the
-        dry path is delay-matched by the same block inside ``mix`` so dry and
-        wet stay phase-coherent and the module presents one clean block of
-        latency.
+        far cheaper (one FFT stream, not V). A stereo IR convolves that mono
+        input through its left channel into ``out_l`` and its right into
+        ``out_r`` (a mono IR drives both, and is convolved once); the
+        decorrelation in the IR is the stereo image.
 
-        Slice 1: the IR defaults to a unit impulse (transparent insert) until
-        a file loader lands. ``gain`` trims the wet only, so ``mix = 0`` is a
-        bit-exact dry bypass (and skips the FFT) whatever ``gain`` is. Both
-        outputs carry the same mono result until stereo IRs load.
+        The IR is decoded + partition-built on a background thread
+        (``_IRLoader``), kicked at compile() and on any live ``path`` edit, so
+        a new/changed IR never blocks the audio thread -- the convolver keeps
+        the previous IR (or a transparent unit impulse) sounding until the new
+        one is ready. The wet path carries a fixed one-block latency; the dry
+        path is delay-matched by the same block inside ``mix`` so dry and wet
+        stay phase-coherent. ``gain`` trims the wet only, so ``mix = 0`` is a
+        bit-exact dry bypass (FFT skipped) whatever ``gain`` is.
         """
-        state = self._state.setdefault(
-            module.id,
-            {"engine": None, "dry_prev": None, "block": None,
-             "ir": None, "_ir_id": None},
-        )
+        state = self._state.setdefault(module.id, self._new_convolver_state())
 
-        # Mono dry (collapse=True sums any voice rows: convolution is linear).
+        # --- resolve path -> active engines (never blocks the audio thread) ---
+        path = str(module.params.get("path", ""))
+        if path == "":
+            # Transparent insert: drop any IR + cancel a pending load.
+            if state.get("ir_l") is not None or state.get("loaded_path") is not None:
+                state["ir_l"] = state["ir_r"] = None
+                state["engine_l"] = state["engine_r"] = None
+                state["loaded_path"] = None
+            pend = state.get("pending")
+            if pend is not None:
+                if pend.get("loader") is not None:
+                    pend["loader"].close()
+                state["pending"] = None
+        else:
+            pend = state.get("pending")
+            if path != state.get("loaded_path") and (
+                pend is None or pend.get("path") != path
+            ):
+                # New/changed IR: kick a background load, keep current engines
+                # (previous IR or transparent) sounding until it is ready.
+                state["pending"] = {
+                    "path": path, "loader": self._start_ir_loader(path, frames)
+                }
+
+        # Adopt a finished load (ready -> new engines; failed -> keep current).
+        pend = state.get("pending")
+        if pend is not None:
+            loader = pend.get("loader")
+            if loader is None or loader.done:
+                if loader is not None and loader.ready:
+                    state["ir_l"] = loader.ir_l
+                    state["ir_r"] = loader.ir_r
+                    state["engine_l"] = loader.engine_l
+                    state["engine_r"] = loader.engine_r
+                    state["block"] = loader.block
+                    state["loaded_path"] = pend["path"]
+                state["pending"] = None
+
+        # --- ensure engines exist and match the current block size ---
+        if state.get("engine_l") is None or state.get("block") != frames:
+            ir_l = state.get("ir_l")
+            if ir_l is None:  # transparent: shared unit-impulse engine
+                imp = _PartitionedConvolver(np.array([1.0], dtype=np.float64), frames)
+                state["engine_l"] = imp
+                state["engine_r"] = imp
+            else:
+                ir_r = state.get("ir_r")
+                state["engine_l"] = _PartitionedConvolver(ir_l, frames)
+                if ir_r is None or np.array_equal(ir_l, ir_r):
+                    state["engine_r"] = state["engine_l"]
+                else:
+                    state["engine_r"] = _PartitionedConvolver(ir_r, frames)
+            state["block"] = frames
+            state["dry_prev"] = np.zeros(frames, dtype=np.float32)
+
+        # --- mono dry (collapse=True sums any voice rows: conv is linear) ---
         src = self._input_buffer(patch, buffers, module.id, "in")
         if src is None:
             x = np.zeros(frames, dtype=np.float32)
@@ -8266,22 +8415,7 @@ class NumpyBackend(AudioBackend):
             elif x.shape[0] > frames:
                 x = x[:frames]
 
-        # IR (slice 1: unit impulse == transparent insert until a file loads).
-        ir = state.get("ir")
-        if ir is None:
-            ir = np.array([1.0], dtype=np.float64)
-            state["ir"] = ir
-        # (Re)build the engine on first use, a block-size change, or a new IR.
-        eng = state.get("engine")
-        if (eng is None or state.get("block") != frames
-                or state.get("_ir_id") != id(ir)):
-            eng = _PartitionedConvolver(ir, frames)
-            state["engine"] = eng
-            state["block"] = frames
-            state["_ir_id"] = id(ir)
-            state["dry_prev"] = np.zeros(frames, dtype=np.float32)
-
-        # Dry delayed by one block (== engine latency) to align with the wet.
+        # dry delayed by one block (== engine latency) to align with the wet
         dry_prev = state.get("dry_prev")
         if dry_prev is None or dry_prev.shape[0] != frames:
             dry_prev = np.zeros(frames, dtype=np.float32)
@@ -8295,15 +8429,63 @@ class NumpyBackend(AudioBackend):
             return {"out_l": out, "out_r": np.array(out, copy=True)}
 
         gain = float(module.params.get("gain", 1.0))
-        wet = eng.process(x).astype(np.float32)
+        eng_l = state["engine_l"]
+        eng_r = state["engine_r"]
+        shared = eng_r is eng_l  # mono IR -> convolve once
+        wet_l = eng_l.process(x).astype(np.float32)
+        wet_r = wet_l if shared else eng_r.process(x).astype(np.float32)
         if gain != 1.0:
-            wet = wet * np.float32(gain)
+            g = np.float32(gain)
+            wet_l = wet_l * g
+            wet_r = wet_l if shared else wet_r * g
+
         if mix >= 1.0:
-            out = np.ascontiguousarray(wet, dtype=np.float32)
+            out_l = np.ascontiguousarray(wet_l, dtype=np.float32)
+            out_r = out_l if shared else np.ascontiguousarray(wet_r, dtype=np.float32)
         else:
-            out = (np.float32(mix) * wet
-                   + np.float32(1.0 - mix) * dry_delayed).astype(np.float32)
-        return {"out_l": out, "out_r": np.array(out, copy=True)}
+            m = np.float32(mix)
+            dm = np.float32(1.0 - mix)
+            out_l = (m * wet_l + dm * dry_delayed).astype(np.float32)
+            out_r = out_l if shared else (m * wet_r + dm * dry_delayed).astype(np.float32)
+        if out_r is out_l:  # distinct arrays for the two ports
+            out_r = np.array(out_l, copy=True)
+        return {"out_l": out_l, "out_r": out_r}
+
+    @staticmethod
+    def _new_convolver_state():
+        return {
+            "engine_l": None, "engine_r": None, "ir_l": None, "ir_r": None,
+            "loaded_path": None, "pending": None, "block": None,
+            "dry_prev": None,
+        }
+
+    def _start_ir_loader(self, path, block):
+        """Spawn a background IR decode+build for ``path`` (None if empty)."""
+        if not path:
+            return None
+        return _IRLoader(path, self.sample_rate, block, self._decode_audio)
+
+    def wait_for_ir_loads(self, timeout: float = 10.0) -> bool:
+        """Block until every convolver's pending IR load finishes.
+
+        Tests / offline render only -- never call from the audio thread.
+        Returns True when every pending loader finished with a usable IR
+        (no pending load counts as trivially ready).
+        """
+        import time as _time
+
+        deadline = _time.monotonic() + float(timeout)
+        ok = True
+        for st in list(self._state.values()):
+            if not isinstance(st, dict):
+                continue
+            pend = st.get("pending")
+            loader = pend.get("loader") if isinstance(pend, dict) else None
+            if loader is None:
+                continue
+            remaining = max(0.0, deadline - _time.monotonic())
+            ok = bool(loader.wait(remaining)) and ok
+        return ok
 
     # Meter fall time: seconds for the peak bar to drop ~20 dB (a factor of
     # ten). The per-meter ``release`` param overrides this default. The fall

@@ -15,13 +15,23 @@ affordable at audio rates (an FFT per block instead of an O(L) tap-for-tap
 sum), and the cost scales with IR length — the **DSP % readout** in the
 toolbar is the meter for how long an IR you can afford.
 
-Slice 1 (this build) is the **mono fixed-block core**: a single IR channel,
-oracle-tested block-for-block against ``scipy.signal.fftconvolve``. Until an
-IR file is loaded (that's a later slice), the IR defaults to a **unit
-impulse**, so a freshly-added Convolver is a *transparent insert* — it
-passes audio straight through (delayed by its reported latency) and does
-nothing until you give it a real IR. The two outputs carry the same mono
-result for now; they split into a true stereo pair once stereo IRs load.
+Loading an IR. Point ``path`` at an audio file — a WAV, or (with the
+``[media]`` extra / a system ffmpeg) an mp3/flac/ogg/m4a or the audio track
+of a video — and the Browse button on the node opens the same file picker
+the FilePlayer uses. IRs load **whole** (no streaming; they're short), and
+the decode + partition-FFT build runs on a **background thread**, so a fresh
+or changed IR never blocks the audio thread — the convolver stays
+transparent (or keeps the previous IR) until the new one is ready. With an
+empty or unreadable path it is a **transparent insert** (a unit-impulse IR:
+dry passthrough delayed by the reported latency), so a saved patch always
+loads even if the IR file has moved. IRs are **not** normalised yet (that's
+a later slice) — trim hot IRs with ``gain``.
+
+Stereo. The convolver emits a **stereo pair**. A stereo IR file convolves
+the (mono-summed) input through its **left** channel into ``out_l`` and its
+**right** channel into ``out_r`` — the decorrelation captured in the IR *is*
+the stereo image (a real room miked in stereo, a stereo plate, ping-pong
+tanks). A mono IR drives both channels identically (and is convolved once).
 
 Latency. The wet path has a fixed **one-block latency** (a render block is
 buffered before it can be transformed). The dry path is delay-matched by the
@@ -29,22 +39,26 @@ same one block inside the ``mix`` blend, so dry and wet stay phase-coherent
 and the whole module presents one clean, constant block of latency.
 
 Parameters:
+    path: Path to an IR audio file. Empty / missing / unreadable → a
+        unit-impulse IR (transparent insert). Relative paths resolve against
+        the process working directory.
     gain: Linear trim on the **wet** (convolved) signal only, in [0, 2].
         The dry path is never touched by ``gain``, so ``mix = 0`` is always
-        a bit-exact dry bypass regardless of ``gain``. Once IRs are
-        normalised on load (a later slice) this is the wet make-up.
+        a bit-exact dry bypass regardless of ``gain``. Use it to tame hot
+        (un-normalised) IRs or as the wet make-up.
     mix: Dry/wet balance in [0, 1]. ``0`` = bit-exact dry (bypass, and the
-        FFT is skipped); ``1`` = fully wet. With the default unit-impulse
-        IR every mix is transparent (wet == dry).
+        FFT is skipped); ``1`` = fully wet. With a unit-impulse IR every mix
+        is transparent (wet == dry).
 
 Ports:
     in (in, audio): the signal to convolve. A polyphonic (voice-aware)
         source is summed to mono first — convolution is linear, so
         convolving each voice and summing equals summing then convolving,
         and the mono sum is far cheaper. Unpatched -> silence.
-    out_l (out, audio): left output (dry + wet). Mono result duplicated to
-        both channels until a stereo IR loads.
-    out_r (out, audio): right output.
+    out_l (out, audio): left output (dry + wet through the IR's left
+        channel). Equals ``out_r`` for a mono IR.
+    out_r (out, audio): right output (dry + wet through the IR's right
+        channel).
 
 Neutral: a unit-impulse IR at ``mix = 1`` (and ``gain = 1``) is a
 passthrough within ~1e-6 — not bit-exact, because the FFT round-trip is
@@ -58,9 +72,12 @@ from ..core.port import Port
 
 @register_module_type
 class Convolver(Module):
-    """Partitioned-FFT convolution (IR reverb / cab); mono core, stereo outs.
+    """Partitioned-FFT convolution (IR reverb / cab); mono-in, stereo out.
 
     Parameters:
+        path: IR audio file (WAV or ffmpeg-decodable). Empty/unreadable →
+            a unit-impulse IR (transparent insert). Loaded whole, off the
+            audio thread.
         gain: Linear wet trim in [0, 2]. Applied to the convolved signal
             only; the dry path is untouched so ``mix = 0`` bypasses
             bit-exactly whatever ``gain`` is.
@@ -70,13 +87,14 @@ class Convolver(Module):
     Ports:
         in (in, audio): signal to convolve (voice sources summed to mono).
             Unpatched -> silence.
-        out_l (out, audio): left channel (dry + wet).
-        out_r (out, audio): right channel.
+        out_l (out, audio): left channel (dry + wet via the IR's left).
+        out_r (out, audio): right channel (dry + wet via the IR's right).
     """
 
     TYPE = "convolver"
     CATEGORY = "Effects"
     DEFAULT_PARAMS = {
+        "path": "",
         "gain": 1.0,
         "mix": 1.0,
     }

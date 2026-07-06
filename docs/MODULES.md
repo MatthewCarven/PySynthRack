@@ -1429,35 +1429,46 @@ saturated old cassette).
 #### `convolver`
 
 A **convolution reverb / cabinet loader**. Convolution stamps a scaled,
-delayed copy of an **impulse response** (IR) onto every input sample and
-sums the overlaps — and because an IR *is* the recorded sound of a space or
-device answering a single click, that one operation reproduces whatever was
-captured: a real room, hall, plate or spring tank, a guitar/speaker cabinet,
-or any exotic sampled "reverb". Load an IR and the input now sounds like it
-was played there.
+delayed copy of an **impulse response** (IR) onto every input sample and sums
+the overlaps — and because an IR *is* the recorded sound of a space or device
+answering a single click, that one operation reproduces whatever was captured:
+a real room, hall, plate or spring tank, a guitar/speaker cabinet, or any
+exotic sampled "reverb". Load an IR and the input now sounds like it was
+played there.
 
-This is **slice 1**: the mono fixed-block convolution *core*, oracle-tested
-block-for-block against `scipy.signal.fftconvolve`. Until the IR file loader
-lands (a later slice) the IR defaults to a **unit impulse**, so a freshly
-added Convolver is a **transparent insert** — it passes audio straight
-through (delayed by its one-block latency) and does nothing until you give it
-a real IR. The two outputs carry the same mono result for now; they become a
-true stereo pair once stereo IRs load.
+**Loading an IR.** Point `path` at an audio file — a WAV, or (with the
+`[media]` extra / a system ffmpeg) an mp3/flac/ogg/m4a or the audio track of a
+video — or click **Browse…** on the node for the same picker the
+[`file_player`](#file_player) uses. IRs load **whole** (no streaming; they're
+short), and the decode + partition-FFT build run on a **background thread**, so
+a fresh or changed IR never blocks the audio thread — the convolver keeps the
+previous IR (or a transparent unit impulse) sounding until the new one is
+ready. An empty / missing / unreadable path is a **transparent insert** (a
+unit-impulse IR: dry passthrough delayed by the reported latency), so a saved
+patch always loads even if the IR moved. IRs are **not normalised yet** (that's
+a later slice) — trim a hot IR with `gain`.
+
+**Stereo.** The convolver emits a **stereo pair**. A stereo IR convolves the
+(mono-summed) input through its **left** channel into `out_l` and its **right**
+into `out_r` — the decorrelation captured in the IR *is* the stereo image (a
+room miked in stereo, a stereo plate, ping-pong tanks). A mono IR drives both
+channels identically, and is convolved once.
 
 **Ports**
 
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to convolve. A polyphonic (voice-aware) source is summed to mono first — convolution is linear, so convolving each voice then summing equals summing then convolving, and the mono sum is far cheaper. A single voice row is bit-identical to mono. Unpatched → silence. |
-| `out_l` | out | audio | Left output (dry + wet). Mono result duplicated to both channels until a stereo IR loads. |
-| `out_r` | out | audio | Right output. |
+| `out_l` | out | audio | Left output (dry + wet through the IR's left channel). Equals `out_r` for a mono IR. |
+| `out_r` | out | audio | Right output (dry + wet through the IR's right channel). |
 
 **Parameters**
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
-| `gain` | `1.0` | 0 … 2 | Linear trim on the **wet** (convolved) signal only. The dry path is never scaled, so `mix = 0` is a bit-exact dry bypass whatever `gain` is. (Becomes the wet make-up once IRs are normalised on load.) |
-| `mix` | `1.0` | 0 … 1 | Dry/wet balance. 0 = bit-exact dry (bypass; the FFT is skipped), 1 = fully wet. With the default unit-impulse IR every mix is transparent. |
+| `path` | `""` | file path | IR audio file (WAV or ffmpeg-decodable). Empty / missing / unreadable → a unit-impulse IR (transparent insert). Loaded whole, off the audio thread; **Browse…** opens the file picker. |
+| `gain` | `1.0` | 0 … 2 | Linear trim on the **wet** (convolved) signal only. The dry path is never scaled, so `mix = 0` is a bit-exact dry bypass whatever `gain` is. Use it to tame hot (un-normalised) IRs or as wet make-up. |
+| `mix` | `1.0` | 0 … 1 | Dry/wet balance. 0 = bit-exact dry (bypass; the FFT is skipped), 1 = fully wet. With a unit-impulse IR every mix is transparent. |
 
 **How it works.** The DSP is a **uniformly-partitioned overlap-save FFT
 convolution**. The IR is chopped into render-block-sized partitions, each
@@ -1466,9 +1477,10 @@ block transforms the `[previous block | current block]` window once, pushes
 that spectrum onto a **frequency-domain delay line** of the last
 `P = ceil(L / B)` input spectra, and the output is the frequency-domain
 multiply-accumulate `Σ_p H[p]·X[k−p]` inverse-transformed (the alias-free
-overlap-save half). That turns an `O(L)` tap-for-tap sum into one FFT pair
-per block, so cost scales with IR length — the toolbar **DSP %** readout is
-the meter for how long an IR you can afford.
+overlap-save half). That turns an `O(L)` tap-for-tap sum into one FFT pair per
+block, so cost scales with IR length — the toolbar **DSP %** readout is the
+meter for how long an IR you can afford. A stereo IR runs one such engine per
+channel (a mono IR shares one).
 
 The overlap-save core is intrinsically zero-latency; a one-block output
 register presents a clean, fixed **one-block (`B`-sample) latency** that the
@@ -1478,10 +1490,10 @@ float32 on the way out. Because the transform size `N = 2B` depends on the
 block size, the result is **block-size independent only up to FFT round-off**
 (~1e-6), not bit-exact — pinned and documented; the oracle tests hold each
 block size to `fftconvolve` within that tolerance. Neutral: a unit-impulse IR
-at `mix = 1` (`gain = 1`) is a passthrough delayed one block, within ~1e-6
-(the FFT round-trip is float, not exact); `mix = 0` is bit-exact delayed dry.
-See `examples/convolver_insert.json` (a convolver dropped inline, transparent
-until you Browse an IR in).
+at `mix = 1` (`gain = 1`) is a passthrough delayed one block, within ~1e-6 (the
+FFT round-trip is float, not exact); `mix = 0` is bit-exact delayed dry. See
+`examples/convolver_insert.json` (a convolver dropped inline, transparent until
+you Browse an IR in).
 
 ---
 
