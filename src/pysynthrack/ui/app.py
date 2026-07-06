@@ -182,6 +182,21 @@ class App:
 
     def run(self) -> None:
         dpg.create_context()
+        # Debug-only self-destruct: set PYSYNTHRACK_CRASH_TEST to a frame count
+        # to make the render loop raise after that many rendered frames, so the
+        # last-resort crash handler in main() can be exercised from a live
+        # window (folder report + friendly pointer + exit 1, no traceback).
+        # Inert unless the env var is set; a non-integer value means "crash on
+        # the first frame".
+        _crash_test_after = os.environ.get("PYSYNTHRACK_CRASH_TEST")
+        if _crash_test_after:
+            try:
+                _crash_test_after = int(_crash_test_after)
+            except ValueError:
+                _crash_test_after = 1
+        else:
+            _crash_test_after = None
+        _frame_count = 0
         try:
             self._build_ui()
             dpg.create_viewport(title="PySynthRack v0.1", width=1280, height=800)
@@ -206,6 +221,14 @@ class App:
                 self._update_file_positions()
                 self._update_velocity_capture()
                 dpg.render_dearpygui_frame()
+                if _crash_test_after is not None:
+                    _frame_count += 1
+                    if _frame_count >= _crash_test_after:
+                        raise RuntimeError(
+                            "PYSYNTHRACK_CRASH_TEST: deliberate crash after "
+                            f"{_frame_count} frame(s) to exercise the crash "
+                            "handler"
+                        )
         finally:
             try:
                 self.backend.stop()
