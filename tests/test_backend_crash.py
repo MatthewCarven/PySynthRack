@@ -1,8 +1,8 @@
 """Tests for the audio-callback crash-protection path.
 
-These exercise the wrapper around ``render_block`` in
+These exercise the wrapper around ``render_block_multi`` in
 :class:`NumpyBackend._audio_callback`. The injection trick: monkeypatch
-``render_block`` itself to raise, then call ``_audio_callback`` directly
+``render_block_multi`` itself to raise, then call ``_audio_callback`` directly
 with a dummy outdata buffer. No PortAudio needed.
 """
 from __future__ import annotations
@@ -43,7 +43,7 @@ class TestAudioCallbackCrashProtection:
         def boom(self, frames):
             raise RuntimeError("simulated render explosion")
 
-        monkeypatch.setattr(NumpyBackend, "render_block", boom)
+        monkeypatch.setattr(NumpyBackend, "render_block_multi", boom)
 
         outdata = np.ones((512, 2), dtype=np.float32)  # start non-zero
         # Should NOT raise.
@@ -59,7 +59,7 @@ class TestAudioCallbackCrashProtection:
         def boom(self, frames):
             raise RuntimeError("simulated render explosion")
 
-        monkeypatch.setattr(NumpyBackend, "render_block", boom)
+        monkeypatch.setattr(NumpyBackend, "render_block_multi", boom)
 
         outdata = np.zeros((512, 2), dtype=np.float32)
         # Five crashes - only the first should produce a file.
@@ -83,7 +83,7 @@ class TestAudioCallbackCrashProtection:
             call_count["n"] += 1
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(NumpyBackend, "render_block", boom)
+        monkeypatch.setattr(NumpyBackend, "render_block_multi", boom)
 
         outdata = np.zeros((512, 2), dtype=np.float32)
         backend._audio_callback(outdata, 512, None, None)

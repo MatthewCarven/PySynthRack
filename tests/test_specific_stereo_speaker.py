@@ -1,21 +1,26 @@
 """Tests for SpecificStereoSpeakerOutput — the device-targetable stereo sink.
 
-This is slice 1: the clone plus a live ``device`` picker. The audio still
-drains into the shared master bus, so the correctness contract here is
-*equivalence* — for every wiring and knob setting, this sink must produce a
-**bit-identical** master bus to :class:`StereoSpeakerOutput`, and the new
-``device`` parameter must have **no** effect on the render (it is picker /
-save-file only until the second-stream routing slice lands).
+Slice 2: real per-device routing. A sink left on the default device
+(``device == ""``) still drains into the shared master bus, bit-identically to
+:class:`StereoSpeakerOutput`. A sink with a **named** device is pulled OFF the
+master onto that device's own bus (``render_block_multi`` returns it under the
+device name), fed live to a secondary OutputStream through a drop-oldest ring.
 
 Coverage:
   - Model: registration, Outputs category, defaults (incl. ``device=""``),
-    ports & signal kinds (identical to the stereo speaker), JSON round-trip
-    of ``device``, ``set_param`` round-trip, unknown param rejected, type
-    walls, sink-ness (drained, not rendered).
+    ports & signal kinds (identical to the stereo speaker), JSON round-trip of
+    ``device``, ``set_param`` round-trip, unknown param rejected, type walls,
+    sink-ness (drained, not rendered).
   - available_output_devices(): returns a list, never raises.
-  - Drain equivalence: bit-identical to stereo_speaker_output across a mono /
-    stereo / pan / width / gain / CV sweep, and invariant to the ``device``
-    value (default, empty, and an unplugged bogus name all match).
+  - Default-device equivalence: bit-identical master bus to
+    stereo_speaker_output across a mono / stereo / pan / width / gain / CV
+    sweep (device left empty), and no device_blocks produced.
+  - Routing: a named device leaves the master silent and appears in
+    device_blocks with the exact stereo-speaker drain; two sinks on one device
+    sum; two devices split; a routed + a master sink coexist; render_block
+    still returns master only; each device bus is clipped.
+  - _DeviceOutput ring: FIFO order, underrun -> silence, overflow -> drop
+    oldest, frame-count mismatch -> silence.
   - Neutral default: a stereo pair passes to the bus bit-exactly via the
     shared _drain_stereo_speaker.
 """
@@ -25,7 +30,7 @@ import numpy as np
 import pytest
 
 import pysynthrack.modules  # noqa: F401  (registers types)
-from pysynthrack.audio.numpy_backend import NumpyBackend
+from pysynthrack.audio.numpy_backend import NumpyBackend, _DeviceOutput
 from pysynthrack.core import Patch
 from pysynthrack.core.module import get_module_type, grouped_module_types
 from pysynthrack.modules.output import (
@@ -42,6 +47,12 @@ def _render(patch, blocks=4):
     b = NumpyBackend(sample_rate=SR, block_size=F)
     b.compile(patch)
     return np.concatenate([b.render_block(F) for _ in range(blocks)]), b
+
+
+def _multi(patch, frames=F):
+    b = NumpyBackend(sample_rate=SR, block_size=F)
+    b.compile(patch)
+    return b.render_block_multi(frames)
 
 
 def _build(sink_type, mode, params, cv=False):
@@ -117,8 +128,6 @@ class TestModel:
             patch.connect(osc.id, "out", sp.id, "pan_cv")  # audio -> cv
 
     def test_is_a_drained_sink_not_rendered(self):
-        # Speaker-family sinks return None from _render_module (they are
-        # mixed in the speaker pass), same as stereo_speaker_output.
         patch = Patch()
         sp = patch.add_module(TYPE)
         b = NumpyBackend(sample_rate=SR, block_size=F)
@@ -133,13 +142,13 @@ class TestAvailableOutputDevices:
         assert all(isinstance(n, str) for n in got)
 
 
-# ----- Drain equivalence vs StereoSpeakerOutput ------------------------------
+# ----- Default device: bit-identical to the stereo speaker -------------------
 
 _PARAM_CASES = [
     ("mono", {}, False),
     ("mono", {"pan": -0.7}, False),
     ("mono", {"pan": 0.5, "gain": 0.8}, False),
-    ("stereo", {}, False),                                   # neutral default
+    ("stereo", {}, False),
     ("stereo", {"pan": 0.4, "width": 1.6}, False),
     ("stereo", {"width": 0.0}, False),
     ("stereo", {"width": 2.0, "gain": 1.2}, False),
@@ -149,28 +158,132 @@ _PARAM_CASES = [
 ]
 
 
-class TestDrainMatchesStereoSpeaker:
+class TestDefaultDeviceMatchesStereoSpeaker:
     @pytest.mark.parametrize("mode,params,cv", _PARAM_CASES)
-    def test_bit_identical_master_bus(self, mode, params, cv):
+    def test_master_bus_bit_identical(self, mode, params, cv):
         ref, _ = _render(_build("stereo_speaker_output", mode, dict(params), cv))
-        pb = dict(params)
-        pb["device"] = "Some Unplugged Device"  # must not change the drain
-        got, _ = _render(_build(TYPE, mode, pb, cv))
+        got, _ = _render(_build(TYPE, mode, dict(params), cv))  # device left ""
         assert np.array_equal(ref, got)
 
-    @pytest.mark.parametrize("device", [AUTO_DEVICE, "", "Bogus Interface 7"])
-    def test_device_value_is_inert(self, device):
+    def test_empty_device_produces_no_device_blocks(self):
+        master, dev = _multi(_build(TYPE, "stereo", {"pan": 0.3}))
+        assert dev == {}
         ref, _ = _render(_build("stereo_speaker_output", "stereo", {"pan": 0.3}))
-        got, _ = _render(
-            _build(TYPE, "stereo", {"pan": 0.3, "device": device})
-        )
-        assert np.array_equal(ref, got)
+        assert np.array_equal(master, ref[:F])
+
+
+# ----- Routing: a named device pulls the sink off the master -----------------
+
+
+class TestDeviceRouting:
+    def test_named_device_leaves_master_silent(self):
+        master, dev = _multi(_build(TYPE, "mono", {"device": "Cans"}))
+        assert np.max(np.abs(master)) == 0.0
+        assert "Cans" in dev and np.max(np.abs(dev["Cans"])) > 0.0
+
+    def test_device_bus_equals_stereo_speaker_drain(self):
+        master, dev = _multi(_build(TYPE, "stereo", {"pan": 0.4, "device": "Cans"}))
+        ref, _ = _render(_build("stereo_speaker_output", "stereo", {"pan": 0.4}))
+        assert np.array_equal(dev["Cans"], ref[:F])
+        assert np.max(np.abs(master)) == 0.0
+
+    def test_two_sinks_same_device_sum(self):
+        p = Patch()
+        o1 = p.add_module("oscillator", params={"amp": 0.4})
+        o2 = p.add_module("oscillator", params={"amp": 0.4})
+        s1 = p.add_module(TYPE, params={"device": "Cans"})
+        s2 = p.add_module(TYPE, params={"device": "Cans"})
+        p.connect(o1.id, "out", s1.id, "in_l")
+        p.connect(o2.id, "out", s2.id, "in_l")
+        _, dev = _multi(p)
+        assert list(dev) == ["Cans"]
+        one = Patch()
+        oa = one.add_module("oscillator", params={"amp": 0.4})
+        sa = one.add_module(TYPE, params={"device": "Cans"})
+        one.connect(oa.id, "out", sa.id, "in_l")
+        _, dev1 = _multi(one)
+        assert np.allclose(dev["Cans"], 2.0 * dev1["Cans"], atol=1e-6)
+
+    def test_two_devices_split(self):
+        p = Patch()
+        o1 = p.add_module("oscillator", params={"amp": 0.4})
+        o2 = p.add_module("oscillator", params={"amp": 0.3, "freq": 330.0})
+        s1 = p.add_module(TYPE, params={"device": "A"})
+        s2 = p.add_module(TYPE, params={"device": "B"})
+        p.connect(o1.id, "out", s1.id, "in_l")
+        p.connect(o2.id, "out", s2.id, "in_l")
+        master, dev = _multi(p)
+        assert set(dev) == {"A", "B"}
+        assert np.max(np.abs(master)) == 0.0
+        assert not np.array_equal(dev["A"], dev["B"])
+
+    def test_routed_and_master_sinks_coexist(self):
+        p = Patch()
+        o1 = p.add_module("oscillator", params={"amp": 0.4})
+        o2 = p.add_module("oscillator", params={"amp": 0.4})
+        routed = p.add_module(TYPE, params={"device": "Cans"})
+        onbus = p.add_module(TYPE)  # default device -> master
+        p.connect(o1.id, "out", routed.id, "in_l")
+        p.connect(o2.id, "out", onbus.id, "in_l")
+        master, dev = _multi(p)
+        ref_master, _ = _render(_build(TYPE, "mono", {}))
+        assert np.array_equal(master, ref_master[:F])
+        assert np.max(np.abs(dev["Cans"])) > 0.0
+
+    def test_render_block_returns_master_only(self):
+        b = NumpyBackend(sample_rate=SR, block_size=F)
+        b.compile(_build(TYPE, "mono", {"device": "Cans"}))
+        master_only = b.render_block(F)
+        assert np.max(np.abs(master_only)) == 0.0
+
+    def test_device_bus_is_clipped(self):
+        p = Patch()
+        o1 = p.add_module("oscillator", params={"amp": 0.9})
+        o2 = p.add_module("oscillator", params={"amp": 0.9})
+        s1 = p.add_module(TYPE, params={"device": "Cans", "pan": -1.0})
+        s2 = p.add_module(TYPE, params={"device": "Cans", "pan": -1.0})
+        p.connect(o1.id, "out", s1.id, "in_l")
+        p.connect(o2.id, "out", s2.id, "in_l")
+        _, dev = _multi(p)
+        assert dev["Cans"].max() <= 1.0 and dev["Cans"].min() >= -1.0
+
+
+class TestDeviceOutputRing:
+    """Ring semantics of _DeviceOutput without opening a real PortAudio stream."""
+
+    def _blk(self, v):
+        return np.full((F, 2), v, dtype=np.float32)
+
+    def test_fifo_order(self):
+        d = _DeviceOutput("X", SR, F, max_blocks=4)
+        d.push(self._blk(0.1)); d.push(self._blk(0.2))
+        o = np.zeros((F, 2), dtype=np.float32)
+        d._callback(o, F, None, None); assert np.allclose(o, 0.1)
+        d._callback(o, F, None, None); assert np.allclose(o, 0.2)
+
+    def test_underrun_is_silence(self):
+        d = _DeviceOutput("X", SR, F, max_blocks=4)
+        o = np.ones((F, 2), dtype=np.float32)
+        d._callback(o, F, None, None)
+        assert np.all(o == 0.0)
+
+    def test_overflow_drops_oldest(self):
+        d = _DeviceOutput("X", SR, F, max_blocks=2)
+        d.push(self._blk(0.1)); d.push(self._blk(0.2)); d.push(self._blk(0.3))
+        o = np.zeros((F, 2), dtype=np.float32)
+        d._callback(o, F, None, None); assert np.allclose(o, 0.2)  # 0.1 dropped
+        d._callback(o, F, None, None); assert np.allclose(o, 0.3)
+
+    def test_frame_mismatch_is_silence(self):
+        d = _DeviceOutput("X", SR, F, max_blocks=2)
+        d.push(self._blk(0.5))
+        o = np.ones((F // 2, 2), dtype=np.float32)
+        d._callback(o, F // 2, None, None)   # wrong frame count -> silence
+        assert np.all(o == 0.0)
 
 
 class TestNeutralDefault:
     def test_stereo_pair_passes_bit_exactly(self):
-        # Mirror of the stereo-speaker neutral test: at defaults a stereo
-        # pair reaches the bus untouched through the shared drain.
         patch = Patch()
         l = patch.add_module("oscillator", params={"amp": 0.4})
         r = patch.add_module("oscillator", params={"amp": 0.3})

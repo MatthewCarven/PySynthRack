@@ -2147,20 +2147,29 @@ naming the physical output it should play out of. The intent is a
 cue / monitor bus you can pin to headphones while the main mix stays
 on the studio monitors.
 
-**Slice 1 (current build): the picker, not yet the routing.** The
-`device` field is live in the UI — a dropdown snapshotted at widget
-creation with a **Refresh** button, exactly like the
-[`mic_input`](#mic_input) picker but listing audio *playback* devices
-via `available_output_devices()` — and it round-trips through saved
-patches. But the audio still sums into the shared master bus: the
-drain is **bit-identical** to `stereo_speaker_output`, so the sound is
-unchanged and the selected `device` has no audible effect *yet*.
-Actually opening a second `sounddevice.OutputStream` on the chosen
-device and routing this sink there is the follow-up slice; the module
-and its saved selection are in place so patches built now keep their
-`device` when the routing lands. (Caveat noted for that slice: two
-PortAudio streams are not sample-clock-synced, so a second device can
-drift slightly against the main output.)
+The `device` field is a dropdown snapshotted at widget creation with a
+**Refresh** button, exactly like the [`mic_input`](#mic_input) picker
+but listing audio *playback* devices via `available_output_devices()`,
+and it round-trips through saved patches. Left empty (`""`, the
+default) the sink drains into the shared master bus **bit-identically**
+to `stereo_speaker_output`. Set to a named device, the sink is pulled
+**off** the master onto that device's own stereo bus: at `start()` the
+engine opens one secondary `sounddevice.OutputStream` per distinct
+selected device, the single per-block render is split so each routed
+sink's audio goes to its device bus (summed if several sinks share a
+device), and a small drop-oldest ring buffer hands blocks from the main
+audio callback to each device stream. Selection is snapshotted at
+`start()` (like the MicInput device), so **changing the device takes
+effect on the next Start**; a device that fails to open is logged and
+that sink stays silent while the rest of the patch plays on.
+
+**Caveat — drift.** The two (or more) `OutputStream`s share samplerate
+and blocksize but run on independent PortAudio clocks, so a second
+device is not sample-synchronised with the main output: the ring
+absorbs jitter, an empty ring emits a block of silence and a full ring
+drops its oldest block, and the second device sits a few blocks behind.
+Fine for a cue / monitor / headphone bus, which is what this sink is
+for; don't rely on it for phase-locked multi-device playback.
 
 **Ports**
 
@@ -2179,7 +2188,7 @@ drift slightly against the main output.)
 | `pan` | `0.0` | −1 … 1 | Position (mono) or balance (pair). |
 | `width` | `1.0` | 0 … 2 | Mid/side width; pairs only. |
 | `cv_depth` | `1.0` | 0 … 2 | Knob units per CV unit, shared by `pan_cv` and `width_cv`. |
-| `device` | `""` | device name | Target output device; `""` = system default. Picker-only this slice. |
+| `device` | `""` | device name | Target output device; `""` = system default (drains to master). A named device routes the sink to its own OutputStream (applied at Start). |
 
 ---
 

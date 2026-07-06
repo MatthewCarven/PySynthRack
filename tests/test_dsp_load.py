@@ -14,7 +14,7 @@ Coverage:
     attribute wipe start() performs; the snapshot is a plain 3-tuple.
 
 The injection trick mirrors test_backend_crash.py: monkeypatch
-``render_block`` and call ``_fill_output`` / ``_audio_callback``
+``render_block_multi`` and call ``_fill_output`` / ``_audio_callback``
 directly with a dummy outdata buffer -- no PortAudio needed.
 """
 from __future__ import annotations
@@ -133,7 +133,7 @@ class TestBackendDspLoad:
         # A render pinned at ~4x the block budget must converge near 4.
         backend = _make_backend_with_patch()
         budget = F / SR
-        orig = NumpyBackend.render_block
+        orig = NumpyBackend.render_block_multi
 
         def slow(self, frames):
             t_end = time.perf_counter() + 4.0 * budget
@@ -142,7 +142,7 @@ class TestBackendDspLoad:
                 pass
             return out
 
-        monkeypatch.setattr(NumpyBackend, "render_block", slow)
+        monkeypatch.setattr(NumpyBackend, "render_block_multi", slow)
         _render_blocks(backend, 40)
         load, peak, overloads = backend.dsp_load_snapshot()
         # EMA after 40 blocks of a constant is within 2% of it; leave
@@ -154,7 +154,7 @@ class TestBackendDspLoad:
     def test_single_overload_counts_once(self, monkeypatch):
         backend = _make_backend_with_patch()
         budget = F / SR
-        orig = NumpyBackend.render_block
+        orig = NumpyBackend.render_block_multi
         calls = {"n": 0}
 
         def one_slow(self, frames):
@@ -166,7 +166,7 @@ class TestBackendDspLoad:
                     pass
             return out
 
-        monkeypatch.setattr(NumpyBackend, "render_block", one_slow)
+        monkeypatch.setattr(NumpyBackend, "render_block_multi", one_slow)
         _render_blocks(backend, 10)
         load, peak, overloads = backend.dsp_load_snapshot()
         assert overloads == 1
@@ -181,7 +181,7 @@ class TestBackendDspLoad:
         def boom(self, frames):
             raise RuntimeError("simulated render explosion")
 
-        monkeypatch.setattr(NumpyBackend, "render_block", boom)
+        monkeypatch.setattr(NumpyBackend, "render_block_multi", boom)
         outdata = np.ones((F, 2), dtype=np.float32)
         backend._audio_callback(outdata, F, None, None)
         assert backend._render_disabled is True

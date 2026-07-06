@@ -35,6 +35,7 @@ Keyboard / MIDIInput note sources) route through.
 """
 from __future__ import annotations
 
+import collections
 import math
 import queue
 import threading
@@ -61,6 +62,72 @@ try:
 except Exception:  # pragma: no cover - environment-dependent
     sd = None  # type: ignore[assignment]
     _HAS_SOUNDDEVICE = False
+
+
+class _DeviceOutput:
+    """A secondary stereo OutputStream feeding one specific_stereo_speaker
+    device, fed by the main audio callback through a small ring buffer.
+
+    The graph is rendered once per block on the *main* stream's callback;
+    that callback pushes this device's (frames, 2) block into the ring, and
+    this stream's own callback pops one block per invocation. The two streams
+    share samplerate and blocksize but run on independent PortAudio clocks, so
+    the ring absorbs scheduling jitter and the slow relative drift between two
+    unsynchronised devices: an empty ring (device ran ahead) yields a block of
+    silence, and a full ring (device fell behind) drops its oldest block. A
+    ``deque`` with ``maxlen`` gives that drop-oldest behaviour, and its append
+    (main thread) / popleft (device thread) are individually atomic under the
+    GIL, so no lock is needed. The trade is a few blocks of added latency on
+    the second device -- fine for the cue / monitor buses this sink is for."""
+
+    def __init__(
+        self, device: str, sample_rate: int, block_size: int,
+        max_blocks: int = 8,
+    ) -> None:
+        self.device = device
+        self._sample_rate = sample_rate
+        self._block_size = block_size
+        self._q: "collections.deque[np.ndarray]" = collections.deque(
+            maxlen=max_blocks
+        )
+        self._stream: Any = None
+
+    def open(self) -> None:
+        """Open and start the PortAudio stream on the named device."""
+        self._stream = sd.OutputStream(
+            samplerate=self._sample_rate,
+            channels=2,
+            blocksize=self._block_size,
+            dtype="float32",
+            device=self.device,
+            callback=self._callback,
+        )
+        self._stream.start()
+
+    def push(self, block: np.ndarray) -> None:
+        """Enqueue one rendered (frames, 2) block (main audio thread)."""
+        self._q.append(block)
+
+    def _callback(self, outdata, frames, time_info, status) -> None:
+        try:
+            block = self._q.popleft()
+        except IndexError:
+            block = None
+        if block is None or block.shape[0] != frames:
+            outdata.fill(0.0)          # underrun: a block of silence
+        else:
+            outdata[:] = block
+
+    def close(self) -> None:
+        try:
+            if self._stream is not None:
+                self._stream.stop()
+                self._stream.close()
+        except Exception:
+            pass
+        finally:
+            self._stream = None
+            self._q.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +691,11 @@ class NumpyBackend(AudioBackend):
         # when the module leaves the patch or the backend stops.
         self._midi_inputs: dict[int, Any] = {}
         self._stream: Any = None
+        # Secondary OutputStreams for specific_stereo_speaker_output sinks
+        # routed to a named device, keyed by device name. Opened in
+        # start() (snapshotting each sink's selection), fed by the main
+        # callback, closed in stop(). Empty in the common (no routed) case.
+        self._device_outputs: dict[str, Any] = {}
         # GUI thread writes the patch reference; audio thread reads it.
         self._lock = threading.Lock()
         # Audio-callback crash protection. After the first uncaught
@@ -899,6 +971,7 @@ class NumpyBackend(AudioBackend):
                     callback=self._duplex_callback,
                 )
                 self._stream.start()
+                self._open_device_outputs()
                 self._running = True
                 return
             except Exception as e:
@@ -917,6 +990,7 @@ class NumpyBackend(AudioBackend):
             callback=self._audio_callback,
         )
         self._stream.start()
+        self._open_device_outputs()
         self._running = True
 
     def stop(self) -> None:
@@ -928,6 +1002,11 @@ class NumpyBackend(AudioBackend):
         finally:
             self._stream = None
             self._running = False
+        # Close any secondary device-output streams opened for routed
+        # specific_stereo_speaker_output sinks.
+        for _dev_out in list(self._device_outputs.values()):
+            _dev_out.close()
+        self._device_outputs = {}
         # Drop any captured input so a stale block can't leak into the
         # next start() (which may be output-only).
         self._input_block = None
@@ -949,6 +1028,35 @@ class NumpyBackend(AudioBackend):
                 module.stop_midi()
             except Exception:
                 pass
+
+    def _open_device_outputs(self) -> None:
+        """Open one secondary OutputStream per distinct device chosen by a
+        specific_stereo_speaker_output sink. Called from start() once the
+        main stream is up. A device that fails to open is logged and skipped
+        -- its sink stays silent (the MicInput duplex-fallback discipline)
+        while the rest of the patch keeps playing. Selection is snapshotted
+        here, so changing a sink's device takes effect on the next Start
+        (the same device-at-start rule MicInput uses)."""
+        self._device_outputs = {}
+        if self._patch is None:
+            return
+        devices = sorted({
+            str(m.params.get('device', '')).strip()
+            for m in self._patch.modules.values()
+            if m.TYPE == self._SPECIFIC_STEREO_SPEAKER
+            and str(m.params.get('device', '')).strip()
+        })
+        for dev in devices:
+            try:
+                dev_out = _DeviceOutput(dev, self.sample_rate, self.block_size)
+                dev_out.open()
+                self._device_outputs[dev] = dev_out
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    'specific_stereo_speaker_output: could not open output '
+                    'device %r (%s); that sink will be silent.', dev, e,
+                )
 
     # ----- live params -----------------------------------------------------
 
@@ -990,7 +1098,7 @@ class NumpyBackend(AudioBackend):
             return
         t0 = time.perf_counter()
         try:
-            out = self.render_block(frames)
+            out, device_blocks = self.render_block_multi(frames)
         except BaseException as e:
             # First uncaught exception in render_block: capture a heavy
             # report, write it out, and disable rendering for the rest
@@ -1007,6 +1115,14 @@ class NumpyBackend(AudioBackend):
             outdata.fill(0.0)
         else:
             outdata[:] = out
+        # Hand each routed sink's block to its device stream's ring. Only
+        # devices that opened successfully appear in _device_outputs; a
+        # block for a failed/absent device is dropped (that sink is silent).
+        if self._device_outputs:
+            for _dev, _dev_out in self._device_outputs.items():
+                _blk = device_blocks.get(_dev)
+                if _blk is not None:
+                    _dev_out.push(_blk)
         # --- DSP-load bookkeeping (audio thread; see the __init__ notes)
         if frames > 0:
             load = elapsed * self.sample_rate / frames
@@ -1091,16 +1207,37 @@ class NumpyBackend(AudioBackend):
     _STEREO_SPEAKERS = frozenset(
         {"stereo_speaker_output", "specific_stereo_speaker_output"}
     )
+    # The device-targetable member of _STEREO_SPEAKERS: the only sink whose
+    # `device` param can pull it off the master bus onto a secondary stream.
+    _SPECIFIC_STEREO_SPEAKER = "specific_stereo_speaker_output"
 
     def render_block(self, frames: int) -> np.ndarray | None:
-        """Pure-function rendering of one block. Used by the audio callback
-        and by offline tests (no PortAudio device needed)."""
+        """Master-bus render of one block (the (frames, 2) stereo output).
+
+        Thin wrapper over :meth:`render_block_multi` returning only the
+        master bus, preserving the pure-function contract offline tests
+        rely on. Speaker-family sinks and any specific_stereo_speaker_output
+        left on the default device land here; a sink routed to a named
+        device does not (its audio goes to that device's own bus)."""
+        return self.render_block_multi(frames)[0]
+
+    def render_block_multi(
+        self, frames: int
+    ) -> tuple[np.ndarray | None, dict[str, np.ndarray]]:
+        """Render one block, returning ``(master, device_blocks)``.
+
+        The graph is walked exactly once. ``master`` is the main stereo bus
+        (all speaker sinks plus every stereo speaker on the default device).
+        ``device_blocks`` maps each distinct non-empty ``device`` chosen by
+        a specific_stereo_speaker_output to its own clipped (frames, 2) bus,
+        which the live path hands to that device's secondary OutputStream.
+        No routed sink -> empty dict and byte-for-byte the old render."""
         with self._lock:
             patch = self._patch
             order = list(self._topo_order)
             cv_ports = list(self._cv_output_ports)
         if patch is None:
-            return None
+            return None, {}
 
         # Port-keyed buffer store. A single module may emit multiple outputs
         # (Keyboard publishes both audio and gate).
@@ -1136,9 +1273,18 @@ class NumpyBackend(AudioBackend):
             self._meter_levels = levels
 
         out = np.zeros((frames, 2), dtype=np.float32)
+        device_blocks: dict[str, np.ndarray] = {}
         for module in patch.modules.values():
             if module.TYPE in self._STEREO_SPEAKERS:
-                self._drain_stereo_speaker(module, frames, buffers, patch, out)
+                target = out
+                if module.TYPE == self._SPECIFIC_STEREO_SPEAKER:
+                    dev = str(module.params.get('device', '')).strip()
+                    if dev:
+                        target = device_blocks.get(dev)
+                        if target is None:
+                            target = np.zeros((frames, 2), dtype=np.float32)
+                            device_blocks[dev] = target
+                self._drain_stereo_speaker(module, frames, buffers, patch, target)
                 continue
             channels = self._SPEAKER_CHANNELS.get(module.TYPE)
             if channels is None:
@@ -1165,7 +1311,9 @@ class NumpyBackend(AudioBackend):
                 out[:, 1] += mixed
 
         np.clip(out, -1.0, 1.0, out=out)
-        return out
+        for blk in device_blocks.values():
+            np.clip(blk, -1.0, 1.0, out=blk)
+        return out, device_blocks
 
     def _drain_stereo_speaker(self, module, frames, buffers, patch, out):
         """Mix one StereoSpeakerOutput into the master bus, in place.
