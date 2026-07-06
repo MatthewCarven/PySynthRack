@@ -82,6 +82,38 @@ class PyoBackend(AudioBackend):
         finally:
             self._running = False
 
+    def set_block_size(self, block_size: int) -> None:
+        """Set the buffer size, tearing the server down if it changed.
+
+        pyo bakes ``buffersize`` into the Server at boot and ``_ensure_server``
+        caches it, so a size change means the current server must be shut down;
+        the next ``compile()`` boots a fresh one at the new size (and rebuilds
+        every pyo object anyway, so dropping them here is safe). No-op when the
+        size is unchanged. Stops first if called while running.
+
+        NOTE: re-booting a pyo Server in one process is the fussy part of this
+        feature — verify on a machine with pyo installed. If a fresh
+        ``Server(...).boot()`` proves flaky, switch ``_ensure_server`` to
+        reuse a single Server via ``shutdown()`` + ``reinit()`` + ``boot()``.
+        """
+        block_size = int(block_size)
+        if block_size == self.block_size:
+            return
+        if self._running:
+            self.stop()
+        self.block_size = block_size
+        if self._server is not None:
+            for _call in ("stop", "shutdown"):
+                try:
+                    getattr(self._server, _call)()
+                except Exception:
+                    pass
+            self._server = None
+        # Objects belonged to the now-defunct server; drop them so a later
+        # compile rebuilds against the fresh boot (compile clears these too).
+        self._objects.clear()
+        self._sinks.clear()
+
     # ----- compile --------------------------------------------------------
 
     def compile(self, patch: Patch) -> None:

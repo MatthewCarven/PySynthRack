@@ -56,6 +56,12 @@ from .zoom import (
     scale_pos,
     step_zoom,
 )
+from .buffer import (
+    BUFFER_DEFAULT,
+    BUFFER_SIZES,
+    index_to_size,
+    size_to_index,
+)
 
 
 # Computer-keyboard → semitone-offset mapping. Home row A..K = white keys
@@ -90,6 +96,7 @@ AUDIO_BTN_TAG = "audio_btn"
 STATUS_TEXT_TAG = "status_text"
 MAIN_WINDOW_TAG = "main_window"
 ZOOM_SLIDER_TAG = "zoom_slider"
+BUFFER_SLIDER_TAG = "buffer_slider"
 DSP_TEXT_TAG = "dsp_load_text"
 
 from .._resources import examples_dir
@@ -131,6 +138,12 @@ class App:
         # position by the same factor so spacing — and cable length —
         # tracks the size. See ui/zoom.py for the dpg-free maths.
         self._zoom: float = ZOOM_DEFAULT
+
+        # Global audio buffer size (frames per block) applied to the backend
+        # when audio is (re)started. The toolbar slider carries the *index*
+        # into ui/buffer.BUFFER_SIZES, not the raw count; the size is read at
+        # Start (see _on_toggle_audio) and the slider greys while running.
+        self._buffer_size: int = BUFFER_DEFAULT
 
         # Track which physical keys are currently down so OS auto-repeat
         # doesn't fire note_on repeatedly while a key is held.
@@ -233,6 +246,22 @@ class App:
                     callback=self._on_zoom_slider,
                 )
                 dpg.add_button(label="Reset", callback=self._on_zoom_reset)
+                dpg.add_spacer(width=24)
+                # Global audio buffer size. The slider spans the *indices*
+                # into BUFFER_SIZES (non-uniform stops), and its printf
+                # ``format`` is rewritten in the callback to show the real
+                # frame count on the handle. Applied to the backend at Start.
+                dpg.add_text("Buffer")
+                dpg.add_slider_int(
+                    tag=BUFFER_SLIDER_TAG,
+                    width=120,
+                    min_value=0,
+                    max_value=len(BUFFER_SIZES) - 1,
+                    default_value=size_to_index(self._buffer_size),
+                    clamped=True,
+                    format=str(self._buffer_size),
+                    callback=self._on_buffer_slider,
+                )
                 dpg.add_spacer(width=24)
                 # DSP-load readout: render time over the block budget,
                 # smoothed by the backend (see ui/dsp_load.py). Grey
@@ -2239,18 +2268,27 @@ class App:
         if self.backend.is_running:
             self.backend.stop()
             self._all_keyboards_notes_off()
+            self._set_buffer_slider_enabled(True)
             dpg.set_item_label(AUDIO_BTN_TAG, "Start audio")
             self._set_status(f"Backend: {self.backend.name}  |  stopped")
         else:
             try:
+                # Apply the chosen buffer size before compile: numpy builds
+                # its device outputs and pyo boots its server during compile,
+                # so block_size must be set first.
+                self.backend.set_block_size(self._buffer_size)
                 self.backend.compile(self.patch)
                 self.backend.start()
             except Exception as exc:
                 traceback.print_exc()
                 self._set_status(f"Audio start failed: {exc}")
                 return
+            self._set_buffer_slider_enabled(False)
             dpg.set_item_label(AUDIO_BTN_TAG, "Stop audio")
-            self._set_status(f"Backend: {self.backend.name}  |  running")
+            self._set_status(
+                f"Backend: {self.backend.name}  |  running"
+                f"  |  buffer {self._buffer_size}"
+            )
 
     # ----- file menu ------------------------------------------------------
 
@@ -2374,6 +2412,38 @@ class App:
         if not self._ctrl_down():
             return
         self._apply_zoom(step_zoom(self._zoom, 1 if app_data > 0 else -1))
+
+    # ----- buffer size ----------------------------------------------------
+
+    def _on_buffer_slider(self, sender, app_data) -> None:
+        """Map the slider index to a buffer size and stash it for Start.
+
+        The slider value is an index into ``BUFFER_SIZES``; rewrite the
+        printf ``format`` so the handle shows the real frame count (e.g.
+        "512") rather than the raw index. Nothing is applied to the backend
+        here — the size takes effect on the next Start (see
+        ``_on_toggle_audio``).
+        """
+        size = index_to_size(app_data)
+        self._buffer_size = size
+        if dpg.does_item_exist(BUFFER_SLIDER_TAG):
+            try:
+                dpg.configure_item(BUFFER_SLIDER_TAG, format=str(size))
+            except Exception:
+                pass
+
+    def _set_buffer_slider_enabled(self, enabled: bool) -> None:
+        """Enable/grey the buffer slider (disabled while audio runs).
+
+        Buffer size is read only at Start, so editing it mid-run would be
+        misleading; greying it out makes that explicit.
+        """
+        if not dpg.does_item_exist(BUFFER_SLIDER_TAG):
+            return
+        try:
+            dpg.configure_item(BUFFER_SLIDER_TAG, enabled=enabled)
+        except Exception:
+            pass
 
     def _capture_node_positions(self) -> None:
         """Snapshot the current DPG node positions into ``patch.ui``.

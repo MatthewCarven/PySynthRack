@@ -63,6 +63,18 @@ class AudioBackend(ABC):
     def set_param(self, module_id: int, name: str, value: Any) -> None:
         """Update a parameter on an already-compiled module."""
 
+    def set_block_size(self, block_size: int) -> None:
+        """Set the audio block size ("buffer size", frames per block).
+
+        Takes effect on the next ``start()``. The base implementation simply
+        records the value, which suits backends that read ``block_size`` fresh
+        when the stream is (re)opened. Backends that bake the block size into a
+        long-lived engine (e.g. pyo boots a Server with a fixed buffersize)
+        override this to tear that engine down so it re-inits at the new size.
+        Intended to be called while stopped.
+        """
+        self.block_size = int(block_size)
+
     @property
     def is_running(self) -> bool:
         return self._running
