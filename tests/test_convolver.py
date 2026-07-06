@@ -39,7 +39,10 @@ from scipy.io import wavfile
 
 import pysynthrack.modules  # noqa: F401
 from pysynthrack.core import Patch
-from pysynthrack.audio.numpy_backend import NumpyBackend, _PartitionedConvolver
+from pysynthrack.audio import numpy_backend as _nbmod
+from pysynthrack.audio.numpy_backend import (
+    NumpyBackend, _PartitionedConvolver, _normalize_ir,
+)
 from pysynthrack.modules.convolver import Convolver
 
 SR = 44100
@@ -104,7 +107,8 @@ class TestModel:
     def test_register_and_defaults(self):
         conv = Patch().add_module("convolver")
         assert isinstance(conv, Convolver)
-        assert conv.params == {"path": "", "gain": 1.0, "mix": 1.0}
+        assert conv.params == {"path": "", "predelay": 0.0, "tone": 20000.0,
+                               "gain": 1.0, "mix": 1.0}
 
     def test_ports_and_signal_kinds(self):
         conv = Patch().add_module("convolver")
@@ -125,7 +129,7 @@ class TestModel:
 
     def test_unknown_param_rejected(self):
         with pytest.raises(KeyError):
-            Patch().add_module("convolver", params={"predelay": 10.0})
+            Patch().add_module("convolver", params={"width": 10.0})
 
     def test_category_is_effects(self):
         assert Convolver.CATEGORY == "Effects"
@@ -351,9 +355,10 @@ class TestFileLoad:
         M = F * 20
         x = _sine(M, freq=220.0, amp=0.5)
         left = _run(b, conv, patch, osc.id, x, port="out_l")
-        refL = fftconvolve(x.astype(np.float64),
-                           ir[:, 0].astype(np.float64))[: M - F].astype(np.float32)
-        # float32 WAV round-trips exactly, so this is just the FFT tolerance.
+        # The loader energy-normalises the IR, so the reference must too.
+        nl, nr, _ = _normalize_ir(ir[:, 0].astype(np.float64),
+                                  ir[:, 1].astype(np.float64))
+        refL = fftconvolve(x.astype(np.float64), nl)[: M - F].astype(np.float32)
         assert np.max(np.abs(left[F:M] - refL)) < 1e-3
 
     def test_mono_wav_gives_equal_channels(self):
@@ -473,3 +478,101 @@ class TestIntegration:
         out = b.render_block(F)
         assert out is not None
         assert np.all(np.isfinite(out))
+
+
+# ----- Wet shaping: predelay + tone -----------------------------------------
+
+
+class TestShaping:
+    def test_predelay_delays_wet_by_samples(self):
+        pd_ms = 10.0
+        D = int(round(pd_ms * 1e-3 * SR))
+        patch, osc, conv = _patch(mix=1.0, predelay=pd_ms)  # default impulse IR
+        b = _backend()
+        x = np.zeros(F * 8, dtype=np.float32)
+        x[2000] = 0.8
+        out = _run(b, conv, patch, osc.id, x)
+        # one-block engine latency + the predelay
+        assert int(np.argmax(np.abs(out))) == 2000 + F + D
+
+    def test_tone_max_is_transparent(self):
+        patch, osc, conv = _patch(mix=1.0, tone=20000.0)
+        b = _backend()
+        x = _sine(F * 12, freq=500.0, amp=0.5)
+        out = _run(b, conv, patch, osc.id, x)
+        expected = np.concatenate([np.zeros(F, np.float32), x])[: out.shape[-1]]
+        assert np.max(np.abs(out - expected)) < 1e-6
+
+    def test_tone_low_darkens_high_frequencies(self):
+        hf = _sine(F * 12, freq=9000.0, amp=0.5)
+        b_on = _backend()
+        p1, o1, c1 = _patch(mix=1.0, tone=1500.0)
+        dark = _run(b_on, c1, p1, o1.id, hf)
+        b_off = _backend()
+        p2, o2, c2 = _patch(mix=1.0, tone=20000.0)
+        bright = _run(b_off, c2, p2, o2.id, hf)
+        # A 1.5 kHz low-pass should strongly attenuate a 9 kHz tone.
+        assert np.max(np.abs(dark)) < 0.5 * np.max(np.abs(bright))
+
+    def test_shaping_does_not_touch_mix0(self):
+        # Predelay + tone are wet-only, so mix=0 stays a bit-exact dry bypass.
+        patch, osc, conv = _patch(mix=0.0, predelay=25.0, tone=1200.0, gain=1.9)
+        b = _backend()
+        x = _sine(F * 10, freq=330.0, amp=0.5)
+        out = _run(b, conv, patch, osc.id, x)
+        expected = np.concatenate([np.zeros(F, np.float32), x])[: out.shape[-1]]
+        assert np.array_equal(out, expected)
+
+
+# ----- Normalise on load + length cap ---------------------------------------
+
+
+class TestNormalizeAndCap:
+    def test_hot_ir_is_energy_normalised(self):
+        rng = np.random.default_rng(0)
+        ir = (rng.standard_normal((1000, 2)) * 5.0).astype(np.float32)  # very hot
+        wav = _write_wav(ir)
+        patch, osc, conv = _patch(path=wav, mix=1.0)
+        b = _backend()
+        b.compile(patch)
+        assert b.wait_for_ir_loads(timeout=10)
+        M = F * 20
+        x = _sine(M, freq=220.0, amp=0.5)
+        out = _run(b, conv, patch, osc.id, x)
+        nl, nr, _ = _normalize_ir(ir[:, 0].astype(np.float64),
+                                  ir[:, 1].astype(np.float64))
+        refL = fftconvolve(x.astype(np.float64), nl)[: M - F].astype(np.float32)
+        assert np.max(np.abs(out[F:M] - refL)) < 1e-3
+        # Normalisation kept the hot IR from blowing up the output.
+        assert np.max(np.abs(out)) < 2.0
+
+    def test_normalised_impulse_ir_is_transparent(self):
+        # A single-spike IR normalises to a unit impulse -> transparent insert.
+        ir = np.zeros((F, 2), dtype=np.float32)
+        ir[0, :] = 0.5
+        wav = _write_wav(ir)
+        patch, osc, conv = _patch(path=wav, mix=1.0)
+        b = _backend()
+        b.compile(patch)
+        assert b.wait_for_ir_loads(timeout=10)
+        x = _sine(F * 8, freq=440.0, amp=0.5)
+        out = _run(b, conv, patch, osc.id, x)
+        expected = np.concatenate([np.zeros(F, np.float32), x])[: out.shape[-1]]
+        assert np.max(np.abs(out - expected)) < 1e-6
+
+    def test_long_ir_is_length_capped(self):
+        rng = np.random.default_rng(1)
+        ir = (rng.standard_normal((8000, 2)) * 0.2).astype(np.float32)
+        wav = _write_wav(ir)
+        patch, osc, conv = _patch(path=wav, mix=1.0)
+        b = _backend()
+        saved = _nbmod._IR_MAX_SECONDS
+        _nbmod._IR_MAX_SECONDS = 0.05  # 2205 samples
+        try:
+            b.compile(patch)
+            assert b.wait_for_ir_loads(timeout=10)
+            b._render_convolver(conv, F, {(osc.id, "out"): np.zeros(F, np.float32)},
+                                patch)  # trigger adoption
+        finally:
+            _nbmod._IR_MAX_SECONDS = saved
+        assert b._state[conv.id]["ir_l"].shape[0] == int(0.05 * SR)

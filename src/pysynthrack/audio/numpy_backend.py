@@ -489,6 +489,35 @@ class _PartitionedConvolver:
         return out
 
 
+# Convolver IR / wet-shaping bounds. `tone` is a wet low-pass whose maximum is
+# a bypass; `predelay` is a wet-only delay; loaded IRs are length-capped by the
+# DSP budget (the DSP% readout is the meter) and energy-normalised on load.
+_CONV_TONE_MIN = 1000.0
+_CONV_TONE_MAX = 20000.0           # at/above this the tone low-pass is OFF
+_CONV_PREDELAY_MAX_MS = 500.0
+_IR_MAX_SECONDS = 5.0              # IR length cap (truncate + short fade-out)
+
+
+def _normalize_ir(left, right):
+    """Energy-normalise a decoded IR so wet RMS ~ dry RMS, L/R image intact.
+
+    Convolving white-ish input with an IR scales its RMS by the IR's L2 norm,
+    so dividing by that norm makes the wet sit at roughly the dry's level (and
+    stops a long/hot IR from blowing up). A *single* shared scale
+    ``1 / max(||L||2, ||R||2)`` is applied to both channels: the louder gets
+    unity RMS gain, the quieter keeps its relative level, so the stereo image
+    survives. A silent IR (or the unit impulse, whose norm is 1) is unchanged.
+    Returns ``(left, right, scale)``.
+    """
+    nl = float(np.sqrt(np.sum(left * left)))
+    nr = float(np.sqrt(np.sum(right * right)))
+    norm = max(nl, nr)
+    if norm <= 1e-12:
+        return left, right, 1.0
+    scale = 1.0 / norm
+    return left * scale, right * scale, scale
+
+
 class _IRLoader:
     """Background IR decode + partition-FFT build for the Convolver.
 
@@ -520,6 +549,7 @@ class _IRLoader:
         self.engine_l = None   # _PartitionedConvolver
         self.engine_r = None   # _PartitionedConvolver (is engine_l when mono)
         self.mono = False
+        self.scale = 1.0
         self._thread = threading.Thread(
             target=self._work, daemon=True, name="IRLoad"
         )
@@ -533,6 +563,19 @@ class _IRLoader:
                 return
             left = np.ascontiguousarray(stereo[0], dtype=np.float64)
             right = np.ascontiguousarray(stereo[1], dtype=np.float64)
+            # Cap length by the DSP budget (truncate + a short fade so the cut
+            # doesn't click); the DSP% readout is the meter for IR length.
+            cap = int(_IR_MAX_SECONDS * self.target_sr)
+            if left.shape[0] > cap:
+                left = np.array(left[:cap])
+                right = np.array(right[:cap])
+                fade = min(int(0.010 * self.target_sr), cap)
+                if fade > 1:
+                    ramp = np.linspace(1.0, 0.0, fade)
+                    left[-fade:] *= ramp
+                    right[-fade:] *= ramp
+            # Energy-normalise on load (a shared scale preserves the L/R image).
+            left, right, self.scale = _normalize_ir(left, right)
             self.mono = bool(np.array_equal(left, right))
             self.ir_l = left
             self.ir_r = right
@@ -8429,24 +8472,33 @@ class NumpyBackend(AudioBackend):
             return {"out_l": out, "out_r": np.array(out, copy=True)}
 
         gain = float(module.params.get("gain", 1.0))
+        tone_hz = min(max(float(module.params.get("tone", _CONV_TONE_MAX)),
+                          _CONV_TONE_MIN), _CONV_TONE_MAX)
+        predelay_ms = min(max(float(module.params.get("predelay", 0.0)), 0.0),
+                          _CONV_PREDELAY_MAX_MS)
+        pd = int(round(predelay_ms * 1e-3 * self.sample_rate))
+
         eng_l = state["engine_l"]
         eng_r = state["engine_r"]
-        shared = eng_r is eng_l  # mono IR -> convolve once
+        shared = eng_r is eng_l  # mono IR -> convolve once (the FFTs are shared)
         wet_l = eng_l.process(x).astype(np.float32)
         wet_r = wet_l if shared else eng_r.process(x).astype(np.float32)
+        # Per-channel wet shaping (tone low-pass -> predelay), then wet gain.
+        wet_l = self._shape_conv_wet(wet_l, state, "l", tone_hz, pd, frames)
+        wet_r = self._shape_conv_wet(wet_r, state, "r", tone_hz, pd, frames)
         if gain != 1.0:
             g = np.float32(gain)
             wet_l = wet_l * g
-            wet_r = wet_l if shared else wet_r * g
+            wet_r = wet_r * g
 
         if mix >= 1.0:
             out_l = np.ascontiguousarray(wet_l, dtype=np.float32)
-            out_r = out_l if shared else np.ascontiguousarray(wet_r, dtype=np.float32)
+            out_r = np.ascontiguousarray(wet_r, dtype=np.float32)
         else:
             m = np.float32(mix)
             dm = np.float32(1.0 - mix)
             out_l = (m * wet_l + dm * dry_delayed).astype(np.float32)
-            out_r = out_l if shared else (m * wet_r + dm * dry_delayed).astype(np.float32)
+            out_r = (m * wet_r + dm * dry_delayed).astype(np.float32)
         if out_r is out_l:  # distinct arrays for the two ports
             out_r = np.array(out_l, copy=True)
         return {"out_l": out_l, "out_r": out_r}
@@ -8457,7 +8509,39 @@ class NumpyBackend(AudioBackend):
             "engine_l": None, "engine_r": None, "ir_l": None, "ir_r": None,
             "loaded_path": None, "pending": None, "block": None,
             "dry_prev": None,
+            "tone_zi_l": None, "tone_zi_r": None,
+            "pd_buf_l": None, "pd_buf_r": None,
         }
+
+    def _shape_conv_wet(self, wet, state, ch, tone_hz, predelay, frames):
+        """Shape one wet channel: tone low-pass (off at max) then predelay.
+
+        Both are wet-only and cheap, so they run per channel even when the
+        convolution engine is shared (a mono IR) -- the mirrored per-channel
+        state (``tone_zi_<ch>`` / ``pd_buf_<ch>``) keeps the two identical. The
+        tone one-pole carries its state across blocks; predelay is a
+        per-channel FIFO of ``predelay`` samples, an intentional wet delay on
+        top of the module's one-block latency so the reverb starts behind the
+        dry.
+        """
+        if tone_hz < _CONV_TONE_MAX:
+            a = 1.0 - float(np.exp(-2.0 * np.pi * tone_hz / self.sample_rate))
+            zi = state.get("tone_zi_" + ch)
+            if zi is None:
+                zi = np.zeros(1, dtype=np.float64)
+            filtered, zi = lfilter(
+                [a], [1.0, -(1.0 - a)], np.asarray(wet, dtype=np.float64), zi=zi
+            )
+            state["tone_zi_" + ch] = zi
+            wet = filtered
+        if predelay > 0:
+            buf = state.get("pd_buf_" + ch)
+            if buf is None or buf.shape[0] != predelay:
+                buf = np.zeros(predelay, dtype=np.float64)
+            combined = np.concatenate([buf, np.asarray(wet, dtype=np.float64)])
+            wet = combined[:frames]
+            state["pd_buf_" + ch] = combined[frames:]
+        return np.asarray(wet, dtype=np.float32)
 
     def _start_ir_loader(self, path, block):
         """Spawn a background IR decode+build for ``path`` (None if empty)."""

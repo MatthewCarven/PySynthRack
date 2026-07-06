@@ -1443,16 +1443,25 @@ video — or click **Browse…** on the node for the same picker the
 short), and the decode + partition-FFT build run on a **background thread**, so
 a fresh or changed IR never blocks the audio thread — the convolver keeps the
 previous IR (or a transparent unit impulse) sounding until the new one is
-ready. An empty / missing / unreadable path is a **transparent insert** (a
-unit-impulse IR: dry passthrough delayed by the reported latency), so a saved
-patch always loads even if the IR moved. IRs are **not normalised yet** (that's
-a later slice) — trim a hot IR with `gain`.
+ready. On load the IR is **energy-normalised** (a single scale across both
+channels, so different IRs sit at a consistent level without blowing up or
+vanishing, and the stereo image is preserved) and **length-capped** (~5 s to
+start, truncated with a short fade) so a stray long file can't stall the audio
+— the **DSP %** readout is the meter for how long an IR you can afford. An
+empty / missing / unreadable path is a **transparent insert** (a unit-impulse
+IR: dry passthrough delayed by the reported latency), so a saved patch always
+loads even if the IR moved.
 
 **Stereo.** The convolver emits a **stereo pair**. A stereo IR convolves the
 (mono-summed) input through its **left** channel into `out_l` and its **right**
 into `out_r` — the decorrelation captured in the IR *is* the stereo image (a
 room miked in stereo, a stereo plate, ping-pong tanks). A mono IR drives both
 channels identically, and is convolved once.
+
+**Shaping the wet.** `predelay` (0…500 ms) delays the reverb onset behind the
+dry — the gap that keeps a source articulate in a big space; `tone` is a wet
+low-pass (1 k…20 k Hz) that darkens the tail and is **off** at its maximum.
+Both act on the wet only, so `mix = 0` stays a bit-exact dry bypass.
 
 **Ports**
 
@@ -1466,9 +1475,11 @@ channels identically, and is convolved once.
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
-| `path` | `""` | file path | IR audio file (WAV or ffmpeg-decodable). Empty / missing / unreadable → a unit-impulse IR (transparent insert). Loaded whole, off the audio thread; **Browse…** opens the file picker. |
-| `gain` | `1.0` | 0 … 2 | Linear trim on the **wet** (convolved) signal only. The dry path is never scaled, so `mix = 0` is a bit-exact dry bypass whatever `gain` is. Use it to tame hot (un-normalised) IRs or as wet make-up. |
-| `mix` | `1.0` | 0 … 1 | Dry/wet balance. 0 = bit-exact dry (bypass; the FFT is skipped), 1 = fully wet. With a unit-impulse IR every mix is transparent. |
+| `path` | `""` | file path | IR audio file (WAV or ffmpeg-decodable). Empty / missing / unreadable → a unit-impulse IR (transparent insert). Loaded whole off the audio thread, energy-normalised and length-capped; **Browse…** opens the file picker. |
+| `predelay` | `0.0` | 0 … 500 ms | Wet-only pre-delay — how far the reverb onset sits behind the dry. 0 = starts with the dry. |
+| `tone` | `20000.0` | 1000 … 20000 Hz | Wet low-pass cutoff. At 20000 (max) the filter is **off** (transparent wet); lower darkens the tail. |
+| `gain` | `1.0` | 0 … 2 | Linear trim on the **wet** only. The dry path is never scaled, so `mix = 0` is a bit-exact dry bypass whatever `gain` is. |
+| `mix` | `1.0` | 0 … 1 | Dry/wet balance. 0 = bit-exact dry (bypass; the FFT is skipped), 1 = fully wet. |
 
 **How it works.** The DSP is a **uniformly-partitioned overlap-save FFT
 convolution**. The IR is chopped into render-block-sized partitions, each
@@ -1478,22 +1489,28 @@ that spectrum onto a **frequency-domain delay line** of the last
 `P = ceil(L / B)` input spectra, and the output is the frequency-domain
 multiply-accumulate `Σ_p H[p]·X[k−p]` inverse-transformed (the alias-free
 overlap-save half). That turns an `O(L)` tap-for-tap sum into one FFT pair per
-block, so cost scales with IR length — the toolbar **DSP %** readout is the
-meter for how long an IR you can afford. A stereo IR runs one such engine per
-channel (a mono IR shares one).
+block, so cost scales with IR length. A stereo IR runs one such engine per
+channel (a mono IR shares one); the wet of each channel is then shaped by a
+one-pole `tone` low-pass and a `predelay` FIFO before the wet `gain` and the
+`mix` with the latency-matched dry.
 
 The overlap-save core is intrinsically zero-latency; a one-block output
 register presents a clean, fixed **one-block (`B`-sample) latency** that the
 dry path is delay-matched against inside `mix`, so dry and wet stay
-phase-coherent. All FFT math is float64 (numpy upcasts regardless), cast to
-float32 on the way out. Because the transform size `N = 2B` depends on the
-block size, the result is **block-size independent only up to FFT round-off**
-(~1e-6), not bit-exact — pinned and documented; the oracle tests hold each
-block size to `fftconvolve` within that tolerance. Neutral: a unit-impulse IR
-at `mix = 1` (`gain = 1`) is a passthrough delayed one block, within ~1e-6 (the
-FFT round-trip is float, not exact); `mix = 0` is bit-exact delayed dry. See
-`examples/convolver_insert.json` (a convolver dropped inline, transparent until
-you Browse an IR in).
+phase-coherent (`predelay` is an extra, intentional wet-only delay on top). All
+FFT math is float64 (numpy upcasts regardless), cast to float32 on the way out.
+Because the transform size `N = 2B` depends on the block size, the result is
+**block-size independent only up to FFT round-off** (~1e-6), not bit-exact —
+pinned and documented; the oracle tests hold each block size to `fftconvolve`
+within that tolerance. Neutral: a unit-impulse IR at `mix = 1` (`gain = 1`,
+`predelay = 0`, `tone` off) is a passthrough delayed one block, within ~1e-6
+(the FFT round-trip is float, not exact); `mix = 0` is bit-exact delayed dry.
+
+See `examples/convolver_reverb.json` (a plucked line through a synthetic hall)
+— run `python examples/irs/generate_irs.py` first to create the license-clean
+example IRs it points at (`room` / `hall` / `plate`; the patch is a transparent
+passthrough until they exist). `examples/convolver_insert.json` is the bare
+transparent insert.
 
 ---
 

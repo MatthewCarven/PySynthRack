@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "next_id": 7,
+  "modules": [
+    {"id": 1, "type": "clock", "name": "Clock", "params": {"bpm": 96.0, "division": 1.0, "pulse_width": 0.5}},
+    {"id": 2, "type": "ad_envelope", "name": "Pluck env", "params": {"attack": 0.003, "decay": 0.35}},
+    {"id": 3, "type": "oscillator", "name": "Tri", "params": {"waveform": "triangle", "freq": 220.0, "amp": 0.5}},
+    {"id": 4, "type": "vca", "name": "VCA", "params": {}},
+    {"id": 5, "type": "convolver", "name": "Convolver (run generate_irs.py)", "params": {"path": "examples/irs/hall.wav", "predelay": 18.0, "tone": 7500.0, "gain": 1.0, "mix": 0.4}},
+    {"id": 6, "type": "stereo_speaker_output", "name": "Stereo out", "params": {"gain": 0.7, "pan": 0.0, "width": 1.0}}
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "trig"},
+    {"src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "audio"},
+    {"src_module_id": 2, "src_port": "cv", "dst_module_id": 4, "dst_port": "cv"},
+    {"src_module_id": 4, "src_port": "out", "dst_module_id": 5, "dst_port": "in"},
+    {"src_module_id": 5, "src_port": "out_l", "dst_module_id": 6, "dst_port": "in_l"},
+    {"src_module_id": 5, "src_port": "out_r", "dst_module_id": 6, "dst_port": "in_r"}
+  ],
+  "ui": {"node_positions": {"1": [40, 80], "2": [300, 80], "3": [40, 320], "4": [300, 320], "5": [600, 200], "6": [900, 200]}}
+}
