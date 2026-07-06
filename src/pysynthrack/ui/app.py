@@ -63,6 +63,7 @@ from .buffer import (
     size_to_index,
 )
 from ..settings import load_settings, save_settings
+from .window_geometry import make_geometry, resolve as resolve_window
 
 
 # Computer-keyboard → semitone-offset mapping. Home row A..K = white keys
@@ -2334,6 +2335,7 @@ class App:
             path += ".json"
         try:
             self._capture_node_positions()
+            self._capture_window_geometry()
             save_patch(self.patch, path)
             self._set_status(f"Saved: {path}")
         except Exception as exc:
@@ -2492,6 +2494,66 @@ class App:
         # Remember the zoom so reopening restores the same scale.
         self.patch.ui["zoom"] = float(self._zoom)
 
+    # ----- window geometry (per-patch) ------------------------------------
+
+    @staticmethod
+    def _virtual_screen_bounds():
+        """Virtual-desktop rect ``(x, y, w, h)`` across all monitors, or None.
+
+        Windows-only, via Win32 ``GetSystemMetrics``. Returns None on other
+        platforms or if the query fails — in which case a saved position is
+        not restored (only the size is), since a blind position is the part
+        that can strand the window off-screen.
+        """
+        try:
+            import ctypes
+
+            get = ctypes.windll.user32.GetSystemMetrics
+            # SM_XVIRTUALSCREEN=76, SM_YVIRTUALSCREEN=77,
+            # SM_CXVIRTUALSCREEN=78, SM_CYVIRTUALSCREEN=79.
+            bounds = (get(76), get(77), get(78), get(79))
+            if bounds[2] <= 0 or bounds[3] <= 0:
+                return None
+            return bounds
+        except Exception:
+            return None
+
+    def _capture_window_geometry(self) -> None:
+        """Snapshot viewport size + position into ``patch.ui["window"]``.
+
+        Called before save. DPG 2.3.1 exposes no maximized-state query, so
+        only size and position are stored (see ui/window_geometry).
+        """
+        try:
+            width = dpg.get_viewport_width()
+            height = dpg.get_viewport_height()
+            pos = dpg.get_viewport_pos()
+        except Exception:
+            return
+        geo = make_geometry(width, height, pos[0], pos[1])
+        if geo is not None:
+            self.patch.ui["window"] = geo
+
+    def _apply_window_geometry(self) -> None:
+        """Restore ``patch.ui["window"]`` to the viewport, off-screen-safe.
+
+        Size is always restored (clamped to the desktop); position only when
+        it lands inside the current virtual desktop. See
+        ui/window_geometry.resolve.
+        """
+        resolved = resolve_window(
+            self.patch.ui.get("window"), self._virtual_screen_bounds()
+        )
+        if resolved is None:
+            return
+        try:
+            dpg.set_viewport_width(resolved["width"])
+            dpg.set_viewport_height(resolved["height"])
+            if resolved["x"] is not None and resolved["y"] is not None:
+                dpg.set_viewport_pos([resolved["x"], resolved["y"]])
+        except Exception:
+            traceback.print_exc()
+
     def _load_patch_from(self, path: str) -> None:
         was_running = self.backend.is_running
         if was_running:
@@ -2527,6 +2589,9 @@ class App:
                 self._apply_zoom(float(saved_zoom))
             except (TypeError, ValueError):
                 pass
+
+        # Restore the saved window size/position (off-screen-safe).
+        self._apply_window_geometry()
 
         self._set_status(f"Loaded: {os.path.basename(path)}")
 
