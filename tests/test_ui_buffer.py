@@ -115,3 +115,36 @@ def test_index_size_round_trip():
 def test_size_index_round_trip_at_stops():
     for size in b.BUFFER_SIZES:
         assert b.index_to_size(b.size_to_index(size)) == size
+
+
+# ----- coerce_buffer_size (settings-file resolver) ------------------------
+
+def test_coerce_none_returns_default():
+    assert b.coerce_buffer_size(None) == b.BUFFER_DEFAULT
+
+
+def test_coerce_valid_stop_passthrough():
+    assert b.coerce_buffer_size(512) == 512
+    assert b.coerce_buffer_size(64) == 64
+    assert b.coerce_buffer_size(1024) == 1024
+
+
+def test_coerce_snaps_arbitrary_number():
+    assert b.coerce_buffer_size(500) == 512
+    assert b.coerce_buffer_size(1) == 64
+    assert b.coerce_buffer_size(100_000) == 1024
+
+
+def test_coerce_numeric_string():
+    assert b.coerce_buffer_size("256") == 256
+    assert b.coerce_buffer_size("500") == 512
+
+
+def test_coerce_garbage_returns_default():
+    assert b.coerce_buffer_size("abc") == b.BUFFER_DEFAULT
+    assert b.coerce_buffer_size({}) == b.BUFFER_DEFAULT
+    assert b.coerce_buffer_size([1]) == b.BUFFER_DEFAULT
+
+
+def test_coerce_custom_default():
+    assert b.coerce_buffer_size(None, default=128) == 128

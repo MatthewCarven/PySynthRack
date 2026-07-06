@@ -57,11 +57,12 @@ from .zoom import (
     step_zoom,
 )
 from .buffer import (
-    BUFFER_DEFAULT,
     BUFFER_SIZES,
+    coerce_buffer_size,
     index_to_size,
     size_to_index,
 )
+from ..settings import load_settings, save_settings
 
 
 # Computer-keyboard → semitone-offset mapping. Home row A..K = white keys
@@ -139,11 +140,20 @@ class App:
         # tracks the size. See ui/zoom.py for the dpg-free maths.
         self._zoom: float = ZOOM_DEFAULT
 
+        # Machine-scoped settings, persisted to a JSON file in the platform
+        # config dir (see pysynthrack.settings). Loaded once here; individual
+        # keys are written back as they change.
+        self._settings: dict = load_settings()
+
         # Global audio buffer size (frames per block) applied to the backend
         # when audio is (re)started. The toolbar slider carries the *index*
         # into ui/buffer.BUFFER_SIZES, not the raw count; the size is read at
         # Start (see _on_toggle_audio) and the slider greys while running.
-        self._buffer_size: int = BUFFER_DEFAULT
+        # Persisted globally (NOT per patch — it's a hardware/latency setting):
+        # loaded from settings here, saved when the slider changes.
+        self._buffer_size: int = coerce_buffer_size(
+            self._settings.get("buffer_size")
+        )
 
         # Track which physical keys are currently down so OS auto-repeat
         # doesn't fire note_on repeatedly while a key is held.
@@ -2420,12 +2430,12 @@ class App:
 
         The slider value is an index into ``BUFFER_SIZES``; rewrite the
         printf ``format`` so the handle shows the real frame count (e.g.
-        "512") rather than the raw index. Nothing is applied to the backend
-        here — the size takes effect on the next Start (see
-        ``_on_toggle_audio``).
+        "512") rather than the raw index. The size is persisted globally and
+        applied to the backend on the next Start (see ``_on_toggle_audio``).
         """
         size = index_to_size(app_data)
         self._buffer_size = size
+        self._persist_setting("buffer_size", size)
         if dpg.does_item_exist(BUFFER_SLIDER_TAG):
             try:
                 dpg.configure_item(BUFFER_SLIDER_TAG, format=str(size))
@@ -2444,6 +2454,18 @@ class App:
             dpg.configure_item(BUFFER_SLIDER_TAG, enabled=enabled)
         except Exception:
             pass
+
+    def _persist_setting(self, key, value) -> None:
+        """Update one global setting and write the file, best-effort.
+
+        A write failure (read-only dir, permission denied) must never break
+        the UI, so it is logged and swallowed rather than raised.
+        """
+        self._settings[key] = value
+        try:
+            save_settings(self._settings)
+        except Exception:
+            traceback.print_exc()
 
     def _capture_node_positions(self) -> None:
         """Snapshot the current DPG node positions into ``patch.ui``.

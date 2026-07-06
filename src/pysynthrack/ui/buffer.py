@@ -54,3 +54,16 @@ def snap_buffer(n: int) -> int:
 def size_to_index(n: int) -> int:
     """Buffer size in frames -> slider index, snapping first if needed."""
     return BUFFER_SIZES.index(snap_buffer(n))
+
+
+def coerce_buffer_size(raw: object, default: int = BUFFER_DEFAULT) -> int:
+    """Resolve an arbitrary/persisted value to a valid buffer size.
+
+    Snaps anything numeric to the nearest allowed stop; falls back to
+    ``default`` (itself a valid stop) for ``None`` or non-numeric junk — e.g.
+    a missing or garbage ``buffer_size`` key read out of the settings file.
+    """
+    try:
+        return snap_buffer(int(raw))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
