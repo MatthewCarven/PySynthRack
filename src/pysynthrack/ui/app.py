@@ -2456,16 +2456,31 @@ class App:
     def _on_zoom_reset(self, *args) -> None:
         self._apply_zoom(ZOOM_DEFAULT)
 
+    def _debounce_key(self, key_code) -> bool:
+        """True on the first press of ``key_code``, False while it stays held.
+
+        ``add_key_press_handler`` re-fires at the OS key-repeat rate while a
+        key is held, which made the Ctrl+zoom keys cycle through zoom levels
+        instead of stepping once per press. Gating on ``_held_keys`` — the
+        same set the computer-keyboard note handler debounces with — collapses
+        the repeats to a single action; the global key-release handler clears
+        the code on physical release, so the next real press re-fires.
+        """
+        if key_code in self._held_keys:
+            return False
+        self._held_keys.add(key_code)
+        return True
+
     def _on_zoom_in_key(self, sender, app_data) -> None:
-        if self._ctrl_down():
+        if self._ctrl_down() and self._debounce_key(app_data):
             self._apply_zoom(step_zoom(self._zoom, +1))
 
     def _on_zoom_out_key(self, sender, app_data) -> None:
-        if self._ctrl_down():
+        if self._ctrl_down() and self._debounce_key(app_data):
             self._apply_zoom(step_zoom(self._zoom, -1))
 
     def _on_zoom_reset_key(self, sender, app_data) -> None:
-        if self._ctrl_down():
+        if self._ctrl_down() and self._debounce_key(app_data):
             self._apply_zoom(ZOOM_DEFAULT)
 
     def _on_zoom_wheel(self, sender, app_data) -> None:

@@ -4,6 +4,32 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-07-10 — UI fix: Ctrl+zoom keys debounced (one step per press)
+
+The Ctrl+= / Ctrl+- / Ctrl+0 zoom shortcuts are bound with
+`add_key_press_handler`, which re-fires at the OS key-repeat rate while a key
+is held — so holding one cycled through zoom levels instead of stepping once
+per press (Matthew caught it). The computer-keyboard note handler already
+debounces auto-repeat via a `_held_keys` set; the zoom keys weren't gated.
+
+Fix: a shared `_debounce_key(code)` — True on the first press (records the
+code in `_held_keys`), False on the repeats (already recorded). The global
+key-release handler clears the code on physical release, re-arming the next
+press. The three zoom handlers now guard on
+`self._ctrl_down() and self._debounce_key(app_data)`. Reuses the note
+handler's set: zoom keys and note keys are disjoint codes so they never
+interfere, and `_all_keyboards_notes_off` still clears everything. No change
+to Ctrl+wheel zoom or the mouse-wheel param scroll.
+
+Tests: `tests/test_zoom_key_debounce.py` pins the contract (first press fires,
+repeats suppressed, release re-arms, distinct keys independent) via the
+unbound method against a stub — no dpg context needed. Full suite **1909
+passed, 1 skipped**. The key-repeat behaviour itself is eyeball-only in the
+real window (dpg key events aren't headless-drivable): confirm Ctrl+= steps
+once per tap and holding no longer runs away.
+
+---
+
 ## 2026-07-10 — UI: scroll-to-adjust param widgets (mouse wheel over a knob)
 
 Hovering a param widget and rolling the mouse wheel now nudges its value —

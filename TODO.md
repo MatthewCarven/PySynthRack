@@ -9,6 +9,11 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **Ctrl+zoom keys debounced** — done 2026-07-10. Ctrl+= / Ctrl+- / Ctrl+0
+      were on `add_key_press_handler` and cycled at the OS key-repeat rate when
+      held; now `_debounce_key` (shared `_held_keys` gate, cleared on release)
+      steps them once per press. `tests/test_zoom_key_debounce.py`; suite 1909.
+      Real-window eyeball still worth it (key repeat isn't headless-testable).
 - [x] **Scroll-to-adjust params** — done 2026-07-10. Mouse wheel over a param
       widget nudges it (1% of range, Shift = 10%; ints ±1/±10; combos cycle;
       checkboxes toggle), via a second wheel handler beside Ctrl+wheel zoom.
