@@ -472,13 +472,33 @@ class _GrainShifter:
         src = self.db if (dry and self.db is not None) else self.ib
         return src[(self.iw - n + np.arange(n)) % self.Lin].copy()
 
-    def dry_tap(self, F: int, Dc: int) -> np.ndarray:
-        """Latency-compensated dry read of the most recent block."""
+    def dry_tap(self, F: int, Dc: float) -> np.ndarray:
+        """Latency-compensated dry read of the most recent block. ``Dc`` is
+        the wet-path latency in input samples (see :meth:`latency`), clamped
+        to the ring's valid history so the read can never wrap onto stale
+        samples when the grain is small relative to the block."""
         src = self.db if self.db is not None else self.ib
+        Dc = min(max(float(Dc), 0.0), float(self.Lin - F - 4))
         dp = (self.iw - F) + np.arange(F) - Dc
         d0 = np.floor(dp).astype(np.int64)
         df = dp - d0
         return src[d0 % self.Lin] * (1.0 - df) + src[(d0 + 1) % self.Lin] * df
+
+    def latency(self, r: float) -> float:
+        """Exact input->output latency of the wet path, in input samples, so
+        the dry tap can be delay-matched for a phase-coherent ``mix``.
+
+        The block just emitted read the stretched signal at ``rp``, which maps
+        back to input index ``rp / r`` (undoing the r x time-stretch); it was
+        produced after consuming ``iw`` input samples, so an input sample takes
+        ``iw - rp / r`` samples to appear in the wet output. Verified to the
+        sample against a direct wet-vs-input cross-correlation at unison
+        (corr 1.000 across grain/overlap settings). Before priming there is no
+        wet yet -- fall back to the grain length.
+        """
+        if not self.primed:
+            return float(self.Lg)
+        return float(self.iw - self.rp / max(r, 1e-9))
 
 
 class _PartitionedConvolver:
@@ -7553,7 +7573,7 @@ class NumpyBackend(AudioBackend):
                     if rec_rms > lim:
                         wet = wet * (lim / rec_rms)
 
-            Dc = eng.Lg  # approximate latency compensation for the dry tap
+            Dc = eng.latency(r)  # exact wet latency -> phase-coherent dry/wet mix
             if mix >= 1.0:
                 blk = wet
             elif mix <= 0.0:

@@ -863,6 +863,15 @@ bounds any ill-conditioned envelope estimate at 4x the input RMS. See
 `examples/pitch_shifter_formant_vowel.json` (square → two resonant
 bells as a synthetic vowel → +5 st with formants held).
 
+**Phase-coherent mix (2026-07-10).** The dry tap is delay-matched to the
+wet path's *exact* latency — computed per block from the engine's own
+pointers (`iw − rp/r`, verified to the sample against a wet-vs-input
+cross-correlation) rather than an approximate one-grain guess that under-
+compensated by ~50 ms at the defaults. A partial `mix` — a stacked
+harmony, or a few-cents detune-thicken — now blends two time-aligned
+signals instead of comb-filtering; at unison the dry and wet are the
+same delayed signal.
+
 #### `delay`
 
 An **analog-voiced feedback delay** (echo). It feeds the signal into a

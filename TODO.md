@@ -9,6 +9,24 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **Pitch shifter — phase-coherent mix** — done 2026-07-10. The dry/wet
+      `mix` dry tap is now delay-matched to the WSOLA engine's *exact* wet
+      latency (`iw − rp/r`, measured to the sample) instead of an approximate
+      one-grain guess that under-compensated ~50 ms at the defaults — so a
+      partial mix (stacked harmony, few-cents detune-thicken) blends
+      time-aligned signals instead of combing. New `_GrainShifter.latency()` +
+      a `dry_tap` ring clamp; `test_mix_is_phase_coherent_at_unison` (fails on
+      the old comp at corr −0.007, passes now); suite 1886. Surfaced during the
+      review, still open:
+  - [ ] pitch_shifter: reconcile the `overlap` range — the engine accepts
+        1..8 but the UI slider + docstring say 2..4 (open the UI to allow 1 for
+        a CPU-light mode, or clamp the engine to 2..4 to match the advertised
+        range).
+  - [ ] pitch_shifter enhancement ideas (offered as "love" directions
+        2026-07-10, not started — the mix fix was chosen): a `feedback` path
+        for octave-cascade **shimmer** (freq_shifter-style block-safe
+        feedback); a **harmonizer** — multiple simultaneous shift intervals
+        and/or a stereo `out_l`/`out_r` detune spread.
 - [x] **Error-handler integration** — done 2026-07-06/07. Upgraded the vendored
       `error_handler.py` to the upstream superset + vendored its 157-test suite;
       wired global crash logging (`_crash.install_crash_logging`: threading +

@@ -216,6 +216,29 @@ class TestMonoDSP:
         out = _run(b, patch, src, ps, _tone(440.0))
         assert _dominant_hz(out) == pytest.approx(880.0, rel=0.03)
 
+    def test_mix_is_phase_coherent_at_unison(self):
+        # At shift 0 the wet output is exactly the input delayed by the
+        # engine's latency, so the dry tap must land on the SAME delay --
+        # otherwise a partial mix comb-filters and loses energy. Render the
+        # same noise at mix=1/0/0.5: wet and dry must be near-identical, and
+        # the 50% blend must keep ~full RMS (no cancellation). This fails
+        # with a constant Dc=grain latency comp; passes with the exact one.
+        rng = np.random.RandomState(3)
+        sig = (rng.randn(SR) * 0.3).astype(np.float32)
+
+        def render(mix):
+            patch, src, ps, _, b = _rig({"semitones": 0.0, "mix": mix})
+            return _run(b, patch, src, ps, sig)
+
+        wet, dry, blend = render(1.0), render(0.0), render(0.5)
+        s = slice(SR // 2, SR // 2 + 8192)   # well past priming
+        w, d, bl = wet[s], dry[s], blend[s]
+        corr = float(np.dot(w, d) / (np.linalg.norm(w) * np.linalg.norm(d) + 1e-12))
+        assert corr > 0.98                    # dry is delay-matched to the wet
+        w_rms = float(np.sqrt((w ** 2).mean()))
+        bl_rms = float(np.sqrt((bl ** 2).mean()))
+        assert bl_rms > 0.9 * w_rms           # blend keeps full energy
+
     def test_finite_on_extremes(self):
         for st in (-36.0, -24.0, -7.0, 0.0, 7.0, 24.0, 36.0):
             patch, src, ps, _, b = _rig({"semitones": st})

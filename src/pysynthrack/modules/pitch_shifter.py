@@ -29,9 +29,12 @@ signal, so one module covers full transposition, subtle detune-
 thickening, and parallel harmonies (e.g. +7 semitones at 50% = a fifth
 stacked over the dry).
 
-Like any grain/overlap shifter it adds some latency (about one grain)
-and, pushed to extremes or on very low material with short grains, takes
-on a characteristic granular smear — part of the sound.
+Like any grain/overlap shifter it adds latency (roughly one to two
+grains, depending on ``overlap``); the dry/wet **mix is internally
+delay-matched** to that exact latency, so partial blends and parallel
+harmonies stay phase-coherent — a near-unison detune thickens instead
+of hollowing out. Pushed to extremes or on very low material with short
+grains it takes on a characteristic granular smear — part of the sound.
 
 For pitch shifting where speed *should* follow (tape/turntable, sample
 transposition), use the [resampler] instead.

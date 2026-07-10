@@ -4,6 +4,41 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-07-10 — pitch_shifter: phase-coherent dry/wet mix (exact latency comp)
+
+The pitch_shifter's dry/wet `mix` used an **approximate** latency
+compensation for the dry tap (`Dc = eng.Lg` — a code comment said as much).
+Measured the WSOLA engine's true input→output latency directly (feed noise
+at unison, cross-correlate wet vs input): at the 50 ms / overlap-2 default
+it's **4608 samples**, not `Lg = 2205` — the dry landed ~2400 samples
+(~54 ms) off the wet, so any partial mix near unison comb-filtered and a
+few-cents detune "thickener" hollowed out instead of thickening.
+
+Fix: the exact latency is `iw − rp/r` — total consumed input minus the
+stretched read pointer mapped back through the r× time-stretch. Verified to
+the sample against the cross-correlation (corr 1.000 across grain/overlap
+settings, rock-stable block-to-block at every ratio). Added
+`_GrainShifter.latency(r)` (returns `iw − rp/r`, or `Lg` before priming);
+`_pitch_shifter_core` now sets `Dc = eng.latency(r)`. `dry_tap` gained a
+ring-history clamp so a small grain / large block can't read wrapped
+samples. No change to the wet path, `mix=1`, or the pitch — only the dry
+tap's delay, so a partial `mix` now blends two time-aligned signals (at
+unison, dry ≡ wet).
+
+Trade-off worth noting: `mix=0` (pure dry) is now delayed by the full wet
+latency too (was ~1 grain), so the timing no longer jumps as you sweep
+`mix` — a uniform module latency across the whole knob, which is the point.
+
+Tests: new `test_mix_is_phase_coherent_at_unison` (render the same noise at
+mix 1/0/0.5, shift 0; wet↔dry corr > 0.98, 50% blend keeps ≥ 90% RMS).
+Confirmed it fails on the old `Dc = Lg` (corr −0.007) and passes on the fix.
+Full suite **1886 passed, 1 skipped**. Docs: module docstring + a dated
+"Phase-coherent mix" note in MODULES.md; dropped the "approximate" comment.
+The empirical latency probe lived in a throwaway sandbox script (not
+committed). No UI/pyo/example change — pure DSP + docs + one test.
+
+---
+
 ## 2026-07-07 (crash-test trigger) -- a way to force the GUI crash path
 
 Matthew couldn't find a way to crash the (deliberately robust) app to eyeball
