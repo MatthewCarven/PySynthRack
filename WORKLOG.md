@@ -6940,11 +6940,14 @@ bar I held the refactor to). Chosen design points:
   * **`out` orthogonal to spread** — it's always the clean centre pitch;
     spread only *adds* the L/R pair. `test_out_unaffected_by_spread` pins
     `out` bit-equal across spread 0 vs 25 (AA off).
-  * **Return type stays backward-compatible** — the core returns a dict,
-    but the wrapper hands back the bare `out` array when spread == 0 (the
-    legacy single-output convention), a `{out,out_l,out_r}` dict only above
-    0. So every existing caller/test that treats the return as an array is
-    unchanged; no test churn beyond the two model tests (new ports/param).
+  * **Always emits the stereo pair** — `_render_resampler` returns the
+    `{out,out_l,out_r}` dict unconditionally (chorus/reverb convention);
+    at spread 0 the pair *mirrors* `out` (same array, no extra read). The
+    first cut returned a bare `out` array at spread 0 to dodge test churn,
+    but that left a connected `out_l`/`out_r` **silent** until spread was
+    raised (the demo caught it) — a footgun and a mismatch with the docs'
+    "equals out at spread 0". Fixed to always-emit; the price was pointing
+    the `_run` test helper + ~13 direct call-sites at `["out"]`.
   * **L/R start aligned with the centre head** (`_ensure_resampler_channel`
     seeds their delay from `state["delay"]`), so engaging spread mid-stream
     doesn't jump; they're dropped when spread drops to 0 or the window

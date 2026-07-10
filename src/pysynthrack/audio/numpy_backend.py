@@ -7086,16 +7086,17 @@ class NumpyBackend(AudioBackend):
         silence out, with the buffer/heads left as-is so reconnecting the
         cable doesn't snap.
 
-        Output shape depends on ``spread``: at 0 the module is mono and
-        returns the bare ``out`` array (the legacy single-output
-        convention -- every existing patch and test unchanged); above 0 it
-        returns ``{"out", "out_l", "out_r"}`` with the detuned stereo pair.
+        Always returns the ``{"out", "out_l", "out_r"}`` dict (the
+        multi-output convention). At ``spread`` 0 the pair mirrors the
+        centre ``out``, so wiring the stereo outs plays the mono signal
+        rather than falling silent; above 0 they carry the detuned pair.
         """
         src = self._input_buffer(
             patch, buffers, module.id, "in", collapse=False
         )
         if src is None:
-            return np.zeros(frames, dtype=np.float32)
+            z = np.zeros(frames, dtype=np.float32)
+            return {"out": z, "out_l": z, "out_r": z}
 
         pitch_cv = self._input_buffer(
             patch, buffers, module.id, "pitch_cv", collapse=False
@@ -7131,12 +7132,9 @@ class NumpyBackend(AudioBackend):
             )
             result = {name: buf[0] for name, buf in d.items()}
 
-        # spread == 0 -> a single centre channel; hand back the bare array
-        # so the module stays a drop-in mono output. spread > 0 -> the
-        # multi-output dict, keyed onto out / out_l / out_r downstream.
-        if "out_l" in result:
-            return result
-        return result["out"]
+        # Always the {out, out_l, out_r} dict (the pair mirrors out at
+        # spread 0), keyed onto the three output ports downstream.
+        return result
 
     def _render_resampler_core(self, module, frames, src, cv):
         """Shared ``(V, F)`` varispeed engine.
@@ -7399,6 +7397,14 @@ class NumpyBackend(AudioBackend):
             }
         else:
             out = {name: w.astype(np.float32) for name, w in wets.items()}
+
+        # Always emit the stereo pair (chorus/reverb convention): at
+        # spread 0 they mirror the centre, so a patch wired to out_l/out_r
+        # plays the mono signal rather than falling silent until spread is
+        # dialled up. Same array -> no extra read/copy on the mono path.
+        if "out_l" not in out:
+            out["out_l"] = out["out"]
+            out["out_r"] = out["out"]
 
         state["buf"] = buf
         state["write_idx"] = head

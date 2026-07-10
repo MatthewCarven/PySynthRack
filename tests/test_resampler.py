@@ -85,7 +85,7 @@ def _run(b, patch, src, rs, signal, cvsrc=None, cv=None, block=F):
         bufs = {(src.id, "out"): signal[..., sl].astype(np.float32)}
         if cvsrc is not None and cv is not None:
             bufs[(cvsrc.id, "cv")] = cv[..., sl].astype(np.float32)
-        outs.append(b._render_resampler(rs, block, bufs, patch))
+        outs.append(b._render_resampler(rs, block, bufs, patch)["out"])
     return np.concatenate(outs, axis=-1)
 
 
@@ -221,7 +221,7 @@ class TestMonoDSP:
         rs = patch.add_module("resampler")
         b = _backend()
         b.compile(patch)
-        out = b._render_resampler(rs, 256, {}, patch)
+        out = b._render_resampler(rs, 256, {}, patch)["out"]
         assert out.shape == (256,)
         assert not out.any()
 
@@ -276,7 +276,7 @@ class TestMonoDSP:
             rng = np.random.RandomState(3)
             for _ in range(150):
                 blk = (rng.randn(F) * 0.3).astype(np.float32)
-                out = b._render_resampler(rs, F, {(src.id, "out"): blk}, patch)
+                out = b._render_resampler(rs, F, {(src.id, "out"): blk}, patch)["out"]
                 assert np.all(np.isfinite(out))
                 assert np.abs(out).max() <= 1.5  # interp can't exceed input peak by much
 
@@ -295,7 +295,7 @@ class TestMonoDSP:
                     rs.set_param("semitones", 12.0)
                     switched = True
                 blk = tone[k * F : (k + 1) * F]
-                chunks.append(b._render_resampler(rs, F, {(src.id, "out"): blk}, patch))
+                chunks.append(b._render_resampler(rs, F, {(src.id, "out"): blk}, patch)["out"])
             y = np.concatenate(chunks)
             # dominant pitch per ~46 ms window across the second half
             win = 2048
@@ -324,9 +324,9 @@ class TestVoiceDSP:
     def test_single_voice_matches_mono(self):
         x = np.random.RandomState(0).randn(F).astype(np.float32)
         p1, s1, r1, _, b1 = _rig({"semitones": 3.0})
-        mono = b1._render_resampler(r1, F, {(s1.id, "out"): x}, p1)
+        mono = b1._render_resampler(r1, F, {(s1.id, "out"): x}, p1)["out"]
         p2, s2, r2, _, b2 = _rig({"semitones": 3.0})
-        voice = b2._render_resampler(r2, F, {(s2.id, "out"): np.tile(x, (2, 1))}, p2)
+        voice = b2._render_resampler(r2, F, {(s2.id, "out"): np.tile(x, (2, 1))}, p2)["out"]
         assert voice.shape == (2, F)
         assert np.array_equal(voice[0], mono)
         assert np.array_equal(voice[0], voice[1])
@@ -346,7 +346,7 @@ class TestVoiceDSP:
             outs.append(
                 b._render_resampler(
                     r, F, {(s.id, "out"): audio, (c.id, "cv"): cv}, p
-                )
+                )["out"]
             )
         y = np.concatenate(outs, axis=-1)
         assert _dominant_hz(y[0]) == pytest.approx(2000.0, rel=0.04)
@@ -356,9 +356,9 @@ class TestVoiceDSP:
         patch, src, rs, _, b = _rig({"semitones": 2.0})
         mono_x = np.random.RandomState(5).randn(F).astype(np.float32)
         voice_x = np.tile(mono_x, (4, 1))
-        o1 = b._render_resampler(rs, F, {(src.id, "out"): mono_x}, patch)
-        ov = b._render_resampler(rs, F, {(src.id, "out"): voice_x}, patch)
-        o2 = b._render_resampler(rs, F, {(src.id, "out"): mono_x}, patch)
+        o1 = b._render_resampler(rs, F, {(src.id, "out"): mono_x}, patch)["out"]
+        ov = b._render_resampler(rs, F, {(src.id, "out"): voice_x}, patch)["out"]
+        o2 = b._render_resampler(rs, F, {(src.id, "out"): mono_x}, patch)["out"]
         assert o1.shape == (F,)
         assert ov.shape == (4, F)
         assert o2.shape == (F,)
@@ -620,7 +620,7 @@ class TestWindow:
             if k == 30:
                 r.params["window"] = 800.0
             blk = sig[k * F : (k + 1) * F]
-            outs.append(b._render_resampler(r, F, {(s.id, "out"): blk}, p))
+            outs.append(b._render_resampler(r, F, {(s.id, "out"): blk}, p)["out"])
         full = np.concatenate(outs)
         lag = int(0.5 * int(0.2 * SR)) - F  # the *original* latency
         assert np.array_equal(full[lag:], sig[: full.shape[0] - lag])
@@ -636,7 +636,7 @@ class TestWindow:
             if k == 40:
                 r.params["window"] = 250.0
             blk = sig[k * F : (k + 1) * F]
-            outs.append(b._render_resampler(r, F, {(s.id, "out"): blk}, p))
+            outs.append(b._render_resampler(r, F, {(s.id, "out"): blk}, p)["out"])
         full = np.concatenate(outs)
         lag = int(0.5 * int(0.4 * SR)) - F
         assert np.array_equal(full[lag:], sig[: full.shape[0] - lag])
@@ -654,7 +654,7 @@ class TestWindow:
             if k == 172:  # ~2 s in; the lag has drifted well past 100 ms
                 r.params["window"] = 100.0
             blk = sig[k * F : (k + 1) * F]
-            outs.append(b._render_resampler(r, F, {(s.id, "out"): blk}, p))
+            outs.append(b._render_resampler(r, F, {(s.id, "out"): blk}, p)["out"])
         full = np.concatenate(outs)
         assert np.all(np.isfinite(full))
         L_new = max(int(0.1 * SR), 4 * F)
@@ -837,7 +837,7 @@ class TestAntialias:
             rng = np.random.RandomState(7)
             for _ in range(120):
                 blk = (rng.randn(F) * 0.3).astype(np.float32)
-                out = b._render_resampler(rs, F, {(src.id, "out"): blk}, patch)
+                out = b._render_resampler(rs, F, {(src.id, "out"): blk}, patch)["out"]
                 assert np.all(np.isfinite(out))
                 assert np.abs(out).max() <= 1.5
 
@@ -859,7 +859,7 @@ class TestAntialias:
         for k in range(n):
             if k == n // 2:
                 rs.params["antialias"] = True
-            out = b._render_resampler(rs, F, {(src.id, "out"): tone[k * F:(k + 1) * F]}, patch)
+            out = b._render_resampler(rs, F, {(src.id, "out"): tone[k * F:(k + 1) * F]}, patch)["out"]
             if k > n // 4:
                 rms.append(float(np.sqrt(np.mean(out ** 2))))
         rms = np.array(rms)
@@ -883,13 +883,16 @@ class TestStereoSpread:
         rs = Patch().add_module("resampler")
         assert [p.name for p in rs.output_ports] == ["out", "out_l", "out_r"]
 
-    def test_spread_zero_returns_mono_array(self):
-        # Backward-compatible: at spread 0 the render is a bare array (the
-        # single "out"), not a dict -- a drop-in mono processor.
+    def test_spread_zero_mirrors_out_on_pair(self):
+        # At spread 0 the stereo outs aren't silent -- they mirror ``out``
+        # (a connected out_l/out_r plays the mono signal), so raising
+        # spread later only *widens* rather than un-mutes.
         sig = np.random.RandomState(41).randn(F).astype(np.float32)
         p, s, r, _, b = _rig({"semitones": 5.0, "spread": 0.0})
-        out = b._render_resampler(r, F, {(s.id, "out"): sig}, p)
-        assert isinstance(out, np.ndarray)
+        d = b._render_resampler(r, F, {(s.id, "out"): sig}, p)
+        assert set(d) == {"out", "out_l", "out_r"}
+        assert np.array_equal(d["out_l"], d["out"])
+        assert np.array_equal(d["out_r"], d["out"])
 
     def test_out_unaffected_by_spread(self):
         # ``out`` is always the centre pitch: turning spread on doesn't
