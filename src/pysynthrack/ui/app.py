@@ -62,7 +62,7 @@ from .buffer import (
     index_to_size,
     size_to_index,
 )
-from .param_scroll import cycle_index, nudge_number
+from .param_scroll import cycle_index, decimals_from_format, nudge_number
 from ..settings import load_settings, save_settings
 from .window_geometry import make_geometry, resolve as resolve_window
 
@@ -2554,7 +2554,8 @@ class App:
             if mn is None or mx is None or mn == mx:
                 return  # unbounded drag — no range to step within
             new = nudge_number(cur, direction, min_value=mn, max_value=mx,
-                               coarse=coarse)
+                               coarse=coarse,
+                               decimals=decimals_from_format(cfg.get("format")))
         else:
             return  # text / path / unknown — not scrollable
         if new == cur:

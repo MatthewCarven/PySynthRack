@@ -4,6 +4,34 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-07-10 — scroll-to-adjust: step by displayed precision, not blunt 1%
+
+Follow-up to the scroll-to-adjust feature: Matthew found some widgets jumped
+0.1 per notch where 0.01 was wanted. The original rule (1% of range) gives
+0.01 on a 0..1 "%.2f" mix but 0.1 on a "%.2f" 0.05..10 LFO rate — same shown
+precision, 10× the step, because the range is 10× wider.
+
+New rule (`scroll_step`): a notch is the largest power-of-ten multiple of the
+widget's *displayed* precision (from its printf `format`) that stays within
+~1% of range, and never finer than one shown digit. So a notch bumps the last
+digit you can see — 0.01 on both the mix and the LFO rate, 0.1 st on a "%.2f"
+±24 semitone (not 0.48 or 0.01), 100 Hz on a "%.0f" 20..20000 cutoff (not 1
+Hz), 1 ct on "%.0f" cents. Wide low-precision params stay usably coarse;
+narrow high-precision ones get the fine step they advertise. The result is
+rounded to the displayed precision so the value matches the readout (an
+off-grid drag snaps clean on the first notch). Shift is still ×10; ints and
+combos unchanged.
+
+Implementation: `decimals_from_format` parses the precision from the format
+string (`get_item_configuration` exposes `format` — verified), `scroll_step`
+picks the nice size, `nudge_number` gained a `decimals=` path (unbounded /
+formatless widgets fall back to 1% of range). All in the dpg-free
+`ui/param_scroll.py` — 37 unit tests pin the step for every real param family.
+Full suite **1927 passed, 1 skipped**. Real-window feel still eyeball-pending
+(the gesture itself isn't headless-testable).
+
+---
+
 ## 2026-07-10 — UI fix: Ctrl+zoom keys debounced (one step per press)
 
 The Ctrl+= / Ctrl+- / Ctrl+0 zoom shortcuts are bound with

@@ -14,13 +14,15 @@ Living list of what's next. Edit freely.
       held; now `_debounce_key` (shared `_held_keys` gate, cleared on release)
       steps them once per press. `tests/test_zoom_key_debounce.py`; suite 1909.
       Real-window eyeball still worth it (key repeat isn't headless-testable).
-- [x] **Scroll-to-adjust params** — done 2026-07-10. Mouse wheel over a param
-      widget nudges it (1% of range, Shift = 10%; ints ±1/±10; combos cycle;
-      checkboxes toggle), via a second wheel handler beside Ctrl+wheel zoom.
-      Value math in `ui/param_scroll.py` (19 tests); dispatch verified against
-      real dpg type-strings. **Pending real-window eyeball** — the hover/wheel
-      gesture + step feel, and whether a bare wheel over a slider also scrolls
-      an enclosing panel (shouldn't in the node editor).
+- [x] **Scroll-to-adjust params** — done 2026-07-10 (step-sizing refined same
+      day). Mouse wheel over a param widget nudges it by its *displayed*
+      precision snapped near 1% of range (Shift = ×10; ints ±1/±10; combos
+      cycle; checkboxes toggle) — a notch bumps the last digit shown (0.01 on a
+      "%.2f", 100 Hz on a "%.0f" cutoff, 0.1 st on semitones). Second wheel
+      handler beside Ctrl+wheel zoom; value math in `ui/param_scroll.py` (37
+      tests). **Pending real-window eyeball** — the hover/wheel gesture, and
+      whether a bare wheel over a slider also scrolls an enclosing panel
+      (shouldn't in the node editor).
 - [x] **Pitch shifter — phase-coherent mix** — done 2026-07-10. The dry/wet
       `mix` dry tap is now delay-matched to the WSOLA engine's *exact* wet
       latency (`iw − rp/r`, measured to the sample) instead of an approximate
