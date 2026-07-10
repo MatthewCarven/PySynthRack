@@ -57,6 +57,11 @@ https://drive.google.com/file/d/1XRuWLhmSIns1rs8PRUg1TmpmDwLoh5uX/view?usp=drive
 
 <img width="591" height="22" alt="image" src="https://github.com/user-attachments/assets/e14b3a37-ca71-45c5-ae1e-bf146f146680" />
 
+SuperHyperMegaUltra New Version
+https://drive.google.com/file/d/1bqbVphSJbcw08xo-yxneqqdNiC5IMGXc/view?usp=sharing
+
+<img width="591" height="22" alt="image" src="https://github.com/user-attachments/assets/ec99a758-d7d8-443c-bbfa-03b3b563e95a" />
+
 
 ## Installation (Windows)
 
