@@ -9,6 +9,25 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **Resampler — cubic Hermite read** — done 2026-07-10 (Matthew picked
+      the fidelity direction). The ring read was 2-tap linear at all three
+      sites (fast path + both declick taps); now 4-tap cubic Hermite
+      (Catmull-Rom) via a shared `_hermite4` helper, outer taps clamped to
+      the window ends (click-free boundary; never binds in the fast path).
+      Bit-exact at integer read positions (frac=0 → the sample), so unity /
+      octave / all existing bit-exact tests hold. Interpolator 17–38×
+      tighter low-mid, ~3–7× near Nyquist; engine-level the audible win is
+      concentrated in the high end (1.5 kHz THD unchanged, 12 kHz downshift
+      ~1.5× cleaner). 5 new tests (`TestInterpolation`); suite 55. Open
+      follow-ups (offered as further "love", not started):
+  - [ ] **anti-alias on pitch-up** — a ratio-tracking low-pass so reading
+        faster doesn't fold source content past Nyquist. The bigger fidelity
+        lever, but it fights the lo-fi/tape identity → belongs behind a
+        `quality` or `antialias` toggle, not default-on.
+  - [ ] **tape-stop / spin gesture** — a first-class momentary brake/spin-up
+        with a proper deceleration curve (vs hand-automating semitones+glide).
+  - [ ] **stereo detune spread** — `out_l`/`out_r` with a small opposed
+        detune for one-module stereo thickening (chorus/tape-style).
 - [x] **Ctrl+zoom keys debounced** — done 2026-07-10. Ctrl+= / Ctrl+- / Ctrl+0
       were on `add_key_press_handler` and cycled at the OS key-repeat rate when
       held; now `_debounce_key` (shared `_held_keys` gate, cleared on release)

@@ -6796,3 +6796,66 @@ voices (fm_op, pluck, modal, granular, drum trio), visual (scope, spectrum).
 Suggested first five: compressor, scope, quantizer+shift_random, fm_op,
 convolver. TODO.md gained a pointer line. Docs-only change — no code touched;
 uncommitted on Matthew's tree (commit is his to run).
+
+> **Worklog gap (noted 2026-07-10):** the 2026-07-06..07-09 sessions
+> (buffer-size slider, window persistence, error-handler integration,
+> pitch_shifter phase-coherent mix, scroll-to-adjust + Ctrl-zoom debounce)
+> shipped and are committed, but were logged in TODO.md + auto-memory
+> rather than here. Not back-filled yet — offered to Matthew.
+
+## 2026-07-10 — resampler: read upgraded to cubic Hermite interpolation
+
+Matthew asked what the resampler could use; picked the fidelity direction
+(over anti-alias / tape-stop / stereo-spread) from a question dialog. The
+one real sonic weak spot was the ring read: **2-tap linear interpolation**
+at all three read sites (fast path + the two declick taps), with no
+anti-aliasing. Linear droops hard toward Nyquist and throws imaging
+sidebands, so *every non-integer* transpose (detune-thicken, sample
+pitching) read back dull-and-gritty in a way that isn't the nice tape
+grit — just interpolation error.
+
+Swapped it for **4-tap cubic Hermite (Catmull-Rom)**. New module-level
+`_hermite4(pm1, p0, p1, p2, t)` helper (pure, next to `_dc_block`); all
+three sites now gather four taps instead of two. The outer taps
+(`i0-1`, `i0+2`) are **clamped to the window ends** — the correct
+click-free boundary (hold the edge sample instead of wrapping to the
+opposite end). In the fast path the guard band already keeps the head
+≥ a block off either edge, so the clamp never binds there and the read
+is a clean cubic; it only acts right at the declick seams.
+
+**Bit-exactness held by construction.** At an integer read position
+frac == 0, and Hermite's constant term is `p0` untouched by float ops, so
+it returns the sample *exactly*. Unity ratio and octave/integer shifts
+stay bit-exact — every existing bit-exact test (unity delayed
+passthrough, cents≡semitones, cv-sum≡semitones, mix-half-at-unity
+coherence, mix=0 dry, single-voice≡mono through seams) passes unchanged.
+The cubic only differs where no test pins exact samples (fractional
+reads), which is the point.
+
+**Overshoot:** Catmull-Rom can mildly overshoot in principle (Lebesgue
+const 1.25 at t=0.5); measured worst output/input on the extremes noise
+test was 1.000 (unity dominates; every *shifted* case stayed *below* the
+input peak on that signal), so the `<= 1.5` bound held with room. Left it
+at 1.5.
+
+**Honest scope.** The interpolator itself is 17–38× more accurate in the
+low-mid band and ~3–7× near the top (measured, reconstruction vs a true
+sine). But at the *engine* level the audible win is concentrated in the
+**high end / bright material**: at 1.5 kHz cubic vs linear engine THD is
+identical (seam + priming artifacts dominate there), while a 12 kHz tone
+shifted down shows ~1.5× lower THD. So this is a clean-up for bright/
+complex sources and big downshifts, not a night-and-day change on a
+1 kHz sine. The bigger remaining lever — **anti-aliasing on pitch-up**
+(a ratio-tracking low-pass so reading faster doesn't fold content past
+Nyquist) — is untouched; it fights the lo-fi identity so it belongs
+behind a toggle, filed as a follow-up.
+
+Tests: 5 new in `TestInterpolation` — `_hermite4` endpoints (t=0 → p0
+exact via `array_equal`; t=1 → p1, interpolating), collinear-ramp
+reproduction (no overshoot on a line), reconstruction-beats-linear
+(≥5× tighter RMS vs a 2-tap oracle on a 2.76 kHz sine), and
+engine-read-is-cubic (monkeypatch `_hermite4` down to linear → a bright
+downshift's THD measurably worsens, proving the module routes through the
+cubic read). `tests/test_resampler.py` 50 → 55, all green. Docs: MODULES.md
++ the `_render_resampler_core` docstring updated linear → cubic. Commit is
+Matthew's to run.

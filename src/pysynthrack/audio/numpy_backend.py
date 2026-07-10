@@ -221,6 +221,34 @@ def _dc_block(x, zi):
     return lfilter([1.0, -1.0], [1.0, -_DC_R], x, axis=-1, zi=zi)
 
 
+def _hermite4(pm1, p0, p1, p2, t):
+    """4-point, 3rd-order Hermite (Catmull-Rom) fractional interpolation.
+
+    ``t`` in [0, 1) is the read position between ``p0`` and ``p1``;
+    ``pm1``/``p2`` are the outer neighbours (the two samples flanking
+    that pair). Compared with 2-tap linear this holds the passband far
+    flatter toward Nyquist and pushes the imaging/interpolation
+    sidebands down ~20-30 dB, so non-integer transposition and detune
+    stay clean instead of dull-and-gritty.
+
+    Two facts the resampler leans on:
+      * at ``t == 0`` this returns ``p0`` *exactly* (the constant term
+        is ``p0``, untouched by float ops), so an integer-position read
+        -- unity ratio, octave shifts -- is a bit-exact passthrough,
+        same as linear was;
+      * the spline is interpolating (``t == 1`` returns ``p1``) and
+        C1-continuous, so seam crossfades of two Hermite reads stay
+        click-free.
+
+    Arrays broadcast elementwise; a scalar ``t`` works too.
+    """
+    c0 = p0
+    c1 = 0.5 * (p1 - pm1)
+    c2 = pm1 - 2.5 * p0 + 2.0 * p1 - 0.5 * p2
+    c3 = 0.5 * (p2 - pm1) + 1.5 * (p0 - p1)
+    return ((c3 * t + c2) * t + c1) * t + c0
+
+
 def _detect_period(x: np.ndarray, sr: int, fmin: float = 25.0,
                    fmax: float = 800.0):
     """Autocorrelation fundamental-period estimate of 1D ``x``.
@@ -7091,9 +7119,12 @@ class NumpyBackend(AudioBackend):
 
         Per output sample the read head advances by the playback ratio
         ``2 ** (st/12)`` (``st`` summed in semitone space and optionally
-        glided), reading the per-voice ring buffer with linear
-        interpolation. The whole block is vectorized: the read positions
-        are the cumulative integral of the per-sample ratio.
+        glided), reading the per-voice ring buffer with 4-tap cubic
+        Hermite (Catmull-Rom) interpolation -- a flat-passband read that
+        keeps non-integer transposition clean, and returns the sample
+        exactly at an integer position so unity ratio stays bit-exact.
+        The whole block is vectorized: the read positions are the
+        cumulative integral of the per-sample ratio.
 
         **Loop-seam declick.** At a non-unity ratio the read head
         eventually collides with the write head (pitch up) or falls off
@@ -7241,15 +7272,29 @@ class NumpyBackend(AudioBackend):
             or (offs.max(axis=-1) >= span - guard).any()
         )
         if not slow:
-            # Legacy single-tap path, bit-identical to the pre-declick
-            # engine (the mods are no-ops with the head deep in-band).
+            # In-band fast path: the head is deep inside the window (the
+            # guard band keeps it >= a block off either edge), so the
+            # 4-tap Hermite read never wraps and needs no jumps. At an
+            # integer read position (unity ratio, octave shifts) frac is
+            # exactly 0 and Hermite returns the sample, so this stays a
+            # bit-exact delayed passthrough -- same guarantee as the old
+            # linear read, now with a far flatter passband elsewhere.
             phase = np.mod(offs, span)          # in [0, span)
             i0 = np.floor(phase).astype(np.int64)
             frac = phase - i0
             rows = np.arange(V)[:, np.newaxis]
-            s0 = buf[rows, (head + i0) % L]
-            s1 = buf[rows, (head + i0 + 1) % L]
-            wet = s0 * (1.0 - frac) + s1 * frac
+            # Clamp the outer taps to the window ends; in the fast path
+            # the guard keeps i0 far from the edges so this never binds,
+            # but it makes the gather safe by construction.
+            jm1 = (head + np.clip(i0 - 1, 0, L - 1)) % L
+            j2 = (head + np.clip(i0 + 2, 0, L - 1)) % L
+            wet = _hermite4(
+                buf[rows, jm1],
+                buf[rows, (head + i0) % L],
+                buf[rows, (head + i0 + 1) % L],
+                buf[rows, j2],
+                frac,
+            )
             # Carry the read head as a lag behind the (new) write head.
             new_delay = 1.0 + np.mod((delay + frames - sum_ratio) - 1.0, span)
         else:
@@ -7346,13 +7391,18 @@ class NumpyBackend(AudioBackend):
             fades.append([n0, min(x_eff, frames - n0), 0, x_eff, half])
             state["seam_jumps"][v] += 1
 
-        # Jumped main tap, linear interpolation (same math as the fast
-        # path; p is inside (0, span) by construction after the jumps).
+        # Jumped main tap, 4-tap Hermite (same read as the fast path;
+        # p is inside (0, span) by construction after the jumps, so the
+        # outer taps only clamp right at the window ends).
         i0 = np.floor(p).astype(np.int64)
         frac = p - i0
-        s0 = bufv[(head + i0) % L]
-        s1 = bufv[(head + i0 + 1) % L]
-        out = s0 * (1.0 - frac) + s1 * frac
+        out = _hermite4(
+            bufv[(head + np.clip(i0 - 1, 0, L - 1)) % L],
+            bufv[(head + i0) % L],
+            bufv[(head + i0 + 1) % L],
+            bufv[(head + np.clip(i0 + 2, 0, L - 1)) % L],
+            frac,
+        )
 
         # Blend each fade's old tap back in, equal-power. A back tap that
         # has left the valid window keeps the new tap at full weight.
@@ -7367,9 +7417,13 @@ class NumpyBackend(AudioBackend):
             pbc = np.clip(pb, 0.0, span - 1.0)
             ib = np.floor(pbc).astype(np.int64)
             fb = pbc - ib
-            b0 = bufv[(head + ib) % L]
-            b1 = bufv[(head + ib + 1) % L]
-            back = b0 * (1.0 - fb) + b1 * fb
+            back = _hermite4(
+                bufv[(head + np.clip(ib - 1, 0, L - 1)) % L],
+                bufv[(head + ib) % L],
+                bufv[(head + ib + 1) % L],
+                bufv[(head + np.clip(ib + 2, 0, L - 1)) % L],
+                fb,
+            )
             w_old = np.where(valid, np.cos(0.5 * np.pi * t), 0.0)
             g_new = np.where(valid, np.sin(0.5 * np.pi * t), 1.0)
             seg = slice(n0, n0 + n_here)

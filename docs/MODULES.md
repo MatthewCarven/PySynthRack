@@ -753,8 +753,14 @@ and lo-fi tape effects.
 **How it works.** Pitch is summed in semitone space
 (`st = semitones + cents/100 + cv_depth · pitch_cv`), optionally glided
 with a one-pole, then exponentiated to a playback ratio
-`2^(st/12)`. The read head advances by that ratio per output sample
-with linear interpolation. Because a resampler reading at a different
+`2^(st/12)`. The read head advances by that ratio per output sample,
+reading the buffer with **4-tap cubic Hermite (Catmull-Rom)**
+interpolation — a flat-passband read that keeps non-integer
+transposition and detune clean (its win is biggest on bright,
+high-frequency material, where 2-tap linear droops and images badly),
+while an integer read position (unity ratio, octave shifts) still
+returns the sample exactly, so unity stays a bit-exact passthrough.
+Because a resampler reading at a different
 rate than it's fed can't stay in sync with a continuous stream
 forever, it runs a short **looping buffer** of recent audio: the read
 head wraps inside the window, so the module keeps sounding indefinitely

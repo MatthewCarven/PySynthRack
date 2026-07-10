@@ -44,7 +44,7 @@ import numpy as np
 import pytest
 
 import pysynthrack.modules  # noqa: F401
-from pysynthrack.audio.numpy_backend import NumpyBackend
+from pysynthrack.audio.numpy_backend import NumpyBackend, _hermite4
 from pysynthrack.core import Patch
 from pysynthrack.modules.resampler import Resampler
 
@@ -648,6 +648,81 @@ class TestWindow:
         restored = Patch.from_dict(patch.to_dict())
         rs = next(m for m in restored if m.TYPE == "resampler")
         assert rs.params["window"] == 350.0
+
+
+# ----- Interpolation quality (cubic Hermite read) ----------------------------
+
+
+class TestInterpolation:
+    def test_hermite4_returns_p0_at_zero(self):
+        # frac == 0 -> the sample itself, *exactly* (the constant term is
+        # p0, untouched). This is what keeps an integer-position read --
+        # unity ratio, octave shifts -- a bit-exact passthrough.
+        rng = np.random.RandomState(0)
+        pm1, p0, p1, p2 = rng.randn(4, 64)
+        assert np.array_equal(_hermite4(pm1, p0, p1, p2, 0.0), p0)
+
+    def test_hermite4_interpolates_at_one(self):
+        # Catmull-Rom is an *interpolating* spline: frac -> 1 lands on p1,
+        # so the read is continuous across sample boundaries (no seam).
+        rng = np.random.RandomState(1)
+        pm1, p0, p1, p2 = rng.randn(4, 64)
+        assert np.allclose(_hermite4(pm1, p0, p1, p2, 1.0), p1, atol=1e-12)
+
+    def test_hermite4_reproduces_linear_ramp(self):
+        # On collinear taps the spline is the straight line through them
+        # -- a ramp reads back as a ramp, no overshoot.
+        a, d = 0.3, 0.11
+        taps = (a - d, a, a + d, a + 2 * d)   # pm1, p0, p1, p2 on a line
+        for t in (0.0, 0.25, 0.5, 0.75, 1.0):
+            assert _hermite4(*taps, t) == pytest.approx(a + t * d, abs=1e-12)
+
+    def test_cubic_reconstruction_beats_linear(self):
+        # Reconstruct a mid-band sine at fractional offsets from its
+        # integer samples: cubic Hermite tracks the true continuum many
+        # times more accurately than 2-tap linear -- the whole point of
+        # the upgrade. (Measured ~17x here; assert a conservative 5x.)
+        N, cyc = 4096, 256                    # ~2.76 kHz at 44.1 k
+        n = np.arange(N)
+        s = np.sin(2 * np.pi * cyc * n / N)
+        idx = np.arange(2, N - 2)
+
+        def rms_err(fn):
+            errs = []
+            for t in np.linspace(0.05, 0.95, 19):
+                approx = fn(s[idx - 1], s[idx], s[idx + 1], s[idx + 2], t)
+                true = np.sin(2 * np.pi * cyc * (idx + t) / N)
+                errs.append(np.sqrt(np.mean((approx - true) ** 2)))
+            return float(np.mean(errs))
+
+        linear = lambda pm1, p0, p1, p2, t: p0 * (1 - t) + p1 * t  # noqa: E731
+        assert rms_err(_hermite4) < rms_err(linear) / 5.0
+
+    def test_engine_read_is_cubic(self, monkeypatch):
+        # The module actually routes its ring read through cubic Hermite.
+        # On a bright tone shifted *down* (its HF content stays in band,
+        # where linear interpolation is worst), forcing the interpolator
+        # back to 2-tap linear measurably raises the distortion floor.
+        import pysynthrack.audio.numpy_backend as nb
+
+        def thd(y):
+            yp = y[len(y) // 3:]
+            spec = np.abs(np.fft.rfft(yp * np.hanning(len(yp))))
+            fr = np.fft.rfftfreq(len(yp), 1.0 / SR)
+            fund = np.abs(fr - fr[spec.argmax()]) < 20.0
+            rest = np.sqrt((spec[~fund] ** 2).sum())
+            return float(rest / (np.sqrt((spec[fund] ** 2).sum()) + 1e-12))
+
+        tone = _tone(12000.0, 1.0)
+        p, s, r, _, b = _rig({"semitones": -7.0})
+        cubic = thd(_run(b, p, s, r, tone))
+        monkeypatch.setattr(
+            nb, "_hermite4",
+            lambda pm1, p0, p1, p2, t: p0 * (1.0 - t) + p1 * t,
+        )
+        p2, s2, r2, _, b2 = _rig({"semitones": -7.0})
+        linear = thd(_run(b2, p2, s2, r2, tone))
+        assert cubic < 0.85 * linear
 
 
 # ----- Integration -----------------------------------------------------------
