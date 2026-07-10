@@ -1620,6 +1620,8 @@ class NumpyBackend(AudioBackend):
             return self._render_cv_keyboard(module, frames)
         if module.TYPE == "cv_gates":
             return self._render_cv_gates(module, frames)
+        if module.TYPE == "key_trigger":
+            return self._render_key_trigger(module, frames)
         if module.TYPE == "clock":
             return self._render_clock(module, frames)
         if module.TYPE in ("sequencer", "fader_seq"):
@@ -2410,6 +2412,59 @@ class NumpyBackend(AudioBackend):
                     ks["phase"] = "idle"
             ks["level"] = level
             out[n] = level
+        return out
+
+    # ----- key_trigger ----------------------------------------------------
+
+    # Trigger-mode pulse width: a fixed high period per press, long enough for
+    # any downstream edge detector (schmitt / clock / sequencer / AD) to catch
+    # reliably, carried across block boundaries so the length is block-size
+    # independent. Floored at one sample.
+    _KEY_TRIGGER_PULSE_SECONDS = 0.005
+
+    def _render_key_trigger(self, module, frames: int) -> np.ndarray:
+        """One bound key → a mono ``(frames,)`` gate signal in {0, 1}.
+
+        ``gate``    high while the key is held (block-constant, like every
+                    keyboard renderer — a key change lands on the first sample
+                    of the next block).
+        ``latch``   each press toggles the output, which then holds through
+                    key-up until the next press (an even number of presses in
+                    one block nets no change).
+        ``trigger`` each press emits a fixed ~5 ms pulse from the block head,
+                    carried across blocks so its length is block-size
+                    independent; a merely-held key does not re-pulse.
+
+        An unbound key never receives an event, so it idles at 0.
+        """
+        held, presses = module.snapshot()
+        mode = str(module.params.get("mode", "gate"))
+        out = np.zeros(frames, dtype=np.float32)
+
+        if mode == "latch":
+            state = self._state.setdefault(module.id, {})
+            if presses & 1:  # an odd number of presses this block flips it
+                state["latched"] = not state.get("latched", False)
+            if state.get("latched", False):
+                out[:] = 1.0
+        elif mode == "trigger":
+            state = self._state.setdefault(module.id, {})
+            pulse = int(state.get("pulse", 0))
+            if presses:
+                # (Re)arm the pulse; a press restarts it from the block head.
+                pulse = max(
+                    1,
+                    int(round(self.sample_rate * self._KEY_TRIGGER_PULSE_SECONDS)),
+                )
+            n = min(pulse, frames)
+            if n > 0:
+                out[:n] = 1.0
+                pulse -= n
+            state["pulse"] = pulse
+        else:  # "gate" (default; also the fallback for an unknown mode)
+            if held:
+                out[:] = 1.0
+
         return out
 
     # ----- clock / sequencer ---------------------------------------------

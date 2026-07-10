@@ -34,6 +34,7 @@ from .filter import Filter
 from .flanger import Flanger
 from .freq_shifter import FreqShifter
 from .keyboard import Keyboard
+from .key_trigger import KeyTrigger
 from .lfo import LFO
 from .limiter import Limiter
 from .loudness import Loudness
@@ -96,6 +97,7 @@ __all__ = [
     "Flanger",
     "FreqShifter",
     "Keyboard",
+    "KeyTrigger",
     "LeftSpeakerOutput",
     "LFO",
     "Limiter",

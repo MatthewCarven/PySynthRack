@@ -9,6 +9,34 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **KeyTrigger — bind one key to a gate/trigger/latch** — done 2026-07-11
+      (Matthew's idea: "drop in a single key at a time for a super complex
+      setup"). New `key_trigger` source (Sources): one node listens for one
+      physical key and emits `out` (gate). `mode` = gate / trigger / latch
+      (Matthew: offer the choice, "flexibility is king"); `key` bound via a
+      **Learn** button, stored as a portable name.
+  - **Raw-key path** — the note keyboards route keys as MIDI notes through a
+        home-row keymap, so non-note keys never reached a module. Added a
+        parallel `ACCEPTS_RAW_KEYS` dispatch (`_on_raw_key_press/_release` +
+        `_KEY_CODE_TO_NAME`) that delivers *any* bindable key by name; modules
+        self-filter. Runs alongside the note path (both fire), own debounce
+        set so it never tangles with the note/zoom `_held_keys`.
+  - **Shortcuts win** (Matthew's call) — reserved keys (Delete/Backspace/…)
+        are absent from the bindable map; a bound key defers while Ctrl/Alt is
+        held or a text field is focused (typing guard on the two `input_text`
+        sites). Bare letters/numbers/punct/space fire only in performance
+        context. Overlap with note keys stays allowed (fan-out).
+  - **DSP** — `_render_key_trigger`: gate = held; latch = press-parity toggle
+        surviving key-up; trigger = fixed ~5 ms pulse carried across blocks
+        (block-size independent). Renderer never reads `key` (module self-
+        filters), so Learn just sets the model param.
+  - Tests: 15 module (`test_key_trigger.py`) + 7 GUI-glue
+        (`test_key_trigger_ui.py`, dpg mocked). Suite 2001 pass / 1 skip.
+        `examples/key_trigger_latch_brake.json` (latch a key → resampler
+        brake) loads + renders. **Pending:** real-window eyeball — the Learn
+        button, the code→name map building off real `mvKey_*` constants, and
+        the focus/modifier guards are dpg-only. Follow-ups not done: reorder/
+        numpad keys; an optional built-in envelope like `cv_gates`.
 - [x] **FilePlayer — file list / queue** — done 2026-07-10 (Matthew picked
       "extend FilePlayer" over a standalone node, and "stop when empty" over
       loop/hold). New `playlist` param (ordered list of paths). The node grows

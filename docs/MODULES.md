@@ -194,6 +194,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`keyboard`](#keyboard) | Sources | — → `out` (audio), `gate` (gate) |
 | [`cv_keyboard`](#cv_keyboard) | Sources | — → `pitch_cv` (cv), `gate`, `key_c`…`key_b` (gate) |
 | [`cv_gates`](#cv_gates) | Sources | — → `c4`…`e5` (cv, one enveloped gate per key) |
+| [`key_trigger`](#key_trigger) | Sources | — → `out` (gate) |
 | [`midi_input`](#midi_input) | Sources | — → `out` (audio), `gate`, `pitch_cv`, `mod_cv`, `pressure_cv` |
 | [`file_player`](#file_player) | Sources | — → `left`,`right` (audio) |
 | [`mic_input`](#mic_input) | Sources | — → `left`,`right` (audio) |
@@ -350,6 +351,46 @@ of enveloped control voltages keyed to the computer keyboard. Headline use:
 `cv_gates.c4 → oscillator.amp_cv` on each of several oscillators summed into a
 [`mixer`](#mixer), so one key swells a whole chord. See
 `examples/cv_gates_amp.json`.
+
+#### `key_trigger`
+
+**One bound key → one control signal.** A single-purpose controller: each
+node listens for **one** physical key and puts out a gate/trigger/latch when
+you press it. Drop as many as you like — one per key — and wire each
+independently, so a busy patch reads as a swarm of small labelled "this key
+does this one thing" nodes rather than one fat keyboard with a cable tangle.
+Fan-out is free, so one key can drive a whole rack of destinations at once.
+
+Where [`keyboard`](#keyboard) / [`cv_keyboard`](#cv_keyboard) /
+[`cv_gates`](#cv_gates) route the home-row keys as *notes* (a fixed keymap),
+`key_trigger` binds **any** single key — letters, the number row,
+punctuation, space — because the UI feeds it *raw* key events by name, not
+note-mapped ones. Bind a key the note keyboards don't use and it's a
+dedicated control; bind one they do and both respond (fan-out is free). App
+shortcuts always win: a bound key doesn't fire while a modifier is held
+(so `Ctrl+`-chords are safe) or while you're typing in a field, and the
+reserved keys (Delete/Backspace, etc.) can't be bound.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `out` | out | gate | The control signal in {0, 1}, shaped by `mode`. |
+
+**Parameters**
+
+| Param | Default | Options / range | Description |
+|-------|---------|-----------------|-------------|
+| `key` | `""` | a key name | The bound physical key (e.g. `Q`, `5`, `Semicolon`, `Spacebar`). `""` = unbound (idles at 0). Set with the node's **Learn** button (click Learn, press a key; click again to cancel), stored as a portable name so a saved patch rebinds on any machine. |
+| `mode` | `gate` | `gate` / `trigger` / `latch` | How a press shapes `out`: **gate** = high while the key is held; **trigger** = a short (~5 ms) pulse on each press, for clocking a [`sequencer`](#sequencer), resetting a [`clock`](#clock), or firing an [`ad_envelope`](#ad_envelope); **latch** = each press *toggles* the output and it holds through key-up until the next press (tap-on / tap-off). |
+
+**Patching.** No pitch, no velocity, no envelope — shape it downstream with an
+[`adsr`](#adsr)/[`ad_envelope`](#ad_envelope) if you want a contour. Headline
+use: a `latch`-mode key into a [`resampler`](#resampler)'s `brake` — tap once
+to tape-stop, tap again to spin back up — see
+`examples/key_trigger_latch_brake.json`. Or `trigger` mode into a
+[`sequencer`](#sequencer) `clock`/`reset`, or `gate` mode into an
+[`adsr`](#adsr) for a hands-on one-key voice.
 
 #### `midi_input`
 

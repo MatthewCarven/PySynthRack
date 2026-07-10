@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    { "id": 1, "type": "oscillator", "name": "saw 220", "params": { "waveform": "saw_blep", "freq": 220.0, "amp": 0.7 } },
+    { "id": 2, "type": "key_trigger", "name": "tap B = tape stop", "params": { "key": "B", "mode": "latch" } },
+    { "id": 3, "type": "resampler", "name": "tape stop", "params": { "brake_time": 0.6, "spinup_time": 0.35 } },
+    { "id": 4, "type": "speaker_output", "name": "speaker_output", "params": { "gain": 0.8 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 3, "dst_port": "in" },
+    { "src_module_id": 2, "src_port": "out", "dst_module_id": 3, "dst_port": "brake" },
+    { "src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 80], "2": [40, 320], "3": [360, 180], "4": [680, 180]
+    }
+  }
+}

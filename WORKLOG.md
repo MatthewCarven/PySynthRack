@@ -7162,3 +7162,62 @@ paragraphs), the `playlist` docstring, TODO (all three ticked). Committed per
 the working agreement; push is Matthew's. **Pending:** the usual real-window
 eyeball — the Remove/>>| buttons and numbered listbox are dpg-only, no
 headless path builds the node.
+
+## 2026-07-11 — KeyTrigger: bind one key → gate / trigger / latch
+
+Matthew's idea, arrived at through a design chat: instead of one fat keyboard
+node, a swarm of tiny single-purpose "this key does this one thing" nodes —
+"drop in a single key at a time for a super complex setup." Built as a new
+`key_trigger` source. He picked the name, chose to expose the output shape as
+a **choice** ("offer selection of gate/trigger/latch… flexibility is king"),
+and — for the shortcut-collision question — "shortcuts always win"; the key
+set was left to my discretion.
+
+**The one architectural finding (drove the whole slice split).** The existing
+keyboards (`keyboard`/`cv_keyboard`/`cv_gates`) receive keys *as MIDI notes*
+via `_KEY_TO_SEMITONE` (a home-row→note map); `_on_key_press` drops anything
+not in that map. So non-note keys (number row, punctuation…) never reach a
+module today. Binding *arbitrary* keys therefore needs a **parallel raw-key
+dispatch path**, not a tweak to the note path. That's the only non-trivial
+part; I sliced the work so the risky GUI bit was isolated.
+
+**Slice 1 — module + DSP (fully headless).** `modules/key_trigger.py`:
+Sources, `ACCEPTS_RAW_KEYS = True` (a new routing flag, sibling to
+`ACCEPTS_COMPUTER_KEYS`), params `key=""` (unbound) + `mode`, one `out`
+(gate). Thread-safe held/press-edge tracking like `cv_gates`
+(`raw_key_down/up(name)` self-filter by the bound key; `snapshot()` returns
+`(held, presses)` and consumes the edge). `_render_key_trigger`: **gate** =
+held; **latch** = press-parity toggle held in backend state, surviving
+key-up; **trigger** = a fixed ~5 ms pulse carried across blocks via a
+`pulse` sample counter, so it's block-size independent (proved: 240 highs @
+48k whether one 512 block or eight 64s). The renderer never reads `key` — the
+module self-filters — so binding is a pure model-param write. 15 tests.
+
+**Slice 2 — raw-key routing + Learn (the eyeball part).** A second global
+key-handler pair (`_on_raw_key_press/_release`) with its **own** debounce set
+(`_raw_key_down`, kept separate so it can't tangle with the note/zoom
+`_held_keys`), plus `_KEY_CODE_TO_NAME`/`_KEY_NAME_TO_CODE` built at runtime
+off `mvKey_*` constants (like `_init_key_map`) over A–Z, 0–9, common
+punctuation, space. Reserved keys are simply absent from the map → unbindable
+(Delete/Backspace keep deleting), and performance dispatch defers on
+`_ctrl_down()/_alt_down()` (new) or `_text_field_focused()` (checks the two
+`input_text` sites, now tagged + registered) — so "shortcuts always win" and
+typing a path doesn't fire bound letters. Release is unguarded (no stuck
+gates). Learn: a per-node button arms `_key_learn_target`; the next bindable
+press binds it (`_bind_learned_key`), clicking again cancels, clicking
+another node hands over. `mode` slots into the shared mode-combo;
+`key_trigger` appears in the Add▸Sources menu for free (auto from CATEGORY).
+7 GUI-glue tests (dpg mocked) cover dispatch fan-out/self-filter, independence
+of two nodes, Learn bind/cancel/handover, and panic-release.
+
+**Slice 3 — docs + example.** MODULES.md index row + a full catalogue entry;
+the module docstring; `examples/key_trigger_latch_brake.json` (a latch key →
+resampler `brake`: tap to tape-stop, tap to spin up — closing the loop on the
+brake chat that prompted this) — verified to load and render 50 blocks.
+
+Full suite **2001 pass / 1 skip** (+22). Committed per the working agreement;
+push is Matthew's. **Pending real-window eyeball** (all dpg-only, unbuildable
+headless): the Learn button + bound-key label, the code→name map resolving
+real `mvKey_*` codes, and the modifier/focus guards actually gating. Known
+follow-ups left open: single-key reorder/numpad support; an optional built-in
+envelope like `cv_gates`; Esc-to-cancel Learn.

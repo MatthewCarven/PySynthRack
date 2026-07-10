@@ -26,6 +26,7 @@ from ..core.patch import Cable, Patch
 from ..io_patch import load_patch, save_patch
 from ..modules.filter import FILTER_MODES
 from ..modules.keyboard import midi_to_name, semitone_to_midi
+from ..modules.key_trigger import KEY_TRIGGER_MODES
 from ..modules.cvcombiner import CVCOMBINER_MODES
 from ..modules.cvtofrequency import MODES as CVTOFREQ_MODES
 from ..modules.lfo import LFO_WAVEFORMS
@@ -93,6 +94,44 @@ def _init_key_map(dpg_module) -> None:
         if key_code is None:
             continue
         _KEY_TO_SEMITONE[key_code] = semitone
+
+
+# ----- raw-key binding map (KeyTrigger) ------------------------------------
+#
+# KeyTrigger binds an *arbitrary* single key, not a note-mapped one, so it
+# needs a plain key-code <-> name map covering every bindable key. Names are
+# the portable, serialized identity (stored in the module's ``key`` param);
+# codes are the runtime dpg ``mvKey_*`` values. Reserved keys are deliberately
+# *absent* (Delete/Backspace remove nodes, Escape/Tab/Enter navigate), so the
+# app's own shortcuts always win — an unmapped code is simply un-bindable.
+_KEY_CODE_TO_NAME: dict[int, str] = {}
+_KEY_NAME_TO_CODE: dict[str, int] = {}
+
+# mvKey_* suffixes offered for binding. Letters + the number row + common
+# punctuation + Space. Punctuation-constant spellings vary across dpg
+# versions, so several are listed and the missing ones skipped (like the note
+# map). The suffix doubles as the human-readable, serialized name.
+_BINDABLE_KEY_SUFFIXES: tuple[str, ...] = (
+    tuple(chr(c) for c in range(ord("A"), ord("Z") + 1))       # A..Z
+    + tuple(str(d) for d in range(10))                          # 0..9
+    + ("Spacebar", "Space",
+       "Comma", "Period", "Slash", "Semicolon", "Apostrophe", "Quote",
+       "Open_Brace", "Close_Brace", "Backslash", "Minus", "Plus", "Equal",
+       "Tilde", "Backtick")
+)
+
+
+def _init_raw_key_map(dpg_module) -> None:
+    """Build the KeyTrigger key-code <-> name maps from real ``mvKey_*``
+    constants (runtime, like :func:`_init_key_map`). Idempotent."""
+    if _KEY_CODE_TO_NAME:
+        return
+    for suffix in _BINDABLE_KEY_SUFFIXES:
+        code = getattr(dpg_module, f"mvKey_{suffix}", None)
+        if code is None or code in _KEY_CODE_TO_NAME:
+            continue
+        _KEY_CODE_TO_NAME[code] = suffix
+        _KEY_NAME_TO_CODE[suffix] = code
 
 EDITOR_TAG = "node_editor"
 AUDIO_BTN_TAG = "audio_btn"
@@ -168,6 +207,15 @@ class App:
         # Track which physical keys are currently down so OS auto-repeat
         # doesn't fire note_on repeatedly while a key is held.
         self._held_keys: set[int] = set()
+        # KeyTrigger raw-key path (independent of the note _held_keys so it
+        # can't tangle with the note/zoom debounce). ``_raw_key_down`` debounces
+        # OS repeat for the raw dispatch; ``_key_learn_target`` is the module id
+        # currently in Learn mode (None = not learning); ``_text_input_tags``
+        # lists text fields whose focus suppresses raw triggers (so a bound
+        # letter doesn't fire while you're typing a path/param).
+        self._raw_key_down: set[int] = set()
+        self._key_learn_target: int | None = None
+        self._text_input_tags: set[str] = set()
 
         # CV meters. For each cv-kind output port we draw a progress bar
         # under its node attribute; ``_cv_meter_bars`` maps the port key
@@ -343,9 +391,15 @@ class App:
         # MIDI note-on / note-off events, and by the node editor for
         # Delete-to-remove-selected.
         _init_key_map(dpg)
+        _init_raw_key_map(dpg)
         with dpg.handler_registry():
             dpg.add_key_press_handler(callback=self._on_key_press)
             dpg.add_key_release_handler(callback=self._on_key_release)
+            # KeyTrigger raw-key path: a second global pair, delivering every
+            # bindable key by name to ACCEPTS_RAW_KEYS modules (and driving
+            # Learn). Separate from the note handlers above; both fire per key.
+            dpg.add_key_press_handler(callback=self._on_raw_key_press)
+            dpg.add_key_release_handler(callback=self._on_raw_key_release)
             # Delete key removes whatever's currently selected in the node
             # editor (cables + nodes). Backspace as a forgiving alternative.
             del_key = getattr(dpg, "mvKey_Delete", None)
@@ -465,6 +519,10 @@ class App:
                     # dedicated listbox + Add/Clear panel in the block below.
                     if module.TYPE == "file_player" and param_name == "playlist":
                         continue
+                    # key_trigger's bound key gets a Learn button + label
+                    # panel below instead of a raw text box.
+                    if module.TYPE == "key_trigger" and param_name == "key":
+                        continue
                     with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                         self._add_param_widget(module, param_name, default)
                         wid = dpg.last_item()
@@ -539,6 +597,26 @@ class App:
                             user_data=module.id,
                         )
 
+            # KeyTrigger: a Learn button that binds the next key press, plus a
+            # label showing the currently bound key. (The ``mode`` param renders
+            # as a normal combo in the loop above; only ``key`` is custom.)
+            if module.TYPE == "key_trigger":
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(
+                            label="Learn",
+                            tag=f"keytrigger_learnbtn_{module.id}",
+                            callback=self._on_key_learn,
+                            user_data=module.id,
+                        )
+                        dpg.add_text(
+                            self._keytrigger_key_caption(
+                                str(module.params.get("key") or "")
+                            ),
+                            tag=f"keytrigger_keylabel_{module.id}",
+                            color=(170, 170, 170),
+                        )
+
             # Meter: one dBFS level display (-90..0) per channel, driven
             # each frame from the backend's indicator triples. Each is a
             # drawlist (bar fill + peak-hold tick + clip lamp + dB text)
@@ -586,14 +664,18 @@ class App:
             # callback can write the chosen path back into it; typing a
             # path by hand still works via the same _on_param_changed.
             with dpg.group(horizontal=True):
+                path_tag = f"fileplayer_path_{module.id}"
                 dpg.add_input_text(
                     label=param_name,
                     default_value=str(current),
                     width=140,
-                    tag=f"fileplayer_path_{module.id}",
+                    tag=path_tag,
                     callback=self._on_param_changed,
                     user_data=user_data,
                 )
+                # Focusing this field suppresses KeyTrigger's raw triggers, so
+                # typing a path doesn't fire bound keys.
+                self._text_input_tags.add(path_tag)
                 dpg.add_button(
                     label="Browse...",
                     callback=self._show_wav_dialog,
@@ -1621,6 +1703,8 @@ class App:
                 items = list(DISTORTION_MODES)
             elif module.TYPE == "waveshaper":
                 items = list(WAVESHAPER_MODES)
+            elif module.TYPE == "key_trigger":
+                items = list(KEY_TRIGGER_MODES)
             else:
                 items = list(FILTER_MODES)
             dpg.add_combo(
@@ -1874,13 +1958,17 @@ class App:
             return
 
         # Fallback: input_text for anything we don't recognize.
+        text_tag = f"paramtext_{module.id}_{param_name}"
         dpg.add_input_text(
             label=param_name,
             default_value=str(current),
             width=140,
+            tag=text_tag,
             callback=self._on_param_changed,
             user_data=user_data,
         )
+        # Focusing a free-text param suppresses KeyTrigger's raw triggers.
+        self._text_input_tags.add(text_tag)
 
     # ----- callbacks ------------------------------------------------------
 
@@ -2521,11 +2609,138 @@ class App:
             module.note_off(midi_note)
 
     def _all_keyboards_notes_off(self) -> None:
-        """Release every note on every key-accepting module — avoids stuck notes."""
+        """Release every note/key on every key-accepting module — avoids stuck
+        notes and stuck KeyTrigger gates (e.g. on focus loss / audio stop)."""
         self._held_keys.clear()
+        self._raw_key_down.clear()
         for module in self.patch.modules.values():
-            if getattr(module, "ACCEPTS_COMPUTER_KEYS", False):
+            if getattr(module, "ACCEPTS_COMPUTER_KEYS", False) or getattr(
+                module, "ACCEPTS_RAW_KEYS", False
+            ):
                 module.all_notes_off()
+
+    # ----- KeyTrigger raw-key path ----------------------------------------
+
+    def _on_raw_key_press(self, sender, app_data, user_data=None) -> None:
+        """Route a physical key press to KeyTrigger modules (by name), or bind
+        it if a node is in Learn mode.
+
+        Debounced against OS auto-repeat via ``_raw_key_down`` (its own set, so
+        it never tangles with the note/zoom ``_held_keys``). Only *bindable*
+        keys (in ``_KEY_CODE_TO_NAME``) do anything — reserved keys are absent
+        from the map, so the app's shortcuts always win. Learn takes any
+        bindable key; performance dispatch additionally defers when a modifier
+        is held (shortcut context) or a text field is focused (you're typing).
+        """
+        key_code = app_data
+        if key_code in self._raw_key_down:
+            return
+        self._raw_key_down.add(key_code)
+        name = _KEY_CODE_TO_NAME.get(key_code)
+        if name is None:
+            return  # not a bindable key (reserved / unknown)
+        if self._key_learn_target is not None:
+            self._bind_learned_key(name)
+            return
+        if self._ctrl_down() or self._alt_down():
+            return  # a shortcut chord — shortcuts win
+        if self._text_field_focused():
+            return  # typing into a field, not performing
+        self._dispatch_raw_key(name, down=True)
+
+    def _on_raw_key_release(self, sender, app_data, user_data=None) -> None:
+        """Release a physical key on every KeyTrigger. Unguarded on purpose —
+        a key released while typing/with a modifier must still drop its gate,
+        so nothing sticks on."""
+        key_code = app_data
+        self._raw_key_down.discard(key_code)
+        name = _KEY_CODE_TO_NAME.get(key_code)
+        if name is None:
+            return
+        self._dispatch_raw_key(name, down=False)
+
+    def _dispatch_raw_key(self, name: str, down: bool) -> None:
+        """Fan a named raw key event out to every ACCEPTS_RAW_KEYS module;
+        each self-filters by its own bound key."""
+        for module in self.patch.modules.values():
+            if getattr(module, "ACCEPTS_RAW_KEYS", False):
+                (module.raw_key_down if down else module.raw_key_up)(name)
+
+    def _text_field_focused(self) -> bool:
+        """True while a registered text input has focus, so a bound
+        performance key shouldn't fire (you're typing, not playing)."""
+        for tag in self._text_input_tags:
+            try:
+                if dpg.does_item_exist(tag) and dpg.is_item_focused(tag):
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _alt_down(self) -> bool:
+        """True if either Alt key is currently held down."""
+        for _name in ("mvKey_LAlt", "mvKey_RAlt", "mvKey_Alt", "mvKey_Menu"):
+            code = getattr(dpg, _name, None)
+            if code is None:
+                continue
+            try:
+                if dpg.is_key_down(code):
+                    return True
+            except Exception:
+                pass
+        return False
+
+    # ----- KeyTrigger Learn button ----------------------------------------
+
+    @staticmethod
+    def _keytrigger_key_caption(bound: str) -> str:
+        return f"Key: {bound}" if bound else "Key: (click Learn)"
+
+    def _set_keytrigger_learn_label(self, module_id: int, learning: bool) -> None:
+        tag = f"keytrigger_learnbtn_{module_id}"
+        if dpg.does_item_exist(tag):
+            dpg.set_item_label(tag, "Press a key…" if learning else "Learn")
+
+    def _refresh_keytrigger_label(self, module_id: int) -> None:
+        module = self.patch.modules.get(module_id)
+        tag = f"keytrigger_keylabel_{module_id}"
+        if module is not None and dpg.does_item_exist(tag):
+            bound = str(module.params.get("key") or "")
+            dpg.set_value(tag, self._keytrigger_key_caption(bound))
+
+    def _on_key_learn(self, sender, app_data, user_data) -> None:
+        """Learn button: arm this node to capture the next key press. Clicking
+        it again (same node) cancels; clicking a different node's button hands
+        the arming over."""
+        module_id = user_data
+        if self._key_learn_target == module_id:
+            self._key_learn_target = None
+            self._set_keytrigger_learn_label(module_id, learning=False)
+            self._set_status("Learn cancelled")
+            return
+        prev = self._key_learn_target
+        self._key_learn_target = module_id
+        if prev is not None:
+            self._set_keytrigger_learn_label(prev, learning=False)
+        self._set_keytrigger_learn_label(module_id, learning=True)
+        self._set_status("Press a key to bind (Learn again to cancel)")
+
+    def _bind_learned_key(self, name: str) -> None:
+        """Bind the just-pressed key ``name`` to the learning node's ``key``
+        param and leave Learn mode. ``key`` is a model-only param (the module
+        self-filters on it; the renderer never reads it), so it's set directly
+        on the shared module object."""
+        module_id = self._key_learn_target
+        self._key_learn_target = None
+        if module_id is None:
+            return
+        module = self.patch.modules.get(module_id)
+        if module is None:
+            return
+        module.params["key"] = name
+        self._set_keytrigger_learn_label(module_id, learning=False)
+        self._refresh_keytrigger_label(module_id)
+        self._set_status(f"Bound key: {name}")
 
     def _on_delete_selected(self, sender, app_data, user_data=None) -> None:
         """Delete selected links and nodes from both the UI and the model.
@@ -3070,6 +3285,11 @@ class App:
         self._file_pos_labels.clear()
         self._playlist_listboxes.clear()
         self._fileplayer_advanced_gen.clear()
+        # KeyTrigger UI state: stale text-input tags and any pending Learn
+        # don't carry across a patch load.
+        self._text_input_tags.clear()
+        self._raw_key_down.clear()
+        self._key_learn_target = None
         # Reset the cascade so a fresh-loaded patch (with no saved positions)
         # starts laying out from the top-left again.
         self._next_node_pos = [40, 40]
