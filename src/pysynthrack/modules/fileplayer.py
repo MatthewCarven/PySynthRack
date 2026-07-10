@@ -44,12 +44,15 @@ Parameters:
         the GUI pops the head of this list into ``path`` and it plays from
         the top — so the module works as a simple gapless playlist. Each
         track is removed as it starts, so the queue drains to empty and the
-        player then falls silent (parked at the last track's end). A player
-        started with an empty ``path`` but a non-empty queue kicks off the
-        first queued track automatically. The auto-advance is a GUI
-        behaviour (see ``ui/app.py``); the renderer itself only ever sees a
-        single ``path`` change, exactly as if you had Browsed a new file.
-        Ignored while ``loop`` is True (a looping track never ends).
+        player then falls silent (parked at the last track's end). A queued
+        file that can't be decoded (missing/unreadable) is skipped straight
+        to the next good one rather than stalling the list. A player started
+        with an empty ``path`` but a non-empty queue kicks off the first
+        queued track automatically; the node's **>>|** button skips to the
+        next track by hand. The auto-advance is a GUI behaviour (see
+        ``ui/app.py``); the renderer itself only ever sees a single ``path``
+        change, exactly as if you had Browsed a new file. Ignored while
+        ``loop`` is True (a looping track never ends).
 """
 from __future__ import annotations
 

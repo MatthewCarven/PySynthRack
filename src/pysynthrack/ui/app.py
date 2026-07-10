@@ -188,11 +188,13 @@ class App:
         self._file_pos_labels: dict[int, int] = {}
         # FilePlayer queue ("file list"). ``_playlist_listboxes`` maps
         # module_id -> the dpg listbox tag showing the upcoming tracks;
-        # ``_fileplayer_prev_finished`` remembers each player's last
-        # 'finished' state so _advance_file_playlists can edge-trigger the
-        # auto-advance (one pop per track end, not one per frame).
+        # ``_fileplayer_advanced_gen`` remembers the backend decode
+        # "generation" the queue was last advanced at, so
+        # _advance_file_playlists fires exactly once per track end — keyed
+        # on decode identity, not a bool edge, so a bad track whose decode
+        # fails between two polls is still skipped (not stalled on) once.
         self._playlist_listboxes: dict[int, int] = {}
-        self._fileplayer_prev_finished: dict[int, bool] = {}
+        self._fileplayer_advanced_gen: dict[int, int] = {}
 
     # ----- entry point ----------------------------------------------------
 
@@ -496,6 +498,14 @@ class App:
                             callback=self._on_file_transport,
                             user_data=(module.id, "stop"),
                         )
+                        # Skip to the next queued track (no-op if the queue
+                        # is empty). The manual mate to the auto-advance.
+                        dpg.add_button(
+                            label=">>|",
+                            width=32,
+                            callback=self._on_file_transport,
+                            user_data=(module.id, "next"),
+                        )
                         label = dpg.add_text("0:00 / 0:00")
                         self._file_pos_labels[module.id] = label
                 # File list / queue: tracks here auto-play (then drop off the
@@ -517,6 +527,11 @@ class App:
                             label="Add to list...",
                             callback=self._show_wav_dialog,
                             user_data=(module.id, "playlist"),
+                        )
+                        dpg.add_button(
+                            label="Remove",
+                            callback=self._on_remove_playlist_item,
+                            user_data=module.id,
                         )
                         dpg.add_button(
                             label="Clear",
@@ -1921,20 +1936,32 @@ class App:
             self._set_status(f"Param error: {exc}")
 
     def _on_file_transport(self, sender, app_data, user_data) -> None:
-        """A FilePlayer transport button: (module_id, 'play'|'stop'|'rewind').
+        """A FilePlayer transport button:
+        (module_id, 'play'|'stop'|'rewind'|'next').
 
         Play/Stop drive the ``playing`` param (pause keeps the playhead;
         the renderer holds position while False) and mirror the value into
         the node's checkbox. Rewind asks the backend to seek to 0:00 at
         the next block boundary — a state poke, not a param, so it works
         identically while playing or paused (backends without the hook,
-        i.e. the pyo stub, no-op).
+        i.e. the pyo stub, no-op). Next force-advances the queue to the
+        following track (no-op when the queue is empty) — the manual mate
+        to the auto-advance.
         """
         module_id, action = user_data
         if action == "rewind":
             rewind = getattr(self.backend, "rewind_file_player", None)
             if rewind is not None:
                 rewind(module_id)
+            return
+        if action == "next":
+            module = self.patch.modules.get(module_id)
+            if module is None:
+                return
+            if module.params.get("playlist"):
+                self._advance_playlist(module_id)
+            else:
+                self._set_status("Queue empty — nothing to skip to")
             return
         playing = action == "play"
         try:
@@ -2011,9 +2038,14 @@ class App:
 
     @staticmethod
     def _playlist_display_items(module) -> list[str]:
-        """The queue as listbox rows: basenames of the pending paths."""
+        """The queue as listbox rows: ``'<n>. <basename>'`` per pending path.
+
+        The leading position number keeps every row unique even when two
+        queued files share a basename, so a selected row maps back to an
+        unambiguous queue index for Remove (the rows renumber on every
+        refresh as the queue drains)."""
         queue = module.params.get("playlist") or []
-        return [os.path.basename(p) for p in queue]
+        return [f"{i + 1}. {os.path.basename(p)}" for i, p in enumerate(queue)]
 
     def _refresh_playlist_display(self, module_id: int) -> None:
         """Repaint a FilePlayer's queue listbox from its ``playlist`` param."""
@@ -2035,47 +2067,90 @@ class App:
         self._refresh_playlist_display(module_id)
         self._set_status("Queue cleared")
 
+    def _on_remove_playlist_item(self, sender, app_data, user_data) -> None:
+        """Remove button: drop the selected row from a FilePlayer's queue.
+
+        The listbox hands back the selected row *string* (``'<n>. name'``);
+        matching it against the freshly regenerated numbered rows gives the
+        exact queue index to pop — unambiguous even with duplicate
+        basenames. No selection (or a stale one) is a gentle no-op."""
+        module_id = user_data
+        module = self.patch.modules.get(module_id)
+        if module is None:
+            return
+        queue = module.params.get("playlist") or []
+        if not queue:
+            return
+        tag = self._playlist_listboxes.get(module_id)
+        selected = str(dpg.get_value(tag)) if tag is not None else ""
+        items = self._playlist_display_items(module)
+        if selected not in items:
+            self._set_status("Select a queued track to remove")
+            return
+        idx = items.index(selected)
+        removed = queue.pop(idx)
+        self._refresh_playlist_display(module_id)
+        self._set_status(f"Removed from queue: {os.path.basename(removed)}")
+
     def _advance_file_playlists(self) -> None:
         """Auto-advance each FilePlayer queue once per frame.
 
-        A one-shot track that just reached its end (rising edge of the
-        backend's ``file_player_finished``) pops the head of the queue into
-        ``path`` and rolls on; an empty queue leaves the player parked at the
-        end (silence). As a convenience, a running player sitting on an empty
-        ``path`` with a non-empty queue is kick-started so a fresh 'file
-        list' plays without a manual Browse first. Backends without the hook
-        (the pyo stub) no-op.
+        A one-shot track that just *ended* pops the head of the queue into
+        ``path`` and rolls on. A healthy track ends by running off its end
+        (``file_player_finished``); a bad/unreadable one ends by failing to
+        decode (``file_player_failed``) — folding both in is what lets the
+        queue skip past a dud instead of stalling on it. The 'once per end'
+        guard keys on the backend's decode *generation*
+        (``file_player_decode_gen``), not a bool edge: a fast-failing file
+        can flip failed between two polls, but its generation still differs
+        from the track it replaced, so the skip fires exactly once. An empty
+        queue leaves the player parked (silence). As a convenience, a running
+        player sitting on an empty ``path`` with a non-empty queue is
+        kick-started so a fresh 'file list' plays without a manual Browse
+        first. Backends without the hooks (the pyo stub) no-op.
         """
         if not self._playlist_listboxes:
             return
         finished = getattr(self.backend, "file_player_finished", None)
         if finished is None:
             return
+        failed = getattr(self.backend, "file_player_failed", None)
+        decode_gen = getattr(self.backend, "file_player_decode_gen", None)
         running = self.backend.is_running
         for module_id in list(self._playlist_listboxes):
             module = self.patch.modules.get(module_id)
             if module is None:
                 continue
             try:
-                now_finished = bool(finished(module_id))
+                now_failed = bool(failed(module_id)) if failed else False
+                now_ended = bool(finished(module_id)) or now_failed
+                gen = int(decode_gen(module_id)) if decode_gen else 0
             except Exception:
-                now_finished = False
-            was_finished = self._fileplayer_prev_finished.get(module_id, False)
-            self._fileplayer_prev_finished[module_id] = now_finished
+                now_failed = now_ended = False
+                gen = 0
             if not (module.params.get("playlist") or []):
                 continue
             current = str(module.params.get("path") or "")
-            if (now_finished and not was_finished) or (running and not current):
-                self._advance_playlist(module_id)
+            # Advance on a *fresh* ended decode (its generation differs from
+            # the one we last advanced at — robust to a fast-failing file we
+            # never caught mid-decode), or kick-start an idle running player.
+            ended_fresh = now_ended and gen != self._fileplayer_advanced_gen.get(module_id)
+            if ended_fresh or (running and not current):
+                self._advance_playlist(module_id, skipped_bad=now_failed)
+                self._fileplayer_advanced_gen[module_id] = gen
 
-    def _advance_playlist(self, module_id: int) -> None:
-        """Pop the next queued file into a FilePlayer and let it play."""
+    def _advance_playlist(self, module_id: int, skipped_bad: bool = False) -> None:
+        """Pop the next queued file into a FilePlayer and let it play.
+
+        ``skipped_bad`` tags the status line when the advance is skipping a
+        track that failed to decode (vs a clean end-of-track advance)."""
         module = self.patch.modules.get(module_id)
         if module is None:
             return
         queue = module.params.get("playlist")
         if not queue:
             return  # nothing queued: stay parked at the end (silence)
+        prev_path = str(module.params.get("path") or "")
         next_path = queue.pop(0)
         try:
             # Same mutation path as Browse/typing; the renderer re-decodes
@@ -2088,7 +2163,13 @@ class App:
         if dpg.does_item_exist(text_tag):
             dpg.set_value(text_tag, next_path)
         self._refresh_playlist_display(module_id)
-        self._set_status(f"Queue → {os.path.basename(next_path)}")
+        if skipped_bad and prev_path:
+            self._set_status(
+                f"Skipped unreadable {os.path.basename(prev_path)} "
+                f"→ {os.path.basename(next_path)}"
+            )
+        else:
+            self._set_status(f"Queue → {os.path.basename(next_path)}")
 
     # ----- device refresh ---------------------------------------------------
 
@@ -2487,7 +2568,7 @@ class App:
             # stops being polled (and its listbox tag isn't reused stale).
             self._file_pos_labels.pop(module_id, None)
             self._playlist_listboxes.pop(module_id, None)
-            self._fileplayer_prev_finished.pop(module_id, None)
+            self._fileplayer_advanced_gen.pop(module_id, None)
             # Drop any cables touching this module — both in our maps and in
             # the editor visual. ``patch.remove_module`` handles the model.
             for lid, cab in list(self._link_to_cable.items()):
@@ -2988,7 +3069,7 @@ class App:
         self._audio_meter_bars.clear()
         self._file_pos_labels.clear()
         self._playlist_listboxes.clear()
-        self._fileplayer_prev_finished.clear()
+        self._fileplayer_advanced_gen.clear()
         # Reset the cascade so a fresh-loaded patch (with no saved positions)
         # starts laying out from the top-left again.
         self._next_node_pos = [40, 40]

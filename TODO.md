@@ -23,13 +23,28 @@ Living list of what's next. Edit freely.
       headless App-glue in `test_file_player_queue.py` (advance/drain/edge/
       kickstart); suite 1959. **Pending:** real-GUI eyeball (listbox + buttons;
       no headless path builds the node). Follow-ups surfaced, not started:
-  - [ ] **queue stalls on a bad/missing file** — a queued path that fails to
-        decode loads as silence and (being `failed`, not `finished`) never
-        advances, so the playlist stops there. Fine as "stop-ish" for v1;
-        could auto-skip failed tracks to the next good one.
-  - [ ] **remove a single queued item** — only whole-list **Clear** exists;
-        the listbox already supports selection, so a **Remove** button (and/or
-        reorder) is a small add.
+  - [x] **queue stalls on a bad/missing file** — done 2026-07-11. A queued
+        path that fails to decode is now auto-skipped to the next good track.
+        The fix is race-proof: rather than a bool `finished`/`failed` edge (a
+        fast-failing file flips `failed` between two UI polls and the edge is
+        missed → stall), the advancer keys 'advance once per track' on a new
+        backend **decode generation** (`NumpyBackend.file_player_decode_gen`,
+        bumped once per real decode (re)start at the render rebuild site — zero
+        cost on steady-state playback, empty path never ticks). New
+        `file_player_failed` hook + `now_ended = finished or failed`. Status
+        line says "Skipped unreadable X → Y". Tests: +5 `TestFailedHook`,
+        +1 queue skip.
+  - [x] **remove a single queued item** — done 2026-07-11. A **Remove** button
+        beside Clear drops the *selected* listbox row. Queue rows are now
+        numbered (`1. name`) so a selection maps back to an unambiguous index
+        even with duplicate basenames; a stale/empty selection is a no-op.
+        Tests: +1 queue remove. (Reorder still not done — a further small add
+        if wanted.)
+  - [x] **next-track button** — done 2026-07-11 (Matthew's ask alongside the
+        above; the queue gives it a reason to exist). A **>>|** transport
+        button force-advances to the next queued track mid-play (reuses
+        `_advance_playlist`); no-op with a status when the queue is empty.
+        Tests: +2 queue (advances / empty no-op).
 - [x] **Resampler — cubic Hermite read** — done 2026-07-10 (Matthew picked
       the fidelity direction). The ring read was 2-tap linear at all three
       sites (fast path + both declick taps); now 4-tap cubic Hermite

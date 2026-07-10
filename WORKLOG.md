@@ -7102,3 +7102,63 @@ finite, ~1/5 of them near-silent (the stops), full level between.
 That empties the resampler idea list — cubic → AA → spread → brake. The
 real-window eyeball (checkbox/drags layout) is meatthread0's, as usual.
 Committed per the working agreement; push is Matthew's.
+
+## 2026-07-11 — FilePlayer queue: auto-skip bad files, Remove, Next button
+
+The three open FilePlayer-queue follow-ups, shipped together (Matthew picked
+the queue follow-ups and, seeing the queue now exists, added a next-track
+button to the ask).
+
+**Auto-skip a bad/missing queued file (the interesting one).** The queue
+advanced off `file_player_finished`, but a track that *fails* to decode
+finishes as `done`+`failed`, never `finished` — so the list stalled on the
+dud. The naïve fix (add a `failed` bool, advance on `finished OR failed`)
+has a **race**: after we set `path` to the bad file, the audio thread
+rebuilds its decoder on the next render and the decode of a missing file
+fails almost instantly — often *between* two ~60 fps UI polls. A bool edge
+(`ended and not was_ended`) needs to observe the decoder in a not-ended
+state once to re-arm; if the failure lands inside the poll gap, the edge is
+never seen and the queue stalls anyway — intermittently, the worst kind.
+
+Fix: give the advancer a stable **decode identity** instead of a bool edge.
+New `NumpyBackend.file_player_decode_gen(mid)` returns a counter bumped once
+each time the renderer actually (re)starts a decode — at the existing render
+rebuild site (`if decoder is None or path changed`), guarded on a non-None
+decoder so an empty-path idle player never ticks, and *not* on the hot
+steady-state path (the rebuild `if` is skipped while a track just plays, so
+zero per-block cost). The GUI keeps `_fileplayer_advanced_gen[mid]` = the
+generation it last advanced at and fires when `now_ended and gen !=
+last_gen`. Because the bad file's decoder is a *new* generation regardless of
+*when* it fails, the skip fires exactly once no matter where the failure
+lands relative to the polls — race gone. This also subsumes the old
+edge-trigger's no-double-eat guarantee (same generation across polls with no
+render between ⇒ no re-advance), so `test_advance_is_edge_triggered` still
+holds. Also added `file_player_failed(mid)` (`done and failed`) so the
+advancer can tell a bad track's end from a still-decoding one and tag the
+status line ("Skipped unreadable X → Y").
+
+**Remove a single queued item.** A **Remove** button beside Clear drops the
+selected **Up next** row. dpg listboxes hand back the selected row *string*,
+not an index, and we display basenames — which can collide. So the rows are
+now numbered (`_playlist_display_items` → `"1. name"`, renumbered on every
+refresh as the queue drains), making each unique; Remove matches the selected
+string against the freshly regenerated rows to get an unambiguous index. No
+selection / a stale one is a gentle no-op.
+
+**Next-track button.** A **>>|** transport button (beside `|<`/Play/Stop)
+force-advances to the next queued track by hand, reusing `_advance_playlist`
+via a new `"next"` action in `_on_file_transport`. Empty queue → a status
+message, no disruption (matches the "stop when empty" auto-advance stance).
+Works mid-track (doesn't wait for the current one to finish).
+
+Renamed `_fileplayer_prev_ended` → `_fileplayer_advanced_gen` (init, delete-
+prune, load-reset). Tests: +5 `TestFailedHook` in `test_file_player.py`; +4
+in `test_file_player_queue.py` (skip-bad, next-advances, next-empty-no-op,
+remove-selected+stale). The skip test is deterministic — it renders once to
+kick (and generation-bump) the bad decode, `wait_for_file_decodes` to force
+the failure, then advances — so it never races the worker thread. Full suite
+**1979 pass / 1 skip** (was 1970). Docs: MODULES.md (file-list + transport
+paragraphs), the `playlist` docstring, TODO (all three ticked). Committed per
+the working agreement; push is Matthew's. **Pending:** the usual real-window
+eyeball — the Remove/>>| buttons and numbered listbox are dpg-only, no
+headless path builds the node.

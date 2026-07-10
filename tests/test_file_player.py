@@ -535,6 +535,46 @@ class TestFinishedHook:
         assert be.file_player_finished(999999) is False
 
 
+class TestFailedHook:
+    """``file_player_failed`` — the sibling edge the GUI polls to auto-skip
+    a queued track that can't be decoded, so a dud doesn't stall the list."""
+
+    def test_reports_failed_after_a_bad_decode(self, tmp_path):
+        be = NumpyBackend(sample_rate=SR, block_size=512)
+        patch = Patch()
+        fp = patch.add_module(
+            "file_player", params={"path": str(tmp_path / "nope.wav")}
+        )
+        be.compile(patch)
+        be.wait_for_file_decodes()  # a missing path finishes as done+failed
+        assert be.file_player_failed(fp.id) is True
+
+    def test_healthy_track_never_reports_failed(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=1000)
+        assert be.file_player_failed(fp.id) is False  # at 0:00
+        _ports(be, fp, patch, 512)
+        _ports(be, fp, patch, 512)  # play off the end
+        assert be.file_player_finished(fp.id) is True
+        assert be.file_player_failed(fp.id) is False  # ended cleanly, not failed
+
+    def test_still_decoding_not_failed(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=1000)
+        be._state[fp.id]["decoder"] = _FakeDecoder(ref, ready=500, done=False)
+        assert be.file_player_failed(fp.id) is False
+
+    def test_empty_path_not_failed(self, tmp_path):
+        be = NumpyBackend(sample_rate=SR, block_size=512)
+        patch = Patch()
+        fp = patch.add_module("file_player", params={"path": ""})
+        be.compile(patch)
+        be.wait_for_file_decodes()
+        assert be.file_player_failed(fp.id) is False  # no decoder for ""
+
+    def test_unknown_id_not_failed(self, tmp_path):
+        be, patch, fp, _ = _compiled_player(tmp_path)
+        assert be.file_player_failed(999999) is False
+
+
 class TestPlaylistSerialization:
     def test_playlist_round_trips_through_to_from_dict(self):
         cls = all_module_types()["file_player"]

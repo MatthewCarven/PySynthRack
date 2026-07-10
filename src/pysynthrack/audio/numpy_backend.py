@@ -7977,9 +7977,18 @@ class NumpyBackend(AudioBackend):
             if old_dec is not None:
                 old_dec.close()
             state["path"] = path
-            state["decoder"] = self._start_file_decoder(path)
+            new_dec = self._start_file_decoder(path)
+            state["decoder"] = new_dec
             state["pos"] = 0
             state["seek"] = None
+            if new_dec is not None:
+                # Bump the decode "generation" — a monotonic identity the GUI
+                # queue-advancer uses to tell a freshly (re)started decode from
+                # the last one, so a bad file whose decode fails *between* two
+                # UI polls is still skipped exactly once (a bool finished/failed
+                # edge can be missed in that window). An empty path yields no
+                # decoder, so an idle player's generation never ticks.
+                state["decode_gen"] = state.get("decode_gen", 0) + 1
 
         left = np.zeros(frames, dtype=np.float32)
         right = np.zeros(frames, dtype=np.float32)
@@ -8093,6 +8102,47 @@ class NumpyBackend(AudioBackend):
         # ``pos >= total`` means exactly "a non-looping, armed track ran off
         # the end" without having to re-read the loop/armed params here.
         return int(state.get("pos", 0)) >= total
+
+    def file_player_failed(self, module_id: int) -> bool:
+        """UI hook: True once a ``file_player`` decode has terminally failed.
+
+        A queued path that can't be decoded (missing, unreadable, or not
+        audio) finishes as ``done`` **and** ``failed`` with zero frames. The
+        GUI polls this alongside ``file_player_finished`` so a bad track
+        auto-skips to the next queued file instead of stalling the playlist
+        on it (a failed track never reports ``finished``, so without this the
+        queue would stop dead). Returns False for an empty path (no decoder),
+        a still-decoding one, or a healthy track.
+
+        Lock-free like ``file_player_finished``: the bool reads are atomic
+        under the GIL and a block-late answer only delays the skip one block.
+        """
+        if self._state_types.get(module_id) != "file_player":
+            return False
+        state = self._state.get(module_id)
+        if not state:
+            return False
+        decoder = state.get("decoder")
+        return bool(decoder is not None and decoder.done and decoder.failed)
+
+    def file_player_decode_gen(self, module_id: int) -> int:
+        """UI hook: a counter that ticks each time this ``file_player``
+        (re)starts a real decode.
+
+        The GUI queue-advancer keys its 'advance once per track' decision on
+        this identity rather than on a raw finished/failed bool edge: a
+        missing/unreadable queued file can finish decoding (as *failed*) in
+        the gap between two UI polls, so the edge would be missed and the
+        queue would stall — but the generation still differs from the track
+        it's replacing, so the skip fires exactly once. Idle players (empty
+        path → no decoder) stay at 0.
+        """
+        if self._state_types.get(module_id) != "file_player":
+            return 0
+        state = self._state.get(module_id)
+        if not state:
+            return 0
+        return int(state.get("decode_gen", 0))
 
     def wait_for_file_decodes(self, timeout: float = 10.0) -> bool:
         """Block until every file_player decode finishes. Tests/offline only.

@@ -150,3 +150,88 @@ def test_empty_path_with_queue_kickstarts_only_when_running(tmp_path, monkeypatc
     app._advance_file_playlists()
     assert fp.params["path"] == str(a)
     assert fp.params["playlist"] == []
+
+
+def test_bad_queued_file_is_skipped_not_stalled(tmp_path, monkeypatch):
+    """A queued file that can't be decoded is auto-skipped to the next good
+    one, rather than stalling the playlist on the dud."""
+    a, c = tmp_path / "a.wav", tmp_path / "c.wav"
+    _write_ramp(a)
+    _write_ramp(c)
+    bad = str(tmp_path / "nope.wav")  # never written -> decode fails
+    be = NumpyBackend(sample_rate=SR, block_size=512)
+    app = _make_app(monkeypatch, be)
+    fp = _add_player(app, path=str(a), playlist=[bad, str(c)])
+    be.compile(app.patch)
+    be._running = True
+    assert be.wait_for_file_decodes()
+
+    _play_to_end(be, fp, app.patch)      # A runs off the end
+    app._advance_file_playlists()        # A ended -> load the bad file
+    assert fp.params["path"] == bad
+    assert fp.params["playlist"] == [str(c)]
+
+    # The bad file's decode is kicked on the next render and terminally
+    # fails; the advancer sees a *new* decode generation that ended (failed)
+    # and skips straight to C rather than stalling on the dud. (Keying on
+    # generation, not a bool edge, is what makes this robust to the failure
+    # landing between polls.)
+    be._render_module(fp, 512, {}, app.patch)
+    be.wait_for_file_decodes()           # bad finishes as failed
+    app._advance_file_playlists()
+    assert fp.params["path"] == str(c)
+    assert fp.params["playlist"] == []
+
+
+def test_next_button_advances_to_next_queued_track(tmp_path, monkeypatch):
+    """The Next transport button force-advances mid-track, without waiting
+    for the current one to finish."""
+    a, b = tmp_path / "a.wav", tmp_path / "b.wav"
+    _write_ramp(a)
+    _write_ramp(b)
+    be = NumpyBackend(sample_rate=SR, block_size=512)
+    app = _make_app(monkeypatch, be)
+    fp = _add_player(app, path=str(a), playlist=[str(b)])
+    be.compile(app.patch)
+    be._running = True
+    assert be.wait_for_file_decodes()
+
+    app._on_file_transport(None, None, (fp.id, "next"))
+    assert fp.params["path"] == str(b)
+    assert fp.params["playlist"] == []
+
+
+def test_next_button_is_a_noop_on_empty_queue(tmp_path, monkeypatch):
+    a = tmp_path / "a.wav"
+    _write_ramp(a)
+    be = NumpyBackend(sample_rate=SR, block_size=512)
+    app = _make_app(monkeypatch, be)
+    fp = _add_player(app, path=str(a), playlist=[])
+    be.compile(app.patch)
+    be._running = True
+    assert be.wait_for_file_decodes()
+
+    app._on_file_transport(None, None, (fp.id, "next"))  # nothing queued
+    assert fp.params["path"] == str(a)   # current track left untouched
+    assert fp.params["playlist"] == []
+
+
+def test_remove_drops_the_selected_queued_item(tmp_path, monkeypatch):
+    """Remove pops exactly the highlighted numbered row from the queue,
+    keeping the rest in order; a stale selection is a no-op."""
+    a, b, c = tmp_path / "a.wav", tmp_path / "b.wav", tmp_path / "c.wav"
+    for p in (a, b, c):
+        _write_ramp(p)
+    be = NumpyBackend(sample_rate=SR, block_size=512)
+    app = _make_app(monkeypatch, be)
+    fp = _add_player(app, path="", playlist=[str(a), str(b), str(c)])
+
+    # The listbox reports the selected numbered row; drop that one.
+    app_mod.dpg.get_value.return_value = "2. b.wav"
+    app._on_remove_playlist_item(None, None, fp.id)
+    assert fp.params["playlist"] == [str(a), str(c)]  # b gone, order kept
+
+    # A stale/absent selection must not raise or remove the wrong item.
+    app_mod.dpg.get_value.return_value = "9. gone.wav"
+    app._on_remove_playlist_item(None, None, fp.id)
+    assert fp.params["playlist"] == [str(a), str(c)]
