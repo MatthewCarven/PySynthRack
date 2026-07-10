@@ -53,6 +53,15 @@ up-shifts stay clean; leave it off to keep the raw, aliased lo-fi
 character that suits the sci-fi/tape sound. Pitching down and unity
 never fold, so they're untouched either way.
 
+``spread`` widens a mono source into stereo. Above 0 the module grows a
+detuned pair — ``out_l`` read a touch flat, ``out_r`` a touch sharp
+(``spread``/2 cents each side) — off their own drifting read heads, so
+their loop seams don't coincide and the two channels decorrelate.
+Patch ``out_l``/``out_r`` into the L/R speakers and one module gives a
+lush, chorus-like width from a single mono input. ``out`` stays the
+centre pitch, and at spread 0 all three outputs are identical, so the
+module is a drop-in mono processor until you dial width in.
+
 Use cases:
   * Transpose a sample/loop from the FilePlayer — turn one hit into a
     melodic run by sequencing ``pitch_cv``.
@@ -60,6 +69,9 @@ Use cases:
     crawl.
   * Detune/thicken: +10 cents at 50% ``mix`` for chorusy width,
     without needing a parallel path.
+  * Instant stereo widener: raise ``spread`` to ~15 cents and patch
+    ``out_l``/``out_r`` to the left/right speakers for a wide ensemble
+    from a mono synth.
   * Sci-fi / formant-shift vocal and drum mangling at extreme settings,
     where the loop texture becomes part of the sound.
 
@@ -71,7 +83,9 @@ Ports:
   * ``in`` (audio): the signal to transpose. Unpatched -> silence out.
   * ``pitch_cv`` (cv): added to the semitone amount, scaled by
     ``cv_depth``. Optional; unpatched means 0 (no modulation).
-  * ``out`` (audio): the resampled signal.
+  * ``out`` (audio): the resampled signal (centre pitch).
+  * ``out_l`` / ``out_r`` (audio): the stereo detune pair (centre pitch
+    -/+ ``spread``/2 cents). Identical to ``out`` when ``spread`` = 0.
 
 Voice-awareness:
   Shape-polymorphic, per the v0.4 convention. A mono ``(F,)`` audio in
@@ -116,11 +130,21 @@ class Resampler(Module):
             gritty tape/sci-fi sound). Pitch-down and unity are
             unaffected (nothing folds there); the dry side of ``mix``
             stays full-band.
+        spread: Stereo detune width in cents (0 = mono, default). Above 0
+            the ``out_l``/``out_r`` pair is read a touch flat/sharp of the
+            centre (``spread``/2 cents each side), so patching them to L/R
+            speakers thickens a mono source into a wide, chorus-like
+            stereo image from one module. ``out`` stays the centre pitch
+            regardless. ~10-25 cents is a natural width.
 
     Ports:
         in (in, audio): signal to transpose. Unpatched -> silence.
         pitch_cv (in, cv): added to the transpose, scaled by cv_depth.
-        out (out, audio): the resampled signal.
+        out (out, audio): the resampled signal (the centre pitch).
+        out_l (out, audio): left of the stereo detune pair (centre pitch
+            minus ``spread``/2 cents). Equals ``out`` when spread = 0.
+        out_r (out, audio): right of the pair (centre pitch plus
+            ``spread``/2 cents). Equals ``out`` when spread = 0.
     """
 
     TYPE = "resampler"
@@ -133,9 +157,14 @@ class Resampler(Module):
         "mix": 1.0,
         "window": 200.0,
         "antialias": False,
+        "spread": 0.0,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),
         Port("pitch_cv", "in", "cv"),
     ]
-    OUTPUT_PORTS = [Port("out", "out", "audio")]
+    OUTPUT_PORTS = [
+        Port("out", "out", "audio"),
+        Port("out_l", "out", "audio"),
+        Port("out_r", "out", "audio"),
+    ]

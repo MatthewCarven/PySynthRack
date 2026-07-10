@@ -6917,3 +6917,55 @@ run.
 
 Follow-ups still open (from the cubic session): tape-stop/spin gesture;
 stereo detune spread (`out_l`/`out_r`).
+
+## 2026-07-10 — resampler: stereo detune spread (the "love" arc completes)
+
+Third of the resampler follow-ups (after cubic + anti-alias). New `spread`
+param (cents, default 0). Above 0 the module grows a detuned stereo pair
+alongside the centre `out`: `out_l` reads `spread`/2 cents flat, `out_r`
+the same sharp, **each off its own read head** — so they drift and
+loop-seam independently and decorrelate (measured L/R correlation ≈ 0,
+i.e. wide) into a chorus-like stereo image from a mono source. `out` stays
+the centre pitch; at spread 0 it's a single centre read, unchanged.
+
+**The refactor.** Producing three simultaneous varispeed reads meant the
+one inline read head had to become N. Extracted the read-positions +
+fast/slow + declick into `_resampler_read_channel(state, ch, ...)` and
+`_ensure_resampler_channel`, with the seam state keyed by a channel suffix
+(`""` centre, `"_l"`/`"_r"`); `_resampler_voice_declick` took a `ch` arg so
+its `xf_*`/`seam_jumps` writes hit the right channel. The centre channel
+keeps the exact old keys and code path, so it's **bit-identical** — all 63
+prior tests passed untouched before a single stereo test was written (the
+bar I held the refactor to). Chosen design points:
+  * **`out` orthogonal to spread** — it's always the clean centre pitch;
+    spread only *adds* the L/R pair. `test_out_unaffected_by_spread` pins
+    `out` bit-equal across spread 0 vs 25 (AA off).
+  * **Return type stays backward-compatible** — the core returns a dict,
+    but the wrapper hands back the bare `out` array when spread == 0 (the
+    legacy single-output convention), a `{out,out_l,out_r}` dict only above
+    0. So every existing caller/test that treats the return as an array is
+    unchanged; no test churn beyond the two model tests (new ports/param).
+  * **L/R start aligned with the centre head** (`_ensure_resampler_channel`
+    seeds their delay from `state["delay"]`), so engaging spread mid-stream
+    doesn't jump; they're dropped when spread drops to 0 or the window
+    rebuilds, re-seeding aligned next time.
+  * **One AA ring shared** across channels (cutoff from the max channel
+    ratio); each channel reads it on its own up-shift.
+
+Cost stays at one read for the mono default; three only when spread > 0.
+
+Tests: 9 new in `TestStereoSpread` — default + round-trip; ports; spread-0
+returns a bare array; `out` unaffected by spread; detuned pair (out_l flat
+/ out_r sharp); L/R decorrelation < 0.5; voice-row == mono on all three
+outs; finite/bounded at extremes; engage-mid-stream no-dropout. Plus two
+model tests updated for the new ports/param. `test_resampler` 63 → 72; full
+suite 1948 pass / 1 skip. End-to-end (render_block, saw_wt → resampler
+spread 20 → L/R speakers): master L/R correlation −0.03, both channels
+alive. Docs: module docstring (top + params + ports), MODULES.md (ports +
+param + a stereo paragraph + patching line + examples list), a `spread`
+drag-float in the resampler UI block, and a new
+`examples/resampler_stereo_spread.json`. Commit is Matthew's to run.
+
+That closes the resampler "love" arc: **cubic Hermite read → anti-alias on
+pitch-up → stereo detune spread.** One idea remains parked: a first-class
+tape-stop / spin gesture.

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    { "id": 1, "type": "oscillator", "name": "saw 220", "params": { "waveform": "saw_blep", "freq": 220.0, "amp": 0.6 } },
+    { "id": 2, "type": "resampler", "name": "stereo spread", "params": { "semitones": 0.0, "cents": 0.0, "mix": 1.0, "spread": 15.0 } },
+    { "id": 3, "type": "left_speaker_output", "name": "left", "params": { "gain": 0.8 } },
+    { "id": 4, "type": "right_speaker_output", "name": "right", "params": { "gain": 0.8 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "in" },
+    { "src_module_id": 2, "src_port": "out_l", "dst_module_id": 3, "dst_port": "in" },
+    { "src_module_id": 2, "src_port": "out_r", "dst_module_id": 4, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 160], "2": [360, 160], "3": [680, 80], "4": [680, 260]
+    }
+  }
+}

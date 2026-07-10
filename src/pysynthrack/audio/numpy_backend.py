@@ -7071,7 +7071,7 @@ class NumpyBackend(AudioBackend):
     # pitched-up octave for markedly less aliasing.
     _RESAMP_AA_MARGIN = 0.85
 
-    def _render_resampler(self, module, frames: int, buffers, patch) -> np.ndarray:
+    def _render_resampler(self, module, frames: int, buffers, patch):
         """Varispeed pitch shifter: resample ``in`` at a pitch-derived rate.
 
         Shape-polymorphic. Branches on the *audio* input's ndim (the
@@ -7085,6 +7085,11 @@ class NumpyBackend(AudioBackend):
         ``pitch_cv`` drives each voice independently. Missing audio in ->
         silence out, with the buffer/heads left as-is so reconnecting the
         cable doesn't snap.
+
+        Output shape depends on ``spread``: at 0 the module is mono and
+        returns the bare ``out`` array (the legacy single-output
+        convention -- every existing patch and test unchanged); above 0 it
+        returns ``{"out", "out_l", "out_r"}`` with the detuned stereo pair.
         """
         src = self._input_buffer(
             patch, buffers, module.id, "in", collapse=False
@@ -7111,19 +7116,27 @@ class NumpyBackend(AudioBackend):
                 cv = np.broadcast_to(
                     pitch_cv.mean(axis=0), (V, pitch_cv.shape[1])
                 )
-            return self._render_resampler_core(module, frames, src, cv)
+            result = self._render_resampler_core(module, frames, src, cv)
+        else:
+            # Mono audio. A 2D pitch_cv collapses to a single shared
+            # transpose (mean over voices) -- summing pitch voltages would
+            # be nonsense.
+            if pitch_cv is not None and pitch_cv.ndim == 2:
+                pitch_cv = pitch_cv.mean(axis=0)
+            d = self._render_resampler_core(
+                module,
+                frames,
+                src[np.newaxis, :],
+                None if pitch_cv is None else pitch_cv[np.newaxis, :],
+            )
+            result = {name: buf[0] for name, buf in d.items()}
 
-        # Mono audio. A 2D pitch_cv collapses to a single shared transpose
-        # (mean over voices) -- summing pitch voltages would be nonsense.
-        if pitch_cv is not None and pitch_cv.ndim == 2:
-            pitch_cv = pitch_cv.mean(axis=0)
-        out = self._render_resampler_core(
-            module,
-            frames,
-            src[np.newaxis, :],
-            None if pitch_cv is None else pitch_cv[np.newaxis, :],
-        )
-        return out[0]
+        # spread == 0 -> a single centre channel; hand back the bare array
+        # so the module stays a drop-in mono output. spread > 0 -> the
+        # multi-output dict, keyed onto out / out_l / out_r downstream.
+        if "out_l" in result:
+            return result
+        return result["out"]
 
     def _render_resampler_core(self, module, frames, src, cv):
         """Shared ``(V, F)`` varispeed engine.
@@ -7220,6 +7233,11 @@ class NumpyBackend(AudioBackend):
             state["xf_rem"][:] = 0
             state["xf_len"][:] = 1
             state["xf_off"][:] = 0.0
+            # Stereo-spread channels ride the same geometry; drop them so
+            # they re-seed aligned to the rebuilt centre head next read.
+            for suf in ("_l", "_r"):
+                for k in ("delay", "xf_rem", "xf_len", "xf_off", "seam_jumps"):
+                    state.pop(k + suf, None)
         needs_reinit = (
             "buf" not in state or state["buf"].shape != (V, L)
         )
@@ -7279,22 +7297,46 @@ class NumpyBackend(AudioBackend):
             smoothed = target
         last_st = smoothed[:, -1].copy()
 
-        np.clip(smoothed, -self._RESAMP_MAX_ST, self._RESAMP_MAX_ST, out=smoothed)
-        ratio = np.exp2(smoothed / 12.0)   # (V, F) playback rate per sample
+        # --- per-channel playback ratios ---
+        # ``out`` is the centre pitch (unchanged). A positive ``spread``
+        # adds a stereo detune pair -- ``out_l`` a touch flat, ``out_r`` a
+        # touch sharp (``spread`` cents, split half to each side) -- for
+        # one-module chorus-style width from a mono source. spread == 0
+        # keeps the module mono: one read, the centre, bit-for-bit what it
+        # always produced.
+        spread = float(module.params.get("spread", 0.0))
+        if spread > 0.0:
+            half = spread / 200.0    # cents -> +/- semitones per side
+            chans = (
+                ("out", "", 0.0),
+                ("out_l", "_l", -half),
+                ("out_r", "_r", half),
+            )
+        else:
+            chans = (("out", "", 0.0),)
+            for suf in ("_l", "_r"):     # drop stale spread state when mono
+                for k in ("delay", "xf_rem", "xf_len", "xf_off", "seam_jumps"):
+                    state.pop(k + suf, None)
+
+        ratios = {}
+        for name, ch, off in chans:
+            s = smoothed + off if off else smoothed
+            ratios[name] = np.exp2(
+                np.clip(s, -self._RESAMP_MAX_ST, self._RESAMP_MAX_ST) / 12.0
+            )
 
         # --- optional anti-alias for pitch-up ---
         # Reading faster than the write shifts source content above Nyquist,
         # which folds back as aliasing; band-limiting the input *before* the
-        # faster read is the fix. Maintain a second ring of the input
-        # low-passed at Fs/(2*ratio) and read the wet signal from it on
-        # up-shifts. Off by default -> raw read, every existing render
-        # bit-for-bit. Pitch-down and unity keep reading the raw ring (so
-        # their bit-exact paths are untouched), and the dry tap below always
-        # reads raw. The seam-declick machinery is unchanged -- it just
-        # samples whichever ring ``read_buf`` points at.
-        read_buf = buf
+        # faster read is the fix. Maintain one band-limited ring of the
+        # input (low-passed at Fs/(2*ratio)) shared by all channels, its
+        # cutoff tracking the highest channel ratio; each channel reads that
+        # ring on its own up-shift, the raw ring otherwise. Off by default
+        # -> raw read, every existing render bit-for-bit. Pitch-down and
+        # unity keep the raw ring (bit-exact); the dry tap always does.
+        read_bufs = {name: buf for name, _, _ in chans}
         if float(module.params.get("antialias", 0.0)) >= 0.5:
-            r_rep = max(1.0, float(ratio.max()))
+            r_rep = max(1.0, max(float(r.max()) for r in ratios.values()))
             # Normalised cutoff is 1/ratio; floor it so extreme up-shifts
             # stay in a numerically safe Butterworth range (partial AA
             # rather than a degenerate filter).
@@ -7320,44 +7362,96 @@ class NumpyBackend(AudioBackend):
             )
             buf_aa[:, write_slots] = filt
             state["buf_aa"] = buf_aa
-            if r_rep > 1.0 + 1e-9:
-                read_buf = buf_aa
+            for name, _, _ in chans:
+                if float(ratios[name].max()) > 1.0 + 1e-9:
+                    read_bufs[name] = buf_aa
         else:
             # AA off: drop the second ring so a later toggle-on re-seeds
             # from the up-to-date raw ring instead of reading a stale gap.
             state.pop("buf_aa", None)
 
-        # --- read positions: cumulative integral of ratio ---
+        # --- loop-seam declick guard band (shared by all channels) ---
+        x_nom = max(1, int(self._RESAMP_XFADE_SEC * sr))
+        guard = int(max(self._RESAMP_EDGE_FRAC * L, x_nom + 8, frames + 8))
+        guard = min(guard, span // 3)
+
+        # --- read each channel through the one ring (own head + seam state) ---
+        for _, ch, _ in chans:
+            self._ensure_resampler_channel(state, ch, V)
+        wets = {}
+        for name, ch, _ in chans:
+            wets[name], nd = self._resampler_read_channel(
+                state, ch, read_bufs[name], ratios[name],
+                head, L, span, guard, x_nom, frames, V,
+            )
+            state["delay" + ch] = nd
+
+        # --- dry/wet mix: the dry tap is the raw centre ring read at the
+        # fixed initial delay (shared across channels), so unity wet and
+        # dry are sample-aligned and the dry stays full-band under spread.
+        if mix < 1.0:
+            init_lag = int(max(1, min(L - 1, int(self._RESAMP_INIT_FRAC * L))))
+            dry_slots = (head + (L - init_lag) + np.arange(frames)) % L
+            dry = buf[:, dry_slots]
+            out = {
+                name: (mix * w + (1.0 - mix) * dry).astype(np.float32)
+                for name, w in wets.items()
+            }
+        else:
+            out = {name: w.astype(np.float32) for name, w in wets.items()}
+
+        state["buf"] = buf
+        state["write_idx"] = head
+        state["last_st"] = last_st
+        return out
+
+    def _ensure_resampler_channel(self, state, ch, V):
+        """Lazily create a stereo-spread channel's read-head + crossfade
+        state. The centre ("") is set up by the main reinit; ``"_l"`` /
+        ``"_r"`` start *aligned* with the centre head (``state["delay"]``)
+        so engaging ``spread`` mid-stream doesn't jump -- they then drift
+        apart through their own detuned ratios.
+        """
+        if ch == "" or ("delay" + ch) in state:
+            return
+        state["delay" + ch] = state["delay"].copy()
+        state["xf_rem" + ch] = np.zeros(V, dtype=np.int64)
+        state["xf_len" + ch] = np.ones(V, dtype=np.int64)
+        state["xf_off" + ch] = np.zeros(V, dtype=np.float64)
+        state["seam_jumps" + ch] = np.zeros(V, dtype=np.int64)
+
+    def _resampler_read_channel(
+        self, state, ch, read_buf, ratio, head, L, span, guard, x_nom,
+        frames, V,
+    ):
+        """Read one detune channel from the ring with seam-declick, using
+        this channel's own read head (``state["delay"+ch]``) and crossfade
+        state. ``ratio`` is the channel's (V, F) per-sample playback rate;
+        ``read_buf`` the ring it samples (raw, or the anti-alias ring on an
+        up-shift). Returns ``(wet (V, F) float64, new_delay (V,))``; the
+        caller stores ``new_delay`` back under ``"delay"+ch``.
+        """
+        delay = state["delay" + ch]
         cum = np.cumsum(ratio, axis=-1)
         excum = cum - ratio                 # exclusive cumsum (offset per sample)
         offs = (L - delay)[:, np.newaxis] + excum
         sum_ratio = cum[:, -1]
 
-        # --- loop-seam declick guard band ---
-        x_nom = max(1, int(self._RESAMP_XFADE_SEC * sr))
-        guard = int(max(self._RESAMP_EDGE_FRAC * L, x_nom + 8, frames + 8))
-        guard = min(guard, span // 3)
-
         slow = bool(
-            state["xf_rem"].any()
+            state["xf_rem" + ch].any()
             or (offs[:, 0] <= guard).any()
             or (offs.max(axis=-1) >= span - guard).any()
         )
         if not slow:
-            # In-band fast path: the head is deep inside the window (the
-            # guard band keeps it >= a block off either edge), so the
-            # 4-tap Hermite read never wraps and needs no jumps. At an
-            # integer read position (unity ratio, octave shifts) frac is
-            # exactly 0 and Hermite returns the sample, so this stays a
-            # bit-exact delayed passthrough -- same guarantee as the old
-            # linear read, now with a far flatter passband elsewhere.
+            # In-band fast path (see _render_resampler_core): the guard band
+            # keeps the head clear of both edges, so the 4-tap Hermite read
+            # never wraps; at an integer read position frac is exactly 0 and
+            # Hermite returns the sample, so unity stays a bit-exact
+            # delayed passthrough.
             phase = np.mod(offs, span)          # in [0, span)
             i0 = np.floor(phase).astype(np.int64)
             frac = phase - i0
             rows = np.arange(V)[:, np.newaxis]
-            # Clamp the outer taps to the window ends; in the fast path
-            # the guard keeps i0 far from the edges so this never binds,
-            # but it makes the gather safe by construction.
             jm1 = (head + np.clip(i0 - 1, 0, L - 1)) % L
             j2 = (head + np.clip(i0 + 2, 0, L - 1)) % L
             wet = _hermite4(
@@ -7374,33 +7468,21 @@ class NumpyBackend(AudioBackend):
             new_delay = np.empty(V, dtype=np.float64)
             for v in range(V):
                 wet[v], new_delay[v] = self._resampler_voice_declick(
-                    state, v, read_buf[v], head, offs[v], ratio[v],
+                    state, ch, v, read_buf[v], head, offs[v], ratio[v],
                     float(delay[v]), float(sum_ratio[v]),
                     frames, L, span, guard, x_nom,
                 )
-
-        # --- dry/wet mix: the dry tap is the same ring read at the fixed
-        # initial delay, so unity wet and dry are sample-aligned.
-        if mix < 1.0:
-            init_lag = int(max(1, min(L - 1, int(self._RESAMP_INIT_FRAC * L))))
-            dry_slots = (head + (L - init_lag) + np.arange(frames)) % L
-            dry = buf[:, dry_slots]
-            out = (mix * wet + (1.0 - mix) * dry).astype(np.float32)
-        else:
-            out = wet.astype(np.float32)
-
-        state["buf"] = buf
-        state["write_idx"] = head
-        state["delay"] = new_delay
-        state["last_st"] = last_st
-        return out
+        return wet, new_delay
 
     def _resampler_voice_declick(
-        self, state, v, bufv, head, p, r, delay_v, sum_r,
+        self, state, ch, v, bufv, head, p, r, delay_v, sum_r,
         frames, L, span, guard, x_nom,
     ):
         """One voice's block with the read head inside the guard band (or
         a seam crossfade still in flight from the previous block).
+
+        ``ch`` is the detune-channel suffix ("" centre, "_l"/"_r" the
+        stereo spread) that keys this channel's own crossfade state.
 
         ``p`` is the voice's unwrapped read-position trajectory for this
         block (position in the window: 0 = oldest, ``span`` = newest) and
@@ -7424,10 +7506,10 @@ class NumpyBackend(AudioBackend):
         jump_sum = 0.0      # net delay change from the jumps
 
         # Continue an in-flight fade from the previous block.
-        rem = int(state["xf_rem"][v])
+        rem = int(state["xf_rem" + ch][v])
         if rem > 0:
-            x_eff = int(state["xf_len"][v])
-            off = float(state["xf_off"][v])
+            x_eff = int(state["xf_len" + ch][v])
+            off = float(state["xf_off" + ch][v])
             n_here = min(rem, frames)
             fades.append([0, n_here, x_eff - rem, x_eff, off])
 
@@ -7443,7 +7525,7 @@ class NumpyBackend(AudioBackend):
                 # trajectory; keep it in place across the new jump.
                 f[4] -= half
             fades.append([0, min(x_nom, frames), 0, x_nom, -half])
-            state["seam_jumps"][v] += 1
+            state["seam_jumps" + ch][v] += 1
 
         # High edge: the head is about to collide with the write head --
         # the pitch-up collision. Jump back half a span at the first
@@ -7461,7 +7543,7 @@ class NumpyBackend(AudioBackend):
             p[n0:] -= half
             jump_sum += half
             fades.append([n0, min(x_eff, frames - n0), 0, x_eff, half])
-            state["seam_jumps"][v] += 1
+            state["seam_jumps" + ch][v] += 1
 
         # Jumped main tap, 4-tap Hermite (same read as the fast path;
         # p is inside (0, span) by construction after the jumps, so the
@@ -7478,7 +7560,7 @@ class NumpyBackend(AudioBackend):
 
         # Blend each fade's old tap back in, equal-power. A back tap that
         # has left the valid window keeps the new tap at full weight.
-        state["xf_rem"][v] = 0
+        state["xf_rem" + ch][v] = 0
         for n0, n_here, t0, x_eff, off in fades:
             if n_here <= 0:
                 continue
@@ -7502,9 +7584,9 @@ class NumpyBackend(AudioBackend):
             out[seg] = g_new * out[seg] + w_old * back
             if t0 + n_here < x_eff and n0 + n_here >= frames:
                 # The fade outlives the block -- carry the remainder.
-                state["xf_rem"][v] = x_eff - (t0 + n_here)
-                state["xf_len"][v] = x_eff
-                state["xf_off"][v] = off
+                state["xf_rem" + ch][v] = x_eff - (t0 + n_here)
+                state["xf_len" + ch][v] = x_eff
+                state["xf_off" + ch][v] = off
 
         new_delay = delay_v + frames - sum_r + jump_sum
         new_delay = 1.0 + float(np.mod(new_delay - 1.0, span))

@@ -737,7 +737,9 @@ and lo-fi tape effects.
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to transpose. Unpatched → silence. |
 | `pitch_cv` | in | cv | Added to the transpose, scaled by `cv_depth` (summed in semitone space). |
-| `out` | out | audio | The resampled signal. |
+| `out` | out | audio | The resampled signal (centre pitch). |
+| `out_l` | out | audio | Left of the stereo detune pair (centre − `spread`/2 cents). Equals `out` when `spread` = 0. |
+| `out_r` | out | audio | Right of the pair (centre + `spread`/2 cents). Equals `out` when `spread` = 0. |
 
 **Parameters**
 
@@ -750,6 +752,7 @@ and lo-fi tape effects.
 | `mix` | `1.0` | 0 … 1 | Dry/wet blend. The dry tap is latency-compensated to line up with unity-pitch wet, so the blend is coherent (no slapback). |
 | `window` | `200.0` | 20 … 2000 ms | Looping-buffer window. Latency is half of it, so shorter = tighter live latency but a stronger loop texture; longer = subtler texture on big shifts. Floored at 4 audio blocks; live changes keep the recent audio (no dropout). |
 | `antialias` | `False` | off / on | Off = raw, aliased **lo-fi** up-shift (the default character). On = band-limit the input before the read so **pitching up** doesn't fold content past Nyquist into aliasing (a cleaner up-shift). Pitch-down and unity never fold, so they're unaffected; the dry side of `mix` stays full-band. |
+| `spread` | `0.0` | 0 … 50 ct | Stereo detune width. 0 = mono (all three outs identical). Above 0, `out_l`/`out_r` read `spread`/2 cents flat/sharp of the centre off their own drifting heads → patch them to L/R speakers for one-module stereo width. `out` stays the centre pitch. ~10–25 ct is a natural spread. |
 
 **How it works.** Pitch is summed in semitone space
 (`st = semitones + cents/100 + cv_depth · pitch_cv`), optionally glided
@@ -796,6 +799,17 @@ aliased lo-fi grit that suits the sci-fi/tape character. Pitching down
 and unity can't fold, so they read the raw ring untouched (and stay
 bit-exact); the dry side of `mix` always stays full-band.
 
+**Stereo detune spread (`spread`, off by default).** Above 0 the module
+grows a detuned pair alongside the centre `out`: `out_l` reads `spread`/2
+cents flat, `out_r` the same sharp, each off its **own** read head that
+drifts and loop-seams independently — so the two channels decorrelate
+(L/R correlation near 0) into a wide, chorus-like image from a single
+mono input. Patch `out_l`/`out_r` into the
+[left](#left_speaker_output)/[right](#right_speaker_output) speakers.
+`out` stays the centre pitch regardless, and at `spread` 0 all three
+outputs are identical — the module is a drop-in mono processor (a single
+centre read, no extra cost) until you dial width in.
+
 For pitch shifting that keeps the *speed* fixed you'd want a granular
 or phase-vocoder engine — a heavier build for later. This one is
 deliberately the tape kind.
@@ -805,7 +819,9 @@ or feed the [FilePlayer](#file_player) in to pitch a sample. Wire an
 [LFO](#lfo) into `pitch_cv` for vibrato/tape-wobble, or an
 [ADSR](#adsr)/[AD](#ad_envelope) for pitch dives; raise `glide` for
 portamento and tape-stop sweeps. Set `mix` to ~0.5 with a few `cents`
-of detune for one-module chorus-style thickening. See
+of detune for one-module chorus-style thickening. For instant stereo
+width, raise `spread` to ~15 ct and patch `out_l`/`out_r` into the
+[left](#left_speaker_output)/[right](#right_speaker_output) speakers. See
 `examples/resampler_tape_wobble.json` (saw → varispeed with a slow LFO
 wobbling the pitch → speaker) and `examples/resampler_detune_blend.json`
 (+12 ct at 50% mix → detune thickening).
@@ -2360,6 +2376,7 @@ loads in the app. Notable ones referenced above:
 - `mic_beatbox_crossover.json` — live mic, beatbox-driven.
 - `resampler_tape_wobble.json` — varispeed pitch shift, LFO wobbling the pitch.
 - `resampler_detune_blend.json` — resampler `mix`: +12 cents at 50% dry/wet, one-module detune thickening.
+- `resampler_stereo_spread.json` — resampler `spread`: a mono saw widened into a decorrelated stereo pair (`out_l`/`out_r` → L/R speakers).
 - `pitch_shifter_harmony.json` — time-preserving shift; +7 st at 50% mix = a fifth harmony.
 - `pitch_shifter_formant_vowel.json` — formant-preserving shift: synthetic vowel up a fourth, timbre intact.
 - `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.

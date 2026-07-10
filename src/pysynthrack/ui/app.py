@@ -844,6 +844,21 @@ class App:
                     user_data=user_data,
                 )
                 return
+            if param_name == "spread":
+                # Stereo detune width in cents (0 = mono). Patch
+                # out_l/out_r to L/R speakers for one-module width.
+                dpg.add_drag_float(
+                    label=param_name,
+                    default_value=float(current),
+                    speed=0.2,
+                    min_value=0.0,
+                    max_value=50.0,
+                    format="%.1f ct",
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
 
         if module.TYPE == "sweep_eq":
             # A single CV-swept resonant band (auto-wah / envelope filter).

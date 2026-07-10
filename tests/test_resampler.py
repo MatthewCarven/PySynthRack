@@ -119,6 +119,23 @@ def _render(params, sig, block=F):
     return _run(b, patch, src, rs, sig, block=block)
 
 
+def _run_multi(params, sig, block=F):
+    """Run through the resampler, returning a dict of concatenated channel
+    arrays. Handles both the mono-array return (spread 0) and the
+    ``{out, out_l, out_r}`` dict return (spread > 0)."""
+    patch, src, rs, _, b = _rig(params, block=block)
+    n = (sig.shape[-1] // block) * block
+    chans: dict = {}
+    for k in range(n // block):
+        blk = sig[..., k * block:(k + 1) * block].astype(np.float32)
+        r = b._render_resampler(rs, block, {(src.id, "out"): blk}, patch)
+        if not isinstance(r, dict):
+            r = {"out": r}
+        for name, buf in r.items():
+            chans.setdefault(name, []).append(buf)
+    return {name: np.concatenate(bufs, axis=-1) for name, bufs in chans.items()}
+
+
 # ----- Model -----------------------------------------------------------------
 
 
@@ -134,6 +151,7 @@ class TestModel:
             "mix": 1.0,
             "window": 200.0,
             "antialias": False,
+            "spread": 0.0,
         }
 
     def test_ports_and_signal_kinds(self):
@@ -142,7 +160,11 @@ class TestModel:
             ("in", "audio"),
             ("pitch_cv", "cv"),
         ]
-        assert [(p.name, p.signal_kind) for p in rs.output_ports] == [("out", "audio")]
+        assert [(p.name, p.signal_kind) for p in rs.output_ports] == [
+            ("out", "audio"),
+            ("out_l", "audio"),
+            ("out_r", "audio"),
+        ]
 
     def test_json_round_trip(self):
         patch = Patch()
@@ -842,6 +864,98 @@ class TestAntialias:
                 rms.append(float(np.sqrt(np.mean(out ** 2))))
         rms = np.array(rms)
         assert rms.min() > 0.2 * rms.max()   # no block collapses at the toggle
+
+
+# ----- Stereo detune spread --------------------------------------------------
+
+
+class TestStereoSpread:
+    def test_default_and_roundtrip(self):
+        rs = Patch().add_module("resampler")
+        assert rs.params["spread"] == 0.0
+        patch = Patch()
+        patch.add_module("resampler", params={"spread": 20.0})
+        restored = Patch.from_dict(patch.to_dict())
+        r = next(m for m in restored if m.TYPE == "resampler")
+        assert r.params["spread"] == 20.0
+
+    def test_ports_include_stereo_pair(self):
+        rs = Patch().add_module("resampler")
+        assert [p.name for p in rs.output_ports] == ["out", "out_l", "out_r"]
+
+    def test_spread_zero_returns_mono_array(self):
+        # Backward-compatible: at spread 0 the render is a bare array (the
+        # single "out"), not a dict -- a drop-in mono processor.
+        sig = np.random.RandomState(41).randn(F).astype(np.float32)
+        p, s, r, _, b = _rig({"semitones": 5.0, "spread": 0.0})
+        out = b._render_resampler(r, F, {(s.id, "out"): sig}, p)
+        assert isinstance(out, np.ndarray)
+
+    def test_out_unaffected_by_spread(self):
+        # ``out`` is always the centre pitch: turning spread on doesn't
+        # change it one sample (spread only adds the detuned L/R pair).
+        sig = np.random.RandomState(42).randn(20 * F).astype(np.float32)
+        mono = _run_multi({"semitones": 4.0, "spread": 0.0}, sig)["out"]
+        wide = _run_multi({"semitones": 4.0, "spread": 25.0}, sig)["out"]
+        assert np.array_equal(mono, wide)
+
+    def test_spread_emits_detuned_pair(self):
+        # out_l reads flat of centre, out_r sharp (+/- spread/2 cents).
+        tone = _tone(1000.0, 1.5)
+        ch = _run_multi({"semitones": 0.0, "spread": 30.0}, tone)
+        assert set(ch) == {"out", "out_l", "out_r"}
+        centre = _dominant_hz(ch["out"])
+        assert _dominant_hz(ch["out_l"]) < centre - 3.0
+        assert _dominant_hz(ch["out_r"]) > centre + 3.0
+
+    def test_spread_decorrelates_channels(self):
+        # The detuned pair drifts apart -> low L/R correlation is the
+        # stereo width (a mono duplicate would correlate at ~1.0).
+        tone = _tone(1000.0, 2.0)
+        ch = _run_multi({"semitones": 0.0, "spread": 20.0}, tone)
+        L, R = ch["out_l"], ch["out_r"]
+        corr = float(np.corrcoef(L[len(L) // 2:], R[len(R) // 2:])[0, 1])
+        assert abs(corr) < 0.5
+
+    def test_spread_voice_matches_mono(self):
+        sig = np.random.RandomState(43).randn(20 * F).astype(np.float32)
+        mono = _run_multi({"semitones": 3.0, "spread": 20.0}, sig)
+        p, s, r, _, b = _rig({"semitones": 3.0, "spread": 20.0})
+        vch: dict = {}
+        n = (sig.shape[-1] // F) * F
+        for k in range(n // F):
+            blk = np.tile(sig[k * F:(k + 1) * F], (2, 1))
+            d = b._render_resampler(r, F, {(s.id, "out"): blk}, p)
+            for name, buf in d.items():
+                vch.setdefault(name, []).append(buf)
+        for name in ("out", "out_l", "out_r"):
+            v = np.concatenate(vch[name], axis=-1)
+            assert np.array_equal(v[0], mono[name])
+            assert np.array_equal(v[0], v[1])
+
+    def test_spread_finite_and_bounded(self):
+        sig = (np.random.RandomState(44).randn(60 * F) * 0.3).astype(np.float32)
+        for st in (-12.0, 0.0, 12.0):
+            ch = _run_multi({"semitones": st, "spread": 35.0}, sig)
+            for name in ("out", "out_l", "out_r"):
+                assert np.all(np.isfinite(ch[name]))
+                assert np.abs(ch[name]).max() <= 1.5
+
+    def test_spread_engage_no_dropout(self):
+        # Raising spread mid-stream: out_l/out_r start aligned with the
+        # centre head (not from scratch), so neither channel drops out.
+        p, s, r, _, b = _rig({"semitones": 0.0, "spread": 0.0})
+        tone = _tone(1000.0, 2.0)
+        n = len(tone) // F
+        rms = []
+        for k in range(n):
+            if k == n // 2:
+                r.params["spread"] = 20.0
+            d = b._render_resampler(r, F, {(s.id, "out"): tone[k * F:(k + 1) * F]}, p)
+            if isinstance(d, dict) and k > n // 2 + 2:
+                rms.append(float(np.sqrt(np.mean(d["out_l"] ** 2))))
+        rms = np.array(rms)
+        assert rms.min() > 0.2 * rms.max()
 
 
 # ----- Integration -----------------------------------------------------------

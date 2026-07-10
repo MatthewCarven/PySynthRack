@@ -30,10 +30,20 @@ Living list of what's next. Edit freely.
         reading raw (bit-exact). Measured: band-limited saw +12 st −13→−25 dB
         alias, a folding 15 kHz tone's alias peak 0.86→0.11. 8 new tests
         (`TestAntialias`); suite 63 (resampler) / 1939 full.
+  - [x] **stereo detune spread** — done 2026-07-10. New `spread` param
+        (cents, default 0 = mono). Above 0 the module grows a detuned pair
+        `out_l`/`out_r` (centre ∓ spread/2 cents) off their own drifting
+        read heads → decorrelated stereo width from one mono source; `out`
+        stays the centre pitch. Refactored the read into a per-channel
+        helper (`_resampler_read_channel` + `ch`-suffixed seam state);
+        centre channel bit-identical (all prior tests pass). Return type is
+        the bare `out` array at spread 0 (drop-in mono) / `{out,out_l,out_r}`
+        above. 9 new tests (`TestStereoSpread`), an example patch; suite 72
+        (resampler) / 1948 full. **Resampler "love" arc complete** (cubic →
+        anti-alias → stereo spread).
   - [ ] **tape-stop / spin gesture** — a first-class momentary brake/spin-up
         with a proper deceleration curve (vs hand-automating semitones+glide).
-  - [ ] **stereo detune spread** — `out_l`/`out_r` with a small opposed
-        detune for one-module stereo thickening (chorus/tape-style).
+        The last open resampler idea.
 - [x] **Ctrl+zoom keys debounced** — done 2026-07-10. Ctrl+= / Ctrl+- / Ctrl+0
       were on `add_key_press_handler` and cycled at the OS key-repeat rate when
       held; now `_debounce_key` (shared `_held_keys` gate, cleared on release)
