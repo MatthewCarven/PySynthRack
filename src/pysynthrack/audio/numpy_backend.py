@@ -7464,7 +7464,7 @@ class NumpyBackend(AudioBackend):
         cv_depth = float(module.params.get("cv_depth", 12.0))
         mix = float(np.clip(float(module.params.get("mix", 1.0)), 0.0, 1.0))
         grain_ms = float(module.params.get("grain_size", 50.0))
-        overlap = max(1, min(8, int(module.params.get("overlap", 2))))
+        overlap = max(2, min(4, int(module.params.get("overlap", 2))))
         formant = bool(module.params.get("formant_preserve", False))
         Lg = max(8, int(round(grain_ms * 1e-3 * sr)))
 

@@ -18,10 +18,11 @@ Living list of what's next. Edit freely.
       a `dry_tap` ring clamp; `test_mix_is_phase_coherent_at_unison` (fails on
       the old comp at corr −0.007, passes now); suite 1886. Surfaced during the
       review, still open:
-  - [ ] pitch_shifter: reconcile the `overlap` range — the engine accepts
-        1..8 but the UI slider + docstring say 2..4 (open the UI to allow 1 for
-        a CPU-light mode, or clamp the engine to 2..4 to match the advertised
-        range).
+  - [x] pitch_shifter: reconcile the `overlap` range — done 2026-07-10.
+        Clamped the engine to 2..4 to match the UI slider + docstring (the
+        out-of-range values were only reachable via hand-edited JSON, and
+        overlap=1 was a degenerate no-overlap path). `test_overlap_clamped_to_2_4`
+        locks it (1 ≡ 2, 8 ≡ 4).
   - [ ] pitch_shifter enhancement ideas (offered as "love" directions
         2026-07-10, not started — the mix fix was chosen): a `feedback` path
         for octave-cascade **shimmer** (freq_shifter-style block-safe

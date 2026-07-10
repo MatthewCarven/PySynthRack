@@ -259,6 +259,19 @@ class TestMonoDSP:
                 assert np.all(np.isfinite(out))
                 assert _dominant_hz(out) == pytest.approx(880.0, rel=0.05)
 
+    def test_overlap_clamped_to_2_4(self):
+        # Documented range is 2..4 (the UI slider caps there); only hand-
+        # edited JSON can pass 1 or >4. Those clamp, so overlap=1 renders
+        # identically to 2 and overlap=8 identically to 4 -- the engine no
+        # longer takes the degenerate overlap=1 path (no grain overlap ->
+        # amplitude dips).
+        def render(ov):
+            patch, src, ps, _, b = _rig({"semitones": 7.0, "overlap": ov})
+            return _run(b, patch, src, ps, _tone(330.0))
+
+        assert np.array_equal(render(1), render(2))
+        assert np.array_equal(render(8), render(4))
+
 
 # ----- Voice DSP -------------------------------------------------------------
 

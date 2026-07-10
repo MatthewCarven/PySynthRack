@@ -4,6 +4,20 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-07-10 (follow-up) — pitch_shifter: honor the documented overlap range
+
+Tiny consistency fix surfaced in the review: the engine clamped `overlap`
+to 1..8 while the UI slider and docstring both say 2..4. The out-of-range
+values were only reachable via hand-edited JSON (the GUI caps at 2..4), and
+`overlap = 1` is degenerate (no grain overlap → amplitude dips). Tightened
+the clamp in `_pitch_shifter_core` to `max(2, min(4, ...))` so a stray JSON
+value snaps into range instead. New deterministic test
+`test_overlap_clamped_to_2_4` (overlap 1 ≡ 2 and 8 ≡ 4, bit-identical).
+Suite **1887 passed, 1 skipped**. No UI/docstring change needed — they were
+already right; the engine now matches them.
+
+---
+
 ## 2026-07-10 — pitch_shifter: phase-coherent dry/wet mix (exact latency comp)
 
 The pitch_shifter's dry/wet `mix` used an **approximate** latency
