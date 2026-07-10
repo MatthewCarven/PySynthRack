@@ -2484,28 +2484,37 @@ class App:
             self._apply_zoom(ZOOM_DEFAULT)
 
     def _on_zoom_wheel(self, sender, app_data) -> None:
+        # Ctrl+wheel zooms — but only over empty canvas. Over a param widget,
+        # Ctrl+wheel is the fine-adjust gesture (see _on_param_wheel), so yield.
         if not self._ctrl_down():
+            return
+        if self._hovered_param_widget() is not None:
             return
         self._apply_zoom(step_zoom(self._zoom, 1 if app_data > 0 else -1))
 
     def _on_param_wheel(self, sender, app_data) -> None:
-        """Bare mouse wheel over a param widget nudges its value.
+        """Mouse wheel over a param widget nudges its value.
 
-        Ctrl+wheel is the zoom gesture (its own handler), so this bails when
-        Ctrl is held. Otherwise it finds the hovered registered param widget
-        and steps it one notch — 1% of range for float sliders/drags (Shift =
-        10%), ±1 for int sliders (Shift = 10), next/previous option for a
-        combo, on/off for a checkbox — then pushes the value to the backend
-        through the normal param-changed path. ``app_data`` is the signed
-        wheel delta.
+        Finds the hovered registered param widget and steps it one notch —
+        the displayed-precision step for float sliders/drags, ±1 for int
+        sliders, next/previous option for a combo, on/off for a checkbox —
+        then pushes the value to the backend through the normal param-changed
+        path. Modifiers scale a float notch: **Shift = ×10 (coarse)**,
+        **Ctrl = ÷10 (fine)**. When the pointer is over a widget this takes
+        priority over the Ctrl+wheel zoom (which only fires over empty canvas).
+        ``app_data`` is the signed wheel delta.
         """
-        if self._ctrl_down():
-            return
         wid = self._hovered_param_widget()
         if wid is None:
             return
+        if self._ctrl_down():
+            mult = 0.1        # fine
+        elif self._shift_down():
+            mult = 10.0       # coarse
+        else:
+            mult = 1.0
         try:
-            self._nudge_param_widget(wid, app_data, self._shift_down())
+            self._nudge_param_widget(wid, app_data, mult)
         except Exception as exc:
             self._set_status(f"Scroll error: {exc}")
 
@@ -2528,8 +2537,9 @@ class App:
             self._param_widgets.pop(wid, None)
         return found
 
-    def _nudge_param_widget(self, wid, direction, coarse) -> None:
-        """Step one param widget by a wheel notch, dispatching on dpg type."""
+    def _nudge_param_widget(self, wid, direction, mult) -> None:
+        """Step one param widget by a wheel notch scaled by ``mult`` (1.0
+        normal, 10.0 coarse/Shift, 0.1 fine/Ctrl), dispatching on dpg type."""
         user_data = self._param_widgets[wid]
         wtype = dpg.get_item_info(wid).get("type", "")
         cfg = dpg.get_item_configuration(wid)
@@ -2547,14 +2557,14 @@ class App:
                 cur, direction,
                 min_value=cfg.get("min_value", cur),
                 max_value=cfg.get("max_value", cur),
-                is_int=True, coarse=coarse,
+                is_int=True, mult=mult,
             )
         elif wtype.endswith(("mvSliderFloat", "mvDragFloat", "mvInputFloat")):
             mn, mx = cfg.get("min_value"), cfg.get("max_value")
             if mn is None or mx is None or mn == mx:
                 return  # unbounded drag — no range to step within
             new = nudge_number(cur, direction, min_value=mn, max_value=mx,
-                               coarse=coarse,
+                               mult=mult,
                                decimals=decimals_from_format(cfg.get("format")))
         else:
             return  # text / path / unknown — not scrollable

@@ -4,6 +4,33 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-07-10 — scroll-to-adjust: Ctrl = fine (÷10), Shift = coarse (×10)
+
+Matthew wanted a fine-adjust modifier for scrolling a param (fine-tuning a
+`constant` CV and the resampler). Added **Ctrl = ÷10 (fine)** alongside the
+existing **Shift = ×10 (coarse)**; a bare notch is unchanged (displayed
+precision). Ctrl+wheel is also the zoom gesture, so the two are resolved by
+**hover priority: over a param widget Ctrl+wheel fine-adjusts that knob; over
+empty canvas it still zooms** (`_on_zoom_wheel` now yields when a param is
+hovered).
+
+The step math generalized from a `coarse` bool to a `mult` factor (1 / 10 /
+0.1). Fine can go below the displayed precision (e.g. cents "%.0f ct" → 0.1
+ct/notch), so the result is now rounded to whichever is finer of the display
+precision and the step (`_step_decimals`) — otherwise the fine nudge would be
+rounded straight back. Ints step by `round(mult)` floored at 1 (fine can't
+subdivide an int). Coarse is unchanged (still rounds to the display, keeping
+any fine offset). Handler side: `_on_param_wheel` maps the held modifiers to
+the mult; `_nudge_param_widget` passes it through.
+
+All numeric decisions stay in the dpg-free `ui/param_scroll.py` — 36 unit
+tests including the sub-display fine case and the coarse-keeps-offset case.
+Full suite **1926 passed, 1 skipped**. Real-window feel eyeball-pending — in
+particular confirm Ctrl+scroll over a knob fine-tunes (not zooms) and Ctrl+
+scroll over empty canvas still zooms.
+
+---
+
 ## 2026-07-10 — scroll-to-adjust: step by displayed precision, not blunt 1%
 
 Follow-up to the scroll-to-adjust feature: Matthew found some widgets jumped

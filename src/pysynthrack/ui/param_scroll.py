@@ -2,10 +2,11 @@
 
 Kept dpg-free so it unit-tests headless -- the ui/zoom.py + ui/buffer.py split.
 One mouse-wheel notch bumps a param by the least-significant digit its readout
-shows, snapped to a "nice" size near 1% of the range (Shift -> x10 coarse);
-integers step by 1 (Shift -> 10). The app.py wheel handler owns the dpg glue --
-finding the hovered widget, reading its min/max/format, writing the value back
--- while every numeric decision lives here where it can be tested.
+shows, snapped to a "nice" size near 1% of the range. Modifiers scale that
+step: Shift -> x10 (coarse), Ctrl -> /10 (fine). The app.py wheel handler owns
+the dpg glue -- finding the hovered widget, reading its min/max/format, mapping
+the held modifiers to a multiplier, writing the value back -- while every
+numeric decision lives here where it can be tested.
 """
 from __future__ import annotations
 
@@ -45,30 +46,41 @@ def scroll_step(min_value, max_value, decimals):
     return prec * (10.0 ** max(0, k))
 
 
+def _step_decimals(step):
+    """Decimal places needed to represent a power-of-ten ``step`` exactly
+    (0.001 -> 3, 0.01 -> 2, 1 -> 0, 100 -> 0). Robust to float error."""
+    nd = 0
+    s = abs(float(step))
+    while s < 1.0 - 1e-9 and nd < 12:
+        s *= 10.0
+        nd += 1
+    return nd
+
+
 def nudge_number(value, direction, *, min_value, max_value,
-                 is_int=False, coarse=False, decimals=None):
+                 is_int=False, mult=1.0, decimals=None):
     """``value`` nudged one wheel notch in ``direction`` (>0 up, <=0 down).
 
     A float widget with a known ``decimals`` (its readout precision) steps by
-    :func:`scroll_step` -- the displayed-digit size -- and the result is
-    rounded to that precision so it matches what the readout shows. Without
-    ``decimals`` (no parseable format) it falls back to 1% of the range.
-    Integers step by 1. ``coarse`` (Shift) multiplies the step by 10. The
-    result is clamped to the range regardless of bound order.
+    :func:`scroll_step` scaled by ``mult`` -- 1.0 normal, 10.0 coarse (Shift),
+    0.1 fine (Ctrl) -- and the result is rounded to whichever is finer of the
+    displayed precision and the step, so a fine (sub-digit) nudge survives the
+    round instead of snapping back. Without ``decimals`` it falls back to 1% of
+    the range x ``mult``. Integers step by ``round(mult)`` but never below 1
+    (fine can't subdivide an int). The result is clamped to the range.
     """
     d = 1.0 if direction > 0 else -1.0
     lo = float(min(min_value, max_value))
     hi = float(max(min_value, max_value))
     if is_int:
-        new = round(float(value)) + d * (10.0 if coarse else 1.0)
+        new = round(float(value)) + d * max(1, round(abs(mult)))
         return int(min(max(new, lo), hi))
     if decimals is None:
-        step = (hi - lo) / 100.0
-        new = float(value) + d * step * (10.0 if coarse else 1.0)
-        return float(min(max(new, lo), hi))
-    step = scroll_step(lo, hi, decimals) * (10.0 if coarse else 1.0)
+        step = (hi - lo) / 100.0 * mult
+        return float(min(max(float(value) + d * step, lo), hi))
+    step = scroll_step(lo, hi, decimals) * mult
     new = min(max(float(value) + d * step, lo), hi)
-    return round(new, max(0, int(decimals)))
+    return round(new, max(int(decimals), _step_decimals(step)))
 
 
 def cycle_index(index, direction, count):
