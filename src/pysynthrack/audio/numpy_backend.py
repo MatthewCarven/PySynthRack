@@ -44,7 +44,7 @@ import wave
 from typing import Any
 
 import numpy as np
-from scipy.signal import firwin, lfilter, resample_poly
+from scipy.signal import butter, firwin, lfilter, resample_poly, sosfilt
 
 from . import media
 from scipy.io import wavfile
@@ -7054,6 +7054,22 @@ class NumpyBackend(AudioBackend):
     # with crossfade runway to spare and cross-block drift can't skip
     # past the band).
     _RESAMP_EDGE_FRAC = 0.06
+    # Anti-alias (optional ``antialias`` toggle, off by default). Pitching
+    # up reads the ring faster than it's written, shifting source content
+    # above Nyquist where it folds back as aliasing (real tape is
+    # inherently band-limited and never does this). With the toggle on, the
+    # input is low-passed at Fs/(2*ratio) into a second ring the wet read
+    # uses on up-shifts, so nothing folds. This is the Butterworth order;
+    # the normalised cutoff (1/ratio) is floored to WN_MIN so the steepest
+    # up-shifts get partial AA in a numerically safe range rather than a
+    # degenerate filter (WN_MIN 0.05 -> full AA to ~+52 st, ratio ~20).
+    _RESAMP_AA_ORDER = 8
+    _RESAMP_AA_WN_MIN = 0.05
+    # Cut a little below the ideal Fs/(2*ratio) so the filter's transition
+    # band sits below Nyquist-after-scaling -- content that survives it then
+    # still lands in-band instead of folding. Costs a sliver of the topmost
+    # pitched-up octave for markedly less aliasing.
+    _RESAMP_AA_MARGIN = 0.85
 
     def _render_resampler(self, module, frames: int, buffers, patch) -> np.ndarray:
         """Varispeed pitch shifter: resample ``in`` at a pitch-derived rate.
@@ -7145,6 +7161,17 @@ class NumpyBackend(AudioBackend):
         mix sweep is a coherent blend with no slapback offset. ``mix=1``
         (the default) skips the dry read and is bit-identical to the
         wet-only render; ``mix=0`` is the delayed dry passthrough.
+
+        **Anti-alias (optional).** With the ``antialias`` param on, a
+        second ring holds the input low-passed at ``Fs/(2*ratio)``
+        (Butterworth), and the wet read samples *that* ring whenever the
+        block pitches up -- so source content that would shift past
+        Nyquist and fold back as aliasing is removed before the faster
+        read, the way tape's inherent band-limiting prevents it. Off by
+        default (the raw read keeps the lo-fi/tape character and every
+        existing render bit-for-bit). Unity and pitch-down keep reading
+        the raw ring, and the dry tap always does, so those bit-exact
+        paths are untouched; only the up-shift wet read changes.
         """
         V = src.shape[0]
         sr = self.sample_rate
@@ -7255,6 +7282,51 @@ class NumpyBackend(AudioBackend):
         np.clip(smoothed, -self._RESAMP_MAX_ST, self._RESAMP_MAX_ST, out=smoothed)
         ratio = np.exp2(smoothed / 12.0)   # (V, F) playback rate per sample
 
+        # --- optional anti-alias for pitch-up ---
+        # Reading faster than the write shifts source content above Nyquist,
+        # which folds back as aliasing; band-limiting the input *before* the
+        # faster read is the fix. Maintain a second ring of the input
+        # low-passed at Fs/(2*ratio) and read the wet signal from it on
+        # up-shifts. Off by default -> raw read, every existing render
+        # bit-for-bit. Pitch-down and unity keep reading the raw ring (so
+        # their bit-exact paths are untouched), and the dry tap below always
+        # reads raw. The seam-declick machinery is unchanged -- it just
+        # samples whichever ring ``read_buf`` points at.
+        read_buf = buf
+        if float(module.params.get("antialias", 0.0)) >= 0.5:
+            r_rep = max(1.0, float(ratio.max()))
+            # Normalised cutoff is 1/ratio; floor it so extreme up-shifts
+            # stay in a numerically safe Butterworth range (partial AA
+            # rather than a degenerate filter).
+            wn = min(
+                0.98,
+                max(self._RESAMP_AA_WN_MIN, self._RESAMP_AA_MARGIN / r_rep),
+            )
+            # Second-order-section form: high-order Butterworth in
+            # transfer-function form is ill-conditioned at low cutoffs
+            # (extreme up-shifts); sos stays numerically stable.
+            sos = butter(self._RESAMP_AA_ORDER, wn, btype="low", output="sos")
+            buf_aa = state.get("buf_aa")
+            if buf_aa is None or buf_aa.shape != (V, L):
+                # Seed from the raw ring so first use / a window change / a
+                # live toggle never punches a wet dropout -- the recent tail
+                # is present (unfiltered for one window, then all AA'd).
+                buf_aa = buf.copy()
+                state["aa_zi"] = np.zeros(
+                    (sos.shape[0], V, 2), dtype=np.float64
+                )
+            filt, state["aa_zi"] = sosfilt(
+                sos, src.astype(np.float64), axis=-1, zi=state["aa_zi"]
+            )
+            buf_aa[:, write_slots] = filt
+            state["buf_aa"] = buf_aa
+            if r_rep > 1.0 + 1e-9:
+                read_buf = buf_aa
+        else:
+            # AA off: drop the second ring so a later toggle-on re-seeds
+            # from the up-to-date raw ring instead of reading a stale gap.
+            state.pop("buf_aa", None)
+
         # --- read positions: cumulative integral of ratio ---
         cum = np.cumsum(ratio, axis=-1)
         excum = cum - ratio                 # exclusive cumsum (offset per sample)
@@ -7289,10 +7361,10 @@ class NumpyBackend(AudioBackend):
             jm1 = (head + np.clip(i0 - 1, 0, L - 1)) % L
             j2 = (head + np.clip(i0 + 2, 0, L - 1)) % L
             wet = _hermite4(
-                buf[rows, jm1],
-                buf[rows, (head + i0) % L],
-                buf[rows, (head + i0 + 1) % L],
-                buf[rows, j2],
+                read_buf[rows, jm1],
+                read_buf[rows, (head + i0) % L],
+                read_buf[rows, (head + i0 + 1) % L],
+                read_buf[rows, j2],
                 frac,
             )
             # Carry the read head as a lag behind the (new) write head.
@@ -7302,7 +7374,7 @@ class NumpyBackend(AudioBackend):
             new_delay = np.empty(V, dtype=np.float64)
             for v in range(V):
                 wet[v], new_delay[v] = self._resampler_voice_declick(
-                    state, v, buf[v], head, offs[v], ratio[v],
+                    state, v, read_buf[v], head, offs[v], ratio[v],
                     float(delay[v]), float(sum_ratio[v]),
                     frames, L, span, guard, x_nom,
                 )

@@ -833,6 +833,17 @@ class App:
                     user_data=user_data,
                 )
                 return
+            if param_name == "antialias":
+                # Off by default -> raw, aliased lo-fi up-shift. On ->
+                # band-limits the input so pitching up doesn't fold
+                # content past Nyquist (cleaner, less tape character).
+                dpg.add_checkbox(
+                    label=param_name,
+                    default_value=bool(current),
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
 
         if module.TYPE == "sweep_eq":
             # A single CV-swept resonant band (auto-wah / envelope filter).

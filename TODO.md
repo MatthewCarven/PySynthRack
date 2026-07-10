@@ -20,10 +20,16 @@ Living list of what's next. Edit freely.
       concentrated in the high end (1.5 kHz THD unchanged, 12 kHz downshift
       ~1.5× cleaner). 5 new tests (`TestInterpolation`); suite 55. Open
       follow-ups (offered as further "love", not started):
-  - [ ] **anti-alias on pitch-up** — a ratio-tracking low-pass so reading
-        faster doesn't fold source content past Nyquist. The bigger fidelity
-        lever, but it fights the lo-fi/tape identity → belongs behind a
-        `quality` or `antialias` toggle, not default-on.
+  - [x] **anti-alias on pitch-up** — done 2026-07-10. New `antialias`
+        toggle (default off, so lo-fi character + every existing render
+        preserved). On, the input is low-passed at `Fs/(2·ratio)` (8th-order
+        Butterworth, sos, 0.85 guard margin) into a *second ring* the up-shift
+        wet read samples — band-limiting before the faster read, the only
+        place that removes fold-over. Sidesteps the seam-declick core: the
+        read just samples a different ring; dry tap + pitch-down + unity keep
+        reading raw (bit-exact). Measured: band-limited saw +12 st −13→−25 dB
+        alias, a folding 15 kHz tone's alias peak 0.86→0.11. 8 new tests
+        (`TestAntialias`); suite 63 (resampler) / 1939 full.
   - [ ] **tape-stop / spin gesture** — a first-class momentary brake/spin-up
         with a proper deceleration curve (vs hand-automating semitones+glide).
   - [ ] **stereo detune spread** — `out_l`/`out_r` with a small opposed

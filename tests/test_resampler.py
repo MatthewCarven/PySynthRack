@@ -101,6 +101,24 @@ def _dominant_hz(y):
     return float(fr[spec.argmax()])
 
 
+def _bl_saw(freq, secs=1.5):
+    """Band-limited sawtooth (additive, harmonics kept below ~21 kHz), so
+    any aliasing in a pitch-up render is the resampler's, not the source's."""
+    t = np.arange(int(secs * SR))
+    y = np.zeros(len(t), dtype=np.float64)
+    k = 1
+    while freq * k < 21000.0:
+        y += np.sin(2 * np.pi * freq * k * t / SR) / k
+        k += 1
+    return (0.5 * y / np.max(np.abs(y))).astype(np.float32)
+
+
+def _render(params, sig, block=F):
+    """Convenience: build an osc->resampler rig and run ``sig`` through it."""
+    patch, src, rs, _, b = _rig(params, block=block)
+    return _run(b, patch, src, rs, sig, block=block)
+
+
 # ----- Model -----------------------------------------------------------------
 
 
@@ -115,6 +133,7 @@ class TestModel:
             "glide": 0.0,
             "mix": 1.0,
             "window": 200.0,
+            "antialias": False,
         }
 
     def test_ports_and_signal_kinds(self):
@@ -723,6 +742,106 @@ class TestInterpolation:
         p2, s2, r2, _, b2 = _rig({"semitones": -7.0})
         linear = thd(_run(b2, p2, s2, r2, tone))
         assert cubic < 0.85 * linear
+
+
+# ----- Anti-alias (pitch-up) -------------------------------------------------
+
+
+def _alias_ratio_saw(y, shifted_fund=4000.0):
+    """Energy off the true harmonics vs on them, for a pitched saw."""
+    yp = y[len(y) // 3:]
+    spec = np.abs(np.fft.rfft(yp * np.hanning(len(yp))))
+    fr = np.fft.rfftfreq(len(yp), 1.0 / SR)
+    harm = [shifted_fund * i for i in range(1, 6) if shifted_fund * i < SR / 2]
+    on = np.zeros_like(fr, dtype=bool)
+    for h in harm:
+        on |= np.abs(fr - h) < 40.0
+    alias = np.sqrt((spec[(fr > 200) & ~on] ** 2).sum())
+    sig = np.sqrt((spec[on] ** 2).sum())
+    return float(alias / (sig + 1e-9))
+
+
+class TestAntialias:
+    def test_default_off_and_roundtrip(self):
+        rs = Patch().add_module("resampler")
+        assert rs.params["antialias"] is False
+        patch = Patch()
+        patch.add_module("resampler", params={"antialias": True})
+        restored = Patch.from_dict(patch.to_dict())
+        r = next(m for m in restored if m.TYPE == "resampler")
+        assert r.params["antialias"] is True
+
+    def test_unity_bit_exact_with_aa_on(self):
+        # AA never engages at unity (ratio not > 1) -> the wet read stays on
+        # the raw ring, bit-identical to AA off (delayed passthrough intact).
+        sig = np.random.RandomState(31).randn(20 * F).astype(np.float32)
+        on = _render({"semitones": 0.0, "antialias": True}, sig)
+        off = _render({"semitones": 0.0, "antialias": False}, sig)
+        assert np.array_equal(on, off)
+
+    def test_pitch_down_unaffected(self):
+        # Pitching down can't fold content past Nyquist, so AA doesn't
+        # engage; on == off bit-for-bit.
+        sig = np.random.RandomState(32).randn(20 * F).astype(np.float32)
+        on = _render({"semitones": -7.0, "antialias": True}, sig)
+        off = _render({"semitones": -7.0, "antialias": False}, sig)
+        assert np.array_equal(on, off)
+
+    def test_reduces_pitch_up_alias_folding_tone(self):
+        # 15 kHz pitched up an octave lands at 30 kHz (> Nyquist): it should
+        # vanish, but un-antialiased it folds back to ~14 kHz near full
+        # level. AA removes the source content before the faster read.
+        tone = _tone(15000.0, 1.5)
+        off = _render({"semitones": 12.0, "antialias": False}, tone)
+        on = _render({"semitones": 12.0, "antialias": True}, tone)
+        poff = float(np.abs(off[len(off) // 3:]).max())
+        pon = float(np.abs(on[len(on) // 3:]).max())
+        assert poff > 0.7            # the fold is nearly the whole signal
+        assert pon < 0.4 * poff      # AA collapses it (measured ~0.13x)
+
+    def test_reduces_pitch_up_alias_saw(self):
+        # A band-limited saw pitched up an octave folds its upper harmonics;
+        # AA markedly lowers the off-harmonic (alias) energy.
+        saw = _bl_saw(2000.0, 1.5)
+        off = _alias_ratio_saw(_render({"semitones": 12.0, "antialias": False}, saw))
+        on = _alias_ratio_saw(_render({"semitones": 12.0, "antialias": True}, saw))
+        assert on < 0.5 * off        # measured ~0.28x (-13.4 -> -24.4 dB)
+
+    def test_pitch_up_finite_bounded_at_extremes(self):
+        # The sos low-pass stays stable (finite, bounded) even at the cutoff
+        # floor reached by extreme up-shifts.
+        for st in (12.0, 24.0, 48.0, 60.0):
+            patch, src, rs, _, b = _rig({"semitones": st, "antialias": True})
+            rng = np.random.RandomState(7)
+            for _ in range(120):
+                blk = (rng.randn(F) * 0.3).astype(np.float32)
+                out = b._render_resampler(rs, F, {(src.id, "out"): blk}, patch)
+                assert np.all(np.isfinite(out))
+                assert np.abs(out).max() <= 1.5
+
+    def test_voice_matches_mono(self):
+        sig = np.random.RandomState(33).randn(30 * F).astype(np.float32)
+        mono = _render({"semitones": 12.0, "antialias": True}, sig)
+        p, s, r, _, b = _rig({"semitones": 12.0, "antialias": True})
+        voice = _run(b, p, s, r, np.tile(sig, (2, 1)))
+        assert np.array_equal(voice[0], mono)
+        assert np.array_equal(voice[0], voice[1])
+
+    def test_toggle_live_no_dropout(self):
+        # Flipping AA on mid-stream during a pitch-up must not punch a wet
+        # dropout: the second ring is seeded from the raw ring, not zeros.
+        patch, src, rs, _, b = _rig({"semitones": 12.0, "antialias": False})
+        tone = _tone(2000.0, 2.0)
+        n = len(tone) // F
+        rms = []
+        for k in range(n):
+            if k == n // 2:
+                rs.params["antialias"] = True
+            out = b._render_resampler(rs, F, {(src.id, "out"): tone[k * F:(k + 1) * F]}, patch)
+            if k > n // 4:
+                rms.append(float(np.sqrt(np.mean(out ** 2))))
+        rms = np.array(rms)
+        assert rms.min() > 0.2 * rms.max()   # no block collapses at the toggle
 
 
 # ----- Integration -----------------------------------------------------------

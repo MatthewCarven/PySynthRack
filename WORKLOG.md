@@ -6859,3 +6859,61 @@ downshift's THD measurably worsens, proving the module routes through the
 cubic read). `tests/test_resampler.py` 50 → 55, all green. Docs: MODULES.md
 + the `_render_resampler_core` docstring updated linear → cubic. Commit is
 Matthew's to run.
+
+## 2026-07-10 — resampler: anti-alias on pitch-up (the follow-up ships)
+
+Matthew took the follow-up from the cubic session. Pitching *up* reads the
+ring faster than it's written, shifting source highs above Nyquist where
+they fold back as aliasing (real tape is inherently band-limited and never
+does this). Measured baseline: a band-limited saw +12 st sits at −13 dB
+alias/harmonics; a 15 kHz tone +12 st (→30 kHz, should vanish) folds back
+to 14 kHz at essentially full level (peak 0.86).
+
+**Approach — band-limit before the read, in a second ring.** Aliasing folds
+*at* the decimating read, so it has to be removed *before* it (post-filtering
+can't un-fold). New `antialias` toggle (bool, default **off** — house
+`through_zero`/flanger convention, `float(...) >= 0.5` in the engine): when
+on, the input is low-passed at `Fs/(2·ratio)` into a **second ring**
+`buf_aa`, and the wet read samples that ring whenever the block pitches up.
+Chosen over the alternatives (variable windowed-sinc; running the read at M×
+oversample) precisely because it **leaves the delicate seam-declick core
+untouched** — the fast path and the declick voice loop just receive
+`read_buf` (= `buf_aa` on up-shift, else the raw `buf`) instead of a
+hardcoded buffer. The dry tap always reads raw; unity and pitch-down keep
+`read_buf = buf` (gated on `ratio.max() > 1`), so all their bit-exact paths
+are untouched — the 55 prior tests pass unchanged with AA off *and* AA on at
+unity is bit-identical to AA off.
+
+**Filter.** 8th-order Butterworth in **sos** form (transfer-function form is
+ill-conditioned at the low cutoffs of extreme up-shifts — its a-coeffs hit
+~46; sos is stable, identical output), cross-block `zi` carried in state
+(exact on static ratio, minor transient on a glide — acceptable). Two tuning
+levers past raw order: the cutoff carries a **0.85 guard margin**
+(`_RESAMP_AA_MARGIN`) so the filter's transition band sits below
+Nyquist-after-scaling — content that survives it lands in-band instead of
+folding, which mattered more than order beyond ~6; and a **Wn floor**
+(`_RESAMP_AA_WN_MIN` 0.05) keeps the steepest up-shifts (past ~+52 st) in a
+safe range with partial AA rather than a degenerate filter. Result: saw
++12 st −13 → −25 dB; the 15 kHz fold peak 0.86 → 0.11 (end-to-end through
+`render_block` too, saw_wt source: −12.6 → −25.2 dB, finite/bounded).
+
+**No-dropout on toggle / window change.** `buf_aa` is **seeded from the raw
+ring** (`buf.copy()`) whenever it's missing or the wrong shape — so a live
+toggle-on, a window resize, or a reinit never punches a wet dropout (the
+recent tail is already there, unfiltered for one window then all AA'd). When
+AA is off the second ring is dropped (`state.pop`) so a later toggle-on
+re-seeds from the *up-to-date* raw ring rather than a stale gap.
+
+Tests: 8 new in `TestAntialias` — default-off + JSON round-trip; unity
+bit-exact with AA on; pitch-down on==off bit-for-bit (gating); folding-tone
++ band-limited-saw alias reduction; finite/bounded at extreme up-shifts (sos
+stability); voice-row == mono; live-toggle no-dropout. `test_resampler`
+55 → 63; full suite 1939 pass / 1 skip. Docs: module docstring (top +
+params), `_render_resampler_core` docstring, MODULES.md (param row + an
+anti-alias paragraph), and an `antialias` checkbox in the resampler UI
+block (app.py, `through_zero` precedent). Constants `_RESAMP_AA_ORDER` /
+`_MARGIN` / `_WN_MIN` next to the seam-declick ones. Commit is Matthew's to
+run.
+
+Follow-ups still open (from the cubic session): tape-stop/spin gesture;
+stereo detune spread (`out_l`/`out_r`).

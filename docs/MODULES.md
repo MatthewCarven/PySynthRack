@@ -749,6 +749,7 @@ and lo-fi tape effects.
 | `glide` | `0.0` | 0 … 5 s | Portamento time for pitch changes (0 = instant). |
 | `mix` | `1.0` | 0 … 1 | Dry/wet blend. The dry tap is latency-compensated to line up with unity-pitch wet, so the blend is coherent (no slapback). |
 | `window` | `200.0` | 20 … 2000 ms | Looping-buffer window. Latency is half of it, so shorter = tighter live latency but a stronger loop texture; longer = subtler texture on big shifts. Floored at 4 audio blocks; live changes keep the recent audio (no dropout). |
+| `antialias` | `False` | off / on | Off = raw, aliased **lo-fi** up-shift (the default character). On = band-limit the input before the read so **pitching up** doesn't fold content past Nyquist into aliasing (a cleaner up-shift). Pitch-down and unity never fold, so they're unaffected; the dry side of `mix` stays full-band. |
 
 **How it works.** Pitch is summed in semitone space
 (`st = semitones + cents/100 + cv_depth · pitch_cv`), optionally glided
@@ -782,6 +783,18 @@ is shape-polymorphic like [Filter](#filter) / [Crossover](#crossover):
 a mono input runs one buffer, a voice-aware `(V, F)` input runs V
 independent buffers with per-voice read heads (a single voice row is
 bit-identical to the mono render).
+
+**Anti-alias (`antialias`, off by default).** Pitching *up* reads the
+buffer faster than it's written, which shifts the source's high content
+above Nyquist, where it folds back down as aliasing — real tape never
+does this because it's inherently band-limited. With the toggle on, the
+input is low-passed at `Fs/(2·ratio)` (a Butterworth, into a second ring
+the up-shift wet read samples), so nothing folds and up-shifts stay
+clean — e.g. a band-limited saw up an octave drops from ≈ −13 dB alias
+to ≈ −25 dB. It's a deliberate switch, not a default: off keeps the raw,
+aliased lo-fi grit that suits the sci-fi/tape character. Pitching down
+and unity can't fold, so they read the raw ring untouched (and stay
+bit-exact); the dry side of `mix` always stays full-band.
 
 For pitch shifting that keeps the *speed* fixed you'd want a granular
 or phase-vocoder engine — a heavier build for later. This one is

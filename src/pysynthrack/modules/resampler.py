@@ -44,6 +44,15 @@ unity-pitch wet signal, so sweeping the mix blends coherently instead
 of adding a slapback echo — at 50% with a small detune you get
 instant chorus-style thickening in one module.
 
+``antialias`` (off by default) is the clean-vs-gritty switch for
+*pitching up*. Reading the buffer faster than it's written shifts the
+source's highs past Nyquist, where they fold back as aliasing — real
+tape never does this because it's inherently band-limited. Turn it on
+and the input is low-passed to match the shift before the read, so
+up-shifts stay clean; leave it off to keep the raw, aliased lo-fi
+character that suits the sci-fi/tape sound. Pitching down and unity
+never fold, so they're untouched either way.
+
 Use cases:
   * Transpose a sample/loop from the FilePlayer — turn one hit into a
     melodic run by sequencing ``pitch_cv``.
@@ -100,6 +109,13 @@ class Resampler(Module):
             shifts; longer = subtler texture, more latency. Floored at
             four audio blocks. Changing it live keeps the most recent
             audio, so a slider drag doesn't drop out.
+        antialias: Off (0) by default. When on (1), band-limits the
+            input before the read so **pitching up** doesn't fold source
+            content past Nyquist into aliasing -- a cleaner up-shift, at
+            the cost of the raw/lo-fi character (leave it off for the
+            gritty tape/sci-fi sound). Pitch-down and unity are
+            unaffected (nothing folds there); the dry side of ``mix``
+            stays full-band.
 
     Ports:
         in (in, audio): signal to transpose. Unpatched -> silence.
@@ -116,6 +132,7 @@ class Resampler(Module):
         "glide": 0.0,
         "mix": 1.0,
         "window": 200.0,
+        "antialias": False,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),
