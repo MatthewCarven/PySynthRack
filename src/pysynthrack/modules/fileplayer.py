@@ -39,6 +39,17 @@ Parameters:
         the same spot. Driven by the node's Play / Stop buttons (Rewind
         seeks to 0:00 whether playing or paused, without touching this
         param). Contrast with ``armed``, which parks at the start.
+    playlist: An ordered queue of file paths that play *after* the current
+        ``path``. When a one-shot track (``loop`` False) reaches its end,
+        the GUI pops the head of this list into ``path`` and it plays from
+        the top — so the module works as a simple gapless playlist. Each
+        track is removed as it starts, so the queue drains to empty and the
+        player then falls silent (parked at the last track's end). A player
+        started with an empty ``path`` but a non-empty queue kicks off the
+        first queued track automatically. The auto-advance is a GUI
+        behaviour (see ``ui/app.py``); the renderer itself only ever sees a
+        single ``path`` change, exactly as if you had Browsed a new file.
+        Ignored while ``loop`` is True (a looping track never ends).
 """
 from __future__ import annotations
 
@@ -58,6 +69,10 @@ class FilePlayer(Module):
         "loop": False,
         "armed": True,
         "playing": True,
+        # Ordered queue of paths that auto-advance into ``path`` as each
+        # one-shot track ends (see the class docstring). A fresh list is
+        # given to every instance by Module.__init__ (mutable-default copy).
+        "playlist": [],
     }
     INPUT_PORTS: list[Port] = []  # source — no inputs
     OUTPUT_PORTS = [

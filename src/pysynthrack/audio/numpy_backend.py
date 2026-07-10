@@ -7964,6 +7964,38 @@ class NumpyBackend(AudioBackend):
         if state is not None and self._state_types.get(module_id) == "file_player":
             state["seek"] = 0
 
+    def file_player_finished(self, module_id: int) -> bool:
+        """UI hook: True once a one-shot ``file_player`` has run off its end.
+
+        The GUI polls this each frame to auto-advance a queued playlist — a
+        False→True transition means the current track just finished, so the
+        node should load its next queued file. Returns False for a looping
+        player (its playhead wraps modulo the length and never lands past
+        the total), an unarmed one (parked at 0), an empty/unreadable path
+        (no decoder, or a failed one), or a track still mid-file or
+        mid-decode.
+
+        Reads audio-thread state without the lock: the int/bool reads are
+        atomic under the GIL and a block-late answer only delays the queue
+        poke by one block, which is inaudible.
+        """
+        if self._state_types.get(module_id) != "file_player":
+            return False
+        state = self._state.get(module_id)
+        if not state:
+            return False
+        decoder = state.get("decoder")
+        if decoder is None or decoder.failed or not decoder.done:
+            return False
+        total = int(decoder.total_frames)
+        if total <= 0:
+            return False
+        # A one-shot parks at pos == total_frames; a loop wraps modulo total
+        # so its pos is always < total; disarming resets pos to 0. So
+        # ``pos >= total`` means exactly "a non-looping, armed track ran off
+        # the end" without having to re-read the loop/armed params here.
+        return int(state.get("pos", 0)) >= total
+
     def wait_for_file_decodes(self, timeout: float = 10.0) -> bool:
         """Block until every file_player decode finishes. Tests/offline only.
 

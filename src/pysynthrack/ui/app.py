@@ -127,9 +127,12 @@ class App:
         # built; stale ids (deleted nodes) are pruned lazily on scroll.
         self._param_widgets: dict[int, tuple[int, str]] = {}
 
-        # The file_player node whose Browse button was last clicked, so the
-        # shared WAV file dialog's callback knows which module to update.
+        # The file_player node whose Browse / Add-to-list button was last
+        # clicked, so the shared WAV file dialog's callback knows which
+        # module to update, and whether to set ``path`` ("path") or append
+        # to the queue ("playlist").
         self._wav_target_id: Optional[int] = None
+        self._wav_target_mode: str = "path"
 
         # The midi_input whose Calibrate-keys dialog is open, plus the
         # last stopped-but-not-yet-computed learn capture (Learn -> Stop
@@ -183,6 +186,13 @@ class App:
         # tag showing 'elapsed / total'; refreshed each frame in
         # _update_file_positions from the backend's snapshot hook.
         self._file_pos_labels: dict[int, int] = {}
+        # FilePlayer queue ("file list"). ``_playlist_listboxes`` maps
+        # module_id -> the dpg listbox tag showing the upcoming tracks;
+        # ``_fileplayer_prev_finished`` remembers each player's last
+        # 'finished' state so _advance_file_playlists can edge-trigger the
+        # auto-advance (one pop per track end, not one per frame).
+        self._playlist_listboxes: dict[int, int] = {}
+        self._fileplayer_prev_finished: dict[int, bool] = {}
 
     # ----- entry point ----------------------------------------------------
 
@@ -225,6 +235,7 @@ class App:
                 self._update_audio_meters()
                 self._update_dsp_load()
                 self._update_file_positions()
+                self._advance_file_playlists()
                 self._update_velocity_capture()
                 dpg.render_dearpygui_frame()
                 if _crash_test_after is not None:
@@ -448,6 +459,10 @@ class App:
                     self._build_fader_seq_panel(module)
             else:
                 for param_name, default in module.DEFAULT_PARAMS.items():
+                    # file_player's queue is not a scalar widget — it gets a
+                    # dedicated listbox + Add/Clear panel in the block below.
+                    if module.TYPE == "file_player" and param_name == "playlist":
+                        continue
                     with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                         self._add_param_widget(module, param_name, default)
                         wid = dpg.last_item()
@@ -483,6 +498,31 @@ class App:
                         )
                         label = dpg.add_text("0:00 / 0:00")
                         self._file_pos_labels[module.id] = label
+                # File list / queue: tracks here auto-play (then drop off the
+                # list) as each one-shot finishes. 'Add to list...' reuses the
+                # same WAV picker as Browse; Clear empties the queue.
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                    dpg.add_text(
+                        "Up next (plays then leaves the list):",
+                        color=(170, 170, 170),
+                    )
+                    lb = dpg.add_listbox(
+                        items=self._playlist_display_items(module),
+                        num_items=4,
+                        width=200,
+                    )
+                    self._playlist_listboxes[module.id] = lb
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(
+                            label="Add to list...",
+                            callback=self._show_wav_dialog,
+                            user_data=(module.id, "playlist"),
+                        )
+                        dpg.add_button(
+                            label="Clear",
+                            callback=self._on_clear_playlist,
+                            user_data=module.id,
+                        )
 
             # Meter: one dBFS level display (-90..0) per channel, driven
             # each frame from the backend's indicator triples. Each is a
@@ -1882,26 +1922,56 @@ class App:
             dpg.set_value(tag, playing)
 
     def _show_wav_dialog(self, sender, app_data, user_data) -> None:
-        """A FilePlayer Browse button was clicked: open the WAV picker."""
-        self._wav_target_id = user_data  # module id
+        """A FilePlayer Browse / Add-to-list button was clicked: open the
+        shared WAV picker.
+
+        ``user_data`` is the module id (Browse — set the ``path`` param) or
+        a ``(module_id, "playlist")`` tuple (Add to list — append to the
+        queue). The mode is stashed for _on_wav_selected to read back.
+        """
+        if isinstance(user_data, tuple):
+            self._wav_target_id, self._wav_target_mode = user_data
+        else:
+            self._wav_target_id, self._wav_target_mode = user_data, "path"
         if dpg.does_item_exist("wav_dialog"):
             dpg.show_item("wav_dialog")
 
     def _on_wav_selected(self, sender, app_data) -> None:
-        """Apply the picked WAV path to the FilePlayer that requested it."""
+        """Apply the picked WAV(s) to the FilePlayer that requested them —
+        either as the current ``path`` or appended to its queue."""
         module_id = self._wav_target_id
+        mode = self._wav_target_mode
         self._wav_target_id = None
+        self._wav_target_mode = "path"
         if module_id is None:
             return
         selections = app_data.get("selections", {})
         if selections:
-            path = next(iter(selections.values()))
+            paths = [p for p in selections.values() if p]
         else:
-            path = app_data.get("file_path_name")
-        if not path:
+            one = app_data.get("file_path_name")
+            paths = [one] if one else []
+        if not paths:
             return
-        # Same mutation path as typing into the field; the renderer
-        # re-decodes on the next block because the path param changed.
+
+        if mode == "playlist":
+            module = self.patch.modules.get(module_id)
+            if module is None:
+                return
+            queue = module.params.get("playlist")
+            if not isinstance(queue, list):
+                queue = []
+                module.params["playlist"] = queue
+            queue.extend(paths)
+            self._refresh_playlist_display(module_id)
+            self._set_status(
+                f"Queued {len(paths)} file(s) — {len(queue)} in the list"
+            )
+            return
+
+        # "path" mode: same mutation path as typing into the field; the
+        # renderer re-decodes on the next block because the path changed.
+        path = paths[0]
         try:
             self.backend.set_param(module_id, "path", path)
         except Exception as exc:
@@ -1911,6 +1981,89 @@ class App:
         if dpg.does_item_exist(text_tag):
             dpg.set_value(text_tag, path)
         self._set_status(f"Selected: {os.path.basename(path)}")
+
+    # ----- file_player queue ("file list") ---------------------------------
+
+    @staticmethod
+    def _playlist_display_items(module) -> list[str]:
+        """The queue as listbox rows: basenames of the pending paths."""
+        queue = module.params.get("playlist") or []
+        return [os.path.basename(p) for p in queue]
+
+    def _refresh_playlist_display(self, module_id: int) -> None:
+        """Repaint a FilePlayer's queue listbox from its ``playlist`` param."""
+        tag = self._playlist_listboxes.get(module_id)
+        if tag is None or not dpg.does_item_exist(tag):
+            return
+        module = self.patch.modules.get(module_id)
+        items = self._playlist_display_items(module) if module else []
+        dpg.configure_item(tag, items=items)
+
+    def _on_clear_playlist(self, sender, app_data, user_data) -> None:
+        """Clear button: empty a FilePlayer's queue (the current track keeps
+        playing; only the pending list is dropped)."""
+        module_id = user_data
+        module = self.patch.modules.get(module_id)
+        if module is None:
+            return
+        module.params["playlist"] = []
+        self._refresh_playlist_display(module_id)
+        self._set_status("Queue cleared")
+
+    def _advance_file_playlists(self) -> None:
+        """Auto-advance each FilePlayer queue once per frame.
+
+        A one-shot track that just reached its end (rising edge of the
+        backend's ``file_player_finished``) pops the head of the queue into
+        ``path`` and rolls on; an empty queue leaves the player parked at the
+        end (silence). As a convenience, a running player sitting on an empty
+        ``path`` with a non-empty queue is kick-started so a fresh 'file
+        list' plays without a manual Browse first. Backends without the hook
+        (the pyo stub) no-op.
+        """
+        if not self._playlist_listboxes:
+            return
+        finished = getattr(self.backend, "file_player_finished", None)
+        if finished is None:
+            return
+        running = self.backend.is_running
+        for module_id in list(self._playlist_listboxes):
+            module = self.patch.modules.get(module_id)
+            if module is None:
+                continue
+            try:
+                now_finished = bool(finished(module_id))
+            except Exception:
+                now_finished = False
+            was_finished = self._fileplayer_prev_finished.get(module_id, False)
+            self._fileplayer_prev_finished[module_id] = now_finished
+            if not (module.params.get("playlist") or []):
+                continue
+            current = str(module.params.get("path") or "")
+            if (now_finished and not was_finished) or (running and not current):
+                self._advance_playlist(module_id)
+
+    def _advance_playlist(self, module_id: int) -> None:
+        """Pop the next queued file into a FilePlayer and let it play."""
+        module = self.patch.modules.get(module_id)
+        if module is None:
+            return
+        queue = module.params.get("playlist")
+        if not queue:
+            return  # nothing queued: stay parked at the end (silence)
+        next_path = queue.pop(0)
+        try:
+            # Same mutation path as Browse/typing; the renderer re-decodes
+            # and restarts from 0:00 because the path param changed.
+            self.backend.set_param(module_id, "path", next_path)
+        except Exception as exc:
+            self._set_status(f"Queue error: {exc}")
+            return
+        text_tag = f"fileplayer_path_{module_id}"
+        if dpg.does_item_exist(text_tag):
+            dpg.set_value(text_tag, next_path)
+        self._refresh_playlist_display(module_id)
+        self._set_status(f"Queue → {os.path.basename(next_path)}")
 
     # ----- device refresh ---------------------------------------------------
 
@@ -2305,6 +2458,11 @@ class App:
             if module_id is None:
                 continue
             self._module_to_node.pop(module_id, None)
+            # Drop any per-module file_player bookkeeping so a deleted queue
+            # stops being polled (and its listbox tag isn't reused stale).
+            self._file_pos_labels.pop(module_id, None)
+            self._playlist_listboxes.pop(module_id, None)
+            self._fileplayer_prev_finished.pop(module_id, None)
             # Drop any cables touching this module — both in our maps and in
             # the editor visual. ``patch.remove_module`` handles the model.
             for lid, cab in list(self._link_to_cable.items()):
@@ -2804,6 +2962,8 @@ class App:
         self._meter_bounds.clear()
         self._audio_meter_bars.clear()
         self._file_pos_labels.clear()
+        self._playlist_listboxes.clear()
+        self._fileplayer_prev_finished.clear()
         # Reset the cascade so a fresh-loaded patch (with no saved positions)
         # starts laying out from the top-left again.
         self._next_node_pos = [40, 40]

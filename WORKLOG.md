@@ -6972,3 +6972,87 @@ drag-float in the resampler UI block, and a new
 That closes the resampler "love" arc: **cubic Hermite read → anti-alias on
 pitch-up → stereo detune spread.** One idea remains parked: a first-class
 tape-stop / spin gesture.
+
+## 2026-07-10 — FilePlayer: a file list / queue that auto-advances
+
+Matthew asked for a "file list" component that feeds the FilePlayer — when
+the current track finishes, load the next from the list and remove it — with
+an Add button, reusing the Browse dialog if easy.
+
+**Design fork, asked up front.** Cables here only carry audio/CV between
+ports, so a *path* can't be a signal a separate node cables in. The two
+shapes that actually fit: (A) extend FilePlayer with a queue, or (C) a
+standalone `file_list` source node that plays through a queue (like
+`fader_seq` reuses the sequencer engine). Asked; Matthew picked **A — extend
+FilePlayer**, and **stop/silence when the list empties** (over loop-the-list
+or hold-last). So no new node type; the queue lives on the player.
+
+**Model.** New `playlist` param on FilePlayer — an ordered `list[str]` of
+paths, default `[]`. That default is *mutable*, and `Module.__init__` only
+deep-copied dict-valued defaults (velocity_curve), so every player would have
+shared one class-level list. Extended the per-instance copy to also `list(...)`
+list defaults — a general correctness fix (no module had a list default
+before, so nothing else changes). `playlist` round-trips for free via
+`to_dict`/`from_dict`.
+
+**Finish signal.** Auto-advance needs a clean "this one-shot just ended"
+edge. `snapshot_file_positions` gives `(elapsed, total)` but not *done*, and
+elapsed transiently equals total on a mid-file underrun — a false end. Added
+`NumpyBackend.file_player_finished(mid)`: True iff the decoder is `done`, not
+`failed`, `total_frames > 0`, and `pos >= total_frames`. That's exactly "a
+non-looping, armed track ran off the end" thanks to renderer invariants — a
+loop wraps `pos` modulo the length (never ≥ total) and disarming resets `pos`
+to 0 — so no need to re-read `loop`/`armed` here. Lock-free (atomic int/bool
+reads under the GIL; a block-late answer just delays the queue poke one
+block). pyo backend has no file playback, so it simply lacks the hook.
+
+**GUI glue.** The advance is UI-driven, matching how the app already polls
+the backend each frame (meters, DSP load, playhead). New
+`_advance_file_playlists` runs once per frame:
+  * **edge-triggered** — it stores each player's last `finished` and only
+    acts on the False→True transition. Critical: after we set `path` to the
+    next track, the audio thread takes ~a block to rebuild state, so
+    `finished` stays True for a frame or two; a level trigger would eat the
+    whole queue in three frames. (`test_advance_is_edge_triggered_not_per_frame`
+    pins this by ticking three times with no render between — exactly one hop.)
+  * **advance** — pop the head of `playlist` into `path` via `backend.set_param`
+    (same mutation Browse/typing use; the renderer re-decodes and restarts at
+    0:00 because the path changed), repaint the field + listbox, status line.
+  * **empty queue** — do nothing; the one-shot stays parked at its end
+    (silence), which *is* the "stop when empty" Matthew chose.
+  * **kick-start** — a *running* player sitting on an empty `path` with a
+    non-empty queue loads its first track, so a fresh file list plays without
+    a manual Browse first. Gated on `is_running` so a queue built while
+    stopped isn't consumed before Start.
+
+**Node UI.** Under the transport row: an **Up next** listbox (basenames),
+**Add to list...**, and **Clear**. Add reuses the one shared `wav_dialog` —
+`_show_wav_dialog` now takes a mode (`(mid, "playlist")` tuple vs bare `mid`),
+and `_on_wav_selected` either sets `path` or appends to the queue. `playlist`
+is skipped in the generic param-widget loop (it'd render a broken control) and
+drawn as this dedicated panel instead. Per-module bookkeeping
+(`_playlist_listboxes`, `_fileplayer_prev_finished`) is cleared on load and,
+newly, pruned on single-node delete (the existing code left `_file_pos_labels`
+to the recompile-prunes-the-snapshot trick; I pruned all three there).
+
+**Tests.** +2 in `test_file_player` (playlist in default params; fresh-list-
+per-instance; to/from_dict round-trip), +5 `TestFinishedHook` (not finished at
+0:00 / mid-file; True once run off the end; loop never finishes; not-while-
+decoding; missing-path and unknown-id both False). New
+`tests/test_file_player_queue.py` drives the **GUI glue headless** — builds a
+real `App` (dpg mocked out, numpy backend forced in) against real WAVs and
+renders blocks to consume tracks: advance-and-remove, empty-queue-stops,
+edge-not-per-frame, and kickstart-only-when-running. `pytest.importorskip`
+guards the one GUI-touching module so a headless CI without dpg skips it
+cleanly. Full suite **1959 pass / 1 skip**.
+
+**Verified** end-to-end headlessly (the App advance loop actually drains a
+2–3 track queue against a live decode). **Not** verified: the real window —
+listbox/buttons layout and the Add picker are DPG-only, no headless path
+builds the node. That eyeball is meatthread0's, same as the other recent
+shipped-pending-eyeball features. Commit is Matthew's to run.
+
+Known edges left as TODO follow-ups: a queued file that fails to decode
+stalls the queue (loads silence, never "finishes", so no advance) — acceptable
+as stop-ish for v1, could auto-skip; and only whole-list Clear exists, no
+single-item Remove/reorder yet.

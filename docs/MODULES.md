@@ -431,6 +431,18 @@ steady-state playback is an in-memory array slice — no per-block disk I/O.
 | `loop` | `false` | bool | `true` repeats seamlessly; `false` (default) plays once then silence until restart/re-arm. |
 | `armed` | `true` | bool | `false` outputs silence and parks the playhead at the start, so re-arming replays from the top. |
 | `playing` | `true` | bool | Tape-transport pause: `false` holds the playhead in place (silent); `true` resumes from the same spot. Driven by the node's **Play**/**Stop** buttons. |
+| `playlist` | `[]` | list of paths | Queue of files that auto-play (then drop off the list) after `path` — see **File list** below. Round-trips with the patch; edited via the node's list, not typed. |
+
+**File list (queue).** Under the transport row the node carries a
+**file list**: an **Up next** listbox with **Add to list...** (same picker as
+**Browse...**) and **Clear**. When a one-shot track (`loop` off) reaches its
+end, the head of the list loads into `path` and plays from 0:00 — and is
+removed from the list — so the player works as a simple gapless playlist that
+drains to empty and then falls silent. A player left on an empty `path` with a
+queued list kicks off its first track automatically once audio is running (no
+initial **Browse...** needed). Auto-advance is a GUI behaviour; the engine only
+ever sees an ordinary `path` change. (`loop` on = the current track repeats and
+the queue never advances.)
 
 **Transport.** The node carries tape-style buttons: **Play** resumes,
 **Stop** pauses in place (both drive the `playing` param and its checkbox),

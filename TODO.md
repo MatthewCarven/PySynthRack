@@ -9,6 +9,27 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **FilePlayer — file list / queue** — done 2026-07-10 (Matthew picked
+      "extend FilePlayer" over a standalone node, and "stop when empty" over
+      loop/hold). New `playlist` param (ordered list of paths). The node grows
+      an **Up next** listbox + **Add to list...** (reuses the WAV picker) +
+      **Clear**. When a one-shot track ends, `_advance_file_playlists` (a
+      per-frame GUI poll, edge-triggered off the new `NumpyBackend.file_player_finished`)
+      pops the head into `path`, plays it from 0:00, and removes it — draining
+      to silence. Empty-path + queue kick-starts once running. Engine only ever
+      sees an ordinary `path` change; `playlist` round-trips with the patch (list
+      mutable-defaults now copied per-instance in `Module.__init__`). Tests:
+      +2 in `test_file_player` (default/serialize), +5 `TestFinishedHook`, +4
+      headless App-glue in `test_file_player_queue.py` (advance/drain/edge/
+      kickstart); suite 1959. **Pending:** real-GUI eyeball (listbox + buttons;
+      no headless path builds the node). Follow-ups surfaced, not started:
+  - [ ] **queue stalls on a bad/missing file** — a queued path that fails to
+        decode loads as silence and (being `failed`, not `finished`) never
+        advances, so the playlist stops there. Fine as "stop-ish" for v1;
+        could auto-skip failed tracks to the next good one.
+  - [ ] **remove a single queued item** — only whole-list **Clear** exists;
+        the listbox already supports selection, so a **Remove** button (and/or
+        reorder) is a small add.
 - [x] **Resampler — cubic Hermite read** — done 2026-07-10 (Matthew picked
       the fidelity direction). The ring read was 2-tap linear at all three
       sites (fast path + both declick taps); now 4-tap cubic Hermite

@@ -130,12 +130,16 @@ class Module:
         self.id: int = module_id
         self.name: str = name if name is not None else self.TYPE
         # Per-instance copy of the defaults. Values are mostly scalars /
-        # strings, but dict-valued params exist since velocity_curve
-        # (midi_input) — those need a fresh dict per instance or every
-        # module of the type would share (and mutate) the class-level
-        # default.
+        # strings, but mutable-valued params exist — velocity_curve
+        # (midi_input) is a dict, file_player's playlist is a list — and
+        # those need a fresh container per instance or every module of the
+        # type would share (and mutate) the one class-level default.
         self.params: dict[str, Any] = {
-            key: (dict(value) if isinstance(value, dict) else value)
+            key: (
+                dict(value) if isinstance(value, dict)
+                else list(value) if isinstance(value, list)
+                else value
+            )
             for key, value in self.DEFAULT_PARAMS.items()
         }
         if params:

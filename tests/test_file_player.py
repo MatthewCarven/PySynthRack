@@ -21,7 +21,7 @@ from scipy.io import wavfile
 import pysynthrack.modules  # noqa: F401  (registers module types)
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core import Patch
-from pysynthrack.core.module import all_module_types
+from pysynthrack.core.module import Module, all_module_types
 
 
 SR = 44100
@@ -64,7 +64,18 @@ class TestModuleShape:
             "loop": False,
             "armed": True,
             "playing": True,
+            "playlist": [],
         }
+
+    def test_playlist_default_is_a_fresh_list_per_instance(self):
+        # A mutable class-level default must not be shared: appending to one
+        # player's queue must never leak into another's (or into the class).
+        cls = all_module_types()["file_player"]
+        a = cls(1)
+        b = cls(2)
+        a.params["playlist"].append("/tmp/a.wav")
+        assert b.params["playlist"] == []
+        assert cls.DEFAULT_PARAMS["playlist"] == []
 
 
 class TestDecode:
@@ -480,3 +491,54 @@ class TestStreamingPlayback:
         fake.finish()
         elapsed, total = be.snapshot_file_positions()[fp.id]
         assert abs(total - 1000 / SR) < 1e-9  # true duration once done
+
+
+# ----- playlist / "file list" queue ------------------------------------------
+
+
+class TestFinishedHook:
+    """``file_player_finished`` — the edge the GUI polls to auto-advance a
+    queue. True exactly when a one-shot has run off its end."""
+
+    def test_oneshot_reports_finished_only_after_running_off_the_end(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=1000)
+        assert be.file_player_finished(fp.id) is False  # sitting at 0:00
+        _ports(be, fp, patch, 512)
+        assert be.file_player_finished(fp.id) is False  # mid-file
+        _ports(be, fp, patch, 512)                      # consumes the tail
+        assert be.file_player_finished(fp.id) is True   # parked at the end
+
+    def test_looping_player_never_reports_finished(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=1000, loop=True)
+        for _ in range(6):  # well past one length — the playhead just wraps
+            _ports(be, fp, patch, 512)
+        assert be.file_player_finished(fp.id) is False
+
+    def test_not_finished_while_still_decoding(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=1000)
+        st = be._state[fp.id]
+        st["decoder"] = _FakeDecoder(ref, ready=1000, done=False)
+        st["pos"] = 1000  # at the watermark, but the decode is not done
+        assert be.file_player_finished(fp.id) is False
+
+    def test_missing_path_never_finished(self, tmp_path):
+        be = NumpyBackend(sample_rate=SR, block_size=512)
+        patch = Patch()
+        fp = patch.add_module("file_player", params={"path": str(tmp_path / "x.wav")})
+        be.compile(patch)
+        be.wait_for_file_decodes()  # finishes as failed
+        _ports(be, fp, patch, 512)
+        assert be.file_player_finished(fp.id) is False
+
+    def test_unknown_id_not_finished(self, tmp_path):
+        be, patch, fp, _ = _compiled_player(tmp_path)
+        assert be.file_player_finished(999999) is False
+
+
+class TestPlaylistSerialization:
+    def test_playlist_round_trips_through_to_from_dict(self):
+        cls = all_module_types()["file_player"]
+        fp = cls(7, params={"path": "a.wav", "playlist": ["b.wav", "c.wav"]})
+        restored = Module.from_dict(fp.to_dict())
+        assert restored.params["path"] == "a.wav"
+        assert restored.params["playlist"] == ["b.wav", "c.wav"]
