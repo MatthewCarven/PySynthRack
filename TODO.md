@@ -9,6 +9,13 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **Scroll-to-adjust params** — done 2026-07-10. Mouse wheel over a param
+      widget nudges it (1% of range, Shift = 10%; ints ±1/±10; combos cycle;
+      checkboxes toggle), via a second wheel handler beside Ctrl+wheel zoom.
+      Value math in `ui/param_scroll.py` (19 tests); dispatch verified against
+      real dpg type-strings. **Pending real-window eyeball** — the hover/wheel
+      gesture + step feel, and whether a bare wheel over a slider also scrolls
+      an enclosing panel (shouldn't in the node editor).
 - [x] **Pitch shifter — phase-coherent mix** — done 2026-07-10. The dry/wet
       `mix` dry tap is now delay-matched to the WSOLA engine's *exact* wet
       latency (`iw − rp/r`, measured to the sample) instead of an approximate

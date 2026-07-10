@@ -4,6 +4,37 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-07-10 — UI: scroll-to-adjust param widgets (mouse wheel over a knob)
+
+Hovering a param widget and rolling the mouse wheel now nudges its value —
+the standard "scroll a knob" gesture. A bare wheel over a slider/drag steps
+it by 1% of its range (Shift = 10% coarse); an int slider (e.g. `overlap`)
+by ±1 (Shift ±10); a combo (e.g. the compressor `detector` peak/rms) cycles
+options; a checkbox (e.g. `formant_preserve`) flips on/off. The change
+routes through the normal `_on_param_changed`, so the backend updates exactly
+as a drag would.
+
+Wiring reused the zoom infrastructure: a second
+`add_mouse_wheel_handler(_on_param_wheel)` beside the Ctrl+wheel zoom one —
+they never clash because zoom bails without Ctrl and the nudge bails *with*
+Ctrl. Every param widget is registered (dpg id → `(module_id, param_name)`)
+at its single build site; `_on_param_wheel` finds the hovered one via
+`is_item_hovered` (pruning stale ids from deleted nodes) and dispatches on
+the dpg item type. The value math is a dpg-free `ui/param_scroll.py`
+(`nudge_number` / `cycle_index`) — the zoom.py / buffer.py split — with 19
+unit tests. The item type-strings + config keys the dispatch relies on were
+verified against real dearpygui (`mvAppItemType::mvSliderFloat`, `min_value`
+/`max_value` on sliders & drags, `items` on combos). Full suite **1906
+passed, 1 skipped**.
+
+Pending — real-window eyeball (meatthread0): the hover/wheel gesture and the
+step *feel* can only be judged live (the dpg glue isn't headless-testable,
+like zoom / buffer / window-geometry). Worth checking that a bare wheel over
+a slider doesn't also scroll an enclosing panel — in the node editor bare
+wheel currently does nothing, so it should be clean.
+
+---
+
 ## 2026-07-10 (follow-up) — pitch_shifter: honor the documented overlap range
 
 Tiny consistency fix surfaced in the review: the engine clamped `overlap`

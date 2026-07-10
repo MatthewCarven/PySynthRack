@@ -62,6 +62,7 @@ from .buffer import (
     index_to_size,
     size_to_index,
 )
+from .param_scroll import cycle_index, nudge_number
 from ..settings import load_settings, save_settings
 from .window_geometry import make_geometry, resolve as resolve_window
 
@@ -120,6 +121,11 @@ class App:
         self._attr_to_port: dict[int, tuple[int, str, str]] = {}  # attr_id → (mod, port, dir)
         self._port_to_attr: dict[tuple[int, str, str], int] = {}  # (mod, port, dir) → attr_id
         self._link_to_cable: dict[int, Cable] = {}
+
+        # dpg-id → (module_id, param_name) for every scrollable param widget,
+        # so a mouse wheel over one can nudge its value. Filled as nodes are
+        # built; stale ids (deleted nodes) are pruned lazily on scroll.
+        self._param_widgets: dict[int, tuple[int, str]] = {}
 
         # The file_player node whose Browse button was last clicked, so the
         # shared WAV file dialog's callback knows which module to update.
@@ -356,6 +362,9 @@ class App:
                 if _k is not None:
                     dpg.add_key_press_handler(key=_k, callback=self._on_zoom_reset_key)
             dpg.add_mouse_wheel_handler(callback=self._on_zoom_wheel)
+            # Bare wheel over a param widget nudges its value. Zoom (above)
+            # only fires with Ctrl held, so the two never both act on a notch.
+            dpg.add_mouse_wheel_handler(callback=self._on_param_wheel)
 
     def _build_file_dialogs(self) -> None:
         with dpg.file_dialog(
@@ -441,6 +450,9 @@ class App:
                 for param_name, default in module.DEFAULT_PARAMS.items():
                     with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                         self._add_param_widget(module, param_name, default)
+                        wid = dpg.last_item()
+                        if wid:
+                            self._param_widgets[wid] = (module.id, param_name)
 
             # FilePlayer: tape-style transport buttons plus a live
             # 'elapsed / total' playhead readout (_update_file_positions
@@ -2380,6 +2392,19 @@ class App:
                 pass
         return False
 
+    def _shift_down(self) -> bool:
+        """True if either Shift key is currently held down (coarse scroll)."""
+        for _name in ("mvKey_LShift", "mvKey_RShift", "mvKey_Shift"):
+            code = getattr(dpg, _name, None)
+            if code is None:
+                continue
+            try:
+                if dpg.is_key_down(code):
+                    return True
+            except Exception:
+                pass
+        return False
+
     def _apply_zoom(self, new_zoom: float) -> None:
         """Set the UI scale factor and rescale the canvas to match.
 
@@ -2447,6 +2472,80 @@ class App:
         if not self._ctrl_down():
             return
         self._apply_zoom(step_zoom(self._zoom, 1 if app_data > 0 else -1))
+
+    def _on_param_wheel(self, sender, app_data) -> None:
+        """Bare mouse wheel over a param widget nudges its value.
+
+        Ctrl+wheel is the zoom gesture (its own handler), so this bails when
+        Ctrl is held. Otherwise it finds the hovered registered param widget
+        and steps it one notch — 1% of range for float sliders/drags (Shift =
+        10%), ±1 for int sliders (Shift = 10), next/previous option for a
+        combo, on/off for a checkbox — then pushes the value to the backend
+        through the normal param-changed path. ``app_data`` is the signed
+        wheel delta.
+        """
+        if self._ctrl_down():
+            return
+        wid = self._hovered_param_widget()
+        if wid is None:
+            return
+        try:
+            self._nudge_param_widget(wid, app_data, self._shift_down())
+        except Exception as exc:
+            self._set_status(f"Scroll error: {exc}")
+
+    def _hovered_param_widget(self):
+        """The registered param-widget id under the mouse, or None. Prunes
+        ids whose nodes have since been deleted."""
+        found = None
+        stale = []
+        for wid in self._param_widgets:
+            if not dpg.does_item_exist(wid):
+                stale.append(wid)
+                continue
+            try:
+                if dpg.is_item_hovered(wid):
+                    found = wid
+                    break
+            except Exception:
+                stale.append(wid)
+        for wid in stale:
+            self._param_widgets.pop(wid, None)
+        return found
+
+    def _nudge_param_widget(self, wid, direction, coarse) -> None:
+        """Step one param widget by a wheel notch, dispatching on dpg type."""
+        user_data = self._param_widgets[wid]
+        wtype = dpg.get_item_info(wid).get("type", "")
+        cfg = dpg.get_item_configuration(wid)
+        cur = dpg.get_value(wid)
+        if wtype.endswith("mvCheckbox"):
+            new = direction > 0
+        elif wtype.endswith("mvCombo"):
+            items = list(cfg.get("items", []) or [])
+            if not items:
+                return
+            idx = items.index(cur) if cur in items else 0
+            new = items[cycle_index(idx, direction, len(items))]
+        elif wtype.endswith(("mvSliderInt", "mvDragInt", "mvInputInt")):
+            new = nudge_number(
+                cur, direction,
+                min_value=cfg.get("min_value", cur),
+                max_value=cfg.get("max_value", cur),
+                is_int=True, coarse=coarse,
+            )
+        elif wtype.endswith(("mvSliderFloat", "mvDragFloat", "mvInputFloat")):
+            mn, mx = cfg.get("min_value"), cfg.get("max_value")
+            if mn is None or mx is None or mn == mx:
+                return  # unbounded drag — no range to step within
+            new = nudge_number(cur, direction, min_value=mn, max_value=mx,
+                               coarse=coarse)
+        else:
+            return  # text / path / unknown — not scrollable
+        if new == cur:
+            return
+        dpg.set_value(wid, new)
+        self._on_param_changed(wid, new, user_data)
 
     # ----- buffer size ----------------------------------------------------
 
