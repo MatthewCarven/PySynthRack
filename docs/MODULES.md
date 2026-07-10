@@ -212,6 +212,8 @@ signal-flow role (sources → processors → … → sinks).
 | [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`compressor`](#compressor) | Effects | `in`,`sidechain` (audio), `threshold_cv` (cv) → `out` (audio), `gr` (cv) |
 | [`limiter`](#limiter) | Effects | `in` (audio) → `out` (audio) |
+| [`noise_gate`](#noise_gate) | Effects | `in`,`sidechain` (audio) → `out` (audio), `open` (cv) |
+| [`transient_shaper`](#transient_shaper) | Effects | `in` (audio) → `out` (audio) |
 | [`loudness`](#loudness) | Filters & EQ | `in` (audio), `level_cv` (cv) → `out` (audio) |
 | [`distortion`](#distortion) | Effects | `in` (audio), `drive_cv` (cv) → `out` (audio) |
 | [`waveshaper`](#waveshaper) | Effects | `in` (audio), `fold_cv` (cv) → `out` (audio) |
@@ -1045,6 +1047,121 @@ Shape-polymorphic like the other effects — a `(V, F)` input limits per voice
 master safety net; pull `ceiling` down a dB and drive the input harder for
 transparent loudness; or tame a spiky source before a stage that assumes
 headroom. It is the last link in the chain — place it after any make-up gain.
+
+#### `noise_gate`
+
+A **hold-and-hysteresis downward gate** — the inverse of the
+[`compressor`](#compressor). While the detector sits above `threshold` the
+gate is **open** and the signal passes untouched; when the level falls away
+the gate **closes** and pulls the output down to the `range` floor. Kills the
+hiss/hum in the gaps between notes, tightens a boomy drum by chopping its
+tail, or (sidechained) chops one sound to another's rhythm.
+
+`hysteresis` is a Schmitt gap — the gate opens above `threshold` but only
+closes once the level falls `hysteresis` dB below it, so a signal parked at
+the boundary can't chatter. `hold` keeps the gate open for a minimum time
+after the level drops under the close threshold, bridging brief dips (the
+quiet moment inside a word, the gap between two hits of a roll). `attack` /
+`release` ramp the open / close so transients keep their edge and tails fade
+instead of clicking. `range` sets how far a closed gate ducks: −80 dB is a
+full mute, a shallower value (say −12 dB) only ducks the noise floor — an
+**expander**-style gentle gate.
+
+The detector normally listens to `in`, but patch a signal into `sidechain`
+and the gate opens/closes on *that* while still gating `in` (key a pad off a
+hi-hat for rhythmic chops). Unpatched, `sidechain` is normalled to `in`. The
+**`open`** output is a 0/1 gate CV, high exactly while the gate is open — a
+free gate-*extractor*: drive an ADSR, a VCA, or a clock's reset from any
+audio signal's dynamics (a crude beat detector / audio→trigger bridge).
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to gate. Unpatched → silence. |
+| `sidechain` | in | audio | External detector key. Normalled to `in` when unpatched. |
+| `out` | out | audio | The gated signal. |
+| `open` | out | cv | 0/1 gate, high while the gate is open. A free gate-extractor. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `threshold` | `-45.0` | −80 … 0 dBFS | Open level. At the −80 floor the gate is a bit-exact bypass (always open). |
+| `hysteresis` | `4.0` | 0 … 24 dB | Schmitt gap; the gate closes only this far below `threshold`. Anti-chatter. |
+| `attack` | `1.0` | 0.1 … 50 ms | Open ramp time. |
+| `hold` | `40.0` | 0 … 500 ms | Minimum open time after the level drops below the close threshold. |
+| `release` | `150.0` | 5 … 2000 ms | Close ramp time. |
+| `range` | `-80.0` | −80 … 0 dB | Closed-gate floor. −80 = full mute; higher = expander-style duck. |
+
+Instant-attack / one-pole-release peak follower on the key → Schmitt
+open/close with hysteresis + a hold timer → target gain (1 open / `range`
+floor closed) → attack/release smoothing of the gain → multiply. A single
+per-sample voice loop carries the detector, Schmitt/hold and gain state, so
+the render is **block-size independent and bit-exact** (pure recurrences, no
+reassociation — stronger than the compressor's to-round-off gain solve).
+`threshold` at its −80 floor **short-circuits to a bit-exact passthrough**
+(always open, `open` = 1). Shape-polymorphic like the other effects — a
+`(V, F)` input gates per voice (a single row bit-identical to mono); a mono
+sidechain broadcasts across voices, a `(V, F)` sidechain keys each voice. See
+`examples/noise_gate_chop.json` (an LFO-driven auto-gate).
+
+**Patching.** Silence the hiss between phrases (`range` −80); tighten drums
+(short `hold`, fast `release`); expand rather than gate (`range` −6…−12);
+sidechain-chop a pad off a rhythmic key; or take `open` into an ADSR / VCA /
+clock so the patch plays in step with "is the signal present".
+
+#### `transient_shaper`
+
+A **transient shaper** — reshapes a sound's dynamic envelope, and the one
+dynamics tool with *no threshold to set*. Push `attack` to snap onsets (a
+pluck, a kick's click, a picked string) or cut it to soften them; push
+`sustain` to bloom the body and tail (room, ring, decay) or cut it to dry a
+boomy kit or shorten a ringing tail without a gate. `speed` picks how quick
+the detector pair is — `fast` for tight percussion, `slow` for bass and
+sustained material, `med` between.
+
+**Threshold-free (the classic trick).** The effect is **level-independent** —
+a quiet ghost note is shaped exactly like a loud accent, and turning the input
+up or down changes nothing. Two envelope followers run on `|in|`, one **fast**
+and one **slow**; their *difference in dB* isolates the transient. When a note
+attacks the fast follower leaps ahead of the slow one (difference **positive** →
+an onset), and as it decays the fast follower drops below (difference
+**negative** → sustain); in steady state the two agree and the difference is
+zero, so a held tone is untouched. Because a dB difference is a *ratio*, it is
+the same at any level — that is what makes the shaper threshold-free.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Signal to shape. Unpatched → silence. |
+| `out` | out | audio | Reshaped signal. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `attack` | `0.0` | −1 … +1 | Onset gain. +1 boosts attacks by up to +12 dB, −1 cuts by −12 dB. Acts only where the signal is transient. |
+| `sustain` | `0.0` | −1 … +1 | Body/tail gain. +1 lifts the sustain by up to +12 dB, −1 dries it by −12 dB. Acts only where the signal is decaying. |
+| `speed` | `med` | fast / med / slow | Follower-pair responsiveness (fast/med/slow = 0.5·20 / 2·50 / 5·120 ms). |
+
+The positive part of the follower difference scales the `attack` gain and the
+negative part the `sustain` gain (each soft-saturated to top out near ±12 dB);
+the two sum in dB, a short one-pole smooths the linear gain, and it multiplies
+the signal. The followers reuse the same vectorized fixed-point one-pole the
+[`audio_to_cv`](#audio_to_cv) follower and the compressor's gain smoother use.
+With `attack` = `sustain` = 0 it **short-circuits to a bit-exact passthrough**
+(the followers are skipped). Shape-polymorphic like the other effects — a
+`(V, F)` input is shaped per voice with independent follower/gain state, a
+single row bit-identical to mono. Block-size independent to float64 round-off
+(the reassociated follower solve, < 1e-6 after the float32 cast). See
+`examples/transient_shaper_snap.json`.
+
+**Patching.** Add snap to a drum loop (`attack` up, `speed` fast) or tame a
+clicky kick (`attack` down); dry an over-roomy kit or shorten a snare's ring
+(`sustain` down) — a gate-free "less room" move; bring out a bass or pad's body
+(`sustain` up) without a compressor's pumping.
 
 #### `loudness`
 

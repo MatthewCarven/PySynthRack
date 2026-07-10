@@ -4,6 +4,882 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-07-07 (crash-test trigger) -- a way to force the GUI crash path
+
+Matthew couldn't find a way to crash the (deliberately robust) app to eyeball
+the new handler. Added a debug-only self-destruct in `App.run()`'s render loop:
+`PYSYNTHRACK_CRASH_TEST=<frames>` makes the loop raise after N rendered frames,
+which escapes `run()` into `main()`'s handler. Inert unless the env var is set
+(non-integer value -> crash on the first frame). Verified the resulting
+behaviour with a headless `main()`-wrapper smoke: friendly stderr pointer, crash
+file in `~/.pysynthrack/crashes/`, exit 1, no traceback. Suite unchanged (1885).
+
+Use (PowerShell): `$env:PYSYNTHRACK_CRASH_TEST=180; python -m pysynthrack`
+(~3 s of live window at 60fps, then it crashes into the handler). Open a new
+shell or `Remove-Item Env:PYSYNTHRACK_CRASH_TEST` to reset.
+
+---
+
+## 2026-07-07 (error-handler slice B) -- init suppresses + logs; global hooks wired
+
+Completed the integration. Init now captures-suppresses-logs instead of
+re-raising, and uncaught background crashes are caught globally.
+
+- **`_crash.py`**: new `install_crash_logging()` registers a folder-writing
+  observer on the (upgraded) handler and `install()`s the `threading` +
+  `unraisable` hooks (excepthook is left to `ui.app.main`). The observer writes
+  only BACKGROUND/uncaught reports (source `"uncaught"`); explicit catch points
+  wrap their `describe_error` in the new thread-local `explicit_write()` guard
+  so the observer skips them -- exactly one file per crash. `uninstall_crash_
+  logging()` reverses it (tests / clean shutdown).
+- **`ui/app.py:main()`**: calls `install_crash_logging()` early, then wraps
+  `App().run()`; on `Exception` it writes the `"gui"` report and `sys.exit(1)`
+  -- suppresses the traceback, keeps a non-zero exit (Matthew's call). Now
+  catches `Exception` (not `BaseException`), so Ctrl-C / SystemExit pass through.
+- **`numpy_backend._handle_audio_crash`**: unchanged behaviour, but its
+  `describe_error` is now wrapped in `explicit_write()` so the global observer
+  doesn't duplicate the `"audio_callback"` file.
+
+**Testing.** New `tests/test_crash_logging.py` (observer writes uncaught to the
+folder; `explicit_write` guard skips; flag resets after the block; uninstall
+stops it; no observer without install). `test_crash` + `test_backend_crash`
+unchanged and green. Full suite **1885 passed, 1 skipped**. Plus a headless
+smoke: a real worker-thread crash fires the installed `threading.excepthook`
+and lands one `*_uncaught.txt` in the folder.
+
+**Pending -- real-window eyeball (meatthread0).** The suppressed GUI-crash path
+(`App().run()` raises -> folder file + friendly stderr pointer + exit 1, no
+traceback) can only be seen by launching the windowed app and forcing a crash.
+
+---
+
+## 2026-07-06 (error-handler slice A follow-up) -- vendored the upstream test suite
+
+Copied upstream's `test_error_handler.py` (157 tests) into `tests/` to guard the
+newly-vendored handler surface. One adaptation: upstream imports the module as
+top-level `error_handler`; a 2-line shim at the top of the copy aliases
+`pysynthrack.error_handler` under that bare name in `sys.modules`, so the file
+stays a verbatim copy (trivial to re-sync) and the deeper `import error_handler`
+sites resolve unchanged. On Python 3.14: **156 passed, 1 skipped** (the skip is
+the module's own <3.11 graceful-fallback branch). Full suite now **1879 passed,
+1 skipped**. The alias is inert for the rest of the suite -- app code always
+imports via the `pysynthrack.error_handler` path.
+
+---
+
+## 2026-07-06 (error-handler slice A) -- vendored the upstream superset
+
+Copied the standalone `error_handler.py` (2861 ln) over our older vendored copy
+(1374 ln). Verified first that the vendored symbols are a subset of upstream --
+the only vendored-only name was `_register`, which upstream keeps as an alias
+for `register_extractor`, and which nothing outside `error_handler.py` uses.
+Backward-compatible: the two call sites (`ui/app.py:main`,
+`numpy_backend._handle_audio_crash`) use only `describe_error(include_locals=
+True)` + `for_claude()`, both preserved. Full suite green (**1723**); `test_crash`
++ `test_backend_crash` pass unchanged. Gains the wrapping API
+(`install`/`capture`/`capturing`/`register_observer`/`ReportFormatter`) that
+Slice B will use to make init suppress-and-log. Follow-up worth considering:
+vendor upstream's `test_error_handler.py` (157 tests) to guard the new surface.
+
+---
+
+## 2026-07-06 (error-handler scout) -- it's an upgrade, not a new add
+
+Scouted Matthew's standalone "Python ErrorHandler" lib with a view to wrapping
+init to suppress + log to folder. Findings:
+
+- **We already vendor an older version of it.** `error_handler.py` (1374 ln) is
+  a clean ancestor of the standalone (~2861 ln); no local mods. The standalone
+  is a superset that adds `install()`, `@capture`/`capturing()` (suppress-and-
+  continue), `ReportFormatter`, `register_observer`, asyncio wiring, PEP-657
+  column anchors, more extractors, `to_json`/`to_markdown`. Ours has only the
+  core `describe_error` / `ErrorReport.for_claude()` / redactors / ExceptionGroup.
+- **Folder logging already exists.** `_crash.write_crash_report` writes
+  `for_claude()` to `~/.pysynthrack/crashes/`; never raises.
+- **Init is already wrapped but RE-RAISES.** `ui/app.py:main()` catches around
+  `App().run()`, logs to the folder, prints a pointer, then `raise`s. Second
+  catch point: `numpy_backend._handle_audio_crash` (audio_callback, once/stream).
+- Guarded by `tests/test_crash.py` + `tests/test_backend_crash.py`.
+
+Plan (not yet done): (A) upgrade `error_handler.py` to the superset
+(backward-compatible -- call sites use only `describe_error(include_locals=True)`
++ `for_claude()`); (B) rewire `main()` to `capturing(reraise=False,
+on_report=...)` so init SUPPRESSES instead of re-raising, still logging to the
+folder; optionally `install()` for worker-thread / `__del__` coverage. Open
+decision: suppress-and-exit-clean vs suppress-but-exit-nonzero vs keep-reraise.
+
+---
+
+## 2026-07-06 (settings persistence -- slice 2) -- per-patch window geometry
+
+Second and final persistence slice. A patch now remembers the editor window's
+**size and position**, restored (off-screen-safe) when the patch loads.
+
+**New `ui/window_geometry.py`** (pure, dpg-free, like zoom/buffer): `resolve`
+takes the saved `patch.ui["window"]` dict + the virtual-desktop bounds and
+returns the size/pos to apply, clamping the whole window inside the desktop so
+a **stale off-screen coordinate** (saved on a monitor that's since gone) is
+pulled back into view rather than lost. Bounds unknown (non-Windows / query
+failed) -> restore size only, never a blind position. `make_geometry` builds
+the serialised dict.
+
+**Glue in app.py.** `_capture_window_geometry` (in the save path, beside
+`_capture_node_positions`) snapshots `get_viewport_width/height/pos` into
+`patch.ui["window"]`; `_apply_window_geometry` (end of `_load_patch_from`,
+after the zoom restore) runs `resolve` and applies via `set_viewport_*`.
+`_virtual_screen_bounds` reads the Win32 virtual-screen metrics
+(`GetSystemMetrics` 76-79) via ctypes, guarded -> None off-Windows. `patch.ui`
+already round-trips, so no patch_io change.
+
+**DPG 2.3.1 limitation -- maximized not captured.** Confirmed empirically: DPG
+2.3.1 exposes no maximized state (no `is_viewport_maximized`, no `maximized`
+key in `get_viewport_configuration`). So only size+pos are stored; a maximized
+window restores to that same full size+position -- visually near-identical,
+just not a true OS-maximized toggle. If we want real maximize later: a
+heuristic (restored ~= monitor size -> `maximize_viewport()`), or wait for a
+DPG that surfaces the state.
+
+**Testing.** `tests/test_window_geometry.py` (16 cases: junk->None, size floor
++ desktop cap, screen-None keeps-size/drops-pos, within-bounds preserved,
+off-screen right/left/partial clamped, secondary-monitor incl. negative
+origin). Headless DPG smoke: capture -> resolve(stale x=5000 -> 920) -> apply,
+and `set/get_viewport_*` round-trips cleanly (API contract verified; visual
+result still wants an eyeball). Full suite green: **1723 passed**.
+
+**Pending -- real-window eyeball (meatthread0).** Save a patch, move/resize the
+window, reopen -> should restore; drag it onto a now-absent monitor coord,
+reopen -> should clamp back on-screen. Only unverifiable-from-here part.
+
+---
+
+## 2026-07-06 (settings persistence -- slice 1) -- global settings.json, buffer size persists
+
+Follow-on to the buffer slider. Buffer size now survives app restarts via a
+new machine-scoped settings store -- the first of two persistence slices
+agreed with Matthew (slice 2, per-patch window geometry, is still to come).
+
+**New `pysynthrack/settings.py`** -- a generic JSON key/value store in the
+platform config dir (`%APPDATA%\PySynthRack\settings.json`, with
+`$XDG_CONFIG_HOME`/`~/.config` fallbacks and a `PYSYNTHRACK_SETTINGS`
+override). Reads are total (missing/corrupt/non-dict -> `{}`, never raises, so
+a bad file can't block launch); writes are atomic (temp + `os.replace`).
+Deliberately generic and buffer-agnostic -- the natural home for audio device,
+backend choice, and a default window size later.
+
+**Wiring.** `App.__init__` loads the settings once (`self._settings`) and
+resolves the buffer size through the new pure `ui.buffer.coerce_buffer_size`
+(snap-or-default, so junk in the file can't crash the slider). The slider is
+built from that persisted value, so it shows the remembered size on launch.
+`_on_buffer_slider` writes the change back via a best-effort `_persist_setting`
+(a read-only / permission-denied save is logged and swallowed, never fatal).
+Buffer size stays *global*, not per-patch -- a hardware/latency setting must
+not ride inside portable patch files.
+
+**Testing.** `tests/test_settings.py` (path resolution across
+override/APPDATA/XDG, total loads incl. corrupt/non-dict/directory, atomic
+round-trip, no tmp sidecar) plus coerce cases in `tests/test_ui_buffer.py`.
+Manual relaunch smoke: launch1 default 512 -> pick 128 -> launch2 loads 128.
+Full suite green: **1707 passed**.
+
+**Pending.** Slice 2: per-patch window geometry (size+pos+maximized in
+`patch.ui`, off-screen-safe restore) -- GUI-heavy, wants a real-window eyeball.
+
+---
+
+## 2026-07-06 (buffer-size slider) -- global block_size control on the toolbar
+
+Added a toolbar **Buffer** slider (mirrors the Zoom control) letting the user
+pick the audio block size from a fixed set -- 64, 128, 256, 384, 512, 768,
+1024 frames -- applied globally to the backend when audio is placed into
+running mode. Default 512, matching `AudioBackend`'s existing default.
+
+**Why a slider carrying an *index*.** The stops are non-uniform, so a raw
+value slider would let you land between them. New dpg-free helper
+`ui/buffer.py` (same pattern as `ui/zoom.py`) exposes `BUFFER_SIZES`,
+`snap_buffer` (nearest stop, ties -> smaller/lower-latency) and
+`index_to_size`/`size_to_index`. The slider spans indices 0..6; its printf
+`format` is rewritten in the callback to show the real frame count on the
+handle (the `format=""` fader precedent at app.py:1923 confirms DPG accepts
+literal, specifier-less formats).
+
+**Apply path.** `_on_toggle_audio` calls `backend.set_block_size(size)`
+*before* `compile()`/`start()` -- numpy builds its device outputs and pyo
+boots its Server during compile, so the size must be set first. New
+`AudioBackend.set_block_size` is record-only in the base (numpy reads
+`block_size` fresh each `start()`, so nothing else to do). **Pyo overrides it
+to reboot:** a booted pyo Server bakes in `buffersize`, so a change tears the
+server down (stop -> shutdown -> `_server=None`) and the next compile boots
+fresh. The slider greys out while running, since the size is only read at
+Start -- editing mid-run would be misleading. Running status line now shows
+the active buffer.
+
+**Testing.** `tests/test_ui_buffer.py` (mirrors the zoom suite -- snap /
+index / size round-trips) and `tests/test_backend_block_size.py` (numpy
+records; pyo no-ops on unchanged size, tears the server down on change, stops
+first if running -- via a fake Server so pyo need not be installed). Full
+suite green: **1690 passed**.
+
+**Pending / not done here.**
+- *Real-GUI eyeball* (meatthread0): no automated path builds the DPG toolbar
+  (`--cli` plays a patch headlessly, no chrome), so the actual slider render,
+  the `format` size readout, and the grey-out want a manual launch.
+- *Pyo reboot on real pyo*: re-booting a Server in one process is the fussy
+  bit -- verify shutdown+fresh-boot holds, else switch `_ensure_server` to
+  reuse one Server via `shutdown()`+`reinit()`+`boot()`. The numpy path
+  (what runs here) is unaffected.
+- *Persistence*: buffer size is in-memory (global, resets to 512 each launch),
+  matching how zoom isn't persisted. A small app-settings file could persist
+  both later.
+
+---
+
+## 2026-07-06 — specific_stereo_speaker_output: live device switching
+
+- Changing a sink's `device` while running now takes effect immediately —
+  no Stop/Start. Only the affected secondary stream is rebuilt.
+- `_open_device_outputs` → `_sync_device_outputs`, a reconciler: diff the
+  sinks' selected devices against the open streams, open the new, close the
+  now-unused, keep the rest (identity preserved). Builds a fresh dict and
+  swaps `_device_outputs` in one assignment (audio thread only reads the
+  reference → never a half-updated map); removed streams closed after the
+  swap. Open failure logged + skipped + retried next change.
+- Hooked at start() (opens all from empty), set_param (only when a
+  specific_stereo_speaker_output `device` changes while running), and the end
+  of compile() while running (outside the render lock — so add/remove a routed
+  sink live is picked up too).
+- 40 module tests (TestLiveDeviceSwitch stubs _DeviceOutput.open/close, no
+  PortAudio). Full sandbox suite 1666/0.
+
+---
+
+## 2026-07-06 — specific_stereo_speaker_output (slice 2: real per-device routing)
+
+- A named `device` now actually plays out that device. Left empty (`""`) the
+  sink still drains to the master bus, bit-identically to `stereo_speaker_output`.
+- Engine split: `render_block_multi(frames)` walks the graph once and returns
+  `(master, {device: bus})`; routed sinks drain into per-device buffers
+  **excluded** from master (each clipped ±1). `render_block` is now a thin
+  master-only wrapper, so every existing offline caller is unchanged.
+- `_DeviceOutput`: one secondary `sd.OutputStream` per distinct selected device,
+  fed by the main callback through a `deque(maxlen)` ring (append/popleft are
+  GIL-atomic → no lock; underrun & frame-mismatch → silence; overflow → drop
+  oldest). `start()` opens one per device (snapshot → device change applies at
+  next Start, MicInput convention; open failure logs + that sink stays silent).
+  `stop()` closes them.
+- Caveat: two PortAudio streams aren't sample-clock-synced; the ring absorbs
+  drift and the 2nd device sits a few blocks behind. Monitor/cue bus, not
+  phase-locked multi-device playback.
+- Crash/DSP-load tests: the audio-callback render seam moved to
+  `render_block_multi`; their monkeypatch points followed it.
+- 32 module tests (routing + `_DeviceOutput` ring). Full sandbox suite 1658/0.
+- MODULE COMPLETE (both slices on origin/main after this applies).
+
+---
+
+## 2026-07-06 — specific_stereo_speaker_output (slice 1: picker only)
+
+- New sink `specific_stereo_speaker_output`: a clone of `stereo_speaker_output`
+  carrying a `device` parameter so a patch can name which physical output the
+  sink should play out of (cue/monitor bus → headphones, main mix → monitors).
+- **Slice 1 ships the module + the live picker only.** Audio still drains into
+  the shared master bus, **bit-identically** to the plain stereo speaker
+  (verified by an A/B sweep over mono/stereo/pan/width/gain/CV). The `device`
+  value is picker- and save-file-only and has no audible effect yet.
+- Added `available_output_devices()` — the output mirror of MicInput's input
+  enumerator (filters `max_output_channels > 0`, de-dupes, never raises).
+- Backend: `_STEREO_SPEAKER` (str) → `_STEREO_SPEAKERS` (frozenset of both
+  stereo-sink types); drain dispatch + sink check now test membership.
+- UI: device dropdown + Refresh (MicInput pattern), listing output devices.
+- pyo backend: listed in the not-yet-supported stub set (pyo stays parked).
+- 23 tests; full sandbox suite 1649/0 (mido + scipy + dearpygui installed).
+
+---
+
+## 2026-07-06 — convolver (slice 3: predelay / tone / normalize + example IRs)
+
+Final slice of the **convolver** — the module is now complete.
+
+Wet shaping. Two new params, both wet-only (so `mix = 0` stays a bit-exact dry
+bypass): `predelay` (0..500 ms) is a per-channel FIFO delay on the wet, an
+intentional delay on top of the module's one-block latency so the reverb starts
+behind the dry; `tone` (1k..20k Hz) is a per-channel one-pole low-pass that
+darkens the tail and is **off** at its 20k maximum (exact bypass, so the neutral
+is untouched). Both live in a new `_shape_conv_wet(wet, state, ch, tone, pd,
+frames)` applied to each channel after the convolution and before the wet
+`gain`/`mix`; state carries `tone_zi_<ch>` (filter zi) and `pd_buf_<ch>` (the
+predelay FIFO). They run per channel even when the convolution engine is shared
+(mono IR) — the FFT is the expensive part; the shaping is cheap.
+
+IR conditioning on load (in `_IRLoader`). (1) **Length cap**: IRs longer than
+`_IR_MAX_SECONDS` (5 s) are truncated with a ~10 ms fade-out (no click), so a
+stray long file can't stall the audio — the DSP% readout is the meter. (2)
+**Energy-normalise**: a shared scale `1 / max(||L||2, ||R||2)` (module-level
+`_normalize_ir`, shared with the tests) — the louder channel gets unity RMS
+gain through the convolution, the quieter keeps its relative level, so hot/long
+IRs don't blow up and different IRs sit at a consistent level while the stereo
+image survives. The unit impulse (norm 1) and a single-spike IR normalise to a
+pass-through, so the transparent-insert neutral holds.
+
+Example IRs are **license-clean by construction** (pure synthesis) and shipped
+as a **generator script**, not committed binaries (Matthew's pick):
+`examples/irs/generate_irs.py` writes seeded, decorrelated decaying-noise
+room/hall/plate WAVs (with early reflections + a darkening tail);
+`examples/irs/.gitignore` keeps the generated `*.wav` out of git.
+`examples/convolver_reverb.json` is a clock→AD→VCA pluck through the hall IR
+(predelay 18 ms, tone 7.5 k, mix 0.4; osc amp 0.5 / speaker gain 0.7 for
+headroom) — it loads and passes audio even before you run the script (an
+unreadable path is transparent), and the reverb appears once `hall.wav` exists.
+
+Tests (`tests/test_convolver.py`, now 65): predelay delays the wet by exactly D
+samples (dry untouched), tone off = passthrough / tone low attenuates 9 kHz,
+shaping never touches `mix = 0`, a hot IR is energy-normalised (bounded + matches
+`fftconvolve` of the normalised IR), a single-spike IR normalises to transparent,
+and a long IR is length-capped (monkeypatching `_IR_MAX_SECONDS`). Slice-2
+file-load refs updated to normalise. Sandbox suite **1567 passed / 18 mido-skips**
+(the two dearpygui UI files ignored — no GUI lib in the sandbox).
+
+pyo: still the silent stub (unchanged). No app.py change this slice — `predelay`
+/`tone` render as generic sliders and the renderer clamps them.
+
+Deviation note (working agreement): the `path`/Browse special-case already
+covers it; no UI work needed. Bounded sliders for predelay/tone left as a
+possible follow-up (generic drag-floats + renderer clamps for now).
+
+---
+
+## 2026-07-06 — convolver (slice 2: IR file load + true stereo)
+
+Second slice of the **convolver**: it now loads real IR files and is a true
+stereo effect. (Slice 3 — predelay/tone/normalize + license-clean example IRs
+— is still to come.)
+
+IR loading. A `path` param (empty by default) points at an audio file; the
+node grows a **Browse…** button (the file_player's picker, extended in app.py
+by one condition — `module.TYPE in ("file_player", "convolver")`). Decode
+reuses the backend's `_decode_audio` (scipy WAV fast path → ffmpeg for
+mp3/flac/ogg/m4a/video), so anything the FilePlayer can read works as an IR.
+IRs load **whole** (they're short — no streaming), but the decode + the
+per-channel partition-FFT build run on a **background thread** (`_IRLoader`,
+daemon), kicked at `compile()` (mirroring the file_player lifecycle) and on any
+live `path` edit in the renderer. The audio thread never decodes: it keeps the
+previous IR (or the transparent unit impulse) sounding until the loader
+publishes `ready`, then adopts the new engines at a block boundary. An empty /
+missing / unreadable path stays a transparent insert (a saved patch always
+loads). `wait_for_ir_loads()` is the tests/offline join hook (the
+`wait_for_file_decodes` analogue).
+
+True stereo. `_IRLoader` builds one `_PartitionedConvolver` per IR channel
+(sharing a single engine when the two channels are identical — a mono file — so
+a mono IR convolves once). The mono-summed input is convolved through the IR's
+left channel into `out_l` and its right into `out_r`; the IR's own
+decorrelation is the stereo image. Latency, the wet-only `gain`, the `mix = 0`
+bit-exact bypass and the voices-sum-to-mono contract are all unchanged from
+slice 1.
+
+State machine (`_render_convolver`): `path == ""` → drop IR + cancel pending →
+transparent; `path` changed → kick a loader, keep current engines; a finished
+loader → adopt (ready) or fall back (failed); engines (re)built lazily on
+first use, block-size change, or IR swap. Per-convolver state carries
+`engine_l/engine_r/ir_l/ir_r/loaded_path/pending/block/dry_prev`; the drop-state
+path in `compile()` closes a mid-flight loader.
+
+IRs are **not normalised** and length is **not capped** yet — both are slice 3;
+for now trim hot IRs with `gain` and watch the DSP% on very long IRs.
+
+Tests (`tests/test_convolver.py`, now 58): everything from slice 1 plus a seeded
+**stereo** IR (out_l/out_r each match their channel's `fftconvolve` and differ),
+a mono IR sharing one engine with equal channels, a real **temp-WAV** stereo
+load (compile → `wait_for_ir_loads` → convolves), a mono WAV giving equal
+channels, a missing path staying transparent, and a **live path change**
+adopting the new IR. Sandbox suite **1560 passed / 18 mido-skips** (the two
+dearpygui UI files ignored — no GUI lib in the sandbox; unrelated).
+
+Deviation note (working agreement): none of substance — built off-mount via
+clone + patch. app.py touched (one condition) to give the convolver the same
+Browse button as the file_player.
+
+---
+
+## 2026-07-06 — convolver (slice 1: mono partitioned-FFT core)
+
+First slice of the **convolver** (Effects), an IR convolution reverb /
+cabinet loader. This slice is the mono fixed-block DSP core; the IR file
+loader + true stereo (slice 2) and predelay/tone/normalize + example IRs
+(slice 3) follow in later sessions.
+
+DSP: uniformly-partitioned **overlap-save** FFT convolution
+(`_PartitionedConvolver` in numpy_backend.py). The IR is split into
+render-block-sized partitions, each pre-transformed once to a length-2B
+rfft; every block transforms the `[prev|cur]` 2B window once, pushes it onto
+a frequency-domain delay line of the last P = ceil(L/B) input spectra, and
+the output is the FD multiply-accumulate Σ_p H[p]·X[k−p] inverse-transformed
+(the alias-free overlap-save half). One FFT pair per block instead of an
+O(L) tap sum, so cost tracks IR length — the DSP% readout is the budget
+meter.
+
+The overlap-save core is intrinsically zero-latency; a one-block output
+register presents a clean, fixed **one-block (B-sample) latency**, and the
+dry path is delay-matched by that block inside `mix` so dry/wet stay
+phase-coherent. Voices are summed to mono before convolving (convolution is
+linear: per-voice-then-sum == sum-then-convolve, and mono is far cheaper),
+so a single voice row is bit-identical to mono. `gain` trims the **wet
+only**, so `mix = 0` is a bit-exact dry bypass (and short-circuits the FFT)
+whatever `gain` is.
+
+Until the file loader lands the IR defaults to a **unit impulse** — a
+freshly added Convolver is a transparent insert (delayed passthrough) that
+does nothing until you load a real IR. Both outputs carry the same mono
+result; they split into a stereo pair with stereo IRs (slice 2).
+
+Neutral & tolerances: unit-impulse IR at mix=1/gain=1 is a passthrough
+delayed one block, within ~1e-6 (the FFT round-trip is float, not bit-exact
+— pinned & documented); mix=0 is bit-exact delayed dry. Because N = 2B
+depends on the block size, block-size independence holds within FFT
+round-off (~1e-6), not bit-exact.
+
+Tests (`tests/test_convolver.py`, 52): model/ports/defaults/category/JSON;
+engine oracle vs `scipy.signal.fftconvolve` across block sizes
+{64,128,256,512,333} × IR lengths {1,5,511,512,513,2000}; impulse = delayed
+identity; tail length matches IR; one-block latency; neutral (impulse mix=1
+passthrough <1e-6, mix=0 bit-exact dry, both channels equal, silence→silence);
+latency constant across block sizes; module-level oracle with an injected IR
+(gain scales wet only, mix blends); big-block == small-blocks within 1e-6;
+single voice row ≡ mono, voices sum before conv; osc→convolver→stereo speaker
+integration. Sandbox suite 1554 passed / 18 mido-skips (the two dearpygui UI
+files — test_dsp_load, test_ui_zoom — are uncollectable without a GUI lib in
+the sandbox, so ignored; unrelated to this change).
+
+pyo: silent stub (added `convolver` to the TYPE list). Example
+`examples/convolver_insert.json` (osc → convolver → stereo speaker,
+transparent until you Browse an IR; source amp 0.4 + speaker gain 0.7 for
+headroom). Docs: MODULES.md index row + catalogue entry.
+
+Deviation note (working agreement): none of substance — built off-mount via
+clone + patch per protocol. Design note: proper partitioned convolution is
+intrinsically zero-latency; the fixed one-block latency is a deliberate,
+reported, dry-compensated choice matching the spec (a one-block pipeline),
+not a limitation.
+
+---
+
+## 2026-07-06 — tape ("put it on tape": wow/flutter/drift + saturation + hiss + head bump)
+
+New "Effects" module `tape` — the character of an analog tape machine in
+one pass. Six independent flavours, layered in the order a deck imposes
+them: **wow** (slow ~1 Hz pitch sway), **flutter** (fast ~9 Hz waver +
+noise), **drift** (very slow, non-periodic speed wander), **sat** (tanh
+saturation), **hiss** (calibrated noise floor), **bump** (~60 Hz low-shelf
+head bump), plus **mix**.
+
+Signal flow: `in → wow/flutter/drift-modulated fractional-delay line →
+saturation → + hiss → head-bump low shelf → mix against the
+latency-matched dry`. The delay line reuses the **chorus core** (fixed
+~10 ms nominal delay; write the whole block, then read fractional taps
+behind the write head). A moving delay is a moving pitch — that *is* the
+wow/flutter/drift. No feedback, so every read references an
+already-written sample, the whole render vectorizes, and it is **exactly
+block-size independent**.
+
+Modulation detail: wow is a slow sine, flutter a fast sine + a little
+band-limited noise, drift a heavily low-passed (~0.35 Hz) random walk,
+unit-std-normalised and hard-bounded so the read can never cross the write
+head (a final `clip(delay, 2, L−2)` is the safety net). The wow/flutter
+LFO phases persist in `self._state`; the drift, flutter-noise and hiss are
+each a **single seeded `default_rng`** (`_TAPE_DRIFT_SEED` /
+`_TAPE_FLUT_SEED` / `_TAPE_HISS_SEED` + `module.id`) drawn **one sample
+per output sample** and streamed through one-pole / biquad filters with
+carried `zi` — so every stochastic path is block-size independent too, and
+a patch renders identically every time. Saturation is
+`tanh(drive·u)/tanh(drive)` via `_dist_curve("soft", …)` on the shared
+`_Oversampler4` (4x); its 16-sample OS latency is folded into the dry
+latency-comp. Hiss is a calibrated floor (RMS = `10^(hiss_db/20)`) living
+in the wet path so it scales with `mix`; off at/below −80 dB. The head
+bump is `_loud_shelf()` (0 dB → identity).
+
+One tape path is modelled: the modulation and hiss are **shared** across a
+polyphonic input's voices (each voice keeps its own delay line,
+oversampler and shelf state, so they never cross-talk); the `(V,F)` core
+runs with `V=1` for mono, so a **single voice row is bit-identical to
+mono**. Neutral (`wow=flutter=drift=sat=bump=0` with `hiss` off)
+short-circuits to a **bit-exact passthrough** — a freshly added Tape does
+nothing until you turn a knob; `mix=0` is likewise bit-exact dry, no state
+advance.
+
+25 tests in `tests/test_tape.py` (model: registration/defaults/ports/kinds
+/JSON/unknown-param/type walls; contract: disconnected silence, frames=0,
+neutral bit-exact, mix=0 dry, float32, finite+bounded at extremes, voice
+shape; character: **wow → measurable pitch deviation** via a windowed
+parabolic-peak tracker — ~59 Hz swing on a 2 kHz tone vs 0 baseline;
+**saturation THD monotone in `sat`** — 0.027 → 0.122 → 0.230; **hiss
+calibrated** to within 0.1 % of the target dB and **reproducible**; **head
+bump lifts lows not highs**; **exact block-size independence** at 512 /
+4096 / 333; voice: single row ≡ mono, voices independent; osc→tape→speaker
+integration). Sandbox suite **1561 passed / 0 failed** (dearpygui + mido
+installed in-sandbox so the UI/MIDI files collect).
+
+pyo: silent stub (added `"tape"` to the TYPE list). Example
+`examples/tape_cassette.json` — clock → sequencer → saw + pluck ADSR → VCA
+→ tape (wow 0.5 / flutter 0.35 / drift 0.3 / sat 0.45 / hiss −48 / bump 3.5
+/ mix 0.7) → speaker; source amp 0.4, speaker gain 0.8, master peak ~0.64
+(headroom rule). Docs: MODULES.md index row + catalogue entry (in the
+patch). No CV inputs, so nothing to add to the `cv_depth` conventions
+table.
+
+Deviation note (working agreement): none — built off-mount via clone +
+patch per protocol; WORKLOG/TODO held out of the patch as snippets
+(compressor/ring_mod/freq_shifter/bitcrusher pattern) because your tree
+carries uncommitted doc drift.
+
+---
+
+## 2026-07-05 — bitcrusher (bit-depth quantize + sample-rate decimation)
+
+The lo-fi "digital destruction" box, new in "Effects". Two independent
+degradations in one module. **Bit reduction**: a mid-tread quantizer,
+`round(x·2^(bits−1))/2^(bits−1)` — 24 bits *skips* the op (bit-exact),
+8 bits is grainy, 1–3 bits is buzzy digital fuzz. **Sample-rate
+reduction**: a sample-and-hold that holds every `rate_div`-th sample
+with **no anti-image filter**, so the discarded content folds back as
+aliasing — that harsh alias *is* the sound (early-sampler / Aphex crunch).
+`rate_div=1` skips it.
+
+The decimator is vectorized, no per-sample loop: when `jitter=0` the
+sampling instant for global index g is `(g//N)·N`; when jitter>0 the
+hold length wobbles around N on a **seeded** stream and boundaries are
+the cumulative sum, located per sample with `searchsorted`. The hold
+phase — global sample offset, the per-voice held value that spans a
+block edge, and (jitter) the boundary list + `default_rng` — persists in
+`self._state`, so holds are continuous across block joins and **every
+path is *exactly* block-size independent** (quantize and decimate
+commute — the quantizer is pointwise — so their order is immaterial).
+Jitter is seeded off `_BITCRUSHER_JITTER_SEED + module.id`, so a patch
+renders identically every time, and it's inert unless `rate_div>1`.
+
+`mix` blends dry/wet (`mix=0` bit-exact dry); the neutral `bits=24 ∧
+rate_div=1` (dc off) short-circuits to the input untouched — bit-exact
+at any mix. `dc_filter` (off by default) is a one-pole DC blocker
+(`y=x−x1+R·y1`, ~20 Hz corner) with per-voice state, the only
+per-sample loop and only when enabled. Shape-polymorphic (V,F) core with
+V=1 for mono → one voice row bit-identical to mono, voices independent.
+
+29 tests in `tests/test_bitcrusher.py` (model/kind wall, disconnected
+silence, neutral + mix0 bit-exactness, quantize step-exact/on-grid/
+bits=1/coarser-at-fewer-bits, hold pattern exact incl. across block
+joins + flat plateaus + fewer transitions at larger rate_div, jitter
+seeded-reproducible/wobbles-lengths/changes-result/inert-without-decim,
+DC removal + off-by-default, mix blend, single-voice≡mono, voices
+independent, (V,F) preserved, block-size independence exact across all
+combos, extremes finite). Sandbox suite **1477 passed / 18 mido skips**
+(2 dearpygui UI files uncollectable in-sandbox as usual); that's the
+freq_shifter baseline 1448 + 29.
+
+pyo: silent stub (added to the TYPE list). Example
+`examples/bitcrusher_lofi.json` — clock → sequencer → saw + pluck ADSR →
+VCA → bitcrusher (8-bit / quarter-rate, slight jitter, DC filter) →
+speaker; source amp 0.5, speaker gain 0.8, peak master ~0.49 (headroom
+rule). Docs: MODULES.md index row + catalogue entry (in the patch).
+
+Deviation note (working agreement): none — built off-mount via clone +
+patch per protocol; WORKLOG/TODO held out of the patch as snippets
+(compressor/ring_mod/freq_shifter pattern) because your tree carries
+uncommitted doc drift.
+
+---
+
+## 2026-07-05 — freq_shifter: Bode single-sideband frequency shifter (up/down sidebands)
+
+The inharmonic twin of `ring_mod`, and a different animal from
+`pitch_shifter`: instead of multiplying every partial by a ratio, it
+*adds the same number of hertz to every partial*, so harmonic input turns
+inharmonic — metallic clang, hollow phasing, and (with feedback) the
+barberpole/Shepard endless-glide. Two outputs from one shift: `out_up`
+raises every partial by `shift` Hz, `out_down` lowers it — the two
+sidebands of a single-sideband (Bode/Moog) modulation.
+
+The analytic signal is built with a 255-tap Type-III FIR **Hilbert pair**
+(`_design_fs_hilbert`, module-level like `_OS_FIR`). Type-III = odd length,
+antisymmetric, so the group delay is an **integer** 127 samples (~2.9 ms) —
+no fractional-delay games on the dry path. Window choice mattered: I
+benchmarked Hamming / Blackman / Kaiser / Blackman-Harris and Hamming was
+the clear winner — a flat >55 dB rejection that *holds down to low
+frequencies*, where the wide-transition windows collapse to ~25–33 dB
+against the Type-III DC null (measured in-sandbox before committing to a
+design). `out_up = x_d·cos φ − x_h·sin φ`, `out_down = x_d·cos φ + x_h·sin
+φ`; φ integrates `2π·shift/sr` per sample, per voice, exclusive-prefix so a
+fresh module's first sample sits at φ=0 (the ring_mod carrier convention).
+`shift_cv` is **linear Hz** (a shift is additive, not 1 V/oct), depth 200
+Hz/unit, clamped ±Nyquist.
+
+The nice structural bit: at `shift = 0` the wet is exactly `x_d`, the input
+delayed by the 127-sample Hilbert latency — the `x_h·sin(0)=x_h·0.0` term
+is exactly zero — so it is bit-exactly the delay-matched dry, and the `mix`
+blend at shift 0 is transparent (no combing). `mix = 0` short-circuits to
+the untouched input (bit-exact bypass, no latency, no state advance), the
+chorus/ring_mod contract.
+
+Feedback (recirculates the wet `out_up`, the barberpole comb) is the one
+part that looks like it should break block-size independence. It doesn't: I
+process each block in fixed 127-sample (= the Hilbert latency) chunks, so
+`out_up[n−L]` for a chunk is always already computed — the recurrence is
+causal and boundary-independent, and with the FIR streamed through
+`lfilter` (carried `zi`) plus a per-voice feedback delay line the result is
+**block-size independent even with feedback** (measured bit-exact after the
+float32 cast at 512 vs 4096 vs 333; I pinned the feedback test at <1e-6 to
+be safe across scipy versions). `feedback` is clamped to 0.9 for a bounded
+loop.
+
+Shape-polymorphic `(V, F)` core, `V=1` == mono; per-voice Hilbert / delay /
+phase state. 32 tests in `tests/test_freq_shifter.py` (model + kind walls;
+mix=0 bit-exact dry; shift=0 == delayed dry bit-exact; single upper/lower
+sideband with >40 dB image rejection by FFT; near-unity gain; negative
+shift swaps sidebands; mix blend keeps both dry and shifted peaks; shift_cv
+moves the shift, depth 0 disables; feedback bounded to the clamp + adds
+copies; single-voice≡mono; voice independence; (V,F) shape; block
+independence with and without feedback; finite at extremes; compiled-graph
+stereo integration). Sandbox suite **1448 passed, 18 mido skips** (+2
+dearpygui UI files uncollectable, the usual); `git am` pre-flighted clean
+onto HEAD e4388e7. pyo: silent stub, added to the TYPE list. Example
+`examples/freq_shifter_barberpole.json` — a saw drone (amp 0.2, headroom
+rule) shifted with feedback into a rising stereo shimmer, peak ~0.41. Docs:
+MODULES.md index row, CV conventions-table row (shift_cv = linear Hz), and
+a full catalogue entry.
+
+Deviation note (working agreement): none — built off-mount via clone +
+patch per protocol; WORKLOG/TODO handed as snippets (this file) because of
+the usual local doc drift.
+
+---
+
+## 2026-07-05 — ring_mod: metallic ring modulator (in × carrier)
+
+New Effects module `ring_mod`: `out = in × carrier`. The carrier is either
+an external audio cable on `carrier` or, when that's unpatched, an internal
+per-voice phase-accumulated sine at `freq` (1..5000 Hz) swept 1 V/oct by
+`freq_cv × freq_cv_depth`. `mix` blends dry against the modulated signal;
+`mix = 0` is a bit-exact dry passthrough.
+
+DSP (`_render_ring_mod` + `_ring_match_voices` + `_ring_internal_carrier`
+in numpy_backend). Blended `(1−mix)·in + mix·(in·carrier)`. The internal
+carrier integrates phase per sample from `freq · 2^(freq_cv_depth·freq_cv)`,
+per-voice phase held in `self._state` (continuous across blocks); an
+**exclusive prefix sum** puts a fresh module's first sample at phase 0
+(sin → 0), so the carrier waveform is deterministic/testable. The `(V,F)`
+core runs with V=1 for mono → a single voice row is bit-identical to mono;
+voices independent via per-voice phase. `mix ≤ 0` short-circuits to the
+input untouched (no phase advance) — the chorus/distortion dry contract.
+
+Invariants. Dry (mix=0) and the external-carrier path are exactly
+block-size independent (pure elementwise multiply, no accumulation); the
+internal sine matches across block sizes to < 1e-6 (float phase-wrap
+rounding — same class as the oscillator's phase accumulator, pinned by
+tolerance and documented). A patched `carrier` bypasses `freq` / `freq_cv`.
+Mismatched carrier/cv voice counts sum-to-mono-then-broadcast (the delay's
+`time_cv` fallback).
+
+pyo: silent stub (numpy is the real impl). UI: `ring_mod` knob branch
+(freq 1..5000 Hz, freq_cv_depth 0..4 oct/unit, mix 0..1 slider). Example
+`ring_mod_bells.json` — a clock-plucked sine (ADSR/VCA) rung by a 523 Hz
+internal carrier into tuned bells; source amp 0.3, speaker 0.7 (gain
+headroom, stereo peak ~0.21).
+
+Tests: 22 in `tests/test_ring_mod.py`. Sandbox suite 1457 passed / 18 mido
+skips, green (includes the 2 dearpygui UI files once dearpygui is present).
+Shipped as `0001-ring_mod.patch` (8 files incl. docs/MODULES.md, 674
+insertions, pure adds; git-am pre-flighted clean onto HEAD 87a9a03).
+
+---
+
+## 2026-07-05 — transient_shaper (threshold-free attack/sustain shaper)
+
+NEW module `transient_shaper` ("Effects"), `in → out`. Reshapes the
+dynamic envelope with no threshold and independent of level.
+
+- **DSP.** Two envelope followers on `|in|` (fast + slow) via the shared
+  fixed-point core (`_audio_to_cv_block`, symmetric one-pole). Their dB
+  difference isolates the transient: positive part (fast leads → onset)
+  drives the `attack` gain, negative part (fast trails → decay) drives the
+  `sustain` gain; each soft-saturated (`1 − exp(−|Δ|/_TS_SENS_DB)`) to top
+  out near ±`_TS_MAX_DB` (12 dB), summed in dB, a 2 ms one-pole smooths the
+  linear gain, multiply. Being a dB *ratio* the control is level-invariant
+  → threshold-free.
+- **Params.** `attack`/`sustain` −1..+1 (0), `speed` fast|med|slow →
+  `_TS_SPEEDS` (0.5/20, 2/50, 5/120 ms). `attack==sustain==0` short-circuits
+  to a bit-exact passthrough.
+- **Invariants.** Single voice row bit-identical to mono; per-voice
+  fast/slow/gain state (no cross-talk); block-size independent to float64
+  round-off (reassociated follower solve, like the compressor; observed
+  bit-exact after the float32 cast in the sandbox). No `*_cv` inputs, so the
+  depth-param convention doesn't apply.
+- **Tests.** `tests/test_transient_shaper.py`, 20 tests — model/ports/
+  signal-kind walls/CATEGORY, neutral bit-exact (every speed), attack-moves-
+  click / sustain-moves-tail with each knob's off-region exactly unity, level
+  invariance at −20 dB + steady-tone transparency, block-size independence,
+  single-voice==mono + independent voices, robustness (silence/DC/unknown-
+  speed/integration). Sandbox suite 1394 passed / 18 mido-skips (+20 over the
+  noise_gate baseline of 1374; 2 dearpygui UI files uncollectable in sandbox).
+- **Delivery.** Code-only patch `0001-transient_shaper.patch` (6 files, 642
+  insertions, pure adds), git-am pre-flighted clean onto HEAD `ec587a7`
+  (→ efd9c62 in the pre-flight). `ui/app.py` left untouched — `speed` uses the
+  text-box fallback; the optional fast/med/slow combo is deferred (see TODO).
+- **Example.** `examples/transient_shaper_snap.json` — clocked saw pluck
+  (LFO→schmitt→AD→VCA) → shaper (`attack` +0.8, `sustain` −0.3, fast) with
+  source levels backed off for the transient boost (speaker peak ~0.77).
+
+---
+
+## 2026-07-05 — noise_gate (hold-and-hysteresis downward gate + gate CV)
+
+Shipped the noise_gate ("Effects"): the inverse of the compressor. While the
+detector sits above `threshold` the signal passes; when it falls away the
+gate closes and ducks the output to the `range` floor. Ports: `in`,
+`sidechain` (normalled to `in`), `out`, and `open` — a 0/1 gate CV that's
+high while the gate is open, a free gate-extractor for driving an ADSR / VCA
+/ clock off an audio signal's dynamics. Params: threshold −80..0 dB (−45),
+hysteresis 0..24 dB (4), attack 0.1..50 ms (1), hold 0..500 ms (40), release
+5..2000 ms (150), range −80..0 dB (−80 = full mute, higher = expander-ish).
+
+Signal path: an instant-attack / one-pole-release peak follower on the
+rectified key, then a Schmitt (open above `threshold`, close only
+`hysteresis` dB below — the two-threshold trick the schmitt module uses)
+with a hold timer that keeps the gate open a minimum time after the level
+dips below the close threshold, then a target gain (1 open / `range` floor
+closed) smoothed by the asymmetric attack/release one-pole, then a multiply.
+
+The whole control chain — detector, Schmitt, hold countdown and gain
+smoothing — runs in one per-sample voice loop (vectorized across voices,
+serial in time, like the limiter's release envelope). Because every stage is
+a plain recurrence with its state carried exactly across blocks, the render
+is **block-size independent AND bit-exact** — no reassociation, so a
+big-block render equals a many-small-block render to the last bit (tested
+15360 vs 512 vs 128 vs 300; out and open both `array_equal`). A step up from
+the compressor/limiter, whose vectorized gain solves match only to float
+round-off. `threshold` at its −80 floor short-circuits to a bit-exact
+passthrough (always open, open=1) — the documented neutral.
+
+Voice-aware per the v0.4 convention: `(F,)` or `(V,F)` in with per-voice
+detector/Schmitt/hold/gain state; a mono sidechain broadcasts across voices,
+a `(V,F)` sidechain keys each voice; single voice row bit-identical to mono
+(`_gate_align_key` mirrors the compressor's sidechain alignment).
+
+25 tests in `tests/test_noise_gate.py` (model/kind walls, neutral
+bit-exactness, gating + range floor mute/partial-duck, hysteresis
+anti-chatter — 149 gate transitions at hysteresis 0 vs 1 with a 12 dB band,
+hold timing to ±5%, open matches the audible gating, sidechain
+external/normalled/silent-key, block-size bit-exactness, single-voice ≡ mono
++ independent voices, osc→gate→speaker and open→vca integration). Sandbox
+suite 1374 passed + 18 mido skips (your venv runs 0), plus the two dearpygui
+UI test files that need a display.
+
+UI: bounded param sliders (dBFS/dB/ms) next to the limiter block. pyo: silent
+stub, added to the TYPE list. Example `examples/noise_gate_chop.json` — a
+unipolar 2 Hz LFO pushes a saw's amp over the threshold twice a second so the
+gate pulses it (auto-tremolo / trance chop); speaker peak ~0.4, headroom rule
+respected. Docs: MODULES.md index row + catalogue entry.
+
+Deviation note (working agreement): built off-mount via clone + patch per
+protocol. FLAG — from the sandbox the mount's *working-tree* copies of
+numpy_backend.py / app.py / __init__.py read as truncated (numpy_backend 6917
+lines vs 7587 at HEAD, ending mid-docstring): the uncommitted
+resampler-window / dsp-load / doc WIP looked corrupted, or the mount was
+truncating large-file reads. Committed HEAD (c642059) is intact — the clone
+built and the full suite passed off it — so this patch is against HEAD and
+excludes the drifted doc files. Verify the working copy before applying.
+
+---
+
+## 2026-07-04 — limiter: brickwall lookahead peak limiter (the "demo can't clip" module)
+
+Second dynamics module after the compressor, and a different animal: where
+the compressor eases gain by a ratio around a threshold, the limiter is an
+absolute wall. Ports `in` → `out`; params `ceiling` (−20…0 dBFS, −1),
+`release` (20…1000 ms, 80), `lookahead` (1…10 ms, 5). Category Effects.
+
+**DSP.** Instantaneous target gain `t = min(1, C/|x|)` (C = 10^(ceiling/20))
+→ slope-limited lookahead anticipation → one-pole release → a final
+per-sample clamp to `C/|x|` → multiply into the audio delayed by the
+lookahead. The anticipation is the interesting bit: `A[i] = min_j(t[i+j] +
+j/L)`, a linear ramp of slope 1/L that starts up to L samples before a peak
+and lands exactly on it — no hard corner, and provably `A ≤ t` so the wall
+holds. Computed as a reversed running min (`minimum.accumulate` of
+`t' − q/L`, add back, reverse) — fully vectorized, no per-sample attack loop.
+The release is instant-attack / one-pole-release on the gain *reduction*
+(`1 − A`), reusing the compressor's per-sample voice loop
+`_audio_to_cv_loop_voice` (instant attack breaks the vectorized solver's
+`a = 0` algebra, so it takes the loop by design). A last `min(g, C/|x|)`
+clamp keeps the ceiling hard to the last ULP regardless of envelope
+round-off.
+
+**Latency.** Fixed `L = round(lookahead_ms·sr/1000)` samples (≥ 1), carried
+as a per-voice delay line + release state, so it's constant across block
+sizes and a parallel path can be compensated by the same amount.
+
+**Invariants.** Under the ceiling the gain is identically 1.0 and the output
+is a bit-exact delayed passthrough (short-circuited, resampler-unity
+precedent). Shape-polymorphic — `(V, F)` limits per voice with no cross-voice
+ducking, a single row bit-identical to mono. Block independence is exact for
+the latency and the neutral path; the limited signal matches a single
+big-block render to float round-off (the anticipation's `+q/L` min-scan
+reassociates, same class as the compressor's gain solve) — pinned at
+atol 1e-6.
+
+**Tests.** 25 in `tests/test_limiter.py` — model/kinds, brickwall on impulse
+trains / 0 dBFS squares / hot sines / hot noise across ceilings (and under
+small blocks), neutral bit-exact delayed passthrough, latency = lookahead
+samples and constant across block sizes, release reaches 1−1/e in the nominal
+time (and longer release recovers slower), big-block ≡ small-blocks,
+single-voice ≡ mono + independent voices, osc→limiter→speaker integration.
+Full suite 1408/0 in the sandbox (dpg/mido/rtmidi/ffmpeg installed;
+sounddevice absent but guarded — no skips).
+
+UI: param-panel block next to the distortion block (ceiling dBFS slider,
+release ms drag, lookahead ms slider). pyo: silent stub, added to the TYPE
+list. Example `examples/limiter_brickwall.json` — two `saw`s a fifth apart
+(amp 0.5 each, headroom rule) → combiner → limiter (−1 dBFS); the summed
+peaks land exactly on the wall. Docs: MODULES.md index row + catalogue entry.
+
+---
+
+## 2026-07-04 — compressor: feed-forward dynamics + external sidechain
+
+The rack's first dynamics processor (`compressor`, CATEGORY "Effects").
+Feed-forward: a detector watches a key signal, and above `threshold` the gain
+is pulled down by `ratio` (1 = off, 20 ≈ limiter), with `attack`/`release` on
+the gain, a soft `knee`, make-up `gain`, and `mix` for parallel compression.
+Ports: `in` + `sidechain` (audio, key **normalled to `in`** when unpatched —
+plug a kick in to duck a pad), `threshold_cv` (cv), → `out` (audio) + `gr`
+(cv, applied gain reduction as `applied_gain − 1`, 0..−1).
+
+Path (one `(V, F)` core; mono is the V==1 case, so a single voice row is
+bit-identical to mono): detector → level → dB → soft-knee gain computer (log
+domain) → attack/release smoothing of the *gain reduction* → linear multiply
+of `in` + make-up + parallel mix. Zero latency, so `mix` needs no delay comp.
+
+Reuse: the reduction envelope rises when compression deepens (→ attack) and
+falls when it eases (→ release) — exactly the follower's "attack where the
+target rises above the state" one-pole, so the smoother is one call to
+`_audio_to_cv_block` (reduction ≥ 0 satisfies its no-cancellation
+precondition), loop kept as the degenerate fallback. RMS detector (~10 ms) is
+a one-pole on key² via `lfilter` + carried `zi`; `peak` is instantaneous.
+Both carry per-voice state → block-size independent (bit-exact detector,
+<1e-6 gain solve). Neutral (`ratio=1 ∧ gain=0 ∧ mix=1`) short-circuits to a
+bit-exact passthrough, detector skipped. Gain computer
+(`_compressor_reduction_db`) is the standard soft-knee law, C1-continuous at
+the knee edges, hard hinge at `knee=0`.
+
+22 tests (`tests/test_compressor.py`); sandbox suite 1365 + 18 mido skips. UI:
+`detector` combo (peak/rms). pyo: silent stub. Example
+`examples/sidechain_pump.json` (clock→AD→VCA kick ducks a saw pad, headroom-
+safe, peak ~0.2). Docs: MODULES.md index + catalogue + `threshold_cv`
+conventions row.
+
+Flagged for review: `gr` = linear `applied_gain − 1` (one reading of "0..−1
+scaled from dB"); `threshold_cv_depth` default 12 dB/unit (spec gave the unit,
+no number). Stretch (lookahead, program-dependent release, `ratio_cv`)
+deferred. Delivered via clone + patch per protocol; WORKLOG/TODO handed over
+as paste-in snippets because the working tree was mid-compaction.
+
+---
+
 ## 2026-05-23 (CVToFrequency examples pass) -- four new patches
 
 Follow-up to phase 1: a sampling of patches exercising the module
@@ -5745,253 +6621,17 @@ split-vs-whole continuity, block-path-engages regression guard,
 instant-attack fallback correctness, state-key shape compatibility.
 Suite: 1292 in-sandbox (was 1257), zero skips.
 
-## 2026-07-03 — resampler: `window` param (size / low-latency knob)
+## 2026-07-04 — Module ideas backlog written
 
-Matthew picked the resampler window-size follow-up off the TODO. The
-looping-buffer window was a fixed backend constant (0.2 s); it's now a
-per-module param.
-
-`window` (ms, 20–2000, default 200): the looping-buffer length. Latency
-is half the window, so this is also the low-latency knob — shorten
-toward 20 ms for tight live input (stronger granular-repeat texture on
-non-unity shifts, seams loop proportionally more often), stretch toward
-2 s for the subtlest texture on big shifts. Engine-level clamp like
-`mix`; the existing frames*4 ring floor still applies, so tiny windows
-are floored by the block size (at block 512 the effective minimum is
-~46 ms / ~23 ms latency). 200.0/1000.0 is the same double as the old
-0.2 literal, so the default render is bit-identical to the pre-param
-engine. Everything downstream — guard band, dry-tap lag, crossfade
-runway — already derived from L and just follows.
-
-Live changes don't reinit. A same-voice-count length change rebuilds
-the ring preserving the most recent min(old, new) samples — sample at
-lag l moves to index L-l with the write head at 0 — and each head keeps
-its absolute lag, clamped into the new window. If the new geometry
-leaves a head inside a guard band, the ordinary seam machinery
-re-centres it under an equal-power crossfade on that very block;
-in-flight fades are dropped (their old tap would read relocated
-content). Proof of the mapping: growing 200→800 ms and shrinking
-400→250 ms mid-stream at unity both continue the delayed passthrough
-*bit-exactly* across the change. Only a shrink below a head's drifted
-lag loses the content under it (genuinely gone); that step rides the
-seam crossfade too, just with new-window content. Voice-count changes
-still full-reinit as before.
-
-UI: drag_float 20–2000 "%.0f ms" in the resampler branch, parallel to
-pitch_shifter's grain_size.
-
-Tests: 14 new in TestWindow — default = legacy latency + bit-identical
-render (explicit 200.0 vs unset); latency scales with window
-(closed-form: int(0.5·L) minus one block — the head's lag is carried
-against the post-write head); block-size floor; both clamps bit-exact;
-tight-window seams still crossfaded (bounded step at 40 ms / block
-128); smaller window loops more often; grow/shrink mid-stream bit-exact
-passthrough continuity; hard-shrink recovery (finite, in-window,
-audibly alive); seam_jumps preserved across a change; voice row == mono
-at a non-default window; JSON round-trip. Suite: 1306 in-sandbox, zero
-skips (was 1292).
-
-Docs: MODULES.md param row + latency prose; module docstring; TODO
-follow-up line updated.
-
-## 2026-07-03 — toolbar DSP-load readout (Matthew's "CPU near the zoom" ask)
-
-Matthew asked for a CPU indicator next to the zoom control. Shipped as a
-**DSP-load** readout — render time over the block budget (frames/sr,
-11.6 ms at 512/44.1k), the figure a DAW's "CPU" meter shows — rather
-than whole-machine CPU, which would need a psutil dependency and says
-little about whether the patch is about to glitch.
-
-Backend: `_fill_output` wraps `render_block` in two perf_counter calls
-and keeps three attributes — an EMA of the load (smoothing 0.9/block,
-settles in a few tenths of a second), a since-start() peak, and an
-over-budget block counter (load > 1.0 = the block missed real time).
-Same no-lock discipline as the meters: plain float/int assignment is
-GIL-atomic, the GUI reads via `dsp_load_snapshot()` → (smoothed, peak,
-overloads). Stats reset in start(); a crashing render leaves them
-untouched (its timing means nothing) and the disabled path
-short-circuits before the timer. Cost: two perf_counter calls per block.
-
-UI: `ui/dsp_load.py` holds the dpg-free maths (zoom.py convention) —
-`format_dsp_load` ("DSP 7%", dashes when stopped) and `load_color`
-(grey stopped / meter-green < 50% / amber < 80% / meter-red beyond,
-palette matching the audio meter fill + clip lamp). The toolbar text
-sits after the zoom Reset button and refreshes in the existing manual
-frame loop next to the meter polls; the backend read is getattr-guarded
-so a backend without the observable just leaves it greyed out.
-
-Tests: 18 new in tests/test_dsp_load.py — formatter (stopped/zero/
-typical/rounding/over-100%/negative clamp), colour thresholds + palette
-pins, fresh-backend zeros, rendered blocks move load and peak (trivial
-patch far under budget), a render pinned at 4x budget converges to ~4
-with 40/40 overloads counted, a single slow block counts once, crash
-leaves stats untouched, start()-style reset, snapshot shape. Injection
-mirrors test_backend_crash.py (monkeypatched render_block, direct
-_fill_output calls — no PortAudio). Suite: 1324 in-sandbox, zero skips
-(was 1306).
-
-
-## 2026-07-03 — filter vectorization slice 5: crossover → per-stage lfilter
-
-Matthew picked slice 5 off the TODO (crossover was the last per-sample
-biquad cascade standing). The LR4 split runs four biquad stages — LP1,
-LP2 in series and HP1, HP2 in series — and the old renderer walked them
-sample by sample in Python, mono and (V,)-broadcast voice variants.
-
-Design follows slices 3/4 verbatim: persisted state stays the raw DF-I
-history (x1, x2, y1, y2) per stage — coefficient-independent, so
-per-block freq_cv coefficient changes behave exactly as the old loop —
-converted to transposed-DF-II zi at block start (lfiltic identity,
-inlined) and read back off the stage input/output buffer tails after.
-State keys unchanged (mono scalars / voice `*_arr` (V,) float64), so
-snapshots and the mono↔voice reinit contract carry over untouched.
-
-One deliberate deviation from the TODO line's suggestion: per-stage
-`lfilter` (4 calls), NOT one `sosfilt` over the 2-section cascade. The
-TODO said “sosfilt fits”, and it does for the output — but sosfilt only
-returns the final signal, and the intermediate stage-1 output's tails
-ARE the DF-I history slice 5 needs to persist (stage 1's y-side, stage
-2's x-side). Recovering them algebraically from sosfilt's zf is possible
-(a2 is bounded ≥ ~0.17 by the fixed Butterworth Q) but divides by a2
-and costs bit-exactness. Per-stage calls read the tails straight off the
-buffers; intermediates stay float64 between stages exactly like the
-loop. Voice shape: coefficients are scalar by design (block-mean freq),
-so each stage is ONE lfilter call across all 16 rows with zi (V, 2) —
-the shared-coefficient shape from slice 4.
-
-Equivalence, spiked then pinned in tests: bit-identical after the f32
-cast on noise grids (static + per-block-swept freqs, frames=1, voice
-mixed content). The spike found one razor case the filter slices never
-hit: a pure sine's HIGH branch lands at ~1e-7 magnitudes where DF-I vs
-transposed-DF-II float64 reassociation flips a float32 ulp — max drift
-~5e-13 absolute, every differing sample below ~−130 dBFS in the oracle
-(so slices 3/4's “max err 0.0” was signal-dependent luck, not a
-structural property; same documented drift class as the ADSR rewrite).
-Tests assert < 1e-6 per house convention plus an explicit
-drift-confinement pin (differing samples must sit below 1e-5 ≈
-−100 dBFS in the oracle).
-
-Timing (sandbox, F=512): mono 0.278 → 0.039 ms/blk (7.1x); 16-voice
-7.065 → 0.206 ms/blk (34.2x) — the old voice cascade was eating 60.9%
-of the 11.6 ms block budget on its own, easily the most expensive
-render path in the rack; now 1.8%.
-
-Tests: 9 new in TestCrossoverLfilterEquivalence — verbatim old mono +
-voice loops as oracles (filter-slice convention): noise multiblock
-static + swept, frames=1 mono + voice, split-vs-whole intrinsic
-continuity, sine drift confinement, voice mixed-content grid with
-exact-silence rows, mono↔voice reinit (post-reinit render == fresh
-module bit-for-bit), state-key compatibility pin.
-Suite: 1315 in-sandbox (+18 mido skips), was 1306.
-
-Slice 6 (native-Windows re-profile) is now NEXT and closes the filter
-vectorization thread.
-
-
-## 2026-07-03 — filter vectorization slice 6 (close-out): native re-profile, two machines
-
-Matthew ran tools/profile_numpy.py on both Windows boxes, both verified
-at 24287c0 (post-slice-5). Same protocol as the 2026-06-07 runs: 512
-frames @ 44100 Hz, 11.61 ms budget, 16-voice chord, 2000 timed blocks
-per scenario.
-
-Main machine (python 3.12.13, numpy 2.4.5, Windows AMD64):
-
-    saw (naive)          mean 0.564 ms   4.9%   worst  9.2%   0/2000 over
-    saw_blep             mean 1.000 ms   8.6%   worst 10.1%   0/2000
-    saw_wt               mean 0.872 ms   7.5%   worst 11.6%   0/2000
-    saw_blep + LFO mod   mean 1.028 ms   8.9%   worst 11.3%   0/2000
-
-Worst block anywhere: 12% of budget. Like-for-like vs the 2026-06-07
-close-out on the same box (post-ADSR-vectorization, pre-filter-slices):
-mean 29–33% → 4.9–8.9%, worst 42% → 12%, still zero misses. The
-vectorization ladder (ADSR → filter slices 3/4 → crossover slice 5 →
-audio_to_cv) has taken the standard chord scenario from "one block shy
-of the deadline" (pre-ADSR: 97–102% mean) to under a tenth of budget.
-
-Oldbeast (ID10TError-desktop, python 3.14.4, numpy 2.4.6, Windows
-AMD64, PowerShell 7.6.3 — note the interpreter/numpy skew vs the main
-box):
-
-    saw (naive)          mean 3.830 ms  33.0%   worst  56.2%   0/2000 over
-    saw_blep             mean 7.132 ms  61.4%   worst 121.1%   2/2000
-    saw_wt               mean 6.369 ms  54.9%   worst  87.4%   0/2000
-    saw_blep + LFO mod   mean 7.383 ms  63.6%   worst 102.5%   2/2000
-
-The profiler's verdict line calls this a "real performance case" for
-pyo; we read it narrower. Means fit (33–64%), p99 fits in every
-scenario (worst p99 9.79 ms vs 11.61 budget) — it's tail spikes that
-breach, 4 blocks in 8000. And pyo can't even install on oldbeast: it
-runs Python 3.14 and pyo/rtmidi have no Windows wheels past 3.12 (no
-MSVC on that box either — the same constraint that pins the build venv
-to 3.12). If oldbeast ever becomes a real playing target the practical
-levers are, cheapest first: block size 512→1024 (doubles the budget per
-block), a voice cap, or a 3.12 venv. Filed under Later; not a filter
-question — the remaining per-block cost on both machines sits in the
-oscillator paths and voice infrastructure, not the (now C-speed)
-recurrences.
-
-Decision: **filter vectorization is DONE and the thread is closed.**
-Slices 1–6 all landed: spike, scipy dep, filter mono (slice 3), filter
-voice (slice 4), crossover cascade (slice 5), native re-profile (this
-entry). The pyo ladder stays resolved at step 2 on the primary machine
-— no performance case (worst block 12%); the 2026-06-06 deferral
-stands unchanged.
-
-One recorded caveat: the profiler's scenarios predate the crossover
-(16-voice osc → filter → ADSR chord), so slice 5's path isn't in these
-numbers — its sandbox timing (34.2x voice, 60.9% → 1.8% of budget)
-lives in the slice-5 entry. Adding a crossover scenario to the tool is
-a candidate follow-up if native crossover numbers are ever wanted.
-
-## 2026-07-03 — vocoder: channel vocoder (Matthew's ask, scoped to the full bank)
-
-Matthew asked for a vocoder and floated a simpler "track the loudest
-frequency" version with a "width" option. Scoping call (his picks): the
-**full channel vocoder** — the simple follower is an auto-wah, not a
-talker — with **selectable 8/12/16/24 bands** and a **sibilance (hiss)
-path** in v1. His "width" idea survives intact as the band-bandwidth
-knob.
-
-New module `vocoder` (Effects): `mod` + `carrier` audio in (both
-mono-summed, the modulation-trio collapse rule), mono `out`. Two matched
-banks of RBJ constant-peak bandpasses at log-spaced centres
-(`freq_lo`..`freq_hi`), Q derived from the adjacent-band spacing ×
-`width` (1.0 = bands meet at −3 dB). The modulator's rectified band
-outputs drive per-band asymmetric followers (`attack`/`release`);
-those envelopes gain the carrier's matching bands; sum = wet. `hiss`:
-a 5 kHz RBJ highpass on the modulator feeds one more follower row that
-gates matching highpassed uniform noise into the wet sum — consonants
-ride in on noise. `gain` is wet-only makeup; `mix` 0 = bit-exact
-carrier passthrough (states still advance, so riding the knob up
-doesn't snap from stale filters).
-
-Implementation reuse, the pleasant part: the filter banks carry the
-parametric_eq **DF-I raw-history** state pattern (coefficient-
-independent, so live edits of width/range/bands behave), one biquad
-helper (`_vocoder_biquad`) shared by all four filter groups; and the
-whole follower bank — N bands + the sibilance row — is **one call** to
-the audio_to_cv monotone-pattern block solve (`_audio_to_cv_block`),
-rows being independent. The noise source is a persisted per-module
-`default_rng` — a *stream*, so any block split draws the identical
-sequence. Net result, tested: **bit-identical output at any block
-size** (8192 vs 512 vs 160).
-
-28 tests in `tests/test_vocoder.py` (model/kind walls, no-carrier and
-no-modulator silences, mix=0 bit-exactness, envelope gating on/off
-ratio, band selectivity via FFT, width leakage ordering, gain
-linearity, hiss-path HF energy, release-tail ordering, bands snapping
-8/12/16/24 + live count change, extreme-settings boundedness, zero
-frames, block independence ×3, voice-sum + single-voice ≡ mono,
-compiled-graph integration). Suite 1343 + 18 mido skips in the sandbox
-(the skips are the known missing-mido thing; Matthew's venv runs 0).
-
-UI: param panel special-case (bands combo, Hz/ms drags, sliders) next
-to the phaser block. pyo: silent stub, added to the TYPE list. Example
-`examples/vocoder_robot_choir.json` — mic → mod, two `saw_blep`s a
-fifth apart (amp 0.25 each, headroom rule) → combiner → carrier;
-speak and the chord talks. Docs: MODULES.md index row + catalogue
-entry.
-
-Deviation note (working agreement): none — built off-mount via clone +
-patch per protocol.
+Brainstorm session (all areas, Matthew's pick): wrote **docs/MODULE_IDEAS.md** —
+~26 detailed module specs (ports/params/DSP/tests/effort, each standalone as a
+work item for a future session/agent, shared submission preamble at top) plus a
+quick-hits list. Families: dynamics (compressor/limiter/noise_gate/transient
+shaper — biggest gap, follower core = audio_to_cv fixed-point technique),
+pitch/freq (ring_mod, freq_shifter, bitcrusher), character/space (tape,
+convolver), CV tools (quantizer, slew, pitch_detector), generative
+(shift_random, euclidean, clock_divider, bernoulli, burst, arpeggiator, chord),
+voices (fm_op, pluck, modal, granular, drum trio), visual (scope, spectrum).
+Suggested first five: compressor, scope, quantizer+shift_random, fm_op,
+convolver. TODO.md gained a pointer line. Docs-only change — no code touched;
+uncommitted on Matthew's tree (commit is his to run).
