@@ -206,7 +206,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`motion_eq`](#motion_eq) | Filters & EQ | `in` (audio), `band{i}_freq_cv`, `band{i}_gain_cv`, `band{i}_q_cv` ×4 (cv) → `out` (audio) |
 | [`tilt_eq`](#tilt_eq) | Filters & EQ | `in` (audio), `tilt_cv` (cv) → `out` (audio) |
 | [`vca`](#vca) | Routing & VCA | `audio` (audio), `cv` (cv) → `out` (audio) |
-| [`resampler`](#resampler) | Effects | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
+| [`resampler`](#resampler) | Effects | `in` (audio), `pitch_cv` (cv), `brake` (gate) → `out`, `out_l`, `out_r` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv) → `out` (audio) |
 | [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
@@ -749,6 +749,7 @@ and lo-fi tape effects.
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to transpose. Unpatched → silence. |
 | `pitch_cv` | in | cv | Added to the transpose, scaled by `cv_depth` (summed in semitone space). |
+| `brake` | in | gate | High engages the tape-stop brake (ORed with the `brake` param switch). Unpatched → released. |
 | `out` | out | audio | The resampled signal (centre pitch). |
 | `out_l` | out | audio | Left of the stereo detune pair (centre − `spread`/2 cents). Equals `out` when `spread` = 0. |
 | `out_r` | out | audio | Right of the pair (centre + `spread`/2 cents). Equals `out` when `spread` = 0. |
@@ -765,6 +766,9 @@ and lo-fi tape effects.
 | `window` | `200.0` | 20 … 2000 ms | Looping-buffer window. Latency is half of it, so shorter = tighter live latency but a stronger loop texture; longer = subtler texture on big shifts. Floored at 4 audio blocks; live changes keep the recent audio (no dropout). |
 | `antialias` | `False` | off / on | Off = raw, aliased **lo-fi** up-shift (the default character). On = band-limit the input before the read so **pitching up** doesn't fold content past Nyquist into aliasing (a cleaner up-shift). Pitch-down and unity never fold, so they're unaffected; the dry side of `mix` stays full-band. |
 | `spread` | `0.0` | 0 … 50 ct | Stereo detune width. 0 = mono (all three outs identical). Above 0, `out_l`/`out_r` read `spread`/2 cents flat/sharp of the centre off their own drifting heads → patch them to L/R speakers for one-module stereo width. `out` stays the centre pitch. ~10–25 ct is a natural spread. |
+| `brake` | `False` | off / on | The tape-stop switch. On (or with the `brake` gate high — they OR) playback decelerates to a **dead stop**; off it spins back up. |
+| `brake_time` | `0.5` | 0 … 5 s | Seconds from full speed to stopped when the brake engages. 0 = instant. |
+| `spinup_time` | `0.25` | 0 … 5 s | Seconds from stopped back to full speed on release. 0 = instant. |
 
 **How it works.** Pitch is summed in semitone space
 (`st = semitones + cents/100 + cv_depth · pitch_cv`), optionally glided
@@ -822,6 +826,26 @@ mono input. Patch `out_l`/`out_r` into the
 outputs are identical — the module is a drop-in mono processor (a single
 centre read, no extra cost) until you dial width in.
 
+**Tape-stop brake (`brake`, `brake_time`, `spinup_time`).** The
+first-class stop/start gesture: engage the brake (the param switch or a
+high `brake` gate — either, they OR together) and playback decelerates
+to a dead stop over `brake_time` seconds; release it and the transport
+spins back up over `spinup_time`. The ramp is linear in *speed* —
+constant-torque physics, the way a real platter or capstan winds down —
+applied to the playback ratio itself, which is why it exists as a
+feature rather than a `glide` trick: glide ramps in semitone space,
+where a full stop is −∞ semitones, unreachable. The brake scales the
+ratio to an actual zero — the pitch dives through the floor, the audio
+freezes (silence through any AC path), and on release it whooshes back
+up to the set pitch. The gesture is module-wide (all voices and spread
+channels brake together — one transport), and while stopped the `mix`
+dry tap keeps playing, so at 50% mix the wet layer brakes over a dry
+bed; leave `mix` at 1 for the full stop-to-silence. Wire a
+[clock](#clock)/[sequencer](#sequencer)/[keyboard](#keyboard) gate into
+`brake` for rhythmic stutter-stops, or flip the switch by hand for the
+DJ power-down. With the brake released and fully recovered the feature
+costs nothing and every render is bit-for-bit what it always was.
+
 For pitch shifting that keeps the *speed* fixed you'd want a granular
 or phase-vocoder engine — a heavier build for later. This one is
 deliberately the tape kind.
@@ -830,13 +854,16 @@ deliberately the tape kind.
 or feed the [FilePlayer](#file_player) in to pitch a sample. Wire an
 [LFO](#lfo) into `pitch_cv` for vibrato/tape-wobble, or an
 [ADSR](#adsr)/[AD](#ad_envelope) for pitch dives; raise `glide` for
-portamento and tape-stop sweeps. Set `mix` to ~0.5 with a few `cents`
-of detune for one-module chorus-style thickening. For instant stereo
-width, raise `spread` to ~15 ct and patch `out_l`/`out_r` into the
+portamento sweeps, or use the `brake` for a true tape-stop. Set `mix`
+to ~0.5 with a few `cents` of detune for one-module chorus-style
+thickening. For instant stereo width, raise `spread` to ~15 ct and
+patch `out_l`/`out_r` into the
 [left](#left_speaker_output)/[right](#right_speaker_output) speakers. See
 `examples/resampler_tape_wobble.json` (saw → varispeed with a slow LFO
-wobbling the pitch → speaker) and `examples/resampler_detune_blend.json`
-(+12 ct at 50% mix → detune thickening).
+wobbling the pitch → speaker), `examples/resampler_detune_blend.json`
+(+12 ct at 50% mix → detune thickening) and
+`examples/resampler_tape_stop.json` (a slow clock gating the brake →
+a tape stop and spin-up every four seconds).
 
 #### `pitch_shifter`
 
@@ -2389,6 +2416,7 @@ loads in the app. Notable ones referenced above:
 - `resampler_tape_wobble.json` — varispeed pitch shift, LFO wobbling the pitch.
 - `resampler_detune_blend.json` — resampler `mix`: +12 cents at 50% dry/wet, one-module detune thickening.
 - `resampler_stereo_spread.json` — resampler `spread`: a mono saw widened into a decorrelated stereo pair (`out_l`/`out_r` → L/R speakers).
+- `resampler_tape_stop.json` — resampler `brake`: a slow clock gating a true tape stop and spin-up every four seconds.
 - `pitch_shifter_harmony.json` — time-preserving shift; +7 st at 50% mix = a fifth harmony.
 - `pitch_shifter_formant_vowel.json` — formant-preserving shift: synthetic vowel up a fourth, timbre intact.
 - `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.

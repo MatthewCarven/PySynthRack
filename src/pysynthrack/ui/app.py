@@ -899,6 +899,31 @@ class App:
                     user_data=user_data,
                 )
                 return
+            if param_name == "brake":
+                # Tape-stop switch: on = decelerate to a dead stop
+                # (linear in speed, over brake_time), off = spin back
+                # up (over spinup_time). Also gateable via the brake
+                # input port.
+                dpg.add_checkbox(
+                    label=param_name,
+                    default_value=bool(current),
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name in ("brake_time", "spinup_time"):
+                dpg.add_drag_float(
+                    label=param_name,
+                    default_value=float(current),
+                    speed=0.01,
+                    min_value=0.0,
+                    max_value=5.0,
+                    format="%.2f s",
+                    width=140,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
 
         if module.TYPE == "sweep_eq":
             # A single CV-swept resonant band (auto-wah / envelope filter).

@@ -249,6 +249,36 @@ def _hermite4(pm1, p0, p1, p2, t):
     return ((c3 * t + c2) * t + c1) * t + c0
 
 
+def _brake_ramp(pos, gate, down, up):
+    """Integrate the resampler's tape-stop brake position over one block.
+
+    ``pos`` is the position entering the block (1 = full speed, 0 =
+    stopped); ``gate`` a ``(F,)`` bool array (True = brake engaged);
+    ``down``/``up`` the per-sample ramp slopes (position units per
+    sample, both positive). Returns ``(factor (F,) float64, end pos)``
+    where ``factor[n]`` is the position after sample ``n``'s step,
+    clipped to [0, 1] -- a ramp linear in speed, the constant-torque
+    way a platter or capstan actually winds down and back up.
+
+    Vectorized segment-wise: within a run of equal gate values the
+    position is just a clipped linear ramp, and a block rarely holds
+    more than a couple of gate edges, so the Python loop is over
+    segments, not samples.
+    """
+    n_frames = gate.shape[0]
+    factor = np.empty(n_frames, dtype=np.float64)
+    edges = np.flatnonzero(gate[1:] != gate[:-1]) + 1
+    start = 0
+    for end in (*edges, n_frames):
+        slope = -down if gate[start] else up
+        seg = pos + slope * np.arange(1.0, end - start + 1.0)
+        np.clip(seg, 0.0, 1.0, out=seg)
+        factor[start:end] = seg
+        pos = float(seg[-1])
+        start = end
+    return factor, pos
+
+
 def _detect_period(x: np.ndarray, sr: int, fmin: float = 25.0,
                    fmax: float = 800.0):
     """Autocorrelation fundamental-period estimate of 1D ``x``.
@@ -7101,6 +7131,13 @@ class NumpyBackend(AudioBackend):
         pitch_cv = self._input_buffer(
             patch, buffers, module.id, "pitch_cv", collapse=False
         )
+        # The brake is a transport gesture, module-wide: a voice-aware
+        # gate collapses so *any* voice's gate high engages it.
+        brake_gate = self._input_buffer(
+            patch, buffers, module.id, "brake", collapse=False
+        )
+        if brake_gate is not None and brake_gate.ndim == 2:
+            brake_gate = brake_gate.max(axis=0)
 
         if src.ndim == 2:
             V = src.shape[0]
@@ -7117,7 +7154,9 @@ class NumpyBackend(AudioBackend):
                 cv = np.broadcast_to(
                     pitch_cv.mean(axis=0), (V, pitch_cv.shape[1])
                 )
-            result = self._render_resampler_core(module, frames, src, cv)
+            result = self._render_resampler_core(
+                module, frames, src, cv, brake_gate
+            )
         else:
             # Mono audio. A 2D pitch_cv collapses to a single shared
             # transpose (mean over voices) -- summing pitch voltages would
@@ -7129,6 +7168,7 @@ class NumpyBackend(AudioBackend):
                 frames,
                 src[np.newaxis, :],
                 None if pitch_cv is None else pitch_cv[np.newaxis, :],
+                brake_gate,
             )
             result = {name: buf[0] for name, buf in d.items()}
 
@@ -7136,13 +7176,15 @@ class NumpyBackend(AudioBackend):
         # spread 0), keyed onto the three output ports downstream.
         return result
 
-    def _render_resampler_core(self, module, frames, src, cv):
+    def _render_resampler_core(self, module, frames, src, cv, brake_gate=None):
         """Shared ``(V, F)`` varispeed engine.
 
         ``src`` is ``(V, F)`` audio; ``cv`` is ``(V, F)`` pitch CV or
-        None. The mono path calls this with ``V == 1``, so a single voice
-        row is bit-identical to the mono render -- the float ops are the
-        same per row regardless of V.
+        None; ``brake_gate`` is a ``(F,)`` gate for the tape-stop brake
+        or None (already collapsed module-wide by the caller). The mono
+        path calls this with ``V == 1``, so a single voice row is
+        bit-identical to the mono render -- the float ops are the same
+        per row regardless of V.
 
         Per output sample the read head advances by the playback ratio
         ``2 ** (st/12)`` (``st`` summed in semitone space and optionally
@@ -7183,6 +7225,28 @@ class NumpyBackend(AudioBackend):
         existing render bit-for-bit). Unity and pitch-down keep reading
         the raw ring, and the dry tap always does, so those bit-exact
         paths are untouched; only the up-shift wet read changes.
+
+        **Tape-stop brake.** With the ``brake`` param on or the
+        ``brake`` gate high, a per-sample brake position ramps 1 -> 0
+        over ``brake_time`` seconds (0 -> 1 over ``spinup_time`` on
+        release) and *multiplies the playback ratio* -- deceleration
+        linear in speed, the constant-torque physics of a real platter
+        or capstan winding down. Working in ratio space is the point:
+        glide ramps in semitone space, where a dead stop is minus
+        infinity, unreachable; the brake scales the ratio to an actual
+        zero, freezing the read head (pitch dives through the floor,
+        then the output holds a constant -- silence through any AC
+        path). While frozen the write head keeps filling the ring, so
+        the ordinary low-edge seam machinery re-centres the head under
+        its crossfade as the ring laps it -- crossfades between
+        near-constant values, inaudible. The gesture is module-wide
+        (every voice and spread channel brakes together, one transport)
+        and sits after glide/pitch and before the anti-alias cutoff
+        tracking (a braked read is slower, so AA correctly relaxes).
+        Disengaged with the position fully recovered, the multiply is
+        skipped entirely -- every existing render is bit-for-bit
+        untouched. The ``mix`` dry tap is a fixed-lag ring read and
+        keeps playing through a stop.
         """
         V = src.shape[0]
         sr = self.sample_rate
@@ -7322,6 +7386,40 @@ class NumpyBackend(AudioBackend):
             ratios[name] = np.exp2(
                 np.clip(s, -self._RESAMP_MAX_ST, self._RESAMP_MAX_ST) / 12.0
             )
+
+        # --- tape-stop / spin-up brake (ratio space) ---
+        # The brake position ramps 1 -> 0 (engaged) / 0 -> 1 (released),
+        # linear in speed, and multiplies every channel's ratio -- a true
+        # deceleration to a dead stop, which semitone-space glide can't
+        # reach (a stop is -inf semitones). Module-wide: one transport,
+        # shared by all voices and spread channels. Fully released with
+        # the position recovered, the multiply is skipped -- brake-free
+        # renders stay bit-for-bit what they always were.
+        brake_on = float(module.params.get("brake", 0.0)) >= 0.5
+        brake_pos = float(state.get("brake_pos", 1.0))
+        if brake_gate is not None:
+            gate = (brake_gate.astype(np.float64) >= 0.5) | brake_on
+            engaged = bool(gate.any())
+        else:
+            gate = None
+            engaged = brake_on
+        if engaged or brake_pos < 1.0:
+            # Slopes in position-units per sample; a zero time stops (or
+            # recovers) within one sample.
+            dn = 1.0 / max(
+                float(module.params.get("brake_time", 0.5)) * sr, 1.0
+            )
+            up = 1.0 / max(
+                float(module.params.get("spinup_time", 0.25)) * sr, 1.0
+            )
+            if gate is None:
+                gate = np.full(frames, brake_on)
+            factor, brake_pos = _brake_ramp(brake_pos, gate, dn, up)
+            state["brake_pos"] = brake_pos
+            for name in ratios:
+                ratios[name] = ratios[name] * factor
+        else:
+            state["brake_pos"] = 1.0
 
         # --- optional anti-alias for pitch-up ---
         # Reading faster than the write shifts source content above Nyquist,

@@ -35,6 +35,15 @@ Coverage:
     shrink below the head's lag recovers finite and audible; a window
     change preserves the seam_jumps observable; single voice row
     matches mono at non-default windows; JSON round-trip.
+  - Tape-stop brake: defaults + JSON round-trip; the ``brake`` port is
+    gate-kind (gate legal, audio rejected); released-and-recovered is a
+    bit-exact no-op whatever the times; engaging decelerates to a dead
+    stop (frozen output); the pitch dives through the ramp; release
+    spins back up to the set pitch; a constant-high gate is
+    bit-identical to the param switch; brake_time 0 stops within a
+    sample; a stop held across many ring laps stays finite and
+    movement-free; a voice row is bit-identical to mono through a full
+    gesture; spread channels brake together (one transport).
   - Integration: osc -> resampler -> speaker renders audible audio; an
     LFO into pitch_cv gives vibrato.
 """
@@ -152,6 +161,9 @@ class TestModel:
             "window": 200.0,
             "antialias": False,
             "spread": 0.0,
+            "brake": False,
+            "brake_time": 0.5,
+            "spinup_time": 0.25,
         }
 
     def test_ports_and_signal_kinds(self):
@@ -159,6 +171,7 @@ class TestModel:
         assert [(p.name, p.signal_kind) for p in rs.input_ports] == [
             ("in", "audio"),
             ("pitch_cv", "cv"),
+            ("brake", "gate"),
         ]
         assert [(p.name, p.signal_kind) for p in rs.output_ports] == [
             ("out", "audio"),
@@ -959,6 +972,217 @@ class TestStereoSpread:
                 rms.append(float(np.sqrt(np.mean(d["out_l"] ** 2))))
         rms = np.array(rms)
         assert rms.min() > 0.2 * rms.max()
+
+
+# ----- Tape-stop brake -------------------------------------------------------
+
+
+def _run_brake(params, sig, brake_blocks=None, gate=None, block=F):
+    """Render ``sig`` block-by-block with a brake gesture.
+
+    ``brake_blocks``: block indices where the ``brake`` *param* is on
+    (None = leave it as the params say). ``gate``: optional per-sample
+    gate array fed into the ``brake`` port (via a clock module's out).
+    Returns the concatenated ``out`` channel.
+    """
+    patch = Patch()
+    src = patch.add_module("oscillator")
+    rs = patch.add_module("resampler", params=params or {})
+    patch.connect(src.id, "out", rs.id, "in")
+    gsrc = None
+    if gate is not None:
+        gsrc = patch.add_module("clock")
+        patch.connect(gsrc.id, "out", rs.id, "brake")
+    b = _backend(block)
+    b.compile(patch)
+    outs = []
+    n = (sig.shape[-1] // block) * block
+    for k in range(n // block):
+        if brake_blocks is not None:
+            rs.params["brake"] = k in brake_blocks
+        bufs = {(src.id, "out"): sig[..., k * block:(k + 1) * block].astype(np.float32)}
+        if gate is not None:
+            bufs[(gsrc.id, "out")] = gate[k * block:(k + 1) * block].astype(np.float32)
+        outs.append(b._render_resampler(rs, block, bufs, patch)["out"])
+    return np.concatenate(outs, axis=-1)
+
+
+def _seg_hz(y):
+    """Dominant frequency of a segment (no latency-skip, unlike _dominant_hz)."""
+    spec = np.abs(np.fft.rfft(y * np.hanning(len(y))))
+    return float(np.fft.rfftfreq(len(y), 1.0 / SR)[spec.argmax()])
+
+
+class TestBrake:
+    def test_defaults_and_roundtrip(self):
+        rs = Patch().add_module("resampler")
+        assert rs.params["brake"] is False
+        assert rs.params["brake_time"] == 0.5
+        assert rs.params["spinup_time"] == 0.25
+        patch = Patch()
+        patch.add_module(
+            "resampler",
+            params={"brake": True, "brake_time": 1.5, "spinup_time": 0.1},
+        )
+        restored = Patch.from_dict(patch.to_dict())
+        r = next(m for m in restored if m.TYPE == "resampler")
+        assert r.params["brake"] is True
+        assert r.params["brake_time"] == 1.5
+        assert r.params["spinup_time"] == 0.1
+
+    def test_brake_port_is_gate_kind(self):
+        patch = Patch()
+        rs = patch.add_module("resampler")
+        assert rs.get_port("brake", "in").signal_kind == "gate"
+        clk = patch.add_module("clock")
+        patch.connect(clk.id, "out", rs.id, "brake")  # gate -> gate legal
+        osc = patch.add_module("oscillator")
+        with pytest.raises(ValueError):
+            patch.connect(osc.id, "out", rs.id, "brake")  # audio -> gate
+
+    def test_brake_off_is_bit_exact_noop(self):
+        # With the brake released (and never engaged) the whole feature
+        # is skipped: renders are bit-identical whatever the times say.
+        sig = np.random.RandomState(50).randn(20 * F).astype(np.float32)
+        a = _render({"semitones": 5.0}, sig)
+        c = _render(
+            {"semitones": 5.0, "brake": False,
+             "brake_time": 3.0, "spinup_time": 2.0},
+            sig,
+        )
+        assert np.array_equal(a, c)
+
+    def test_engaged_decelerates_to_dead_stop(self):
+        # Brake on from the start with a quick ramp: after the stop the
+        # output freezes -- essentially zero sample-to-sample movement
+        # (seam crossfades between near-constant values stay tiny),
+        # where the running tone moves ~0.14/sample.
+        tone = _tone(1000.0, 2.0)
+        out = _run_brake({"brake": True, "brake_time": 0.05}, tone)
+        tail = out[-int(0.5 * SR):]
+        assert np.all(np.isfinite(out))
+        assert np.abs(np.diff(tail)).max() < 0.02
+
+    def test_pitch_dives_through_the_brake(self):
+        # 1 kHz tone, brake engaged at 1.0 s with a 1 s linear ramp: the
+        # pitch before the brake is the source's; mid-ramp it has dived.
+        tone = _tone(1000.0, 3.0)
+        bpb = SR // F  # blocks per second (~86)
+        out = _run_brake(
+            {"brake_time": 1.0},
+            tone,
+            brake_blocks=set(range(bpb, 10 * bpb)),
+        )
+        before = _seg_hz(out[int(0.6 * SR):int(0.95 * SR)])
+        diving = _seg_hz(out[int(1.2 * SR):int(1.45 * SR)])
+        assert before == pytest.approx(1000.0, rel=0.03)
+        assert 400.0 < diving < 900.0
+
+    def test_release_spins_back_up(self):
+        # Stop for half a second, release: the transport winds back up
+        # to the set pitch (here unity -> the source's 1 kHz).
+        tone = _tone(1000.0, 4.0)
+        bpb = SR // F
+        out = _run_brake(
+            {"brake_time": 0.2, "spinup_time": 0.3},
+            tone,
+            brake_blocks=set(range(bpb, 2 * bpb)),
+        )
+        stopped = out[int(1.6 * SR):int(1.9 * SR)]
+        # (engaged at ~1.0 s, stopped by ~1.2 s, released at ~2.0 s)
+        assert np.abs(np.diff(stopped)).max() < 0.02
+        recovered = _seg_hz(out[int(2.8 * SR):])
+        assert recovered == pytest.approx(1000.0, rel=0.03)
+
+    def test_gate_port_equivalent_to_param(self):
+        # A constantly-high gate into the brake port is bit-identical to
+        # flipping the param switch (they OR into the same ramp).
+        tone = _tone(700.0, 2.0)
+        by_param = _run_brake({"brake": True, "brake_time": 0.3}, tone)
+        by_gate = _run_brake(
+            {"brake_time": 0.3}, tone, gate=np.ones(len(tone))
+        )
+        assert np.array_equal(by_param, by_gate)
+
+    def test_brake_time_zero_stops_instantly(self):
+        # brake_time 0: the ratio hits zero within a sample of the
+        # engage -- output frozen from that block on (value-continuous,
+        # the head just stops where it was).
+        tone = _tone(1000.0, 2.0)
+        bpb = SR // F
+        out = _run_brake(
+            {"brake_time": 0.0},
+            tone,
+            brake_blocks=set(range(bpb, 4 * bpb)),
+        )
+        frozen = out[(bpb + 1) * F:int(1.5 * SR)]
+        assert np.abs(np.diff(frozen)).max() < 0.02
+
+    def test_long_stop_finite_through_ring_laps(self):
+        # Held stopped for many windows the write head laps the frozen
+        # read head repeatedly; every lap re-centres under the seam
+        # crossfade. Everything stays finite and movement-free.
+        tone = _tone(500.0, 6.0)
+        bpb = SR // F
+        out = _run_brake(
+            {"brake": True, "brake_time": 0.1, "window": 200.0}, tone
+        )
+        assert np.all(np.isfinite(out))
+        tail = out[int(1.0 * SR):]
+        assert np.abs(np.diff(tail)).max() < 0.02
+
+    def test_voice_row_matches_mono_through_brake(self):
+        # The gesture is module-wide; a single voice row through a full
+        # brake+release is bit-identical to the mono render.
+        sig = np.random.RandomState(51).randn(60 * F).astype(np.float32)
+        gesture = set(range(20, 40))
+        mono = _run_brake(
+            {"brake_time": 0.1, "spinup_time": 0.1}, sig,
+            brake_blocks=gesture,
+        )
+        patch = Patch()
+        src = patch.add_module("oscillator")
+        rs = patch.add_module(
+            "resampler", params={"brake_time": 0.1, "spinup_time": 0.1}
+        )
+        patch.connect(src.id, "out", rs.id, "in")
+        b = _backend()
+        b.compile(patch)
+        outs = []
+        for k in range(60):
+            rs.params["brake"] = k in gesture
+            blk = np.tile(sig[k * F:(k + 1) * F], (2, 1))
+            outs.append(
+                b._render_resampler(rs, F, {(src.id, "out"): blk}, patch)["out"]
+            )
+        v = np.concatenate(outs, axis=-1)
+        assert np.array_equal(v[0], mono)
+        assert np.array_equal(v[0], v[1])
+
+    def test_spread_channels_brake_together(self):
+        # One transport: with spread up, centre and both detune channels
+        # all freeze at the stop.
+        tone = _tone(800.0, 2.0)
+        patch = Patch()
+        src = patch.add_module("oscillator")
+        rs = patch.add_module(
+            "resampler",
+            params={"spread": 20.0, "brake": True, "brake_time": 0.05},
+        )
+        patch.connect(src.id, "out", rs.id, "in")
+        b = _backend()
+        b.compile(patch)
+        chans: dict = {}
+        for k in range(len(tone) // F):
+            d = b._render_resampler(
+                rs, F, {(src.id, "out"): tone[k * F:(k + 1) * F]}, patch
+            )
+            for name, buf in d.items():
+                chans.setdefault(name, []).append(buf)
+        for name in ("out", "out_l", "out_r"):
+            y = np.concatenate(chans[name], axis=-1)
+            assert np.all(np.isfinite(y))
+            assert np.abs(np.diff(y[-int(0.5 * SR):])).max() < 0.02
 
 
 # ----- Integration -----------------------------------------------------------

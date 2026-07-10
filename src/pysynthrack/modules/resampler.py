@@ -35,8 +35,25 @@ behaviour. Changing it live keeps the most recent audio, so tweaking
 the slider doesn't punch a hole in the sound.
 
 ``glide`` smooths pitch changes: with it above zero, slider and CV jumps
-ramp instead of stepping, giving portamento and tape-stop sweeps. At 0
+ramp instead of stepping, giving portamento and pitch sweeps. At 0
 the pitch follows instantly.
+
+The **brake** is the first-class tape-stop / spin-up gesture. Engage it
+(the ``brake`` param switch, or a high ``brake`` gate input — either
+works, they OR together) and playback decelerates to a dead stop over
+``brake_time`` seconds; release it and the transport spins back up over
+``spinup_time``. The ramp is linear in *speed* (a constant-torque brake,
+the way a real platter or capstan coasts down), which glide can't
+imitate: glide ramps in semitone space, and a full stop is minus
+infinity semitones. The brake instead scales the playback ratio itself,
+all the way to zero — the pitch dives through the floor and the audio
+freezes; on release it whooshes back up to the set pitch. Wire a
+sequencer/clock/keyboard gate into ``brake`` for rhythmic
+stutter-stops, or flip the switch by hand for the classic DJ
+power-down. It rides on top of everything else (pitch, glide, spread —
+the whole transport brakes together), and while stopped the ``mix``
+dry tap keeps playing, so at 50% mix you get a brake on the wet layer
+over a dry bed; leave mix at 1 for the full stop-to-silence.
 
 ``mix`` blends the shifted signal against the dry input (1 = fully
 wet, the default; 0 = dry). The dry tap is time-aligned with the
@@ -65,8 +82,9 @@ module is a drop-in mono processor until you dial width in.
 Use cases:
   * Transpose a sample/loop from the FilePlayer — turn one hit into a
     melodic run by sequencing ``pitch_cv``.
-  * Tape-stop / vinyl-brake risers by gliding the pitch down to a
-    crawl.
+  * Tape-stop / vinyl-brake drops: flip ``brake`` (or gate it from a
+    sequencer) for a true deceleration to a dead stop, then a spin-up
+    riser on release.
   * Detune/thicken: +10 cents at 50% ``mix`` for chorusy width,
     without needing a parallel path.
   * Instant stereo widener: raise ``spread`` to ~15 cents and patch
@@ -83,6 +101,8 @@ Ports:
   * ``in`` (audio): the signal to transpose. Unpatched -> silence out.
   * ``pitch_cv`` (cv): added to the semitone amount, scaled by
     ``cv_depth``. Optional; unpatched means 0 (no modulation).
+  * ``brake`` (gate): high engages the tape-stop brake (ORed with the
+    ``brake`` param switch). Optional; unpatched means released.
   * ``out`` (audio): the resampled signal (centre pitch).
   * ``out_l`` / ``out_r`` (audio): the stereo detune pair (centre pitch
     -/+ ``spread``/2 cents). Identical to ``out`` when ``spread`` = 0.
@@ -136,10 +156,22 @@ class Resampler(Module):
             speakers thickens a mono source into a wide, chorus-like
             stereo image from one module. ``out`` stays the centre pitch
             regardless. ~10-25 cents is a natural width.
+        brake: The tape-stop switch (off by default). On (or with the
+            ``brake`` gate input high) playback decelerates to a dead
+            stop; off it spins back up. The ramp is linear in *speed*
+            (constant-torque platter/capstan physics) applied to the
+            playback ratio itself, so unlike glide it reaches an actual
+            stop (a stop is minus-infinity semitones in glide's space).
+        brake_time: Seconds from full speed to stopped when the brake
+            engages (default 0.5). 0 = instant.
+        spinup_time: Seconds from stopped back to full speed on release
+            (default 0.25). 0 = instant.
 
     Ports:
         in (in, audio): signal to transpose. Unpatched -> silence.
         pitch_cv (in, cv): added to the transpose, scaled by cv_depth.
+        brake (in, gate): high engages the tape-stop brake (ORed with
+            the ``brake`` param). Unpatched -> released.
         out (out, audio): the resampled signal (the centre pitch).
         out_l (out, audio): left of the stereo detune pair (centre pitch
             minus ``spread``/2 cents). Equals ``out`` when spread = 0.
@@ -158,10 +190,14 @@ class Resampler(Module):
         "window": 200.0,
         "antialias": False,
         "spread": 0.0,
+        "brake": False,
+        "brake_time": 0.5,
+        "spinup_time": 0.25,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),
         Port("pitch_cv", "in", "cv"),
+        Port("brake", "in", "gate"),
     ]
     OUTPUT_PORTS = [
         Port("out", "out", "audio"),

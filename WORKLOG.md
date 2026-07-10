@@ -7056,3 +7056,49 @@ Known edges left as TODO follow-ups: a queued file that fails to decode
 stalls the queue (loads silence, never "finishes", so no advance) — acceptable
 as stop-ish for v1, could auto-skip; and only whole-list Clear exists, no
 single-item Remove/reorder yet.
+
+## 2026-07-11 — resampler: tape-stop / spin-up brake (the last open idea ships)
+
+Matthew asked whether the resampler could use more love or was at its peak.
+The 07-10 arc (cubic → anti-alias → spread) had closed everything but one
+TODO line: the **tape-stop / spin gesture**. Shipped it.
+
+**Why a feature, not a glide preset:** glide ramps in semitone space, and a
+dead stop is −∞ semitones — unreachable. The brake works in **ratio space**:
+a per-sample brake position ramps 1→0 over `brake_time` (0→1 over
+`spinup_time` on release), **linear in speed** — constant-torque physics,
+how a real platter/capstan winds down — and multiplies the playback ratio,
+all the way to an actual zero. Pitch dives through the floor, the read head
+freezes (output holds a constant → silence through any AC path), release
+whooshes back up to the set pitch.
+
+**Shape.** New gate input `brake` (kind "gate": clock/sequencer/keyboard
+gates patch straight in) ORed with a `brake` param switch; `brake_time`
+0.5 s / `spinup_time` 0.25 s defaults, 0 = instant. Module-wide gesture —
+a (V,F) gate collapses via max (any voice high engages), one transport
+shared by all voices and spread channels. Sits after glide/pitch, before
+the AA cutoff tracking (a braked read is slower → AA correctly relaxes).
+While frozen the write head keeps lapping the ring; the ordinary low-edge
+seam jump re-centres the head under its equal-power crossfade (constant-to-
+constant, inaudible) — zero new declick machinery. Implementation is a
+small `_brake_ramp` helper (segment-wise clipped linear ramp, vectorized
+per gate-run) + a ratio multiply; with the brake released and recovered
+the multiply is **skipped entirely**, so brake-free renders stay
+bit-for-bit what they always were (asserted).
+
+**Tests.** +11 (`TestBrake`): defaults/round-trip; gate-kind port walls;
+released = bit-exact no-op; deceleration reaches a movement-free dead stop;
+pitch dives mid-ramp; release recovers the set pitch; constant-high gate ≡
+param switch bit-exactly; brake_time 0 stops within a sample; a 5 s held
+stop across many ring laps stays finite/click-free; voice row ≡ mono
+through a full gesture; spread channels brake together. Suite: 83
+(resampler) / **1970 pass, 1 skip** full. Docs: module + core docstrings,
+MODULES.md (ports/params tables, a brake paragraph, patching + example
+lists). UI: `brake` checkbox + two time drag-floats.
+`examples/resampler_tape_stop.json` (15 BPM clock gating the brake → a
+stop/spin-up every 4 s) verified end-to-end headlessly: 600 blocks render
+finite, ~1/5 of them near-silent (the stops), full level between.
+
+That empties the resampler idea list — cubic → AA → spread → brake. The
+real-window eyeball (checkbox/drags layout) is meatthread0's, as usual.
+Committed per the working agreement; push is Matthew's.

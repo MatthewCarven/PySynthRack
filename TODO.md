@@ -62,9 +62,19 @@ Living list of what's next. Edit freely.
         above. 9 new tests (`TestStereoSpread`), an example patch; suite 72
         (resampler) / 1948 full. **Resampler "love" arc complete** (cubic →
         anti-alias → stereo spread).
-  - [ ] **tape-stop / spin gesture** — a first-class momentary brake/spin-up
-        with a proper deceleration curve (vs hand-automating semitones+glide).
-        The last open resampler idea.
+  - [x] **tape-stop / spin gesture** — done 2026-07-11. New `brake` param
+        switch + `brake` gate input (ORed), `brake_time` / `spinup_time`
+        (default 0.5 s / 0.25 s). Deceleration is linear in *speed*
+        (constant-torque platter physics) applied in **ratio space** —
+        the reason it's a feature and not a glide trick: glide ramps in
+        semitone space, where a dead stop is −∞ st. The brake multiplies
+        the playback ratio to an actual 0 (pitch dives, audio freezes;
+        the existing low-edge seam machinery absorbs the ring lapping
+        the frozen head). Module-wide (voices + spread channels = one
+        transport); brake-released renders bit-exact untouched. 11 new
+        tests (`TestBrake`; suite 83 resampler / 1970 full), UI
+        checkbox + time drags, `examples/resampler_tape_stop.json`
+        (clock-gated rhythmic stops). **No open resampler ideas left.**
 - [x] **Ctrl+zoom keys debounced** — done 2026-07-10. Ctrl+= / Ctrl+- / Ctrl+0
       were on `add_key_press_handler` and cycled at the OS key-repeat rate when
       held; now `_debounce_key` (shared `_held_keys` gate, cleared on release)
