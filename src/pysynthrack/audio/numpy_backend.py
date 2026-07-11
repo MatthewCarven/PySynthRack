@@ -1359,6 +1359,14 @@ class NumpyBackend(AudioBackend):
             patch = self._patch
             order = list(self._topo_order)
             cv_ports = list(self._cv_output_ports)
+            # Snapshot the module map too. The GUI thread mutates
+            # ``patch.modules`` in place (add/remove a node), and the second
+            # render loop below iterates it — without an atomic snapshot a
+            # concurrent edit raises "dictionary changed size during iteration"
+            # in the audio callback (the RuntimeError seen in the wild). The
+            # ``dict(...)`` copy is a single GIL-atomic step, so it is safe even
+            # though the writer doesn't hold this lock.
+            modules = dict(patch.modules) if patch is not None else {}
         if patch is None:
             return None, {}
 
@@ -1366,7 +1374,7 @@ class NumpyBackend(AudioBackend):
         # (Keyboard publishes both audio and gate).
         buffers: dict[tuple[int, str], np.ndarray] = {}
         for module_id in order:
-            module = patch.modules.get(module_id)
+            module = modules.get(module_id)
             if module is None:
                 continue
             result = self._render_module(module, frames, buffers, patch)
@@ -1397,7 +1405,7 @@ class NumpyBackend(AudioBackend):
 
         out = np.zeros((frames, 2), dtype=np.float32)
         device_blocks: dict[str, np.ndarray] = {}
-        for module in patch.modules.values():
+        for module in modules.values():
             if module.TYPE in self._STEREO_SPEAKERS:
                 target = out
                 if module.TYPE == self._SPECIFIC_STEREO_SPEAKER:

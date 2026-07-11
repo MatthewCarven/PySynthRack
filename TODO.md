@@ -9,6 +9,23 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **Two desktop-rig crashes fixed (audio race + stale meter bar)** — done
+      2026-07-11, from six crash logs Matthew sent. (A) GUI: deleting a
+      CV-source node left a `(module_id, port) -> bar` entry in
+      `_cv_meter_bars`, so the next `_update_cv_meters` frame called
+      `set_value` on the freed item ("Item not found") and killed the GUI loop.
+      Fix: prune the meter maps in `_on_delete_selected` + wrap the CV meter
+      loop in try/except (self-heals) like `_draw_meter_channel` already does.
+      (B) Audio: `render_block_multi` iterated the live `patch.modules` dict
+      that the GUI thread mutates in place, raising "dictionary changed size
+      during iteration" in the callback. Fix: snapshot the module map under the
+      lock (`dict(patch.modules)`) and iterate the snapshot in both loops. 6
+      tests (deterministic mid-loop delete verified to reproduce the pre-fix
+      RuntimeError; + stress + meter-map pruning); suite 2021. **Follow-up not
+      taken:** the audio thread still reads individual params/cables lock-free
+      (benign — scalar/list reads, not the size-change class); a full
+      copy-on-write patch swap would close even that, but it's a bigger refactor
+      than the demonstrated bug warrants.
 - [x] **New nodes no longer land on a lower node's slider** — done 2026-07-11
       (Matthew's one outstanding bug). Auto-placement cascaded each new node
       only ~60px down — under a node's height — so newcomers stacked on top;

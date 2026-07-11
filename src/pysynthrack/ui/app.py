@@ -2813,6 +2813,16 @@ class App:
             self._file_pos_labels.pop(module_id, None)
             self._playlist_listboxes.pop(module_id, None)
             self._fileplayer_advanced_gen.pop(module_id, None)
+            # Drop meter bookkeeping too: the bar drawlist items are freed
+            # with the node below, so a lingering entry would make the next
+            # _update_cv_meters frame call set_value on a dead item — the
+            # "Item not found" GUI crash. (_audio_meter_bars is keyed by id;
+            # the CV bar + auto-range maps are keyed by (id, port).)
+            self._audio_meter_bars.pop(module_id, None)
+            for _mk in [k for k in self._cv_meter_bars if k[0] == module_id]:
+                self._cv_meter_bars.pop(_mk, None)
+            for _mk in [k for k in self._meter_bounds if k[0] == module_id]:
+                self._meter_bounds.pop(_mk, None)
             # Drop any cables touching this module — both in our maps and in
             # the editor visual. ``patch.remove_module`` handles the model.
             for lid, cab in list(self._link_to_cable.items()):
@@ -3365,14 +3375,25 @@ class App:
         if snapshot is None:
             return
         levels = snapshot()
+        stale: list[tuple[int, str]] = []
         for key, bar in self._cv_meter_bars.items():
             value = levels.get(key)
             if value is None:
                 continue
             value = float(value)
             fill = self._auto_range_fill(key, value)
-            dpg.set_value(bar, fill)
-            dpg.configure_item(bar, overlay=f"{value:+.2f}")
+            # Defensive, like _draw_meter_channel: a bar whose node was
+            # deleted this frame is a freed dpg item and set_value would raise
+            # ("Item not found"), taking the whole GUI loop down. Prune it and
+            # move on rather than crash — delete-time pruning is the primary
+            # guard; this self-heals any path that misses it.
+            try:
+                dpg.set_value(bar, fill)
+                dpg.configure_item(bar, overlay=f"{value:+.2f}")
+            except Exception:
+                stale.append(key)
+        for key in stale:
+            self._cv_meter_bars.pop(key, None)
 
     def _update_file_positions(self) -> None:
         """Push each FilePlayer's elapsed / total playhead time into its

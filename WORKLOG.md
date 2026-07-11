@@ -7272,3 +7272,69 @@ tiled canvas falls back to preferred; float return. Full suite **2015 pass /
 1 skip** (was 2001). The dpg glue (`_existing_node_rects`, real rect reads) is
 headless-untestable and joins the real-window eyeball pile. Committed per the
 working agreement; push is Matthew's.
+
+## 2026-07-11 — two crashes from the desktop-rig logs (audio race + stale meter bar)
+
+Matthew sent six crash reports from the desktop build. They cluster into two
+distinct bugs, both real and neither related to the node-placement work.
+
+### Family A — GUI crash: "Item not found" in _update_cv_meters (3 logs)
+
+`crash_..._gui.txt` ×3: `dpg.set_value` raised `Item not found: <id>` from
+`_update_cv_meters`, iterating `_cv_meter_bars` and pushing levels into bar
+drawlist items. The backend was `stopped` in all three (incidental — the meter
+snapshot returns the last levels regardless).
+
+**Root cause.** `_on_delete_selected` prunes eight bookkeeping maps on a node
+delete but **not** `_cv_meter_bars` / `_audio_meter_bars` / `_meter_bounds`.
+Deleting a CV-source node frees its bar items (children of the node) yet leaves
+the `(module_id, port) -> bar` entry behind; the next per-frame
+`_update_cv_meters` calls `set_value` on the freed id and the whole GUI loop
+dies. (`_update_audio_meters` never showed up in the logs because
+`_draw_meter_channel` already wraps its dpg calls in try/except — the CV loop
+was the one bare site.)
+
+**Fix (two layers).** (1) Root cause: `_on_delete_selected` now prunes the two
+bar maps + the auto-range `_meter_bounds` for the deleted module id, beside the
+existing pops. (2) Defence-in-depth: `_update_cv_meters` wraps its
+`set_value`/`configure_item` in try/except like `_draw_meter_channel`, and
+prunes any entry that raises — self-healing for any path that ever misses the
+delete-time prune.
+
+### Family B — audio crash: "dictionary changed size during iteration" (3 logs)
+
+`crash_..._audio_callback.txt` ×3: `RuntimeError` inside `render_block_multi`,
+always with `SpecificStereoSpeakerOutput` last and the second render loop's
+locals present (`out`, `device_blocks`, `dev`, `channels`, `target`).
+
+**Root cause.** `compile()` stores the App's *same* `Patch` object as
+`self._patch`, and the GUI thread mutates `patch.modules` in place
+(`add_module`/`remove_module`) **outside** the backend lock. The audio thread
+grabs `patch` under the lock but then iterates `patch.modules.values()`
+(second loop) with the lock released — a concurrent add/remove mid-iteration
+raises. The first loop was immune (it walks a list copy of the topo order);
+only the raw `.values()` iteration was exposed. Cables aren't affected —
+they're list-based, and only dict/set iteration raises this particular error.
+
+**Fix.** Snapshot the module map atomically under the lock alongside `order` /
+`cv_ports` (`modules = dict(patch.modules)`), and iterate the snapshot in both
+loops. `dict(...)` is a single GIL-atomic step so it's safe even though the
+writer doesn't take the lock; a module added/removed mid-block is simply seen
+next block. Per-block cost is a shallow copy of a small dict — negligible.
+Residual by design: individual param/cable reads on the audio thread stay
+lock-free (scalar/list reads, no size-change RuntimeError class).
+
+### Tests
+
+`tests/test_render_modules_snapshot.py` (3): a deterministic mid-second-loop
+delete (wraps `_SPEAKER_CHANNELS.get` to pop a module during iteration) —
+**verified it raises the exact RuntimeError with the pre-fix live-dict loop and
+passes after**; a snapshot-not-live-dict proof (drop a module the instant
+render starts, block still completes); a threaded add/remove-vs-render stress
+loop. `tests/test_meter_bar_cleanup.py` (3, dpg mocked): delete prunes all
+three meter maps for the victim and leaves a sibling's; `_update_cv_meters`
+survives a bar whose `set_value` raises and prunes it; empty-map no-op. Full
+suite **2021 pass / 1 skip** (was 2015). Committed per the working agreement;
+push is Matthew's. The live GUI-crash and audio-race paths remain
+headless-untestable end-to-end, but both are now covered at the unit level and
+the demonstrated failure modes are pinned.
