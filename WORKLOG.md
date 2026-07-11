@@ -7338,3 +7338,20 @@ suite **2021 pass / 1 skip** (was 2015). Committed per the working agreement;
 push is Matthew's. The live GUI-crash and audio-race paths remain
 headless-untestable end-to-end, but both are now covered at the unit level and
 the demonstrated failure modes are pinned.
+
+## 2026-07-11 — README refresh (caught it up to reality)
+
+The README still described "v0.1: oscillator + speaker only" with filters /
+ADSR / LFO / MIDI listed under "coming next" — all long shipped. Rewrote the
+Status + What-works sections to the current reality: **60 modules** across seven
+categories (enumerated by category), the node-editor features (zoom, meters,
+scroll-to-adjust, overlap-aware placement, layout persistence), MIDI, recording,
+multi-device output, crash logging, and the ~1,900-test headless suite. Also:
+corrected the backend framing (numpy is the reference/full backend every module
+targets; pyo is an optional partial alternative — verified pyo_backend is 381 LOC
+/ ~11 render branches vs numpy's 9,675), added the `[media]` extra, refreshed the
+architecture tree (`_crash.py` / `error_handler.py`), dropped stale version refs
+("arrives in v0.3", "handles everything in v0.1 and v0.2"), and removed the
+obsolete `git init` walkthrough (the repo has been a live git repo for ages).
+Screenshots, binary links, and the install/run/troubleshooting steps left intact
+(still accurate). Docs-only; committed per the working agreement.

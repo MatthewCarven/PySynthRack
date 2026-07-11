@@ -2,19 +2,56 @@
 
 A modular software synthesizer in Python with a drag-cable node-graph UI. Think VCV Rack / Reaktor in spirit — modules with input/output jacks, you wire them together by drawing cables.
 
-## Status: v0.1 (work in progress)
+## Status: active development (pre-1.0)
 
-What works in v0.1:
+PySynthRack has grown well past its first prototype into a working instrument:
+**60 modules** across seven categories, a full CV/modulation system, MIDI,
+recording, and a node editor with zoom, live meters, and per-patch layout
+persistence. It's still pre-1.0 — the patch format and APIs can shift — but you
+can build real patches in it today.
 
-- Oscillator module — sine / saw / square / triangle, each (except sine) in three
-  band-limiting flavours: naive, PolyBLEP/PolyBLAMP (`*_blep`), and wavetable (`*_wt`)
-- Speaker output module — plus LeftSpeakerOut / RightSpeakerOut hard-panned variants (pair them for stereo)
-- Drag-cable node-graph UI (DearPyGui)
-- Start/Stop audio
-- Save / load patch as JSON
-- Two audio backends behind one interface — `pyo` (primary) and `sounddevice + numpy` (fallback). The app picks whichever is available at startup.
+### What works
 
-Coming next: filters, ADSR envelope, LFO, mixer, splitter/combiner, Linkwitz-Riley crossover, disk-writer output, MIDI input.
+- **60 modules** in seven Add-menu categories:
+  - **Sources** — oscillator (sine / saw / square / triangle, each in naive,
+    PolyBLEP/PolyBLAMP `*_blep`, and wavetable `*_wt` flavours), noise,
+    computer-keyboard and CV keyboards, single-key triggers, MIDI input, a
+    WAV/audio **file player with a queue**, and microphone input.
+  - **Filters & EQ** — multimode resonant filter, Linkwitz-Riley crossover, and
+    parametric / sweep / motion / tilt EQ plus a loudness contour.
+  - **Effects** — delay, reverb, chorus, flanger, phaser, distortion,
+    waveshaper, bitcrusher, tape, convolution reverb (IR), ring modulator,
+    frequency shifter, pitch shifter, resampler (with tape-stop/spin), vocoder,
+    and a full dynamics set (compressor, limiter, noise gate, transient shaper).
+  - **Modulation** — LFO, ADSR, AD envelope, clock, step sequencer, fader
+    sequencer.
+  - **Routing & VCA** — VCA, 4-in mixer, audio/CV combiners.
+  - **CV & Utilities** — audio↔CV bridges, Schmitt trigger, constant, CV
+    scale/offset, sample & hold, level meter.
+  - **Outputs** — mono / left / right / stereo speaker outs, per-device output
+    routing, and a disk recorder.
+- **Drag-cable node-graph UI** (DearPyGui): wire jacks together, canvas zoom
+  (Ctrl +/‑/wheel), scroll-to-adjust knobs, live CV and audio-level meters, and
+  overlap-aware node placement.
+- **Three signal kinds** — audio / CV / gate — with bridge modules to convert
+  between them and a standardised 1 V/oct + `cv_depth` modulation convention.
+- **MIDI input** from a hardware controller (optional `[midi]` extra).
+- **Recording to disk** and **multi-device output** (route a sub-mix to a named
+  sound card, e.g. a monitor/cue bus).
+- **Save / load patches** as JSON, with per-patch window size/position and zoom
+  restored on reopen; a global buffer-size control and DSP-load readout live in
+  the toolbar.
+- **Crash logging** — uncaught GUI and audio-thread errors are written to
+  `~/.pysynthrack/crashes/` instead of vanishing.
+- **Two audio backends** behind one interface: **sounddevice + numpy** — the
+  reference implementation every module targets, and the default — plus an
+  optional, partial **pyo** backend.
+- **CLI mode** for headless rendering, backed by an extensive headless test
+  suite (~1,900 tests — no audio device or display required).
+
+See **[docs/MODULES.md](docs/MODULES.md)** for the full per-module reference,
+**[TODO.md](TODO.md)** for the roadmap, and **[docs/architecture.md](docs/architecture.md)**
+for the design write-up.
 
 <img width="1266" height="793" alt="image" src="https://github.com/user-attachments/assets/60918d8e-b21c-46fd-a0d4-768854ec9ee6" />
 
@@ -25,12 +62,14 @@ Coming next: filters, ADSR envelope, LFO, mixer, splitter/combiner, Linkwitz-Ril
 
 ```
 src/pysynthrack/
-├── core/        # Pure-Python model: Port, Module, Patch (no audio, no UI)
-├── audio/       # AudioBackend interface + pyo / numpy implementations
-├── modules/     # Module type definitions (Oscillator, SpeakerOutput, ...)
-├── io_patch/    # JSON save / load
-├── ui/          # DearPyGui app — node editor, palette, transport
-└── __main__.py  # Entry point
+├── core/            # Pure-Python model: Port, Module, Patch (no audio, no UI)
+├── audio/           # AudioBackend interface + numpy (reference) / pyo backends
+├── modules/         # The 60 module type definitions — ports & params, no DSP
+├── io_patch/        # JSON save / load
+├── ui/              # DearPyGui app — node editor, palette, transport, meters
+├── _crash.py        # Crash-log wiring (GUI + audio-thread hooks)
+├── error_handler.py # Rich error-report writer (~/.pysynthrack/crashes/)
+└── __main__.py      # Entry point (GUI, with a --cli fallback)
 ```
 
 The model layer is intentionally backend-agnostic. The UI edits the model. The backend compiles the model into a running audio graph. This keeps DSP and UI concerns cleanly separated, and means swapping the audio engine doesn't require touching the UI.
@@ -119,7 +158,7 @@ pip install -e ".[midi]"
 
 If `python-rtmidi` fails to build on Windows, the wheels usually solve it: `pip install --upgrade pip` first, then retry. On Linux you may need `apt install libasound2-dev libjack-dev` before the build succeeds. The MIDIInput module gracefully reports "no devices found" if the install is missing — the rest of the app still works.
 
-The `[gui]`, `[pyo]`, `[midi]`, `[all]`, and `[dev]` extras are defined in `pyproject.toml`. The trailing dot in `pip install -e .` means "install the project in this directory in editable mode" — without it you'll get `No module named pysynthrack` when you try to run.
+The `[gui]`, `[pyo]`, `[midi]`, `[media]`, `[all]`, and `[dev]` extras are defined in `pyproject.toml`. `[media]` bundles a static ffmpeg binary so the file player can read mp3/flac/ogg and the audio track of video files without a system ffmpeg. The trailing dot in `pip install -e .` means "install the project in this directory in editable mode" — without it you'll get `No module named pysynthrack` when you try to run.
 
 ### Verifying you installed into the right venv
 
@@ -131,44 +170,9 @@ python -c "import pysynthrack; print(pysynthrack.__file__)"
 
 If the path is somewhere outside the venv, packages went to the wrong Python — usually a sign that `pip` and `python` resolve to different installs.
 
-### Version control
-
-This folder is set up for git but the repo has to be initialized from your own PowerShell (the editor's sandbox can't reliably write `.git` through the Windows mount).
-
-```powershell
-cd "C:\Users\Admin\Desktop\-=Programming=-\Python Synthesiser 2\Python Synthesizer"
-
-# If a broken .git folder is present from a previous attempt, delete it first.
-if (Test-Path .git) { Remove-Item -Recurse -Force .git }
-
-# Initialize on the modern default branch name.
-git init -b main
-
-# Stage everything; .gitignore already excludes .venv, __pycache__, *.wav, etc.
-git add .
-
-# Sanity-check what's about to be committed.
-git status
-
-# First commit.
-git commit -m "v0.2: oscillator, keyboard, filter, drag-cable UI"
-
-# Optional: tag the milestone so you can `git checkout v0.2.0` later.
-git tag v0.2.0
-```
-
-To push to GitHub afterwards:
-
-```powershell
-# Create the empty repo on github.com first (no README, no .gitignore — we have those).
-git remote add origin https://github.com/<your-username>/pysynthrack.git
-git push -u origin main
-git push --tags
-```
-
 ## Notes on pyo
 
-pyo doesn't ship Windows wheels — `pip install pyo` tries to compile from C source. That works only if you have Microsoft Visual Studio Build Tools + PortAudio dev headers set up. If the build fails (`error: [WinError 2] The system cannot find the file specified`), skip the `[pyo]` extra — the numpy backend handles everything in v0.1 and v0.2.
+pyo doesn't ship Windows wheels — `pip install pyo` tries to compile from C source. That works only if you have Microsoft Visual Studio Build Tools + PortAudio dev headers set up. If the build fails (`error: [WinError 2] The system cannot find the file specified`), just skip the `[pyo]` extra — the numpy backend is the reference implementation and covers every module, so you lose nothing.
 
 ## Running
 
@@ -190,11 +194,11 @@ python -m pysynthrack --cli --patch my_patch.json # custom patch
 python -m pysynthrack --cli --backend numpy       # force numpy backend
 ```
 
-CLI mode is the fastest way to verify your audio device works and a patch makes sound. It's also useful for batch rendering or running patches from a script — both arrive properly in v0.3.
+CLI mode is the fastest way to verify your audio device works and a patch makes sound. It's also useful for batch rendering or running patches from a script.
 
 ### Forcing a backend
 
-The app prefers `pyo` when installed, else falls back to `sounddevice + numpy`. To override:
+The app selects `pyo` when it's installed, else `sounddevice + numpy` (the full-featured default). To override:
 
 ```powershell
 $env:PYSYNTHRACK_BACKEND = "numpy"   # or "pyo"
@@ -222,4 +226,4 @@ Headless tests (everything under `tests/`) don't require an audio device or disp
 
 - DSP code lives in `audio/` backends; UI code lives in `ui/`. Module classes in `modules/` declare ports and parameters but contain no audio rendering — they are descriptions, not implementations.
 - Cable connections are stored in `Patch`, not on the ports themselves. This keeps the model serializable.
-- The pyo backend is preferred when available; the numpy backend is the fallback. Both implement the same `AudioBackend` interface.
+- The numpy backend is the reference implementation — every module targets it, and it's the default. The optional pyo backend covers a subset and is selected first only when installed. Both implement the same `AudioBackend` interface.
