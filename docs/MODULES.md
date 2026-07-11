@@ -200,6 +200,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`mic_input`](#mic_input) | Sources | — → `left`,`right` (audio) |
 | [`cv_to_frequency`](#cv_to_frequency) | Sources | `cv` (cv) → `out` (audio) |
 | [`noise`](#noise) | Sources | — → `out` (audio), `cv` (cv) |
+| [`fm_op`](#fm_op) | Sources | `pitch_cv`,`amp_cv`,`index_cv` (cv), `pm` (audio) → `out` (audio) |
 | [`filter`](#filter) | Filters & EQ | `in` (audio), `cutoff_cv` (cv) → `out` (audio) |
 | [`crossover`](#crossover) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
 | [`parametric_eq`](#parametric_eq) | Filters & EQ | `in` (audio) → `out` (audio) |
@@ -566,6 +567,43 @@ so `amp` means the same level for both colors. `amp` scales both jacks
 past it). Output is mono — a source has no voice context of its own and
 broadcasts cleanly to any per-voice consumer. See
 `examples/noise_hat.json`.
+
+---
+
+#### `fm_op`
+
+One DX-style phase-modulation **FM operator**: a sine oscillator whose phase is
+modulated by an audio-rate input. That single primitive is the whole of FM
+synthesis — patch one operator's `out` into another's `pm` and stack them
+(two make a bell, three make an electric piano). Each operator carries its own
+level envelope via `amp_cv`, exactly like a DX7 voice.
+
+Per sample: `core = sin(2π·phase + index·pm + feedback·core_prev)` and
+`out = amp_cv · core`. `phase` integrates the carrier frequency, so `pitch_cv`
+is a true per-sample 1 V/oct input (C4 = 0 V). `pm` is added directly into the
+sine argument, which is in radians, so **`index` is the peak phase deviation in
+radians for a full-scale `pm`** — a unit sine into `pm` at `index = I` gives
+the classic modulation index `β = I`, and at a 1:1 ratio the output shows the
+textbook Bessel sideband amplitudes `J_k(β)`.
+
+Frequency: normally `261.6256 Hz (C4) · 2**pitch_cv · ratio · 2**(fine/1200)`.
+`ratio` snaps to the nearest entry of a harmonic table (0.25 .. 16, a UI combo)
+so hand-dialled values land on musical partials; `fine` detunes ±50 cents. In
+`fixed` mode the carrier ignores `pitch_cv`/`ratio`/`fine` and runs at a
+constant `freq` Hz. `feedback` (0..1) feeds the previous output back into the
+phase — a lone operator brightens toward a saw. `index_cv` (× `index_cv_depth`)
+modulates the index from an envelope/LFO — the central FM gesture, since the
+index *is* the brightness (effective index floored at 0).
+
+**Ports:** `pitch_cv` (cv, 1 V/oct; unpatched → base pitch), `pm` (audio phase
+modulator), `amp_cv` (cv output level; unpatched → unity), `index_cv` (cv) →
+`out` (audio). Voice-aware: a single voice row is bit-identical to mono, voices
+keep independent phase/feedback state, and the output is block-size independent
+(< 1e-6). `feedback = 0` runs a vectorized block path; any `feedback > 0`
+drops to a per-sample loop (bit-identical to the block path at 0). Pairs with
+`ring_mod` / `freq_shifter` as the inharmonic corner, but is a full voice. See
+`examples/fm_op_bell.json` (2-op bell) and `examples/fm_op_epiano.json`
+(3-op electric piano).
 
 ---
 

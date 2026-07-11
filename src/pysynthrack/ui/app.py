@@ -25,6 +25,7 @@ from ..core.module import grouped_module_types
 from ..core.patch import Cable, Patch
 from ..io_patch import load_patch, save_patch
 from ..modules.filter import FILTER_MODES
+from ..modules.fm_op import RATIO_TABLE as FM_RATIO_TABLE, snap_ratio as fm_snap_ratio
 from ..modules.keyboard import midi_to_name, semitone_to_midi
 from ..modules.key_trigger import KEY_TRIGGER_MODES
 from ..modules.cvcombiner import CVCOMBINER_MODES
@@ -792,6 +793,58 @@ class App:
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=1.0,
                     min_value=-24.0, max_value=24.0, format="%.0f st",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "fm_op":
+            # DX-style FM operator. ``ratio`` is a combo of the harmonic
+            # snap table (stored numeric via _on_fm_ratio_changed); ``fine``
+            # is cents; ``index`` is the FM depth in radians; ``feedback`` is
+            # self-PM; ``fixed`` + ``freq`` give a note-independent carrier.
+            # ``fixed`` (bool) falls through to the generic checkbox below.
+            if param_name == "ratio":
+                dpg.add_combo(
+                    label=param_name,
+                    items=[f"{r:g}" for r in FM_RATIO_TABLE],
+                    default_value=f"{fm_snap_ratio(float(current)):g}",
+                    width=140,
+                    callback=self._on_fm_ratio_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name == "fine":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-50.0, max_value=50.0, format="%.0f ct",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "index":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=10.0, format="%.2f rad",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "index_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=10.0, format="%.2f /unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "feedback":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "freq":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=20.0, max_value=20000.0, format="%.1f Hz",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
@@ -2083,6 +2136,16 @@ class App:
         module_id, param_name = user_data
         try:
             self.backend.set_param(module_id, param_name, coerce_buffer_size(app_data))
+        except Exception as exc:
+            self._set_status(f"Param error: {exc}")
+
+    def _on_fm_ratio_changed(self, sender, app_data, user_data) -> None:
+        """An fm_op ``ratio`` combo changed. The combo carries the harmonic
+        as a string; store it as a float (snapped onto the table) so patches
+        stay numeric and the renderer's own snap is a no-op on the value."""
+        module_id, param_name = user_data
+        try:
+            self.backend.set_param(module_id, param_name, fm_snap_ratio(app_data))
         except Exception as exc:
             self._set_status(f"Param error: {exc}")
 

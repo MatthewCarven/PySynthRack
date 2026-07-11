@@ -7428,3 +7428,91 @@ apply), and confirm real audio out of a *second* physical device at a custom
 buffer size. These match the project's existing "SHIPPED, pending real-GUI
 eyeball" pattern (buffer slider, window persistence). Committed per the working
 agreement; push is Matthew's.
+
+## 2026-07-11 — `fm_op` (DX-style FM operator, Sources)
+
+Matthew picked `fm_op` off the module-ideas backlog ("new synthesis territory,
+small testable surface"). One phase-modulation operator — a sine oscillator
+whose phase is driven by an audio-rate input — which is the whole of DX FM: two
+patched together make a bell, three make an electric piano. Built from the
+spec in `docs/MODULE_IDEAS.md`.
+
+**DSP.** Per sample `core = sin(2π·phase + index·pm + feedback·core_prev)`,
+`out = amp_cv · core`. Phase integrates the carrier frequency
+(`261.6256·2**pitch_cv·ratio·2**(fine/1200)`, or a fixed `freq`) as an
+exclusive prefix-sum with per-voice phase persisted in `self._state` — lifted
+straight from `_ring_internal_carrier`, so a fresh module starts at phase 0 and
+a swept `pitch_cv` stays continuous across blocks. Reused `_ring_match_voices`
+for all the `(V,F)` input coercion.
+
+**The radians scaling (the thing to get right).** `pm` is added *directly* into
+the sine argument, which is in radians, so `index` is the peak phase deviation
+in radians for a full-scale `pm`. That makes `β = index · peak(pm)` the classic
+FM modulation index, and the analytic test is exact: a unit sine into `pm` at a
+1:1 ratio produces sideband `k` at amplitude `|J_k(β)|` — measured against
+`scipy.special.jn` over a leakage-free 1-second rectangular FFT (integer-Hz
+carrier + modulator complete whole cycles → no windowing needed), matching to
+float32 for β = 1, 2, 3.
+
+**Dual engine (delay precedent).** `feedback = 0` has no sample-to-sample
+dependency, so the whole block vectorizes (`np.sin(theta + pm_arg)`).
+`feedback > 0` needs the sequential recurrence, so it drops to a per-sample
+loop (V-vectorized, F-looped) with `core_prev` carried in `self._state["fb"]`.
+The two paths are **bit-identical at feedback 0** (`0·prev` adds nothing, and
+the last-sample state is written on both paths so turning feedback up next
+block continues seamlessly) — verified against a verbatim per-sample oracle
+(max err 0.0). Block-size independent to < 1e-6 (the ring_mod phase-wrap
+contract; the cross-block cumsum reassociation is the only source of drift,
+well under 1e-6, both engines).
+
+**Reconciliation — `index_cv`.** The spec's Ports line listed `pitch_cv` / `pm`
+/ `amp_cv` but the Params line listed `index_cv_depth`, with no matching input.
+A depth param implies its CV input per the project conventions, and an *index
+envelope* is the single most important gesture in FM (the index is the
+brightness), so I added the `index_cv` input. Effective index =
+`max(index + index_cv_depth·index_cv, 0)` (floored so a bipolar CV can null the
+FM but not invert it). Flagged here as a deliberate deviation from the literal
+port list.
+
+**Ratio snapping.** `ratio` snaps to the nearest entry of a 20-value
+harmonic-leaning table (`RATIO_TABLE` in the module, shared by the renderer's
+`snap_ratio` and the UI). Snapping lives in the renderer so a hand-edited JSON
+value still lands on a musical partial; the UI presents `ratio` as a **combo**
+of the table (stored numeric via a small coercing callback `_on_fm_ratio_changed`,
+same pattern as the buffered-sink `buffer_size` combo), so the panel offers
+exactly the allowed set. `fixed` mode bypasses ratio/fine/pitch_cv entirely and
+runs at the constant `freq`.
+
+**UI.** An `fm_op` block in `_add_param_widget`: the ratio combo, `fine`
+(±50 ct slider), `index` (0..10 rad slider), `index_cv_depth` (drag),
+`feedback` (0..1 slider), `freq` (Hz drag); `fixed` falls through to the
+generic checkbox. Without this block the auto-UI would have rendered these as
+unbounded bare drag-floats — functional but not eyeball-ready. pyo gets the
+one-line silent stub (added `"fm_op"` to the stub tuple).
+
+**Levels / examples.** `amp_cv` unpatched → unity (the operator is a Source, so
+it sounds with nothing patched); patched, it's the operator's level envelope.
+`examples/fm_op_bell.json` (2-op: a 3.5:1 modulator with a fast brightness
+envelope into a 1:1 carrier + slow body envelope) and `fm_op_epiano.json` (3-op:
+a 14:1 tine modulator + 1:1 body modulator summed through a `combiner` into a
+1:1 carrier) both load and render at 0.6 peak (audible, within headroom).
+
+### Tests
+
+`tests/test_fm_op.py` (29): model (defaults/ports/kinds/category, JSON
+round-trip, unknown-param reject, `snap_ratio`/`RATIO_TABLE`); frequency
+(unpatched C4·ratio, ratio scaling + snapping, ±50 ct fine, 1 V/oct `pitch_cv`,
+fixed-mode ignores `pitch_cv`); Bessel `J_k(β)` sidebands for β∈{1,2,3} + index
+scaling; feedback (fb=0 ≡ per-sample oracle bit-exact, feedback adds partials);
+`index_cv` (raises the index, depth 0 disables, floored at 0); `amp_cv` (linear
+scale, unpatched unity); invariants (single voice row ≡ mono, voices
+independent, (V,F) preserved, block-size independent, extremes finite and
+bounded, zero frames); and both examples load + render within headroom. Full
+suite **2081 pass** (was 2052), `py_compile` on the five edited/new source files.
+
+**Manual-verify (meatthread0 — can't drive headlessly):** eyeball the node in a
+real GUI window — the `ratio` combo + the fine/index/feedback sliders + `fixed`
+checkbox render and apply — and build a live 2-op bell / 3-op e-piano to hear it
+sing (no headless path builds the node or its audio out). Same "SHIPPED, pending
+real-GUI eyeball" pattern as the recent modules. Committed per the working
+agreement; push is Matthew's.

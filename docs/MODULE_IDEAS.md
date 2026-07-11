@@ -349,7 +349,7 @@ instrument.
 
 ## New voices — "Sources"
 
-### `fm_op` (M)
+### `fm_op` (M) — **SHIPPED 2026-07-11** (see TODO.md / WORKLOG.md)
 
 One DX-style phase-modulation operator; two make a bell, three make nearly
 everything.

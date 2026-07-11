@@ -228,6 +228,7 @@ class PyoBackend(AudioBackend):
             "audio_to_cv",
             "cv_to_audio",
             "cv_to_frequency",
+            "fm_op",
             "schmitt",
             "constant",
             "cv_scale",

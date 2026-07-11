@@ -32,6 +32,7 @@ from .diskwriter import DiskWriter
 from .fileplayer import FilePlayer
 from .filter import Filter
 from .flanger import Flanger
+from .fm_op import FMOperator
 from .freq_shifter import FreqShifter
 from .keyboard import Keyboard
 from .key_trigger import KeyTrigger
@@ -95,6 +96,7 @@ __all__ = [
     "FilePlayer",
     "Filter",
     "Flanger",
+    "FMOperator",
     "FreqShifter",
     "Keyboard",
     "KeyTrigger",

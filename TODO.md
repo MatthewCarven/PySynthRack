@@ -9,6 +9,30 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **`fm_op` — DX-style FM operator** — done 2026-07-11 (Matthew picked it
+      off the module-ideas backlog; "new synthesis territory, small testable
+      surface"). New `fm_op` source (Sources): one phase-modulation operator,
+      `out = amp_cv · sin(2π·phase + index·pm + feedback·prev)`. Ports
+      `pitch_cv` (1 V/oct, C4=0 V, per-sample) · `pm` (audio phase mod, scaled
+      by `index` in **radians** — documented) · `amp_cv` (level; unpatched →
+      unity) · `index_cv` (× `index_cv_depth`) → `out`. Params: `ratio`
+      0.25..16 **snapped** to a harmonic table (UI combo, stored numeric) ·
+      `fine` ±50 ct · `index` 0..10 · `index_cv_depth` · `feedback` 0..1 ·
+      `fixed` + `freq` (note-independent carrier). **Dual engine** (delay
+      precedent): `feedback = 0` vectorizes the block; `feedback > 0` runs a
+      per-sample loop — bit-identical at 0. Voice-aware ((V,F) core, V=1 ≡
+      mono), block-size independent < 1e-6 (ring_mod phase contract). Analytic
+      FM verified: a unit sine into `pm` at 1:1 gives Bessel `J_k(β)` sidebands
+      to float32. **Reconciliation:** the spec's port list omitted `index_cv`
+      but listed `index_cv_depth`; a depth implies its CV input per conventions,
+      and an index envelope is what makes FM evolve, so the input is provided
+      (noted in the worklog). 29 tests (`test_fm_op.py`); suite 2081.
+      `examples/fm_op_bell.json` (2-op) + `fm_op_epiano.json` (3-op) load +
+      render at 0.6 peak. **Pending (meatthread0):** real-GUI eyeball of the
+      node — the `ratio` combo + sliders render/apply, and a live 2-op/3-op
+      patch actually sings. Follow-ups offered, not started: a stereo `out_l`/
+      `out_r` detune spread; a two-sample feedback average (DX7 anti-buzz);
+      optional per-operator anti-alias.
 - [x] **`buffered_specific_speaker_output` — per-sink output buffer size** — done
       2026-07-11 (Matthew's idea: copy the specific speaker, let it carry its own
       buffer size). New sink = `specific_stereo_speaker_output` + a `buffer_size`

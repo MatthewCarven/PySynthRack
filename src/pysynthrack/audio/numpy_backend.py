@@ -52,6 +52,7 @@ from ..core.patch import Patch
 from ..modules.keyboard import midi_to_freq
 from ..modules.cv_keyboard import CV_REFERENCE_NOTE, KEY_GATE_NAMES
 from ..modules.cv_gates import KEY_CV_NAMES
+from ..modules.fm_op import snap_ratio as _fm_snap_ratio
 from .backend import AudioBackend
 
 # Imported lazily so a missing PortAudio install doesn't crash module import.
@@ -1764,6 +1765,8 @@ class NumpyBackend(AudioBackend):
             return self._render_schmitt(module, frames, buffers, patch)
         if module.TYPE == "cv_to_frequency":
             return self._render_cv_to_frequency(module, frames, buffers, patch)
+        if module.TYPE == "fm_op":
+            return self._render_fm_op(module, frames, buffers, patch)
         if module.TYPE == "lfo":
             return self._render_lfo(module, frames, buffers, patch)
         if module.TYPE == "mixer":
@@ -8647,6 +8650,133 @@ class NumpyBackend(AudioBackend):
         phases = (ph0[:, None] + csum - inc) % 1.0                  # exclusive
         state["phase"] = (ph0 + csum[:, -1]) % 1.0
         return np.sin(2.0 * np.pi * phases)
+
+    # C4 (MIDI 60) in Hz — the fm_op carrier pitch at pitch_cv = 0 V (1 V/oct).
+    _FM_REF_HZ = 261.6256
+
+    def _render_fm_op(self, module, frames: int, buffers, patch):
+        """One DX-style phase-modulation FM operator (a self-contained voice).
+
+        Per sample: ``core = sin(2*pi*phase + index*pm + feedback*core_prev)``
+        and ``out = amp_cv * core``. ``phase`` integrates the carrier
+        frequency (C4 * 2**pitch_cv * ratio * 2**(fine/1200), or a fixed
+        ``freq`` in ``fixed`` mode) per sample, exclusive-prefix so a fresh
+        module starts at phase 0. ``index`` scales the audio-rate ``pm``
+        input in *radians* (peak phase deviation for full-scale pm), boosted
+        per-sample by ``index_cv`` * ``index_cv_depth`` (floored at 0).
+
+        Shape-polymorphic: the ``(V, F)`` core runs with ``V == 1`` for all-
+        mono inputs, so a single voice row is bit-identical to the mono
+        render; per-voice phase and feedback state keep voices independent.
+        ``V`` follows the widest voice-aware input (``pitch_cv`` / ``pm`` /
+        ``amp_cv`` / ``index_cv``); a mono input broadcasts across voices.
+
+        Dual engine (delay precedent): ``feedback == 0`` has no sample-to-
+        sample dependency, so the whole block vectorizes; ``feedback > 0``
+        needs the sequential per-sample recurrence (V-vectorized, F-looped).
+        The two paths are bit-identical at ``feedback == 0`` (``0 * prev``
+        adds nothing). Phase integrates continuously across blocks (state
+        carried), so the output is block-size independent to within float
+        phase-wrap rounding (< 1e-6), the ring_mod internal-sine contract.
+        """
+        p = module.params
+        fine = float(p.get("fine", 0.0))
+        index = float(p.get("index", 1.0))
+        index_cv_depth = float(p.get("index_cv_depth", 1.0))
+        feedback = min(max(float(p.get("feedback", 0.0)), 0.0), 1.0)
+        fixed = bool(p.get("fixed", False))
+
+        pitch_cv = self._input_buffer(
+            patch, buffers, module.id, "pitch_cv", collapse=False
+        )
+        pm = self._input_buffer(patch, buffers, module.id, "pm", collapse=False)
+        amp_cv = self._input_buffer(
+            patch, buffers, module.id, "amp_cv", collapse=False
+        )
+        index_cv = self._input_buffer(
+            patch, buffers, module.id, "index_cv", collapse=False
+        )
+
+        # Voice count = widest voice-aware input; mono inputs broadcast.
+        v = 1
+        was_mono = True
+        for buf in (pitch_cv, pm, amp_cv, index_cv):
+            if buf is not None and getattr(buf, "ndim", 1) == 2:
+                v = max(v, buf.shape[0])
+                was_mono = False
+
+        if frames == 0:
+            z = np.zeros((v, 0), dtype=np.float32)
+            return z[0] if was_mono else z
+
+        sr = self.sample_rate
+
+        # Carrier phase increment per sample, (v, F).
+        if fixed:
+            freq = float(p.get("freq", 220.0))
+            inc = np.full((v, frames), freq / sr, dtype=np.float64)
+        else:
+            base = (
+                self._FM_REF_HZ
+                * _fm_snap_ratio(float(p.get("ratio", 1.0)))
+                * (2.0 ** (fine / 1200.0))
+            )
+            if pitch_cv is None or not getattr(pitch_cv, "size", 0):
+                inc = np.full((v, frames), base / sr, dtype=np.float64)
+            else:
+                cv = self._ring_match_voices(pitch_cv, v, frames)
+                inc = (base * np.power(2.0, cv)) / sr
+
+        state = self._state.setdefault(module.id, {})
+        ph0 = state.get("phase")
+        if ph0 is None or ph0.shape[0] != v:
+            ph0 = np.zeros(v, dtype=np.float64)
+        csum = np.cumsum(inc, axis=1)
+        phase = (ph0[:, None] + csum - inc) % 1.0            # exclusive prefix
+        state["phase"] = (ph0 + csum[:, -1]) % 1.0
+        theta = 2.0 * np.pi * phase                          # (v, F) radians
+
+        # Phase-modulation term: pm * effective index (radians).
+        if pm is None or not getattr(pm, "size", 0):
+            pm_arg = np.zeros((v, frames), dtype=np.float64)
+        else:
+            pm_v = self._ring_match_voices(pm, v, frames)
+            if (
+                index_cv is None
+                or not getattr(index_cv, "size", 0)
+                or index_cv_depth == 0.0
+            ):
+                eff_index = index
+            else:
+                icv = self._ring_match_voices(index_cv, v, frames)
+                eff_index = np.maximum(index + index_cv_depth * icv, 0.0)
+            pm_arg = eff_index * pm_v
+
+        arg = theta + pm_arg                                 # everything but fb
+
+        fb_prev = state.get("fb")
+        if fb_prev is None or fb_prev.shape[0] != v:
+            fb_prev = np.zeros(v, dtype=np.float64)
+
+        if feedback <= 0.0:
+            core = np.sin(arg)
+        else:
+            core = np.empty((v, frames), dtype=np.float64)
+            prev = fb_prev
+            for n in range(frames):
+                prev = np.sin(arg[:, n] + feedback * prev)
+                core[:, n] = prev
+        # Persist the last output sample so feedback (if enabled later, or
+        # this block) continues seamlessly across block boundaries.
+        state["fb"] = core[:, -1].copy()
+
+        if amp_cv is None or not getattr(amp_cv, "size", 0):
+            out = core
+        else:
+            out = core * self._ring_match_voices(amp_cv, v, frames)
+
+        out32 = out.astype(np.float32)
+        return out32[0] if was_mono else out32
 
     def _render_freq_shifter(self, module, frames: int, buffers, patch):
         """Bode single-sideband frequency shifter -> up/down sidebands.
