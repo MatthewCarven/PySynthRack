@@ -1417,7 +1417,8 @@ class App:
                 return
 
         if module.TYPE in (
-            "stereo_speaker_output", "specific_stereo_speaker_output"
+            "stereo_speaker_output", "specific_stereo_speaker_output",
+            "buffered_specific_speaker_output",
         ):
             # The stereo sink. ``pan`` places a mono source
             # (constant-power) or balances a stereo pair; ``width`` is
@@ -1791,13 +1792,14 @@ class App:
         # empty string at the top is the "auto-pick first available" path,
         # so saved patches that don't pin a device still load and run.
         if param_name == "device" and module.TYPE in (
-            "midi_input", "mic_input", "specific_stereo_speaker_output"
+            "midi_input", "mic_input", "specific_stereo_speaker_output",
+            "buffered_specific_speaker_output",
         ):
             # Device list snapshot at widget creation, plus a Refresh
             # button that re-enumerates in place after hot-plugging (no
             # more delete+re-add / reopen-the-patch dance). MIDIInput
-            # lists MIDI ports; MicInput lists audio capture devices;
-            # SpecificStereoSpeakerOutput lists audio playback devices.
+            # lists MIDI ports; MicInput lists audio capture devices; the
+            # specific / buffered speaker sinks list audio playback devices.
             current_str = str(current)
             items, _ = self._device_combo_items(module.TYPE, current_str)
             with dpg.group(horizontal=True):
@@ -1858,6 +1860,25 @@ class App:
                 max_value=16,
                 width=140,
                 callback=self._on_param_changed,
+                user_data=user_data,
+            )
+            return
+
+        if (
+            param_name == "buffer_size"
+            and module.TYPE == "buffered_specific_speaker_output"
+        ):
+            # The buffered sink's own output-stream block size: a dropdown of
+            # the standard sizes (the same set as the global buffer slider).
+            # Stored as an int via _on_buffer_size_changed so saved patches
+            # keep a clean numeric value; the current value is snapped onto the
+            # list for display in case a hand-edited patch is off-list.
+            dpg.add_combo(
+                label=param_name,
+                items=[str(s) for s in BUFFER_SIZES],
+                default_value=str(coerce_buffer_size(current)),
+                width=140,
+                callback=self._on_buffer_size_changed,
                 user_data=user_data,
             )
             return
@@ -2049,6 +2070,19 @@ class App:
         module_id, param_name = user_data
         try:
             self.backend.set_param(module_id, param_name, app_data)
+        except Exception as exc:
+            self._set_status(f"Param error: {exc}")
+
+    def _on_buffer_size_changed(self, sender, app_data, user_data) -> None:
+        """A buffered sink's ``buffer_size`` combo changed. The combo carries
+        the size as a string; store it as an int (snapped onto the allowed
+        set) so patches stay numeric and the backend keys its secondary stream
+        by a clean value. Changing it while running rebuilds just that sink's
+        stream (see NumpyBackend.set_param); otherwise it applies at the next
+        Start."""
+        module_id, param_name = user_data
+        try:
+            self.backend.set_param(module_id, param_name, coerce_buffer_size(app_data))
         except Exception as exc:
             self._set_status(f"Param error: {exc}")
 
@@ -2302,7 +2336,9 @@ class App:
         """
         if module_type == "midi_input":
             devices = midi_available_devices()
-        elif module_type == "specific_stereo_speaker_output":
+        elif module_type in (
+            "specific_stereo_speaker_output", "buffered_specific_speaker_output"
+        ):
             devices = spk_available_devices()
         else:
             devices = mic_available_devices()
@@ -2327,7 +2363,9 @@ class App:
         dpg.configure_item(tag, items=items)
         if module_type == "midi_input":
             kind = "MIDI"
-        elif module_type == "specific_stereo_speaker_output":
+        elif module_type in (
+            "specific_stereo_speaker_output", "buffered_specific_speaker_output"
+        ):
             kind = "audio output"
         else:
             kind = "audio input"

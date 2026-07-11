@@ -259,6 +259,7 @@ class PyoBackend(AudioBackend):
             "waveshaper",
             "stereo_speaker_output",
             "specific_stereo_speaker_output",
+            "buffered_specific_speaker_output",
             "resampler",
             "pitch_shifter",
             "cv_gates",

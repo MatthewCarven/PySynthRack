@@ -9,6 +9,21 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **`buffered_specific_speaker_output` — per-sink output buffer size** — done
+      2026-07-11 (Matthew's idea: copy the specific speaker, let it carry its own
+      buffer size). New sink = `specific_stereo_speaker_output` + a `buffer_size`
+      param setting the block size of *its own* secondary stream, independent of
+      the global buffer (a flaky monitor can run roomy while the main mix stays
+      tight). Reworked `_DeviceOutput` from a block ring to a **sample-counted**
+      ring (lock-guarded) so push size ≠ pop size no longer means silence; unified
+      the secondary-stream key on `(device, block_size)` so one device carries
+      several streams at different sizes; `buffer_size` reconciles live like
+      `device`. UI: pan/width/gain/cv_depth sliders + device combo/Refresh + a
+      `buffer_size` dropdown. pyo silent-stub. 28 new tests + reworked ring tests;
+      suite 2052. Also fixed the stale `SpecificStereoSpeakerOutput` "Slice 1"
+      docstring (routing landed as Slice 2 ages ago). **Pending (meatthread0):**
+      real-GUI eyeball of the node (combos render + apply) and real audio out of a
+      *second* physical device at a custom buffer — neither is headless-testable.
 - [x] **Two desktop-rig crashes fixed (audio race + stale meter bar)** — done
       2026-07-11, from six crash logs Matthew sent. (A) GUI: deleting a
       CV-source node left a `(module_id, port) -> bar` entry in

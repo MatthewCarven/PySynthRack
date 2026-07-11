@@ -249,6 +249,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`right_speaker_output`](#right_speaker_output) | Outputs | `in` (audio) → — |
 | [`stereo_speaker_output`](#stereo_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv` (cv) → — |
 | [`specific_stereo_speaker_output`](#specific_stereo_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv` (cv) → — |
+| [`buffered_specific_speaker_output`](#buffered_specific_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv` (cv) → — |
 | [`disk_writer`](#disk_writer) | Outputs | `in` (audio) → — |
 
 ---
@@ -2438,6 +2439,65 @@ for; don't rely on it for phase-locked multi-device playback.
 | `width` | `1.0` | 0 … 2 | Mid/side width; pairs only. |
 | `cv_depth` | `1.0` | 0 … 2 | Knob units per CV unit, shared by `pan_cv` and `width_cv`. |
 | `device` | `""` | device name | Target output device; `""` = system default (drains to master). A named device routes the sink to its own OutputStream; changing it re-routes **live**. |
+
+---
+
+#### `buffered_specific_speaker_output`
+
+The **device-targetable stereo speaker with its own buffer size**:
+everything [`specific_stereo_speaker_output`](#specific_stereo_speaker_output)
+does — the same `in_l` / `in_r` inputs, the `pan` / `width` / `gain`
+knobs, the shared-`cv_depth` `pan_cv` / `width_cv` jacks, and the same
+`device` picker with **Refresh** that routes the sink to its own output
+stream — plus a `buffer_size` parameter setting the block size (frames
+per PortAudio callback) of *that* secondary stream, independent of the
+global buffer size driving the main output.
+
+Why a per-sink buffer: the main mix might run at a tight 128-frame
+buffer for a responsive keyboard while a flaky USB / Bluetooth monitor
+on this sink needs a roomy 1024 to stop crackling — or the reverse, a
+low-latency cue feed off an otherwise safe, sluggish main buffer. The
+secondary stream already runs on its own PortAudio clock, so it can
+carry its own block size. To make that work the drop-oldest hand-off
+ring is counted in **samples, not blocks**, so the main render's block
+size and this stream's block size need not match; the ring's capacity
+scales with this sink's `buffer_size` so even a large secondary buffer
+always fills.
+
+`buffer_size` is a dropdown of the standard sizes (`64` … `1024`, the
+same set as the global buffer slider) and round-trips through saved
+patches. It is read when the stream opens, so the natural workflow is to
+set it **before you Start**; changing it live rebuilds just this sink's
+stream (a brief gap on that one device), exactly as changing `device`
+does. Secondary streams are keyed by `(device, buffer_size)`, so one
+physical device can carry several streams at different buffer sizes, and
+a buffered sink shares a plain `specific_stereo_speaker_output`'s stream
+only when their sizes match. Everything else — the `""`-drains-to-master
+equivalence, the per-device summing, the independent-clock **drift**
+caveat, a failed open logging and silencing just that sink — is
+identical to [`specific_stereo_speaker_output`](#specific_stereo_speaker_output).
+Only the numpy backend routes it; under pyo it is a silent stub, like
+the other stereo speakers.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in_l` | in | audio | Left / only input. Alone = mono source, constant-power panned. |
+| `in_r` | in | audio | Right input; cabling it switches to stereo balance + width. |
+| `pan_cv` | in | cv | Per-sample pan modulation, scaled by `cv_depth`. Optional. |
+| `width_cv` | in | cv | Per-sample width modulation, same shared `cv_depth`. Optional. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `gain` | `1.0` | 0 … 2 | Output trim, applied after pan/width. |
+| `pan` | `0.0` | −1 … 1 | Position (mono) or balance (pair). |
+| `width` | `1.0` | 0 … 2 | Mid/side width; pairs only. |
+| `cv_depth` | `1.0` | 0 … 2 | Knob units per CV unit, shared by `pan_cv` and `width_cv`. |
+| `device` | `""` | device name | Target output device; `""` = system default (drains to master). A named device routes the sink to its own OutputStream; changing it re-routes **live**. |
+| `buffer_size` | `512` | 64 … 1024 | Block size of this sink's own output stream, independent of the global buffer. Read at stream open; a live change rebuilds only this stream. Out-of-range values are clamped. |
 
 ---
 

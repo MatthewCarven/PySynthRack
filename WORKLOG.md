@@ -7355,3 +7355,76 @@ architecture tree (`_crash.py` / `error_handler.py`), dropped stale version refs
 obsolete `git init` walkthrough (the repo has been a live git repo for ages).
 Screenshots, binary links, and the install/run/troubleshooting steps left intact
 (still accurate). Docs-only; committed per the working agreement.
+
+## 2026-07-11 — `buffered_specific_speaker_output` (per-sink output buffer size)
+
+New sink: a copy of `specific_stereo_speaker_output` plus a `buffer_size` param
+that sets the block size of *its own* secondary output stream, independent of
+the global buffer. Use case: a flaky USB/Bluetooth monitor that needs a roomy
+buffer while the main mix stays tight, or a low-latency cue off an otherwise
+sluggish main buffer.
+
+**Finding first:** the `SpecificStereoSpeakerOutput` docstring still claimed
+"Slice 1: the picker, not yet the routing" — **stale**. The routing (secondary
+`sd.OutputStream` per device, drop-oldest ring, live device reconcile) had
+already landed as Slice 2 (the test file header confirms it). Fixed that
+docstring while here.
+
+**The one real gotcha — the ring.** `_DeviceOutput` was a *block* ring: the
+device callback did `if block.shape[0] != frames: fill silence`, which only
+works because the secondary stream shared the main stream's block size. A
+*different* per-sink buffer would have made every popped block the wrong length
+→ **permanent silence** (there was even a `test_frame_mismatch_is_silence`
+pinning that). Reworked it into a **sample-counted ring**: a fixed `(capacity,
+2)` numpy buffer with read cursor + fill count, guarded by a small
+`threading.Lock` (held only for a ≤1-block memcpy — far shorter than the render
+lock the main callback already holds; the lock-free deque discipline couldn't
+survive sample-level drop-oldest with differing block sizes). Capacity =
+`max_blocks * device_block`, so a secondary buffer larger than the main push
+still fills. push drops oldest on overflow; callback zero-pads on underrun.
+Push size and pop size are now fully decoupled. Did this as an isolated first
+pass (green) before building anything on top.
+
+**Keying decision.** A secondary stream is genuinely identified by
+`(device, block_size)`, so I unified `_device_outputs` / `device_blocks` on that
+tuple key rather than the old bare device-name string. The plain specific
+speaker now keys by `(device, global_block)` — same grouping as before, just
+with the size appended — so its behaviour is unchanged (two on one device still
+share/sum). A buffered sink keys by `(device, buffer_size)`; it shares a plain
+sink's stream only when the sizes coincide. New helpers `_stream_key` /
+`_sink_block_size` (the latter clamps `buffer_size` to [16, 8192] and coerces
+float/garbage) centralise it. `_wanted_devices`→`_wanted_streams`,
+`_sync_device_outputs`, `set_param` (now reconciles on `buffer_size` too, so a
+live change rebuilds just that stream), `_fill_output`, and the drain loop all
+switched to the key. Chose unified-key over a parallel `_buffered_outputs` dict:
+one reconcile path can't drift, and the ~15 existing-test edits were mechanical
+(`"Cans"` → `("Cans", F)`).
+
+**UI.** Added the type to the stereo-sink param block (pan/width/gain/cv_depth
+sliders), the device-combo gate + Refresh, and a `buffer_size` dropdown of the
+standard sizes (reusing `BUFFER_SIZES`/`coerce_buffer_size`) with a small
+int-coercing callback so patches stay numeric. pyo gets a one-line silent stub
+like the other stereo speakers.
+
+### Tests
+
+`tests/test_buffered_specific_speaker.py` (28): model (defaults incl.
+`buffer_size=512`, ports, JSON round-trip of device+buffer, unknown-param
+reject, sink-ness); `_stream_key`/`_sink_block_size` (own-buffer key, empty
+device→master, plain sink keys by global block, clamp low/high, float+garbage
+coercion); buffer-inert-on-master-bus equivalence; routing ((device,size) key,
+two sizes one device split, buffered+plain share only when sizes match, device
+bus == stereo drain, clip); secondary stream opens at the sink's buffer size +
+live buffer-change rebuilds only that stream (stubbed open/close). Reworked the
+`_DeviceOutput` ring tests in `test_specific_stereo_speaker.py` (the fifo/
+underrun/overflow ones still pass; replaced frame-mismatch-is-silence with
+smaller/larger/partial cross-size reads + a capacity-scales check) and migrated
+its device-key assertions to tuples. Full suite **2052 pass / 1 skip** (was
+2021), `py_compile` + import checks on all four edited source files.
+
+**Manual-verify (meatthread0 — can't drive headlessly):** eyeball the node in a
+real GUI window (device dropdown + Refresh + the `buffer_size` combo render and
+apply), and confirm real audio out of a *second* physical device at a custom
+buffer size. These match the project's existing "SHIPPED, pending real-GUI
+eyeball" pattern (buffer slider, window persistence). Committed per the working
+agreement; push is Matthew's.

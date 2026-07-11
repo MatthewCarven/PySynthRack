@@ -5,14 +5,14 @@ A modular software synthesizer in Python with a drag-cable node-graph UI. Think 
 ## Status: active development (pre-1.0)
 
 PySynthRack has grown well past its first prototype into a working instrument:
-**60 modules** across seven categories, a full CV/modulation system, MIDI,
+**61 modules** across seven categories, a full CV/modulation system, MIDI,
 recording, and a node editor with zoom, live meters, and per-patch layout
 persistence. It's still pre-1.0 — the patch format and APIs can shift — but you
 can build real patches in it today.
 
 ### What works
 
-- **60 modules** in seven Add-menu categories:
+- **61 modules** in seven Add-menu categories:
   - **Sources** — oscillator (sine / saw / square / triangle, each in naive,
     PolyBLEP/PolyBLAMP `*_blep`, and wavetable `*_wt` flavours), noise,
     computer-keyboard and CV keyboards, single-key triggers, MIDI input, a
@@ -29,7 +29,7 @@ can build real patches in it today.
   - **CV & Utilities** — audio↔CV bridges, Schmitt trigger, constant, CV
     scale/offset, sample & hold, level meter.
   - **Outputs** — mono / left / right / stereo speaker outs, per-device output
-    routing, and a disk recorder.
+    routing (with an optional per-sink buffer size), and a disk recorder.
 - **Drag-cable node-graph UI** (DearPyGui): wire jacks together, canvas zoom
   (Ctrl +/‑/wheel), scroll-to-adjust knobs, live CV and audio-level meters, and
   overlap-aware node placement.
@@ -37,7 +37,8 @@ can build real patches in it today.
   between them and a standardised 1 V/oct + `cv_depth` modulation convention.
 - **MIDI input** from a hardware controller (optional `[midi]` extra).
 - **Recording to disk** and **multi-device output** (route a sub-mix to a named
-  sound card, e.g. a monitor/cue bus).
+  sound card, e.g. a monitor/cue bus — optionally with its own buffer size for a
+  flaky or higher-latency device).
 - **Save / load patches** as JSON, with per-patch window size/position and zoom
   restored on reopen; a global buffer-size control and DSP-load readout live in
   the toolbar.
@@ -47,7 +48,7 @@ can build real patches in it today.
   reference implementation every module targets, and the default — plus an
   optional, partial **pyo** backend.
 - **CLI mode** for headless rendering, backed by an extensive headless test
-  suite (~1,900 tests — no audio device or display required).
+  suite (~2,050 tests — no audio device or display required).
 
 See **[docs/MODULES.md](docs/MODULES.md)** for the full per-module reference,
 **[TODO.md](TODO.md)** for the roadmap, and **[docs/architecture.md](docs/architecture.md)**
@@ -64,7 +65,7 @@ for the design write-up.
 src/pysynthrack/
 ├── core/            # Pure-Python model: Port, Module, Patch (no audio, no UI)
 ├── audio/           # AudioBackend interface + numpy (reference) / pyo backends
-├── modules/         # The 60 module type definitions — ports & params, no DSP
+├── modules/         # The 61 module type definitions — ports & params, no DSP
 ├── io_patch/        # JSON save / load
 ├── ui/              # DearPyGui app — node editor, palette, transport, meters
 ├── _crash.py        # Crash-log wiring (GUI + audio-thread hooks)

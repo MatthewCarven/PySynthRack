@@ -19,8 +19,9 @@ Coverage:
     device_blocks with the exact stereo-speaker drain; two sinks on one device
     sum; two devices split; a routed + a master sink coexist; render_block
     still returns master only; each device bus is clipped.
-  - _DeviceOutput ring: FIFO order, underrun -> silence, overflow -> drop
-    oldest, frame-count mismatch -> silence.
+  - _DeviceOutput ring (sample-accurate): FIFO order, underrun -> zero-pad,
+    overflow -> drop oldest, and a device block size that differs from the
+    push size (smaller, larger, or partially filled) reads sample-accurately.
   - Neutral default: a stereo pair passes to the bus bit-exactly via the
     shared _drain_stereo_speaker.
 """
@@ -179,12 +180,12 @@ class TestDeviceRouting:
     def test_named_device_leaves_master_silent(self):
         master, dev = _multi(_build(TYPE, "mono", {"device": "Cans"}))
         assert np.max(np.abs(master)) == 0.0
-        assert "Cans" in dev and np.max(np.abs(dev["Cans"])) > 0.0
+        assert ("Cans", F) in dev and np.max(np.abs(dev[("Cans", F)])) > 0.0
 
     def test_device_bus_equals_stereo_speaker_drain(self):
         master, dev = _multi(_build(TYPE, "stereo", {"pan": 0.4, "device": "Cans"}))
         ref, _ = _render(_build("stereo_speaker_output", "stereo", {"pan": 0.4}))
-        assert np.array_equal(dev["Cans"], ref[:F])
+        assert np.array_equal(dev[("Cans", F)], ref[:F])
         assert np.max(np.abs(master)) == 0.0
 
     def test_two_sinks_same_device_sum(self):
@@ -196,13 +197,13 @@ class TestDeviceRouting:
         p.connect(o1.id, "out", s1.id, "in_l")
         p.connect(o2.id, "out", s2.id, "in_l")
         _, dev = _multi(p)
-        assert list(dev) == ["Cans"]
+        assert list(dev) == [("Cans", F)]
         one = Patch()
         oa = one.add_module("oscillator", params={"amp": 0.4})
         sa = one.add_module(TYPE, params={"device": "Cans"})
         one.connect(oa.id, "out", sa.id, "in_l")
         _, dev1 = _multi(one)
-        assert np.allclose(dev["Cans"], 2.0 * dev1["Cans"], atol=1e-6)
+        assert np.allclose(dev[("Cans", F)], 2.0 * dev1[("Cans", F)], atol=1e-6)
 
     def test_two_devices_split(self):
         p = Patch()
@@ -213,9 +214,9 @@ class TestDeviceRouting:
         p.connect(o1.id, "out", s1.id, "in_l")
         p.connect(o2.id, "out", s2.id, "in_l")
         master, dev = _multi(p)
-        assert set(dev) == {"A", "B"}
+        assert set(dev) == {("A", F), ("B", F)}
         assert np.max(np.abs(master)) == 0.0
-        assert not np.array_equal(dev["A"], dev["B"])
+        assert not np.array_equal(dev[("A", F)], dev[("B", F)])
 
     def test_routed_and_master_sinks_coexist(self):
         p = Patch()
@@ -228,7 +229,7 @@ class TestDeviceRouting:
         master, dev = _multi(p)
         ref_master, _ = _render(_build(TYPE, "mono", {}))
         assert np.array_equal(master, ref_master[:F])
-        assert np.max(np.abs(dev["Cans"])) > 0.0
+        assert np.max(np.abs(dev[("Cans", F)])) > 0.0
 
     def test_render_block_returns_master_only(self):
         b = NumpyBackend(sample_rate=SR, block_size=F)
@@ -245,7 +246,7 @@ class TestDeviceRouting:
         p.connect(o1.id, "out", s1.id, "in_l")
         p.connect(o2.id, "out", s2.id, "in_l")
         _, dev = _multi(p)
-        assert dev["Cans"].max() <= 1.0 and dev["Cans"].min() >= -1.0
+        assert dev[("Cans", F)].max() <= 1.0 and dev[("Cans", F)].min() >= -1.0
 
 
 class TestDeviceOutputRing:
@@ -274,12 +275,39 @@ class TestDeviceOutputRing:
         d._callback(o, F, None, None); assert np.allclose(o, 0.2)  # 0.1 dropped
         d._callback(o, F, None, None); assert np.allclose(o, 0.3)
 
-    def test_frame_mismatch_is_silence(self):
-        d = _DeviceOutput("X", SR, F, max_blocks=2)
+    def test_smaller_device_block_reads_partial(self):
+        # One F-sample push drained by a device whose block is F//2: two
+        # sample-accurate halves, not silence (the old block-ring's failure
+        # mode — a size mismatch used to yield a dead-silent stream).
+        d = _DeviceOutput("X", SR, F // 2, max_blocks=4)
         d.push(self._blk(0.5))
-        o = np.ones((F // 2, 2), dtype=np.float32)
-        d._callback(o, F // 2, None, None)   # wrong frame count -> silence
-        assert np.all(o == 0.0)
+        o = np.zeros((F // 2, 2), dtype=np.float32)
+        d._callback(o, F // 2, None, None); assert np.allclose(o, 0.5)
+        d._callback(o, F // 2, None, None); assert np.allclose(o, 0.5)
+        o[:] = 1.0
+        d._callback(o, F // 2, None, None); assert np.all(o == 0.0)  # drained
+
+    def test_larger_device_block_assembles_from_pushes(self):
+        # Device block is 2F, fed by two F-sample pushes: one pop spans both.
+        d = _DeviceOutput("X", SR, 2 * F, max_blocks=4)
+        d.push(self._blk(0.1)); d.push(self._blk(0.2))
+        o = np.zeros((2 * F, 2), dtype=np.float32)
+        d._callback(o, 2 * F, None, None)
+        assert np.allclose(o[:F], 0.1) and np.allclose(o[F:], 0.2)
+
+    def test_partial_fill_zero_pads_tail(self):
+        # Only F queued but 2F asked for: first half is the audio, tail silent.
+        d = _DeviceOutput("X", SR, 2 * F, max_blocks=4)
+        d.push(self._blk(0.3))
+        o = np.ones((2 * F, 2), dtype=np.float32)
+        d._callback(o, 2 * F, None, None)
+        assert np.allclose(o[:F], 0.3) and np.all(o[F:] == 0.0)
+
+    def test_capacity_holds_max_blocks_device_blocks(self):
+        # Capacity scales with the DEVICE block, so a secondary buffer larger
+        # than the main block still has room for one full pop.
+        d = _DeviceOutput("X", SR, 2 * F, max_blocks=3)
+        assert d._capacity == 3 * 2 * F
 
 
 class TestLiveDeviceSwitch:
@@ -311,25 +339,25 @@ class TestLiveDeviceSwitch:
 
     def test_initial_open(self, rig):
         b, s, opened, closed = rig
-        assert set(b._device_outputs) == {"A"} and opened == ["A"]
+        assert set(b._device_outputs) == {("A", F)} and opened == ["A"]
 
     def test_switch_rebuilds_only_the_changed_stream(self, rig):
         b, s, opened, closed = rig
         b.set_param(s.id, "device", "B")
-        assert set(b._device_outputs) == {"B"}
+        assert set(b._device_outputs) == {("B", F)}
         assert opened == ["A", "B"] and closed == ["A"]
 
     def test_unrelated_param_leaves_streams_alone(self, rig):
         b, s, opened, closed = rig
         opened.clear(); closed.clear()
         b.set_param(s.id, "pan", 0.5)
-        assert opened == [] and closed == [] and set(b._device_outputs) == {"A"}
+        assert opened == [] and closed == [] and set(b._device_outputs) == {("A", F)}
 
     def test_kept_stream_identity_preserved(self, rig):
         b, s, opened, closed = rig
-        a_obj = b._device_outputs["A"]
+        a_obj = b._device_outputs[("A", F)]
         b.set_param(s.id, "gain", 0.8)     # no device change
-        assert b._device_outputs["A"] is a_obj
+        assert b._device_outputs[("A", F)] is a_obj
 
     def test_switch_to_default_closes_stream(self, rig):
         b, s, opened, closed = rig
@@ -341,7 +369,7 @@ class TestLiveDeviceSwitch:
         b._running = False
         opened.clear(); closed.clear()
         b.set_param(s.id, "device", "C")
-        assert opened == [] and closed == [] and set(b._device_outputs) == {"A"}
+        assert opened == [] and closed == [] and set(b._device_outputs) == {("A", F)}
 
     def test_open_failure_is_skipped(self, rig, monkeypatch):
         b, s, opened, closed = rig
@@ -363,7 +391,7 @@ class TestLiveDeviceSwitch:
         p.connect(o1.id, "out", s1.id, "in_l")
         p.connect(o2.id, "out", s2.id, "in_l")
         b.compile(p)                           # running -> reconcile at end
-        assert set(b._device_outputs) == {"A", "B"}
+        assert set(b._device_outputs) == {("A", F), ("B", F)}
 
 
 class TestNeutralDefault:

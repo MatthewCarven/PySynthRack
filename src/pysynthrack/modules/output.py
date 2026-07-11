@@ -175,16 +175,19 @@ class SpecificStereoSpeakerOutput(Module):
     of. Drop one on a cue/monitor bus and pin it to your headphones while
     the main mix stays on the studio monitors.
 
-    **Slice 1 (this build): the picker, not yet the routing.** The
-    ``device`` field is live in the UI (snapshot dropdown + Refresh, the
-    MicInput pattern) and round-trips through saved patches, but the audio
-    still sums into the same master bus as every other speaker sink — the
-    drain is bit-identical to :class:`StereoSpeakerOutput`, so nothing
-    about the sound changes yet. Actually opening a second
-    :class:`sounddevice.OutputStream` on the selected device and routing
-    this sink there is the follow-up slice; the module and its saved
-    ``device`` value are in place so that patches built now keep their
-    selection when the routing lands.
+    The ``device`` field is a snapshot dropdown + Refresh (the MicInput
+    pattern) and round-trips through saved patches. Left empty (``""``, the
+    default) the sink drains into the shared master bus **bit-identically**
+    to :class:`StereoSpeakerOutput`. Set to a named device, the numpy
+    backend pulls it **off** the master onto that device's own secondary
+    :class:`sounddevice.OutputStream` (one per distinct device, sinks on a
+    shared device summed), fed from the main audio callback through a
+    drop-oldest ring that absorbs the drift between the two independent
+    PortAudio clocks. Changing the device takes effect **live** — only the
+    affected stream is rebuilt, no Stop/Start. For a per-sink output block
+    size on that secondary stream, see
+    :class:`BufferedSpecificSpeakerOutput`. (pyo leaves this a silent stub;
+    run the numpy backend for the routing.)
 
     Parameters:
         gain: Linear output gain, applied after pan/width.
@@ -207,6 +210,66 @@ class SpecificStereoSpeakerOutput(Module):
         "width": 1.0,
         "cv_depth": 1.0,
         "device": AUTO_DEVICE,
+    }
+    INPUT_PORTS = [
+        Port("in_l", "in", "audio"),
+        Port("in_r", "in", "audio"),
+        Port("pan_cv", "in", "cv"),
+        Port("width_cv", "in", "cv"),
+    ]
+    OUTPUT_PORTS: list[Port] = []
+
+
+@register_module_type
+class BufferedSpecificSpeakerOutput(Module):
+    """A :class:`SpecificStereoSpeakerOutput` with its own output buffer size.
+
+    Identical in every audible respect to
+    :class:`SpecificStereoSpeakerOutput` — the same ``in_l`` / ``in_r``
+    inputs, the ``pan`` / ``width`` / ``gain`` knobs, the shared-``cv_depth``
+    ``pan_cv`` / ``width_cv`` jacks, and the same ``device`` picker that pulls
+    this sink onto its own secondary output stream (see that class for the
+    pan-law / mid-side / CV semantics and the per-device routing). The one
+    addition is ``buffer_size``: the block size (frames per PortAudio
+    callback) of *this sink's* secondary stream, independent of the global
+    buffer size that drives the main output.
+
+    Why a per-sink buffer: the main mix might run at a tight 128-frame buffer
+    for a responsive keyboard while a flaky USB / Bluetooth monitor on this
+    sink needs a roomy 1024 to stop crackling — or the reverse, a low-latency
+    cue feed taken off an otherwise safe, sluggish main buffer. The secondary
+    stream already runs on its own PortAudio clock (fed through a drop-oldest
+    ring that absorbs the drift between the two), so it can carry its own
+    block size, at the cost of a little added latency on that one device.
+
+    ``buffer_size`` is read when the stream opens, so the natural workflow is
+    to set it before you Start. Changing it live rebuilds just this sink's
+    stream (a brief gap on that one device), exactly as changing ``device``
+    does. Only the numpy backend routes this sink; under pyo it is a silent
+    stub, like the other stereo speakers.
+
+    Parameters:
+        gain: Linear output gain, applied after pan/width.
+        pan: Position/balance, -1 (hard left) .. 1 (hard right).
+        width: Stereo width, 0 (mono) .. 2 (over-wide). Pairs only.
+        cv_depth: Knob units added per CV unit, shared by ``pan_cv``
+            and ``width_cv``. 0 disables both.
+        device: Output device name, or ``""`` (``AUTO_DEVICE``) for the
+            system default — the same picker as SpecificStereoSpeakerOutput.
+        buffer_size: Frames per block for this sink's own output stream. One
+            of the standard sizes (64 .. 1024); defaults to 512. The backend
+            clamps any out-of-range value to a safe stop.
+    """
+
+    TYPE = "buffered_specific_speaker_output"
+    CATEGORY = "Outputs"
+    DEFAULT_PARAMS = {
+        "gain": 1.0,
+        "pan": 0.0,
+        "width": 1.0,
+        "cv_depth": 1.0,
+        "device": AUTO_DEVICE,
+        "buffer_size": 512,
     }
     INPUT_PORTS = [
         Port("in_l", "in", "audio"),
