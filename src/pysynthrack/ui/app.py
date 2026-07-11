@@ -47,6 +47,7 @@ from ..modules.noise import NOISE_COLORS
 from ..modules.oscillator import WAVEFORMS
 from ..modules.sweep_eq import SWEEP_EQ_MODES
 from .dsp_load import IDLE_COLOR, format_dsp_load, load_color
+from .node_layout import find_free_position
 from .zoom import (
     ZOOM_DEFAULT,
     ZOOM_MAX,
@@ -482,12 +483,40 @@ class App:
 
     # ----- node creation --------------------------------------------------
 
+    def _existing_node_rects(self):
+        """Current node rects as logical ``(x, y, w, h)`` for placement.
+
+        dpg reports position and size in scaled (on-canvas) pixels, so both are
+        divided by the zoom factor to match the logical space find_free_position
+        works in. A node that hasn't rendered yet reports 0x0 and is simply
+        passed through — the placement helper ignores non-positive sizes. Any
+        dpg hiccup (missing item) drops that one node rather than failing the
+        add.
+        """
+        z = self._zoom or 1.0
+        rects = []
+        for node_id in self._node_to_module:
+            try:
+                p = dpg.get_item_pos(node_id)
+                s = dpg.get_item_rect_size(node_id)
+            except Exception:
+                continue
+            if not p or not s:
+                continue
+            rects.append((p[0] / z, p[1] / z, s[0] / z, s[1] / z))
+        return rects
+
     def _create_node_for_module(self, module, pos=None) -> int:
         if pos is None:
-            pos = (self._next_node_pos[0], self._next_node_pos[1])
+            preferred = (self._next_node_pos[0], self._next_node_pos[1])
             # Stagger downward and right for the next node.
             self._next_node_pos[0] = (self._next_node_pos[0] + 220) % 800
             self._next_node_pos[1] = (self._next_node_pos[1] + 60) % 500
+            # Nudge off any existing node so the new title bar never lands on a
+            # lower node's slider (imnodes would then yield the drag to that
+            # slider — the click-through bug). find_free_position works in
+            # logical coords, so un-zoom each existing rect before the test.
+            pos = find_free_position(self._existing_node_rects(), preferred)
 
         # Place at the logical position scaled by the current zoom so a
         # node added (or loaded) while zoomed lands in the right spot.

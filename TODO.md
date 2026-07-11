@@ -9,6 +9,20 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **New nodes no longer land on a lower node's slider** — done 2026-07-11
+      (Matthew's one outstanding bug). Auto-placement cascaded each new node
+      only ~60px down — under a node's height — so newcomers stacked on top;
+      clicking the newcomer's title bar then clicked *through* to the slider
+      underneath. Root cause of the click-through is an imnodes limit (a title
+      bar is not an ImGui widget, so an overlapping slider wins the hover and
+      imnodes yields the drag) — unfixable from dpg — but the overlap trigger
+      is ours. New dpg-free `ui/node_layout.py` `find_free_position` scans for a
+      clear slot (honours the preferred spot when free; margin-gap AABB test;
+      falls back to preferred on a full canvas). `_create_node_for_module`
+      routes the add-path spot through it via `_existing_node_rects` (un-zooms
+      each rect); load-from-patch unchanged. 14 tests; suite 2015. **Caveat:**
+      *manually* dragging nodes to overlap can still trigger it (imnodes, not
+      us). **Pending:** real-window eyeball of the live placement.
 - [x] **KeyTrigger — bind one key to a gate/trigger/latch** — done 2026-07-11
       (Matthew's idea: "drop in a single key at a time for a super complex
       setup"). New `key_trigger` source (Sources): one node listens for one

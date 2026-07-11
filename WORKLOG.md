@@ -7221,3 +7221,54 @@ headless): the Learn button + bound-key label, the code→name map resolving
 real `mvKey_*` codes, and the modifier/focus guards actually gating. Known
 follow-ups left open: single-key reorder/numpad support; an optional built-in
 envelope like `cv_gates`; Esc-to-cancel Learn.
+
+## 2026-07-11 — node placement: stop new nodes landing on a lower slider
+
+Matthew's one remaining bug: when a newly-added module lands on top of an
+existing one, clicking the newcomer's **title bar** to drag it sometimes
+adjusts a **slider on the node underneath** instead of moving the node.
+
+**Root cause (two layers).** The *click-through* itself is an imnodes
+limitation and isn't fixable from DearPyGui: imnodes only starts a title-bar
+drag when ImGui reports no widget hovered at the click point (it yields the
+mouse to widgets on purpose). A title bar is not an ImGui widget — imnodes
+draws and hit-tests it itself — so when nodes overlap, the lower node's slider
+occupies the same pixels as the upper node's title bar, ImGui calls that slider
+hovered, and imnodes yields the drag to it. No knob makes a bare title bar win
+over an overlapping widget; raising z-order doesn't help (the strip still has
+no widget to claim the hover). The *trigger*, though, is fully ours:
+auto-placement cascaded each new node only ~60px down (`_next_node_pos` stepped
+`+60` on y), far less than a node's 150–300px height, so every newcomer landed
+almost entirely on its predecessor by design. Kill the overlap and the imnodes
+limit never fires in the normal add flow.
+
+**Fix.** New dpg-free `ui/node_layout.py`: `find_free_position(existing,
+preferred, …)` tries the caller's preferred (staggered) spot first — so a
+genuinely clear cascade position is honoured unchanged — and on a collision
+scans a grid for the first slot that clears every existing node by a margin,
+falling back to `preferred` only if the canvas is so full nothing clears
+(overlap then unavoidable). Rects with a non-positive size (a sibling that
+hasn't rendered → 0×0) are ignored. `rects_overlap(a, b, margin)` is the shared
+AABB test (margin = required empty gap; zero-gap touch is not an overlap).
+
+**Glue (app.py).** `_create_node_for_module` now, on the interactive-add path
+only (`pos is None`), builds the preferred spot as before then routes it through
+`find_free_position(self._existing_node_rects(), preferred)`. New
+`_existing_node_rects` reads each node's `get_item_pos`/`get_item_rect_size` and
+divides both by the zoom factor (dpg reports scaled pixels; the helper works in
+logical coords), defensively dropping any node dpg can't report. Load-from-patch
+is untouched — it passes explicit positions, so saved layouts restore verbatim.
+
+**Caveat (documented, unreachable from our side).** If the user *manually*
+drags two nodes to overlap, the click-through can still happen — that's the
+imnodes limit, not ours. But the "new node dropped on a slider" path — the one
+actually hit — is now gone.
+
+**Tests.** New `tests/test_node_layout.py` (14): overlap adjacency/margin
+edges; preferred honoured when clear; zero-size rects ignored; collision moved
+to a clear slot; result clears every node; first free slot tucks beside a
+single node on the same row; a wider newcomer needs a bigger gap; a fully
+tiled canvas falls back to preferred; float return. Full suite **2015 pass /
+1 skip** (was 2001). The dpg glue (`_existing_node_rects`, real rect reads) is
+headless-untestable and joins the real-window eyeball pile. Committed per the
+working agreement; push is Matthew's.
