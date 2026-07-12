@@ -2502,20 +2502,54 @@ size and this stream's block size need not match; the ring's capacity
 scales with this sink's `buffer_size` so even a large secondary buffer
 always fills.
 
-`buffer_size` is a dropdown of the standard sizes (`64` … `1024`, the
-same set as the global buffer slider) and round-trips through saved
-patches. It is read when the stream opens, so the natural workflow is to
-set it **before you Start**; changing it live rebuilds just this sink's
-stream (a brief gap on that one device), exactly as changing `device`
-does. Secondary streams are keyed by `(device, buffer_size)`, so one
-physical device can carry several streams at different buffer sizes, and
-a buffered sink shares a plain `specific_stereo_speaker_output`'s stream
-only when their sizes match. Everything else — the `""`-drains-to-master
-equivalence, the per-device summing, the independent-clock **drift**
-caveat, a failed open logging and silencing just that sink — is
-identical to [`specific_stereo_speaker_output`](#specific_stereo_speaker_output).
+`buffer_size` is a dropdown of the sink sizes — the global slider's
+stops (`64` … `1024`) **plus `2048` / `4096` / `8192` extensions** the
+global slider deliberately doesn't offer (the main stream's block size
+also sets keyboard-to-ear latency; this cue/monitor stream's doesn't, so
+a drifting Bluetooth device can ride ~186 ms of cushion) — and
+round-trips through saved patches. It is read when the stream opens, so
+the natural workflow is to set it **before you Start**; changing it live
+rebuilds just this sink's stream (a brief gap on that one device),
+exactly as changing `device` does. Secondary streams are keyed by
+`(device, buffer_size)`, so one physical device can carry several
+streams at different buffer sizes, and a buffered sink shares a plain
+`specific_stereo_speaker_output`'s stream only when their sizes match.
+Everything else — the `""`-drains-to-master equivalence, the per-device
+summing, the independent-clock **drift** caveat, a failed open logging
+and silencing just that sink — is identical to
+[`specific_stereo_speaker_output`](#specific_stereo_speaker_output).
 Only the numpy backend routes it; under pyo it is a silent stub, like
 the other stereo speakers.
+
+**Ring readout.** The node carries a live one-line telemetry readout of
+the sink's hand-off ring, refreshed every GUI frame:
+
+```
+buffer 47% (3852/8192)  under 0  drop 2
+```
+
+The percentage (and `queued/capacity` samples) is how full the ring
+between the render clock and the device clock is; `under` counts device
+callbacks the ring couldn't fully serve (a gap was zero-padded in) and
+`drop` counts render pushes that lost audio — the ring overflowed and
+shed its oldest samples, or the push was bigger than the whole ring —
+both cumulative since the stream opened. Underruns only start counting
+once the ring has first filled to one device block, so the inevitable
+fill-up gap at Start (a 8192 sink block takes ~186 ms of pushes before
+it can serve anything) doesn't read as trouble. Reading it: a climbing
+`under` means the cushion is too thin — pick a bigger `buffer_size`; a
+ring pinned near 100% with climbing `drop` means the device clock runs
+slower than the main stream and the ring is shedding oldest audio
+(latency rides the ring's ceiling); *both* climbing from the first
+moment means the ring itself (8× `buffer_size`) is smaller than one
+main-stream block (e.g. `buffer_size` 64 under a 1024 global buffer) —
+raise `buffer_size` or lower the global buffer. The text sits grey at
+`buffer: idle` while the sink has
+no stream of its own (transport stopped, `device` empty so it drains to
+master, or the device failed to open), green while the ring is healthy,
+and flashes amber for a moment whenever either counter ticks. Sinks
+sharing one `(device, buffer_size)` stream show identical numbers, by
+design. (numpy backend only, like the routing itself.)
 
 **Ports**
 
@@ -2535,7 +2569,7 @@ the other stereo speakers.
 | `width` | `1.0` | 0 … 2 | Mid/side width; pairs only. |
 | `cv_depth` | `1.0` | 0 … 2 | Knob units per CV unit, shared by `pan_cv` and `width_cv`. |
 | `device` | `""` | device name | Target output device; `""` = system default (drains to master). A named device routes the sink to its own OutputStream; changing it re-routes **live**. |
-| `buffer_size` | `512` | 64 … 1024 | Block size of this sink's own output stream, independent of the global buffer. Read at stream open; a live change rebuilds only this stream. Out-of-range values are clamped. |
+| `buffer_size` | `512` | 64 … 8192 | Block size of this sink's own output stream, independent of the global buffer (whose slider tops out at 1024 — the 2048/4096/8192 stops are sink-only). Read at stream open; a live change rebuilds only this stream. Out-of-range values are clamped. |
 
 ---
 

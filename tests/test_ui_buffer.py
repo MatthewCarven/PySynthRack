@@ -148,3 +148,93 @@ def test_coerce_garbage_returns_default():
 
 def test_coerce_custom_default():
     assert b.coerce_buffer_size(None, default=128) == 128
+
+
+# ----- SINK_BUFFER_SIZES (the buffered sink's longer list) ------------------
+
+def test_sink_sizes_extend_the_global_set():
+    assert b.SINK_BUFFER_SIZES == b.BUFFER_SIZES + (2048, 4096, 8192)
+
+
+def test_sink_sizes_sorted_unique_and_positive():
+    assert list(b.SINK_BUFFER_SIZES) == sorted(b.SINK_BUFFER_SIZES)
+    assert len(set(b.SINK_BUFFER_SIZES)) == len(b.SINK_BUFFER_SIZES)
+    assert all(s > 0 for s in b.SINK_BUFFER_SIZES)
+
+
+def test_sink_top_stop_matches_backend_rail():
+    # The dropdown's biggest offer must be exactly what the backend clamp
+    # allows, or the UI would show a size the stream can't open at.
+    from pysynthrack.audio.numpy_backend import _MAX_SINK_BLOCK
+    assert b.SINK_BUFFER_SIZES[-1] == _MAX_SINK_BLOCK
+
+
+def test_sink_default_is_a_sink_stop():
+    assert b.BUFFER_DEFAULT in b.SINK_BUFFER_SIZES
+
+
+# ----- snap_sink_buffer / coerce_sink_buffer_size ---------------------------
+
+def test_snap_sink_exact_members_are_identity():
+    for size in b.SINK_BUFFER_SIZES:
+        assert b.snap_sink_buffer(size) == size
+
+
+def test_snap_sink_reaches_past_the_global_ceiling():
+    # The whole point: values the global snapper would crush to 1024.
+    assert b.snap_sink_buffer(2048) == 2048
+    assert b.snap_sink_buffer(3000) == 2048   # nearer 2048 than 4096
+    assert b.snap_sink_buffer(100_000) == 8192
+    assert b.snap_buffer(100_000) == 1024     # global stays capped
+
+
+def test_snap_sink_tie_resolves_to_smaller():
+    # 1536 is equidistant from 1024 and 2048 -> lower latency wins.
+    assert b.snap_sink_buffer(1536) == 1024
+    # 3072 is equidistant from 2048 and 4096.
+    assert b.snap_sink_buffer(3072) == 2048
+
+
+def test_coerce_sink_valid_stop_passthrough():
+    for size in (64, 512, 1024, 2048, 4096, 8192):
+        assert b.coerce_sink_buffer_size(size) == size
+
+
+def test_coerce_sink_numeric_string_and_float():
+    assert b.coerce_sink_buffer_size("4096") == 4096
+    assert b.coerce_sink_buffer_size(4096.0) == 4096
+
+
+def test_coerce_sink_garbage_returns_default():
+    assert b.coerce_sink_buffer_size("abc") == b.BUFFER_DEFAULT
+    assert b.coerce_sink_buffer_size(None) == b.BUFFER_DEFAULT
+    assert b.coerce_sink_buffer_size(None, default=256) == 256
+
+
+# ----- format_sink_buffer (node ring readout text) ---------------------------
+
+def test_format_idle_when_no_stream():
+    assert b.format_sink_buffer(None) == "buffer: idle"
+
+
+def test_format_running_line():
+    assert (
+        b.format_sink_buffer((3852, 8192, 0, 2))
+        == "buffer 47% (3852/8192)  under 0  drop 2"
+    )
+
+
+def test_format_empty_and_full_ring():
+    assert b.format_sink_buffer((0, 4096, 0, 0)).startswith("buffer 0% ")
+    assert b.format_sink_buffer((4096, 4096, 0, 0)).startswith("buffer 100% ")
+
+
+def test_format_zero_capacity_does_not_divide():
+    # Defensive: a degenerate ring reads 0%, not ZeroDivisionError.
+    assert b.format_sink_buffer((0, 0, 0, 0)).startswith("buffer 0% ")
+
+
+def test_format_is_ascii_only():
+    # The node font has no wide glyph coverage; keep the readout plain.
+    for entry in (None, (123, 8192, 4, 7)):
+        b.format_sink_buffer(entry).encode("ascii")

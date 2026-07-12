@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import time
 import traceback
 from typing import Optional
 
@@ -61,7 +62,10 @@ from .zoom import (
 )
 from .buffer import (
     BUFFER_SIZES,
+    SINK_BUFFER_SIZES,
     coerce_buffer_size,
+    coerce_sink_buffer_size,
+    format_sink_buffer,
     index_to_size,
     size_to_index,
 )
@@ -236,6 +240,18 @@ class App:
         # tag showing 'elapsed / total'; refreshed each frame in
         # _update_file_positions from the backend's snapshot hook.
         self._file_pos_labels: dict[int, int] = {}
+        # Buffered-sink ring readouts (buffered_specific_speaker_output).
+        # ``_sink_buffer_labels`` maps module_id -> the dpg text tag showing
+        # the sink's secondary-stream ring fill / underruns / drops;
+        # refreshed each frame in _update_sink_buffers from the backend's
+        # snapshot hook. ``_sink_buffer_last`` remembers the previous
+        # (underruns, drops) pair so a fresh count *increase* can arm
+        # ``_sink_buffer_flash`` — a monotonic deadline until which the
+        # readout is tinted amber, making a struggling ring catch the eye
+        # without the cumulative counters tinting it forever.
+        self._sink_buffer_labels: dict[int, int] = {}
+        self._sink_buffer_last: dict[int, tuple[int, int]] = {}
+        self._sink_buffer_flash: dict[int, float] = {}
         # FilePlayer queue ("file list"). ``_playlist_listboxes`` maps
         # module_id -> the dpg listbox tag showing the upcoming tracks;
         # ``_fileplayer_advanced_gen`` remembers the backend decode
@@ -286,6 +302,7 @@ class App:
                 self._update_cv_meters()
                 self._update_audio_meters()
                 self._update_dsp_load()
+                self._update_sink_buffers()
                 self._update_file_positions()
                 self._advance_file_playlists()
                 self._update_velocity_capture()
@@ -558,6 +575,20 @@ class App:
                         wid = dpg.last_item()
                         if wid:
                             self._param_widgets[wid] = (module.id, param_name)
+
+            # BufferedSpecificSpeakerOutput: a live readout of the sink's
+            # secondary-stream hand-off ring — fill %, queued/capacity
+            # samples, and cumulative underrun / drop counts
+            # (_update_sink_buffers ticks it each frame from the backend's
+            # snapshot hook). Idle grey until the sink actually has a
+            # stream: transport running AND a named device picked.
+            if module.TYPE == "buffered_specific_speaker_output":
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                    label = dpg.add_text(
+                        format_sink_buffer(None),
+                        color=self._SINK_BUF_IDLE_RGBA,
+                    )
+                    self._sink_buffer_labels[module.id] = label
 
             # FilePlayer: tape-style transport buttons plus a live
             # 'elapsed / total' playhead readout (_update_file_positions
@@ -1922,14 +1953,15 @@ class App:
             and module.TYPE == "buffered_specific_speaker_output"
         ):
             # The buffered sink's own output-stream block size: a dropdown of
-            # the standard sizes (the same set as the global buffer slider).
+            # the sink sizes — the global slider's stops plus the roomy
+            # 2048/4096/8192 extensions a glitchy secondary device may need.
             # Stored as an int via _on_buffer_size_changed so saved patches
             # keep a clean numeric value; the current value is snapped onto the
             # list for display in case a hand-edited patch is off-list.
             dpg.add_combo(
                 label=param_name,
-                items=[str(s) for s in BUFFER_SIZES],
-                default_value=str(coerce_buffer_size(current)),
+                items=[str(s) for s in SINK_BUFFER_SIZES],
+                default_value=str(coerce_sink_buffer_size(current)),
                 width=140,
                 callback=self._on_buffer_size_changed,
                 user_data=user_data,
@@ -2125,19 +2157,34 @@ class App:
             self.backend.set_param(module_id, param_name, app_data)
         except Exception as exc:
             self._set_status(f"Param error: {exc}")
+        if param_name == "device":
+            # A routed sink's device change swaps its stream identity, so
+            # its ring-readout baseline is from the OLD stream; drop it
+            # rather than let the next frame compare against another
+            # stream's historical counters (a phantom amber flash when
+            # re-pointing onto an already-open shared stream). No-op for
+            # the other device-bearing modules (nothing keyed for them).
+            self._sink_buffer_last.pop(module_id, None)
+            self._sink_buffer_flash.pop(module_id, None)
 
     def _on_buffer_size_changed(self, sender, app_data, user_data) -> None:
         """A buffered sink's ``buffer_size`` combo changed. The combo carries
-        the size as a string; store it as an int (snapped onto the allowed
-        set) so patches stay numeric and the backend keys its secondary stream
-        by a clean value. Changing it while running rebuilds just that sink's
-        stream (see NumpyBackend.set_param); otherwise it applies at the next
-        Start."""
+        the size as a string; store it as an int (snapped onto the sink's
+        allowed set, 64..8192) so patches stay numeric and the backend keys
+        its secondary stream by a clean value. Changing it while running
+        rebuilds just that sink's stream (see NumpyBackend.set_param);
+        otherwise it applies at the next Start."""
         module_id, param_name = user_data
         try:
-            self.backend.set_param(module_id, param_name, coerce_buffer_size(app_data))
+            self.backend.set_param(
+                module_id, param_name, coerce_sink_buffer_size(app_data)
+            )
         except Exception as exc:
             self._set_status(f"Param error: {exc}")
+        # Stream identity changed — reset the ring-readout baseline, same
+        # reasoning as the device branch in _on_param_changed.
+        self._sink_buffer_last.pop(module_id, None)
+        self._sink_buffer_flash.pop(module_id, None)
 
     def _on_fm_ratio_changed(self, sender, app_data, user_data) -> None:
         """An fm_op ``ratio`` combo changed. The combo carries the harmonic
@@ -2914,6 +2961,12 @@ class App:
             self._file_pos_labels.pop(module_id, None)
             self._playlist_listboxes.pop(module_id, None)
             self._fileplayer_advanced_gen.pop(module_id, None)
+            # Same for a buffered sink's ring readout: the text item dies
+            # with the node, so a lingering entry would have the next
+            # _update_sink_buffers frame set_value a freed dpg item.
+            self._sink_buffer_labels.pop(module_id, None)
+            self._sink_buffer_last.pop(module_id, None)
+            self._sink_buffer_flash.pop(module_id, None)
             # Drop meter bookkeeping too: the bar drawlist items are freed
             # with the node below, so a lingering entry would make the next
             # _update_cv_meters frame call set_value on a dead item — the
@@ -3425,6 +3478,9 @@ class App:
         self._file_pos_labels.clear()
         self._playlist_listboxes.clear()
         self._fileplayer_advanced_gen.clear()
+        self._sink_buffer_labels.clear()
+        self._sink_buffer_last.clear()
+        self._sink_buffer_flash.clear()
         # KeyTrigger UI state: stale text-input tags and any pending Learn
         # don't carry across a patch load.
         self._text_input_tags.clear()
@@ -3495,6 +3551,64 @@ class App:
                 stale.append(key)
         for key in stale:
             self._cv_meter_bars.pop(key, None)
+
+    # Buffered-sink readout colors and the flash hold. Idle matches the other
+    # grey hint text; OK is a calm green near the CV-meter fill; trouble is
+    # an amber that holds this many seconds after the last underrun/drop so
+    # a one-frame counter tick is actually visible.
+    _SINK_BUF_IDLE_RGBA = (170, 170, 170)
+    _SINK_BUF_OK_RGBA = (150, 205, 160)
+    _SINK_BUF_TROUBLE_RGBA = (240, 190, 90)
+    _SINK_BUF_FLASH_S = 1.5
+
+    def _update_sink_buffers(self) -> None:
+        """Push each buffered sink's secondary-stream ring telemetry into
+        its node readout: fill %, queued/capacity, underrun / drop counts.
+
+        Once per frame; backends without the hook (the pyo stub) show a
+        permanent idle line. A sink absent from the snapshot (stopped, no
+        device, failed open) reads idle and its flash baseline is dropped;
+        a LIVE stream switch (device / buffer_size edit) keeps the sink in
+        consecutive snapshots, so its callbacks reset the baseline instead
+        (see _on_param_changed / _on_buffer_size_changed) — either way the
+        next stream's counters never compare against the old stream's.
+        Amber-tints the text for ``_SINK_BUF_FLASH_S`` after a counter
+        increase; defensive against dead dpg items exactly like
+        _update_cv_meters (prune, don't crash).
+        """
+        if not self._sink_buffer_labels:
+            return
+        snapshot = getattr(self.backend, "snapshot_sink_buffers", None)
+        entries = snapshot() if snapshot is not None else {}
+        now = time.monotonic()
+        stale: list[int] = []
+        for mid, label in self._sink_buffer_labels.items():
+            entry = entries.get(mid)
+            if entry is None:
+                color = self._SINK_BUF_IDLE_RGBA
+                self._sink_buffer_last.pop(mid, None)
+                self._sink_buffer_flash.pop(mid, None)
+            else:
+                counts = (entry[2], entry[3])
+                prev = self._sink_buffer_last.get(mid)
+                if prev is not None and (
+                    counts[0] > prev[0] or counts[1] > prev[1]
+                ):
+                    self._sink_buffer_flash[mid] = now + self._SINK_BUF_FLASH_S
+                self._sink_buffer_last[mid] = counts
+                if now < self._sink_buffer_flash.get(mid, 0.0):
+                    color = self._SINK_BUF_TROUBLE_RGBA
+                else:
+                    color = self._SINK_BUF_OK_RGBA
+            try:
+                dpg.set_value(label, format_sink_buffer(entry))
+                dpg.configure_item(label, color=color)
+            except Exception:
+                stale.append(mid)
+        for mid in stale:
+            self._sink_buffer_labels.pop(mid, None)
+            self._sink_buffer_last.pop(mid, None)
+            self._sink_buffer_flash.pop(mid, None)
 
     def _update_file_positions(self) -> None:
         """Push each FilePlayer's elapsed / total playhead time into its

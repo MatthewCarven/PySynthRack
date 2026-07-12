@@ -236,17 +236,38 @@ class BufferedSpecificSpeakerOutput(Module):
 
     Why a per-sink buffer: the main mix might run at a tight 128-frame buffer
     for a responsive keyboard while a flaky USB / Bluetooth monitor on this
-    sink needs a roomy 1024 to stop crackling — or the reverse, a low-latency
-    cue feed taken off an otherwise safe, sluggish main buffer. The secondary
-    stream already runs on its own PortAudio clock (fed through a drop-oldest
-    ring that absorbs the drift between the two), so it can carry its own
-    block size, at the cost of a little added latency on that one device.
+    sink needs a roomy 1024 — or even 8192, nearly 200 ms of cushion — to
+    stop crackling; or the reverse, a low-latency cue feed taken off an
+    otherwise safe, sluggish main buffer. The secondary stream already runs
+    on its own PortAudio clock (fed through a drop-oldest ring that absorbs
+    the drift between the two), so it can carry its own block size, at the
+    cost of added latency on that one device. The sink's dropdown therefore
+    extends past the global slider's 1024 ceiling with 2048/4096/8192 stops —
+    sizes that would be absurd for the keyboard-to-ear path but are exactly
+    right for a drifting Bluetooth monitor.
 
     ``buffer_size`` is read when the stream opens, so the natural workflow is
     to set it before you Start. Changing it live rebuilds just this sink's
     stream (a brief gap on that one device), exactly as changing ``device``
     does. Only the numpy backend routes this sink; under pyo it is a silent
     stub, like the other stereo speakers.
+
+    To make the size choice observable instead of guesswork, the node carries
+    a live ring readout — ``buffer 47% (3852/8192)  under 0  drop 2`` — fed
+    each GUI frame from the backend: how full the hand-off ring is, plus
+    cumulative underrun (device ran dry, gap played; counted only once the
+    ring has first filled, so a clean Start doesn't tick) and drop (a push
+    lost audio: the ring overflowed and shed its oldest samples, or the push
+    outsized the whole ring) counts since the stream opened. A climbing
+    ``under`` says buy more cushion (bigger ``buffer_size``); a pinned-full
+    ring with climbing ``drop`` says the device clock runs slow relative to
+    the main stream and latency will ride the ring's ceiling; both climbing
+    from the very first moment says the ring itself (8x ``buffer_size``) is
+    smaller than one main-stream block — raise ``buffer_size`` or lower the
+    global buffer. The line reads ``buffer: idle`` when the sink has no
+    stream of its own (transport stopped, ``device`` empty, or the device
+    failed to open), and sinks sharing one (device, buffer_size) stream show
+    identical numbers.
 
     Parameters:
         gain: Linear output gain, applied after pan/width.
@@ -257,8 +278,9 @@ class BufferedSpecificSpeakerOutput(Module):
         device: Output device name, or ``""`` (``AUTO_DEVICE``) for the
             system default — the same picker as SpecificStereoSpeakerOutput.
         buffer_size: Frames per block for this sink's own output stream. One
-            of the standard sizes (64 .. 1024); defaults to 512. The backend
-            clamps any out-of-range value to a safe stop.
+            of the sink sizes (64 .. 8192 — the global stops plus the
+            2048/4096/8192 extensions); defaults to 512. The backend clamps
+            any out-of-range value to a safe stop.
     """
 
     TYPE = "buffered_specific_speaker_output"

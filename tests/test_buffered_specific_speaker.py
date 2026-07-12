@@ -26,6 +26,16 @@ Coverage:
   - Secondary stream: _sync_device_outputs opens each stream at the sink's
     buffer_size; a live buffer_size change rebuilds only that stream; a change
     while stopped does not reconcile.
+  - Extended sizes: the sink keys/opens past the global 1024 ceiling (2048 /
+    4096 / 8192, the SINK_BUFFER_SIZES extensions).
+  - Ring telemetry: a fresh ring reads (0, cap, 0, 0); fill tracks push/pop;
+    underruns arm only once the ring FIRST fills to one device block (priming
+    callbacks and the large-sink fill-up gap at Start are startup, not
+    trouble), then starvation counts; overflow (drop-oldest) and
+    oversize-block truncation count as drops; close() resets everything.
+  - snapshot_sink_buffers: keyed by module id; idle (absent) for master-bus /
+    stopped / failed-open sinks; sinks sharing one stream report the same
+    tuple; the plain specific sink is included too.
 """
 from __future__ import annotations
 
@@ -332,3 +342,181 @@ class TestSecondaryStream:
         opened.clear()
         b.set_param(s.id, "pan", 0.5)
         assert opened == [] and set(b._device_outputs) == {("Cans", 256)}
+
+    @pytest.mark.parametrize("bs", [2048, 4096, 8192])
+    def test_extended_sizes_key_and_open_past_global_ceiling(self, rig, bs):
+        # The SINK_BUFFER_SIZES extensions: sizes the global slider never
+        # offers must still key, open, and size the ring correctly.
+        b, s, opened = rig
+        b.set_param(s.id, "buffer_size", bs)
+        assert set(b._device_outputs) == {("Cans", bs)}
+        assert opened[-1] == ("Cans", bs)
+        assert b._device_outputs[("Cans", bs)]._capacity == 8 * bs
+
+
+# ----- Ring telemetry (the node readout's data) -------------------------------
+
+
+class TestRingTelemetry:
+    """(queued, capacity, underruns, drops) accounting on _DeviceOutput,
+    exercised without a real PortAudio stream (push/_callback are plain
+    methods; telemetry() never touches the stream)."""
+
+    def _blk(self, v, n=F):
+        return np.full((n, 2), v, dtype=np.float32)
+
+    def _out(self, n=F):
+        return np.zeros((n, 2), dtype=np.float32)
+
+    def test_fresh_ring_reads_empty_and_clean(self):
+        d = _DeviceOutput("X", SR, F, max_blocks=4)
+        assert d.telemetry() == (0, 4 * F, 0, 0)
+
+    def test_fill_tracks_push_and_pop(self):
+        d = _DeviceOutput("X", SR, F, max_blocks=4)
+        d.push(self._blk(0.1))
+        assert d.telemetry()[0] == F
+        d._callback(self._out(F // 2), F // 2, None, None)
+        assert d.telemetry()[0] == F // 2
+
+    def test_priming_callbacks_are_not_underruns(self):
+        # PortAudio fires callbacks before the first render lands; an empty
+        # ring at that point is startup, not trouble.
+        d = _DeviceOutput("X", SR, F, max_blocks=4)
+        d._callback(self._out(), F, None, None)
+        d._callback(self._out(), F, None, None)
+        assert d.telemetry() == (0, 4 * F, 0, 0)
+
+    def test_fill_up_gap_at_large_sink_block_is_not_an_underrun(self):
+        # Device block 2F fed by F-sample pushes: the first callback lands
+        # mid-fill-up (inevitable at the 2048/4096/8192 stops, where one
+        # device block takes many main blocks to accumulate). That gap is
+        # startup; only starvation after the ring has once filled counts.
+        d = _DeviceOutput("X", SR, 2 * F, max_blocks=4)
+        d.push(self._blk(0.1))                        # half a device block
+        d._callback(self._out(2 * F), 2 * F, None, None)   # zero-padded tail
+        assert d.telemetry()[2] == 0                  # ...but not an underrun
+        d.push(self._blk(0.2, 2 * F))                 # ring reaches one block
+        d._callback(self._out(2 * F), 2 * F, None, None)   # fully served
+        d._callback(self._out(2 * F), 2 * F, None, None)   # dry: NOW it counts
+        assert d.telemetry()[2] == 1
+
+    def test_starvation_after_priming_counts(self):
+        d = _DeviceOutput("X", SR, F, max_blocks=4)
+        d.push(self._blk(0.1))                    # fills one device block
+        d._callback(self._out(), F, None, None)   # fully served: clean
+        assert d.telemetry()[2] == 0
+        d._callback(self._out(), F, None, None)   # ring dry: underrun
+        assert d.telemetry()[2] == 1
+
+    def test_partial_serve_after_priming_is_an_underrun(self):
+        d = _DeviceOutput("X", SR, F, max_blocks=4)
+        d.push(self._blk(0.1))                    # prime: one full block
+        d._callback(self._out(), F, None, None)
+        d.push(self._blk(0.2, F // 2))
+        d._callback(self._out(), F, None, None)   # half audio, half pad
+        assert d.telemetry()[2] == 1
+
+    def test_overflow_counts_a_drop(self):
+        d = _DeviceOutput("X", SR, F, max_blocks=2)      # cap 2F
+        d.push(self._blk(0.1)); d.push(self._blk(0.2))   # exactly full: clean
+        assert d.telemetry()[3] == 0
+        d.push(self._blk(0.3))                           # drop-oldest fires
+        assert d.telemetry() == (2 * F, 2 * F, 0, 1)
+
+    def test_oversize_block_counts_a_drop(self):
+        # A push bigger than the whole ring keeps only its tail — audio was
+        # lost even though no previously-queued sample was overwritten.
+        d = _DeviceOutput("X", SR, 64, max_blocks=1)     # cap 64
+        d.push(self._blk(0.1, 128))
+        assert d.telemetry() == (64, 64, 0, 1)
+
+    def test_close_resets_counters_and_prime(self):
+        d = _DeviceOutput("X", SR, F, max_blocks=2)
+        d.push(self._blk(0.1))
+        d._callback(self._out(), F, None, None)
+        d._callback(self._out(), F, None, None)          # underrun
+        d.push(self._blk(0.2)); d.push(self._blk(0.3)); d.push(self._blk(0.4))
+        assert d.telemetry()[2] > 0 and d.telemetry()[3] > 0
+        d.close()
+        assert d.telemetry() == (0, 2 * F, 0, 0)
+        d._callback(self._out(), F, None, None)          # back to pre-prime
+        assert d.telemetry()[2] == 0
+
+
+# ----- snapshot_sink_buffers (the GUI hook) -----------------------------------
+
+
+class TestSnapshotSinkBuffers:
+    """Module-id-keyed telemetry for the node readouts. _DeviceOutput.open /
+    .close are stubbed (no real PortAudio); the rings themselves are real."""
+
+    @pytest.fixture
+    def stub_streams(self, monkeypatch):
+        monkeypatch.setattr(_DeviceOutput, "open", lambda self: None)
+        monkeypatch.setattr(_DeviceOutput, "close", lambda self: None)
+
+    def _routed(self, buffer_size=256, device="Cans"):
+        p = Patch()
+        o = p.add_module("oscillator", params={"amp": 0.4})
+        s = p.add_module(TYPE, params={"device": device, "buffer_size": buffer_size})
+        p.connect(o.id, "out", s.id, "in_l")
+        b = _backend()
+        b.compile(p)
+        b._running = True
+        b._sync_device_outputs()
+        return b, s
+
+    def test_no_patch_or_no_streams_is_empty(self, stub_streams):
+        assert _backend().snapshot_sink_buffers() == {}
+        b, s = self._routed()
+        b._device_outputs = {}          # what stop() leaves behind
+        assert b.snapshot_sink_buffers() == {}
+
+    def test_routed_sink_reports_its_ring(self, stub_streams):
+        b, s = self._routed(buffer_size=256)
+        assert b.snapshot_sink_buffers() == {s.id: (0, 8 * 256, 0, 0)}
+        b._device_outputs[("Cans", 256)].push(
+            np.zeros((100, 2), dtype=np.float32)
+        )
+        assert b.snapshot_sink_buffers()[s.id] == (100, 8 * 256, 0, 0)
+
+    def test_master_bus_sink_is_absent(self, stub_streams):
+        b, s = self._routed(device="")
+        assert b.snapshot_sink_buffers() == {}
+
+    def test_failed_open_sink_is_absent(self, monkeypatch):
+        def boom(self):
+            raise RuntimeError("no such device")
+        monkeypatch.setattr(_DeviceOutput, "open", boom)
+        monkeypatch.setattr(_DeviceOutput, "close", lambda self: None)
+        b, s = self._routed()
+        assert b.snapshot_sink_buffers() == {}
+
+    def test_shared_stream_reports_identical_tuples(self, stub_streams):
+        p = Patch()
+        o = p.add_module("oscillator", params={"amp": 0.4})
+        s1 = p.add_module(TYPE, params={"device": "Cans", "buffer_size": 256})
+        s2 = p.add_module(TYPE, params={"device": "Cans", "buffer_size": 256})
+        p.connect(o.id, "out", s1.id, "in_l")
+        p.connect(o.id, "out", s2.id, "in_l")
+        b = _backend()
+        b.compile(p)
+        b._running = True
+        b._sync_device_outputs()
+        snap = b.snapshot_sink_buffers()
+        assert set(snap) == {s1.id, s2.id}
+        assert snap[s1.id] == snap[s2.id]
+
+    def test_plain_specific_sink_is_included(self, stub_streams):
+        # The hook covers every routed speaker, so a future readout on the
+        # plain specific sink is a UI-only change.
+        p = Patch()
+        o = p.add_module("oscillator", params={"amp": 0.4})
+        s = p.add_module(SPECIFIC, params={"device": "Cans"})
+        p.connect(o.id, "out", s.id, "in_l")
+        b = _backend()
+        b.compile(p)
+        b._running = True
+        b._sync_device_outputs()
+        assert set(b.snapshot_sink_buffers()) == {s.id}

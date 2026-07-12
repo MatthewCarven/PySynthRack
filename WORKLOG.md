@@ -7516,3 +7516,72 @@ checkbox render and apply — and build a live 2-op bell / 3-op e-piano to hear 
 sing (no headless path builds the node or its audio out). Same "SHIPPED, pending
 real-GUI eyeball" pattern as the recent modules. Committed per the working
 agreement; push is Matthew's.
+
+## 2026-07-13 — buffered sink love: sizes past 1024 + a live ring readout
+
+Matthew asked for two upgrades to `buffered_specific_speaker_output`: buffer
+sizes larger than 1024, and "some kind of text on it that indicates buffer
+usage/availability". Both shipped.
+
+**Sizes.** `ui/buffer.py` grew `SINK_BUFFER_SIZES` — the global stops plus
+**2048 / 4096 / 8192** — with `snap_sink_buffer` / `coerce_sink_buffer_size`
+(same tie-to-smaller law). The sink's combo and its coercing callback now use
+the sink list; the global toolbar slider deliberately stays 64..1024 (the main
+block sets keyboard-to-ear latency; this cue/monitor stream's doesn't). No
+backend change needed: `_MAX_SINK_BLOCK` was already 8192, so the top UI stop
+now sits exactly on the rail (a test pins that equality). A patch saved at
+4096 round-trips instead of being crushed to 1024.
+
+**Readout.** One line on the node, ticked every GUI frame:
+`buffer 47% (3852/8192)  under 0  drop 2`. Plumbing follows the FilePlayer
+playhead pattern end to end: `_DeviceOutput` grew `_underruns` / `_drops` /
+`_primed` (all mutated inside the existing ring lock) + a `telemetry()`
+4-tuple; `NumpyBackend.snapshot_sink_buffers()` maps module id → its stream's
+telemetry (shared (device, size) streams sampled once, so co-sinks always
+agree; absent = no live stream); `_update_sink_buffers` in the frame loop
+writes the text via the dpg-free `format_sink_buffer` (unit-tested, ASCII-only
+for the node font) with colors: grey idle, green healthy, **amber flash 1.5 s**
+whenever a counter ticks. Bookkeeping mirrors `_file_pos_labels` at node
+delete + patch load, plus the self-healing try/except from the CV meters.
+
+**Semantics that took thought.** `under` = device callbacks the ring couldn't
+fully serve — but only *after the ring has once filled to one device block*.
+Prime-on-first-push (my first cut) still showed `under 1` + amber on every
+clean Start at 8192, because a large sink block needs ~186 ms of pushes before
+it can serve anything; the review caught it, the gate now arms on first fill.
+`drop` = any push that lost audio: drop-oldest overwrite *or* a push bigger
+than the whole ring (reachable: `buffer_size` 64 → 512-sample ring under a
+1024 global block; docs now explain that both-climbing-from-the-start
+signature). Reading guide lives in MODULES.md and the module docstring.
+
+**Review.** Ran the 4-dimension + adversarial-verify workflow over the diff.
+It got cut short by the session token cap: ring-math / gui-lifecycle /
+consistency reviewers completed (2 + 0 + 1 findings), the concurrency reviewer
+and all verifier votes died to the cap — so I verified the three findings
+myself instead of re-spending: (1) the prime-gate Start tick above — real,
+fixed; (2) a phantom amber flash when a live device/buffer_size edit lands a
+sink on an already-open stream with historical counters — real, fixed by
+resetting the flash baseline in both param callbacks (+ component-wise count
+comparison); (3) the `drop` prose narrower than the code in four places —
+real, fixed. Concurrency I re-checked by hand: counters ride the existing
+lock, `telemetry()` holds it for four int reads at frame rate, the snapshot
+reads `_device_outputs` as one atomically-swapped reference, and patch/param
+access stays on the GUI thread. Noting the deviation per the working
+agreement: the confirmed-findings gate was me, not the verifier fleet.
+
+### Tests
+
+`test_ui_buffer.py` +15 (sink list pins incl. rail equality, snap/coerce past
+the ceiling, formatter incl. zero-capacity and ASCII guards);
+`test_buffered_specific_speaker.py` +18 (extended sizes key and open at
+2048/4096/8192 with 8× ring capacity; ring telemetry: fill tracking, priming
+vs fill-up-gap vs genuine starvation, overflow + oversize drops, close()
+reset; snapshot: keyed by id, idle cases, shared-stream equality,
+plain-specific included). Suite **2114 pass** (was 2081).
+`pysynthrack.ui.app` imports clean headless.
+
+**Manual-verify (meatthread0):** eyeball in a real window — the dropdown's
+2048/4096/8192 apply (stream reopens at the new size), the readout goes green
+on Start against a second device, `under`/`drop` tick + amber-flash when you
+force trouble (e.g. 64 under a 1024 global), and idle grey on Stop. Headless
+can't open PortAudio streams, same caveat as the module's original ship.

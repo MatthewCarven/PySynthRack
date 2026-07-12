@@ -48,6 +48,26 @@ Living list of what's next. Edit freely.
       docstring (routing landed as Slice 2 ages ago). **Pending (meatthread0):**
       real-GUI eyeball of the node (combos render + apply) and real audio out of a
       *second* physical device at a custom buffer — neither is headless-testable.
+- [x] **`buffered_specific_speaker_output` love: sizes past 1024 + ring readout**
+      — done 2026-07-13 (Matthew: "buffer sizes larger than 1024" + "some kind of
+      text on it that indicates buffer usage/availability"). (1) `buffer_size`
+      dropdown now offers `SINK_BUFFER_SIZES` = global stops + **2048/4096/8192**
+      (8192 = the backend's `_MAX_SINK_BLOCK` rail, ≈186 ms; sink-only — the
+      global slider stays 64..1024 because the main block sets keyboard-to-ear
+      latency). (2) Live on-node readout `buffer 47% (3852/8192)  under 0  drop 2`:
+      `_DeviceOutput` grew lock-guarded underrun/drop counters + `telemetry()`,
+      the backend a `snapshot_sink_buffers()` GUI hook keyed by module id, the
+      app a per-frame `_update_sink_buffers` text tick (grey idle / green ok /
+      1.5 s amber flash on a counter tick; FilePlayer-readout lifecycle pattern).
+      Underruns arm only once the ring first fills one device block, so a clean
+      Start at 8192 doesn't tick; `drop` = any push that lost audio (overwrite
+      OR ring-smaller-than-main-block truncation — docs explain the tiny-ring
+      case). 33 new/updated tests; suite 2114. Review workflow ran (ring-math +
+      gui-lifecycle + consistency reviewers; concurrency reviewer and verifiers
+      died to the session token cap — findings self-verified instead, all three
+      confirmed and fixed). **Pending (meatthread0):** real-GUI eyeball — the
+      extended dropdown applies, and the readout ticks/flashes on a real second
+      device (headless can't drive PortAudio streams).
 - [x] **Two desktop-rig crashes fixed (audio race + stale meter bar)** — done
       2026-07-11, from six crash logs Matthew sent. (A) GUI: deleting a
       CV-source node left a `(module_id, port) -> bar` entry in

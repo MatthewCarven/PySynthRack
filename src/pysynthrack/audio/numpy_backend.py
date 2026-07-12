@@ -68,7 +68,8 @@ except Exception:  # pragma: no cover - environment-dependent
 # arbitrary blocksize, so these are just defensive rails against a corrupt or
 # hostile ``buffer_size`` in a loaded patch — 16 keeps the callback rate sane,
 # 8192 caps the secondary ring allocation (8 blocks * 8192 * 2ch * 4B ≈ 512 KB).
-# The UI only ever offers the standard 64..1024 stops, well inside this range.
+# The UI offers 64..8192 for the buffered sink (ui/buffer.SINK_BUFFER_SIZES),
+# so its top stop sits exactly on the upper rail by design.
 _MIN_SINK_BLOCK = 16
 _MAX_SINK_BLOCK = 8192
 
@@ -117,6 +118,21 @@ class _DeviceOutput:
         self._ring = np.zeros((self._capacity, 2), dtype=np.float32)
         self._read = 0        # index of the oldest queued sample
         self._avail = 0       # samples currently queued, 0 .. capacity
+        # Ring health counters for the GUI readout (see telemetry()), both
+        # cumulative since open. An underrun is a device callback the ring
+        # couldn't fully serve (its tail was zero-padded); a drop is a push
+        # that lost audio — it overwrote unread samples (drop-oldest fired)
+        # or was itself bigger than the whole ring (its head truncated away).
+        # Guarded by the same lock as the cursors. Underruns only count once
+        # _primed flips, which happens when the fill FIRST reaches one device
+        # block: PortAudio fires callbacks to prime the stream before the
+        # first render lands, and a device block larger than the main block
+        # (the 2048/4096/8192 stops) needs many pushes before it can serve
+        # one callback at all — both are startup fill-up, not a cushion
+        # signal, and neither should read as trouble on a clean Start.
+        self._underruns = 0
+        self._drops = 0
+        self._primed = False
         self._lock = threading.Lock()
         self._stream: Any = None
 
@@ -143,6 +159,7 @@ class _DeviceOutput:
             return
         cap = self._capacity
         with self._lock:
+            dropped = n > cap                  # oversize block loses its head
             if n >= cap:
                 block = block[n - cap:]
                 n = cap
@@ -160,12 +177,23 @@ class _DeviceOutput:
                 # read cursor past them (drop-oldest) and pin to capacity.
                 self._read = (self._read + (new_avail - cap)) % cap
                 new_avail = cap
+                dropped = True
             self._avail = new_avail
+            if dropped:
+                self._drops += 1
+            # Armed the moment the ring can serve one whole device block;
+            # from here on a short callback is genuine starvation. (cap is
+            # >= one device block by construction; the min is a rail against
+            # a degenerate hand-constructed ring.)
+            if not self._primed and new_avail >= min(self._block_size, cap):
+                self._primed = True
 
     def _callback(self, outdata, frames, time_info, status) -> None:
         cap = self._capacity
         with self._lock:
             n = min(self._avail, frames)
+            if n < frames and self._primed:
+                self._underruns += 1
             if n > 0:
                 r = self._read
                 end = r + n
@@ -180,6 +208,17 @@ class _DeviceOutput:
         if n < frames:
             outdata[n:] = 0.0                  # underrun: zero-pad the tail
 
+    def telemetry(self) -> tuple[int, int, int, int]:
+        """``(queued, capacity, underruns, drops)`` — the GUI readout hook.
+
+        Queued/capacity are samples; the counters are cumulative events since
+        open (see the __init__ notes for what each one means). The lock is
+        held for four int reads, far shorter than push's bounded block copy,
+        and this is called at GUI frame rate, so contention is negligible.
+        """
+        with self._lock:
+            return (self._avail, self._capacity, self._underruns, self._drops)
+
     def close(self) -> None:
         try:
             if self._stream is not None:
@@ -192,6 +231,9 @@ class _DeviceOutput:
             with self._lock:
                 self._read = 0
                 self._avail = 0
+                self._underruns = 0
+                self._drops = 0
+                self._primed = False
 
 
 # ---------------------------------------------------------------------------
@@ -1727,6 +1769,39 @@ class NumpyBackend(AudioBackend):
             elapsed = min(int(st.get("pos", 0)), n) / sr
             out[mid] = (elapsed, n / sr)
         return out
+
+    def snapshot_sink_buffers(self) -> dict[int, tuple[int, int, int, int]]:
+        """GUI hook: hand-off-ring telemetry for each device-routed speaker
+        sink, keyed by module id.
+
+        Each value is that sink's secondary stream's ``(queued, capacity,
+        underruns, drops)`` (see :meth:`_DeviceOutput.telemetry`). A sink
+        with no live stream — transport stopped, ``device`` empty (master
+        bus), or the open failed — simply has no entry, which the UI shows
+        as idle. Sinks sharing one ``(device, block_size)`` stream report
+        the *same* tuple, sampled once, so their readouts always agree.
+
+        GUI-thread safe: ``_device_outputs`` is read as one reference (the
+        atomic-swap discipline in :meth:`_sync_device_outputs`), patch
+        edits happen on this same thread, and telemetry() takes each ring's
+        lock only for four int reads.
+        """
+        outs = self._device_outputs
+        if not outs or self._patch is None:
+            return {}
+        result: dict[int, tuple[int, int, int, int]] = {}
+        per_key: dict[tuple[str, int], tuple[int, int, int, int]] = {}
+        for m in self._patch.modules.values():
+            key = self._stream_key(m)
+            if key is None:
+                continue
+            if key not in per_key:
+                dev_out = outs.get(key)
+                if dev_out is None:
+                    continue                    # stream failed to open
+                per_key[key] = dev_out.telemetry()
+            result[m.id] = per_key[key]
+        return result
 
     # ----- per-module rendering -------------------------------------------
 
