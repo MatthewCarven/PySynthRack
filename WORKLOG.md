@@ -7517,6 +7517,13 @@ sing (no headless path builds the node or its audio out). Same "SHIPPED, pending
 real-GUI eyeball" pattern as the recent modules. Committed per the working
 agreement; push is Matthew's.
 
+**Eyeball PASSED 2026-07-14.** Matthew loaded `fm_op_bell.json` in the real GUI
+and it works well — the 2-op bell sings (he clocked its 3.5:1 character as a
+warning/alarm bell, which is exactly right for that inharmonic modulator). So
+the node builds + renders in-window and the real audio path is confirmed. Not
+separately A/B'd yet: the 3-op e-piano example and a close look at the `ratio`
+combo specifically — minor, both exercise the same paths the bell just proved.
+
 ## 2026-07-13 — buffered sink love: sizes past 1024 + a live ring readout
 
 Matthew asked for two upgrades to `buffered_specific_speaker_output`: buffer

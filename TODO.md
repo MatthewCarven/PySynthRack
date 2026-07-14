@@ -28,9 +28,11 @@ Living list of what's next. Edit freely.
       and an index envelope is what makes FM evolve, so the input is provided
       (noted in the worklog). 29 tests (`test_fm_op.py`); suite 2081.
       `examples/fm_op_bell.json` (2-op) + `fm_op_epiano.json` (3-op) load +
-      render at 0.6 peak. **Pending (meatthread0):** real-GUI eyeball of the
-      node — the `ratio` combo + sliders render/apply, and a live 2-op/3-op
-      patch actually sings. Follow-ups offered, not started: a stereo `out_l`/
+      render at 0.6 peak. **Eyeball PASSED 2026-07-14** — Matthew ran
+      `fm_op_bell.json` in the real GUI; the 2-op bell sings (reads as a
+      warning/alarm bell, apt for 3.5:1). Node builds + renders + real audio
+      out confirmed; 3-op e-piano + a `ratio`-combo close-look not separately
+      A/B'd (same paths). Follow-ups offered, not started: a stereo `out_l`/
       `out_r` detune spread; a two-sample feedback average (DX7 anti-buzz);
       optional per-operator anti-alias.
 - [x] **`buffered_specific_speaker_output` — per-sink output buffer size** — done
