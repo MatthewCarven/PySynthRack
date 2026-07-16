@@ -105,7 +105,7 @@ class TestModel:
         assert isinstance(sp, BufferedSpecificSpeakerOutput)
         assert sp.params == {
             "gain": 1.0, "pan": 0.0, "width": 1.0, "cv_depth": 1.0,
-            "device": AUTO_DEVICE, "buffer_size": 512,
+            "device": AUTO_DEVICE, "buffer_size": 512, "ratio_depth": 0.25,
         }
 
     def test_registered_in_outputs_category(self):
@@ -113,13 +113,17 @@ class TestModel:
         outs = dict(grouped_module_types())["Outputs"]
         assert TYPE in outs
 
-    def test_ports_match_the_stereo_speaker(self):
+    def test_ports_match_the_stereo_speaker_plus_governor(self):
+        # The stereo speaker's four jacks, plus the governor pair: the
+        # ratio_cv stretch input and the one-block-delayed fill cv out.
         sp = Patch().add_module(TYPE)
         assert [(p.name, p.signal_kind) for p in sp.input_ports] == [
             ("in_l", "audio"), ("in_r", "audio"),
-            ("pan_cv", "cv"), ("width_cv", "cv"),
+            ("pan_cv", "cv"), ("width_cv", "cv"), ("ratio_cv", "cv"),
         ]
-        assert sp.output_ports == []
+        assert [(p.name, p.signal_kind) for p in sp.output_ports] == [
+            ("fill", "cv"),
+        ]
 
     def test_device_and_buffer_round_trip_through_json(self):
         patch = Patch()

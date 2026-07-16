@@ -269,6 +269,22 @@ class BufferedSpecificSpeakerOutput(Module):
     failed to open), and sinks sharing one (device, buffer_size) stream show
     identical numbers.
 
+    The governor jacks — ``fill`` (cv out) and ``ratio_cv`` (cv in) — make
+    the ring's regulation *patchable*. ``fill`` publishes the ring's fill
+    fraction (0 empty .. 1 full; a neutral 0.5 while the sink has no
+    stream), delayed one block so a feedback patch is legal — the
+    topological sort deliberately ignores cables leaving this jack.
+    ``ratio_cv`` varispeed-resamples the block this sink pushes onto its
+    secondary stream: the pushed length becomes ``frames * (1 + cv *
+    ratio_depth)``, clamped to 0.5x..2x and smoothed over ~a dozen blocks
+    so a twitchy patch can't warble the pitch violently. Wire
+    ``fill -> (offset -0.5) -> (gain) -> ratio_cv`` and the sink stretches
+    time to hold its own ring at half — an adaptive-resampling clock
+    governor built from patch cables. Plain resampling for now, so big
+    corrections audibly bend pitch (a pitch-preserving stretch engine is
+    the planned upgrade); with ``ratio_cv`` unpatched the push is
+    bit-identical to before. Numpy backend only, like the routing itself.
+
     Parameters:
         gain: Linear output gain, applied after pan/width.
         pan: Position/balance, -1 (hard left) .. 1 (hard right).
@@ -281,6 +297,9 @@ class BufferedSpecificSpeakerOutput(Module):
             of the sink sizes (64 .. 8192 — the global stops plus the
             2048/4096/8192 extensions); defaults to 512. The backend clamps
             any out-of-range value to a safe stop.
+        ratio_depth: Stretch swing per ``ratio_cv`` unit (default 0.25:
+            cv +-1 pushes 25% more/fewer samples). The engine clamps the
+            resulting ratio to 0.5..2 whatever the depth.
     """
 
     TYPE = "buffered_specific_speaker_output"
@@ -292,11 +311,13 @@ class BufferedSpecificSpeakerOutput(Module):
         "cv_depth": 1.0,
         "device": AUTO_DEVICE,
         "buffer_size": 512,
+        "ratio_depth": 0.25,
     }
     INPUT_PORTS = [
         Port("in_l", "in", "audio"),
         Port("in_r", "in", "audio"),
         Port("pan_cv", "in", "cv"),
         Port("width_cv", "in", "cv"),
+        Port("ratio_cv", "in", "cv"),
     ]
-    OUTPUT_PORTS: list[Port] = []
+    OUTPUT_PORTS = [Port("fill", "out", "cv")]
