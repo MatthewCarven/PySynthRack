@@ -282,10 +282,16 @@ class BufferedSpecificSpeakerOutput(Module):
     stretches time to hold its own ring at half — an adaptive-resampling
     clock governor built from patch cables. The gain's sign matters: a
     low ring needs a POSITIVE cv (push more), so the loop inverts —
-    positive gain runs away to an empty or pinned-full ring. Plain resampling for now, so big
-    corrections audibly bend pitch (a pitch-preserving stretch engine is
-    the planned upgrade); with ``ratio_cv`` unpatched the push is
-    bit-identical to before. Numpy backend only, like the routing itself.
+    positive gain runs away to an empty or pinned-full ring. The stretch
+    is PITCH-PRESERVING: a streaming WSOLA shift (the pitch shifter's
+    engine, 50 ms grain per channel) cancelled by the length resample,
+    so even large corrections hold pitch — at the cost of one constant
+    ~50 ms latency on the governed path and a one-grain warm-up (brief
+    silence) when the cable first lands or the transport starts. The
+    engines stay in-circuit while cabled, even at ratio 1, so that
+    warm-up is never paid mid-performance; with ``ratio_cv`` unpatched
+    the push is bit-identical to before. Numpy backend only, like the
+    routing itself.
 
     Parameters:
         gain: Linear output gain, applied after pan/width.

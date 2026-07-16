@@ -2502,9 +2502,12 @@ becomes `frames * (1 + cv * ratio_depth)`, clamped 0.5×..2× and smoothed
 the sink stretches time to hold its own ring at half — an
 adaptive-resampling clock governor built from patch cables. (The sign
 matters: a low ring needs positive cv to push more samples, so the loop
-inverts; positive gain runs away.) Plain resampling for now (big
-corrections audibly bend pitch); unpatched, the push is bit-identical
-to before. Numpy backend only.
+inverts; positive gain runs away.) The stretch is **pitch-preserving**
+(streaming WSOLA cancelled by the length resample), so even large
+corrections hold pitch — at the cost of ~50 ms constant latency on the
+governed path and a one-grain warm-up (brief silence) when the cable
+first lands; unpatched, the push is bit-identical to before. Numpy
+backend only.
 
 Why a per-sink buffer: the main mix might run at a tight 128-frame
 buffer for a responsive keyboard while a flaky USB / Bluetooth monitor

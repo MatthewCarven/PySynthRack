@@ -438,10 +438,12 @@ Living list of what's next. Edit freely.
       (written 2026-07-04: ~26 paste-ready specs + quick hits across dynamics,
       generative, new voices, character FX, visualization). Pick items into
       this list as they're chosen; suggested first five at the bottom of the doc.
-- [ ] **Ring governor Slice 2** — swap the buffered sink's governed push from
-      linear-interp varispeed (pitch bends on big corrections) to the
-      pitch-preserving OLA stretch engine already behind pitch_shifter.
-      Slice 1 shipped 2026-07-16 (08d0c3e / 264eab6 / f61a80b).
+- [x] ~~**Ring governor Slice 2**~~ — **shipped 2026-07-16** (197fd53): governed
+      push now pitch-preserving via a per-sink [L, R] _GrainShifter pair
+      (WSOLA shift by ratio cancelled by the length resample). Engines stay
+      in-circuit while cabled (warm-up paid at patch/Start, ~50 ms constant
+      latency); unpatched push still bit-identical. 1 kHz-sine FFT test pins
+      it. Slice 1 shipped 2026-07-16 (08d0c3e / 264eab6 / f61a80b).
 - [ ] **Buffered sink: decouple cushion from device blocksize** — buffer_size
       8192 on the HD Audio box fails open() and the sink goes silently
       `buffer: idle` (screenshot-confirmed 2026-07-16). Fall back

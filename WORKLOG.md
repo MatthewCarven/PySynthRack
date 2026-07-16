@@ -7632,3 +7632,30 @@ stretch/shrink/clamp/first-step-smoothing push lengths); suite **2125 pass**
 **Manual-verify (meatthread0):** patch the loop against a real second device;
 watch `fill`'s CV meter + the ring readout hold ~50%, then crank the CVScale
 gain to find where it starts to warble.
+
+## 2026-07-16 — ring governor Slice 2: pitch-preserving actuator (197fd53)
+
+The governed push no longer bends pitch. Composition trick: `_GrainShifter`
+(the pitch shifter's streaming WSOLA engine) is a same-length pitch shift by
+`r`, and the Slice-1 linear resample to `frames·ratio` is a varispeed by the
+same `r` in the opposite direction — run the block through both and the
+pitch effects cancel exactly, leaving a pitch-preserving time stretch. So
+Slice 2 is: per governed sink, a persistent `[L, R]` engine pair (50 ms
+grain / overlap 2 / the pitch shifter's head formula), shift by the smoothed
+ratio, then the existing resample stage untouched.
+
+Design call: while `ratio_cv` is cabled the engines stay in-circuit even at
+ratio 1.0 — bypassing at unity would spend the ~one-grain warm-up (zeros) at
+the exact moment the governor first corrects, mid-performance; instead it's
+paid once at patch/Start and the governed path carries one constant ~50 ms
+latency (fine for a cue/monitor feed). Uncabled sinks never construct an
+engine, so the unpatched push stays bit-identical (asserted).
+
+`tests/test_sink_governor.py` +1: 1 kHz sine → converged 1.25× stretch →
+FFT of the pushed tail keeps its fundamental at 1 kHz (Slice-1 varispeed
+would read 800 Hz). All Slice-1 length/clamp/smoothing pins unchanged.
+Suite **2126 pass** (was 2125).
+
+**Manual-verify (meatthread0):** same governor patch as Slice 1 — but now
+crank CVScale hard: the ring readout should still walk to ~50% while the
+audio holds pitch (listen for grain texture instead of detune).
