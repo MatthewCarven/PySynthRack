@@ -881,6 +881,10 @@ class NumpyBackend(AudioBackend):
         # (snapshotting each sink's selection), fed by the main callback,
         # closed in stop(). Empty in the common (no routed) case.
         self._device_outputs: dict[tuple[str, int], Any] = {}
+        # Per-sink smoothed governor ratio (see _governed_ratio). Keyed by
+        # module id; an entry exists only while that sink's ratio_cv is
+        # cabled, so the unpatched path carries no state at all.
+        self._sink_ratio: dict[int, float] = {}
         # GUI thread writes the patch reference; audio thread reads it.
         self._lock = threading.Lock()
         # Audio-callback crash protection. After the first uncaught
@@ -1485,6 +1489,12 @@ class NumpyBackend(AudioBackend):
         "specific_stereo_speaker_output",
         "buffered_specific_speaker_output",
     })
+    # One-pole smoothing applied per block to a governed sink's stretch
+    # ratio. 0.2 settles in ~a dozen blocks (~0.15 s at 512/44.1k): slow
+    # enough that a twitchy governor patch reads as drift correction
+    # rather than vibrato, fast enough to track real clock drift, which
+    # moves over seconds.
+    _SINK_RATIO_SMOOTH = 0.2
 
     def _sink_block_size(self, module) -> int:
         """PortAudio block size for a device-routed sink's own stream.
@@ -1557,6 +1567,30 @@ class NumpyBackend(AudioBackend):
         # Port-keyed buffer store. A single module may emit multiple outputs
         # (Keyboard publishes both audio and gate).
         buffers: dict[tuple[int, str], np.ndarray] = {}
+
+        # Governor seed: each buffered sink publishes the PREVIOUS block's
+        # ring fill on its 'fill' cv out before anything renders — the
+        # one-block-delayed feedback source the topological sort ignores
+        # (see _is_delayed_edge), so a fill -> controller -> ratio_cv
+        # governor patch reads a defined value wherever it sorted. With no
+        # live stream (transport stopped, device empty, failed open) the
+        # seed is a neutral 0.5: zero error against the half-full setpoint,
+        # so an idle governor patch commands no stretch.
+        outs = self._device_outputs
+        for module in modules.values():
+            if module.TYPE != self._BUFFERED_SPECIFIC_SPEAKER:
+                continue
+            fill = 0.5
+            key = self._stream_key(module)
+            if key is not None:
+                dev_out = outs.get(key)
+                if dev_out is not None:
+                    queued, capacity, _u, _d = dev_out.telemetry()
+                    if capacity > 0:
+                        fill = queued / capacity
+            buffers[(module.id, "fill")] = np.full(
+                frames, fill, dtype=np.float32
+            )
         for module_id in order:
             module = modules.get(module_id)
             if module is None:
@@ -1589,6 +1623,7 @@ class NumpyBackend(AudioBackend):
 
         out = np.zeros((frames, 2), dtype=np.float32)
         device_blocks: dict[tuple[str, int], np.ndarray] = {}
+        governed: dict[tuple[str, int], float] = {}
         for module in modules.values():
             if module.TYPE in self._STEREO_SPEAKERS:
                 target = out
@@ -1599,6 +1634,13 @@ class NumpyBackend(AudioBackend):
                         target = np.zeros((frames, 2), dtype=np.float32)
                         device_blocks[key] = target
                 self._drain_stereo_speaker(module, frames, buffers, patch, target)
+                if (
+                    key is not None
+                    and module.TYPE == self._BUFFERED_SPECIFIC_SPEAKER
+                ):
+                    ratio = self._governed_ratio(module, patch, buffers)
+                    if ratio is not None:
+                        governed[key] = ratio
                 continue
             channels = self._SPEAKER_CHANNELS.get(module.TYPE)
             if channels is None:
@@ -1627,6 +1669,28 @@ class NumpyBackend(AudioBackend):
         np.clip(out, -1.0, 1.0, out=out)
         for blk in device_blocks.values():
             np.clip(blk, -1.0, 1.0, out=blk)
+        # Governor actuation: varispeed-resample each governed stream's
+        # block to frames * ratio before it is handed to the ring. Plain
+        # linear interpolation — the Slice-1 actuator: cheap, and its
+        # pitch bend on large corrections is deliberately audible (a
+        # pitch-preserving stretch engine is the planned upgrade). The
+        # ring counts in samples with push size free to differ from pop
+        # size, so a variable-length push is already legal; unity ratio
+        # skips entirely, keeping the ungoverned path bit-identical.
+        if governed and frames > 0:
+            for key, ratio in governed.items():
+                blk = device_blocks.get(key)
+                if blk is None or abs(ratio - 1.0) < 1e-9:
+                    continue
+                m = max(1, int(round(frames * ratio)))
+                if m == frames:
+                    continue
+                src_pos = np.arange(frames, dtype=np.float64)
+                dst_pos = np.arange(m, dtype=np.float64) * (frames / m)
+                stretched = np.empty((m, 2), dtype=np.float32)
+                stretched[:, 0] = np.interp(dst_pos, src_pos, blk[:, 0])
+                stretched[:, 1] = np.interp(dst_pos, src_pos, blk[:, 1])
+                device_blocks[key] = stretched
         return out, device_blocks
 
     def _drain_stereo_speaker(self, module, frames, buffers, patch, out):
@@ -1716,6 +1780,38 @@ class NumpyBackend(AudioBackend):
 
         out[:, 0] += l_mix
         out[:, 1] += r_mix
+
+    def _governed_ratio(self, module, patch, buffers) -> float | None:
+        """The smoothed varispeed ratio a buffered sink's governor patch
+        commands, or ``None`` while ``ratio_cv`` is unpatched (the
+        bit-exact pre-governor path; smoothing state is dropped so a
+        re-patch starts from unity). Block-rate control: the cv buffer
+        collapses to its mean, maps through ``1 + cv * ratio_depth``,
+        clamps to a safe 0.5..2, then one-pole smooths
+        (:data:`_SINK_RATIO_SMOOTH`) so a twitchy patch reads as drift
+        correction, not vibrato. Sinks sharing one (device, buffer_size)
+        stream: the last drained sink's ratio wins — a governor patch
+        should own its stream.
+        """
+        cabled = any(
+            c.dst_port == "ratio_cv" for c in patch.cables_into(module.id)
+        )
+        if not cabled:
+            self._sink_ratio.pop(module.id, None)
+            return None
+        cv = self._input_buffer(
+            patch, buffers, module.id, "ratio_cv", collapse=False
+        )
+        level = float(np.mean(cv)) if cv is not None and cv.size else 0.0
+        try:
+            depth = float(module.params.get("ratio_depth", 0.25))
+        except (TypeError, ValueError):
+            depth = 0.25
+        target = min(max(1.0 + level * depth, 0.5), 2.0)
+        prev = self._sink_ratio.get(module.id, 1.0)
+        ratio = prev + self._SINK_RATIO_SMOOTH * (target - prev)
+        self._sink_ratio[module.id] = ratio
+        return ratio
 
     def snapshot_meter_levels(self) -> dict[tuple[int, str], float]:
         """GUI hook: a copy of the latest per-cv-port block-mean levels.

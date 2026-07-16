@@ -75,3 +75,90 @@ class TestDelayedEdgeTopoSort:
         patch.connect(osc.id, "out", sink.id, "in_l")
         order = NumpyBackend._topological_sort(patch)
         assert order.index(osc.id) < order.index(sink.id)
+
+
+# ----- fill seeding & the governed push ---------------------------------------
+
+SR = 44100
+FRAMES = 256
+
+
+def _backend(patch):
+    b = NumpyBackend(sample_rate=SR, block_size=FRAMES)
+    b.compile(patch)
+    return b
+
+
+class TestFillSeed:
+    def test_neutral_half_with_no_stream(self):
+        # Master-bus sink (device empty): no ring, so fill seeds 0.5 —
+        # zero error against the half-full setpoint.
+        patch = Patch()
+        sink = patch.add_module(SINK)
+        b = _backend(patch)
+        b.render_block_multi(FRAMES)
+        assert b.snapshot_meter_levels()[(sink.id, "fill")] == 0.5
+
+    def test_neutral_half_with_device_but_unopened_stream(self):
+        # A named device whose stream never opened (no start() in tests)
+        # is the 'failed open / stopped' shape: still the neutral seed.
+        patch = Patch()
+        sink = patch.add_module(SINK, params={"device": "GovDev"})
+        b = _backend(patch)
+        b.render_block_multi(FRAMES)
+        assert b.snapshot_meter_levels()[(sink.id, "fill")] == 0.5
+
+
+class TestGovernedPush:
+    def _patch(self, value):
+        patch = Patch()
+        sink = patch.add_module(SINK, params={"device": "GovDev"})
+        const = patch.add_module("constant", params={"value": value})
+        patch.connect(const.id, "out", sink.id, "ratio_cv")
+        return patch, sink
+
+    def test_unpatched_ratio_pushes_exactly_frames(self):
+        patch = Patch()
+        patch.add_module(SINK, params={"device": "GovDev"})
+        b = _backend(patch)
+        _out, blocks = b.render_block_multi(FRAMES)
+        (blk,) = blocks.values()
+        assert blk.shape == (FRAMES, 2)
+        assert b._sink_ratio == {}   # no cable -> no governor state at all
+
+    def test_positive_cv_stretches_the_push(self):
+        # cv +1 at default depth 0.25 -> ratio converges on 1.25, so the
+        # pushed block settles at frames * 1.25 (more samples: the
+        # catch-a-draining-ring direction).
+        patch, _sink = self._patch(1.0)
+        b = _backend(patch)
+        for _ in range(80):
+            _out, blocks = b.render_block_multi(FRAMES)
+        (blk,) = blocks.values()
+        assert blk.shape[0] == round(FRAMES * 1.25)
+
+    def test_negative_cv_shrinks_the_push(self):
+        patch, _sink = self._patch(-1.0)
+        b = _backend(patch)
+        for _ in range(80):
+            _out, blocks = b.render_block_multi(FRAMES)
+        (blk,) = blocks.values()
+        assert blk.shape[0] == round(FRAMES * 0.75)
+
+    def test_ratio_clamped_to_2x(self):
+        # cv +10 asks for 1 + 10*0.25 = 3.5; the engine rail is 2.0.
+        patch, _sink = self._patch(10.0)
+        b = _backend(patch)
+        for _ in range(80):
+            _out, blocks = b.render_block_multi(FRAMES)
+        (blk,) = blocks.values()
+        assert blk.shape[0] == 2 * FRAMES
+
+    def test_smoothing_walks_not_jumps(self):
+        # First governed block moves one smoothing step toward the
+        # target (1 + 0.2 * 0.25 = 1.05), not the whole way.
+        patch, _sink = self._patch(1.0)
+        b = _backend(patch)
+        _out, blocks = b.render_block_multi(FRAMES)
+        (blk,) = blocks.values()
+        assert blk.shape[0] == round(FRAMES * 1.05)
