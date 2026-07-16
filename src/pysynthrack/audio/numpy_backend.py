@@ -1107,9 +1107,20 @@ class NumpyBackend(AudioBackend):
 
     @staticmethod
     def _topological_sort(patch: Patch) -> list[int]:
-        """Kahn's algorithm — sources first, sinks last."""
+        """Kahn's algorithm — sources first, sinks last.
+
+        Cables leaving a DELAYED port (see :meth:`_is_delayed_edge`) are
+        ignored for ordering: their value is seeded from the previous
+        block's state before anything renders, so they impose no
+        within-block ordering — and counting them would poison every
+        module downstream of a governor feedback patch into the
+        unordered leftover tail below (Kahn never emits a cycle member,
+        so its whole chain would fall through in creation order).
+        """
         in_degree: dict[int, int] = {mid: 0 for mid in patch.modules}
         for cable in patch.cables:
+            if NumpyBackend._is_delayed_edge(patch, cable):
+                continue
             in_degree[cable.dst_module_id] = in_degree.get(cable.dst_module_id, 0) + 1
         ready = [mid for mid, deg in in_degree.items() if deg == 0]
         order: list[int] = []
@@ -1117,6 +1128,8 @@ class NumpyBackend(AudioBackend):
             mid = ready.pop(0)
             order.append(mid)
             for cable in patch.cables_out_of(mid):
+                if NumpyBackend._is_delayed_edge(patch, cable):
+                    continue
                 in_degree[cable.dst_module_id] -= 1
                 if in_degree[cable.dst_module_id] == 0:
                     ready.append(cable.dst_module_id)
@@ -1124,6 +1137,23 @@ class NumpyBackend(AudioBackend):
             if mid not in order:
                 order.append(mid)
         return order
+
+    @staticmethod
+    def _is_delayed_edge(patch: Patch, cable) -> bool:
+        """True for cables carrying a one-block-DELAYED signal — today,
+        the buffered sink's ``fill`` cv out, seeded into the buffer
+        store from the previous block's ring state before the render
+        loop runs. Such a cable is a real signal path but not a
+        within-block dependency, which is exactly what lets a governor
+        patch (fill -> controller chain -> ratio_cv) close its feedback
+        loop while the rest of the graph still sorts deterministically.
+        """
+        src = patch.modules.get(cable.src_module_id)
+        return (
+            src is not None
+            and src.TYPE == NumpyBackend._BUFFERED_SPECIFIC_SPEAKER
+            and cable.src_port == "fill"
+        )
 
     # ----- start / stop ----------------------------------------------------
 
