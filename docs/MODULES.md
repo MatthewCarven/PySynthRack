@@ -2498,9 +2498,11 @@ leaving this jack, so feedback patches are legal. `ratio_cv` (cv in)
 varispeed-resamples the block pushed to the secondary stream: length
 becomes `frames * (1 + cv * ratio_depth)`, clamped 0.5×..2× and smoothed
 (~0.15 s) against control wobble. Wire
-`fill → CVOffset(−0.5) → CVScale(gain) → ratio_cv` and the sink
-stretches time to hold its own ring at half — an adaptive-resampling
-clock governor built from patch cables. Plain resampling for now (big
+`fill → cv_offset(−0.5) → cv_scale(scale −1, NEGATIVE) → ratio_cv` and
+the sink stretches time to hold its own ring at half — an
+adaptive-resampling clock governor built from patch cables. (The sign
+matters: a low ring needs positive cv to push more samples, so the loop
+inverts; positive gain runs away.) Plain resampling for now (big
 corrections audibly bend pitch); unpatched, the push is bit-identical
 to before. Numpy backend only.
 

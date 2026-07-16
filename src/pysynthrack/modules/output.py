@@ -278,9 +278,11 @@ class BufferedSpecificSpeakerOutput(Module):
     secondary stream: the pushed length becomes ``frames * (1 + cv *
     ratio_depth)``, clamped to 0.5x..2x and smoothed over ~a dozen blocks
     so a twitchy patch can't warble the pitch violently. Wire
-    ``fill -> (offset -0.5) -> (gain) -> ratio_cv`` and the sink stretches
-    time to hold its own ring at half — an adaptive-resampling clock
-    governor built from patch cables. Plain resampling for now, so big
+    ``fill -> (offset -0.5) -> (NEGATIVE gain) -> ratio_cv`` and the sink
+    stretches time to hold its own ring at half — an adaptive-resampling
+    clock governor built from patch cables. The gain's sign matters: a
+    low ring needs a POSITIVE cv (push more), so the loop inverts —
+    positive gain runs away to an empty or pinned-full ring. Plain resampling for now, so big
     corrections audibly bend pitch (a pitch-preserving stretch engine is
     the planned upgrade); with ``ratio_cv`` unpatched the push is
     bit-identical to before. Numpy backend only, like the routing itself.
