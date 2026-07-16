@@ -7592,3 +7592,43 @@ plain-specific included). Suite **2114 pass** (was 2081).
 on Start against a second device, `under`/`drop` tick + amber-flash when you
 force trouble (e.g. 64 under a 1024 global), and idle grey on Stop. Headless
 can't open PortAudio streams, same caveat as the module's original ship.
+
+## 2026-07-16 — buffered sink: patchable ring governor, Slice 1 (plain resample)
+
+Two findings this session. First, Matthew's real-GUI screenshots settled the
+8192 mystery: `buffer_size 8192` on the HD Audio device reads **`buffer:
+idle`** — the secondary stream *fails to open* at that blocksize (open()
+throws, `_sync_device_outputs` logs + skips, sink silent) while 1024 runs a
+healthy `25% (2048/8192) under 2`. So the earlier "never fills past 2048" was
+a normal 2-block backlog at 1024, and the real defect is the silent-idle trap
+plus conflating device blocksize with ring cushion (fix queued in TODO).
+
+Second, designed and shipped Slice 1 of the **ring governor** — Matthew's
+idea: the sink feeds its ring fill back as CV so an upstream stretch holds
+the buffer at half. That's adaptive resampling (async-SRC, textbook 50%
+setpoint) with the control law patchable from cables. Three subslices, each
+committed green:
+
+* `08d0c3e` ports — `fill` (cv out) + `ratio_cv` (cv in) + `ratio_depth`
+  param on `buffered_specific_speaker_output`.
+* `264eab6` topo sort — Kahn's ignores cables leaving the delayed `fill`
+  port (both passes), so a fill → controller → ratio_cv loop keeps its
+  controller chain deterministically ordered instead of falling into the
+  leftover-append tail.
+* `f61a80b` engine — render_block_multi seeds `fill` from the previous
+  block's ring telemetry (neutral 0.5 streamless); a cabled ratio_cv maps
+  block-mean cv → `1 + cv·ratio_depth`, clamps 0.5..2, one-pole smooths
+  (0.2/block ≈ 0.15 s) and linear-interp resamples the pushed block to
+  `frames·ratio`. Unpatched ratio_cv is bit-identical to the old push; the
+  ring already accepts variable push sizes.
+
+The governor patch: `fill → CVOffset(−0.5) → CVScale(gain) → ratio_cv`.
+Plain resample bends pitch on big corrections *by design* (you can hear the
+loop work); the pitch-preserving OLA actuator is Slice 2.
+`tests/test_sink_governor.py` +11 (adversarial-order topo, seed neutrality,
+stretch/shrink/clamp/first-step-smoothing push lengths); suite **2125 pass**
+(was 2114).
+
+**Manual-verify (meatthread0):** patch the loop against a real second device;
+watch `fill`'s CV meter + the ring readout hold ~50%, then crank the CVScale
+gain to find where it starts to warble.

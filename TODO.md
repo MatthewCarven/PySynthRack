@@ -438,3 +438,16 @@ Living list of what's next. Edit freely.
       (written 2026-07-04: ~26 paste-ready specs + quick hits across dynamics,
       generative, new voices, character FX, visualization). Pick items into
       this list as they're chosen; suggested first five at the bottom of the doc.
+- [ ] **Ring governor Slice 2** — swap the buffered sink's governed push from
+      linear-interp varispeed (pitch bends on big corrections) to the
+      pitch-preserving OLA stretch engine already behind pitch_shifter.
+      Slice 1 shipped 2026-07-16 (08d0c3e / 264eab6 / f61a80b).
+- [ ] **Buffered sink: decouple cushion from device blocksize** — buffer_size
+      8192 on the HD Audio box fails open() and the sink goes silently
+      `buffer: idle` (screenshot-confirmed 2026-07-16). Fall back
+      (blocksize=0 or step down) instead of silence, surface the fallback in
+      the readout, and let buffer_size size the RING (the cushion) rather
+      than the PortAudio callback block.
+- [ ] **Real-GUI eyeball: governor patch** (meatthread0) — fill →
+      CVOffset(−0.5) → CVScale → ratio_cv against a second device; watch
+      fill hold ~50% and find the gain where it starts to warble.

@@ -250,7 +250,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`right_speaker_output`](#right_speaker_output) | Outputs | `in` (audio) → — |
 | [`stereo_speaker_output`](#stereo_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv` (cv) → — |
 | [`specific_stereo_speaker_output`](#specific_stereo_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv` (cv) → — |
-| [`buffered_specific_speaker_output`](#buffered_specific_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv` (cv) → — |
+| [`buffered_specific_speaker_output`](#buffered_specific_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv`,`ratio_cv` (cv) → `fill` (cv) |
 | [`disk_writer`](#disk_writer) | Outputs | `in` (audio) → — |
 
 ---
@@ -2490,6 +2490,19 @@ knobs, the shared-`cv_depth` `pan_cv` / `width_cv` jacks, and the same
 stream — plus a `buffer_size` parameter setting the block size (frames
 per PortAudio callback) of *that* secondary stream, independent of the
 global buffer size driving the main output.
+
+It also carries the **governor pair**: `fill` (cv out) publishes the
+hand-off ring's fill fraction (0..1; neutral 0.5 with no live stream),
+one block delayed — the topological sort deliberately ignores cables
+leaving this jack, so feedback patches are legal. `ratio_cv` (cv in)
+varispeed-resamples the block pushed to the secondary stream: length
+becomes `frames * (1 + cv * ratio_depth)`, clamped 0.5×..2× and smoothed
+(~0.15 s) against control wobble. Wire
+`fill → CVOffset(−0.5) → CVScale(gain) → ratio_cv` and the sink
+stretches time to hold its own ring at half — an adaptive-resampling
+clock governor built from patch cables. Plain resampling for now (big
+corrections audibly bend pitch); unpatched, the push is bit-identical
+to before. Numpy backend only.
 
 Why a per-sink buffer: the main mix might run at a tight 128-frame
 buffer for a responsive keyboard while a flaky USB / Bluetooth monitor
