@@ -8,9 +8,11 @@ and useful:
     the controller chain into arbitrary leftover order;
   * ``fill`` is seeded into the buffer store every block (neutral 0.5
     with no live stream), one block delayed, visible to the CV meters;
-  * a cabled ``ratio_cv`` varispeed-resamples the block pushed to the
-    sink's secondary stream (smoothed, clamped), while an unpatched
-    ratio_cv leaves the push bit-identical to the pre-governor engine.
+  * a cabled ``ratio_cv`` time-stretches the block pushed to the sink's
+    secondary stream (smoothed, clamped) — pitch-preserving since Slice
+    2: a streaming WSOLA shift by ``ratio`` cancelled by the length
+    resample — while an unpatched ratio_cv leaves the push bit-identical
+    to the pre-governor engine.
 
 No audio hardware is touched: everything runs through render_block_multi
 on an uncompiled-stream backend, same as the routing tests in
@@ -124,7 +126,8 @@ class TestGovernedPush:
         _out, blocks = b.render_block_multi(FRAMES)
         (blk,) = blocks.values()
         assert blk.shape == (FRAMES, 2)
-        assert b._sink_ratio == {}   # no cable -> no governor state at all
+        assert b._sink_ratio == {}     # no cable -> no governor state at all
+        assert b._sink_stretch == {}   # ...and no stretch engines either
 
     def test_positive_cv_stretches_the_push(self):
         # cv +1 at default depth 0.25 -> ratio converges on 1.25, so the
@@ -162,3 +165,45 @@ class TestGovernedPush:
         _out, blocks = b.render_block_multi(FRAMES)
         (blk,) = blocks.values()
         assert blk.shape[0] == round(FRAMES * 1.05)
+
+
+class TestPitchPreserved:
+    """Slice 2's whole point: a governed stretch must NOT bend pitch.
+
+    A 1 kHz sine pushed through a converged ratio-1.25 stretch keeps its
+    1 kHz fundamental (the WSOLA shift and the length resample cancel);
+    the Slice-1 varispeed actuator would have landed it at 800 Hz.
+    """
+
+    F0 = 1000.0
+
+    def _governed_sine_push(self, blocks_total=120, keep_last=30):
+        patch = Patch()
+        sink = patch.add_module(SINK, params={"device": "GovDev"})
+        osc = patch.add_module(
+            "oscillator", params={"waveform": "sine", "freq": self.F0}
+        )
+        const = patch.add_module("constant", params={"value": 1.0})
+        patch.connect(osc.id, "out", sink.id, "in_l")
+        patch.connect(const.id, "out", sink.id, "ratio_cv")
+        b = _backend(patch)
+        tail = []
+        for i in range(blocks_total):
+            _out, dev = b.render_block_multi(FRAMES)
+            if i >= blocks_total - keep_last:
+                (blk,) = dev.values()
+                tail.append(blk[:, 0].copy())
+        return np.concatenate(tail)
+
+    def test_stretched_push_keeps_the_fundamental(self):
+        # Skip engine warm-up (~one 50 ms grain) and ratio convergence
+        # by analyzing only the tail; the fundamental of the pushed
+        # audio must sit at F0, not F0 / 1.25.
+        sig = self._governed_sine_push()
+        assert float(np.max(np.abs(sig))) > 0.05   # engine is primed, not silent
+        spectrum = np.abs(np.fft.rfft(sig * np.hanning(sig.shape[0])))
+        peak_hz = float(np.argmax(spectrum)) * SR / sig.shape[0]
+        assert abs(peak_hz - self.F0) < 50.0, (
+            f"fundamental at {peak_hz:.1f} Hz — varispeed bend would be "
+            f"{self.F0 / 1.25:.0f} Hz, pitch-preserving keeps {self.F0:.0f} Hz"
+        )

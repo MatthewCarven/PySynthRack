@@ -885,6 +885,12 @@ class NumpyBackend(AudioBackend):
         # module id; an entry exists only while that sink's ratio_cv is
         # cabled, so the unpatched path carries no state at all.
         self._sink_ratio: dict[int, float] = {}
+        # Per-sink [L, R] _GrainShifter pair for the governed push's
+        # pitch-preserving stage (see the actuation tail of
+        # render_block_multi). Same lifecycle as _sink_ratio: created
+        # lazily on the first governed block, dropped when ratio_cv is
+        # uncabled, absent entirely on the unpatched path.
+        self._sink_stretch: dict[int, list] = {}
         # GUI thread writes the patch reference; audio thread reads it.
         self._lock = threading.Lock()
         # Audio-callback crash protection. After the first uncaught
@@ -1623,7 +1629,7 @@ class NumpyBackend(AudioBackend):
 
         out = np.zeros((frames, 2), dtype=np.float32)
         device_blocks: dict[tuple[str, int], np.ndarray] = {}
-        governed: dict[tuple[str, int], float] = {}
+        governed: dict[tuple[str, int], tuple[int, float]] = {}
         for module in modules.values():
             if module.TYPE in self._STEREO_SPEAKERS:
                 target = out
@@ -1640,7 +1646,7 @@ class NumpyBackend(AudioBackend):
                 ):
                     ratio = self._governed_ratio(module, patch, buffers)
                     if ratio is not None:
-                        governed[key] = ratio
+                        governed[key] = (module.id, ratio)
                 continue
             channels = self._SPEAKER_CHANNELS.get(module.TYPE)
             if channels is None:
@@ -1669,27 +1675,60 @@ class NumpyBackend(AudioBackend):
         np.clip(out, -1.0, 1.0, out=out)
         for blk in device_blocks.values():
             np.clip(blk, -1.0, 1.0, out=blk)
-        # Governor actuation: varispeed-resample each governed stream's
-        # block to frames * ratio before it is handed to the ring. Plain
-        # linear interpolation — the Slice-1 actuator: cheap, and its
-        # pitch bend on large corrections is deliberately audible (a
-        # pitch-preserving stretch engine is the planned upgrade). The
-        # ring counts in samples with push size free to differ from pop
-        # size, so a variable-length push is already legal; unity ratio
-        # skips entirely, keeping the ungoverned path bit-identical.
+        # Governor actuation: PITCH-PRESERVING time-stretch of each
+        # governed stream's block to frames * ratio before it is handed
+        # to the ring. Two stages whose pitch effects cancel exactly:
+        # a streaming WSOLA shift UP by `ratio` (_GrainShifter — the
+        # pitch shifter's engine, one per channel, state persistent
+        # across blocks), then the Slice-1 linear resample DOWN by the
+        # same ratio to set the pushed length. Net: unity pitch, length
+        # frames * ratio — the ring counts in samples with push size
+        # free to differ from pop size, so the variable-length push is
+        # already legal. While ratio_cv is CABLED the engines stay
+        # in-circuit even at ratio 1.0 — bypassing at unity would spend
+        # the ~one-grain warm-up (zeros) at the exact moment the
+        # governor first corrects, mid-performance; this way it is paid
+        # once at patch/Start, and the wet path keeps one constant
+        # ~grain (50 ms) latency. Uncabled sinks never reach here (see
+        # _governed_ratio), keeping the unpatched push bit-identical.
         if governed and frames > 0:
-            for key, ratio in governed.items():
+            src_pos = np.arange(frames, dtype=np.float64)
+            for key, (mid, ratio) in governed.items():
                 blk = device_blocks.get(key)
-                if blk is None or abs(ratio - 1.0) < 1e-9:
+                if blk is None:
                     continue
+                engines = self._sink_stretch.get(mid)
+                if engines is None:
+                    # The pitch shifter's house defaults: 50 ms grain,
+                    # overlap 2, and headroom for any block size the
+                    # main stream can run.
+                    grain = max(8, int(round(0.05 * self.sample_rate)))
+                    head = max(16384, 16 * int(getattr(self, "block_size", 512)))
+                    engines = [
+                        _GrainShifter(grain, 2, head),
+                        _GrainShifter(grain, 2, head),
+                    ]
+                    self._sink_stretch[mid] = engines
+                shifted = np.empty((frames, 2), dtype=np.float64)
+                shifted[:, 0] = engines[0].process(
+                    blk[:, 0].astype(np.float64), ratio
+                )
+                shifted[:, 1] = engines[1].process(
+                    blk[:, 1].astype(np.float64), ratio
+                )
                 m = max(1, int(round(frames * ratio)))
                 if m == frames:
-                    continue
-                src_pos = np.arange(frames, dtype=np.float64)
-                dst_pos = np.arange(m, dtype=np.float64) * (frames / m)
-                stretched = np.empty((m, 2), dtype=np.float32)
-                stretched[:, 0] = np.interp(dst_pos, src_pos, blk[:, 0])
-                stretched[:, 1] = np.interp(dst_pos, src_pos, blk[:, 1])
+                    # Sub-0.5-sample rounding: skip the resample (the
+                    # residual pitch offset is a few cents at worst).
+                    stretched = shifted.astype(np.float32)
+                else:
+                    dst_pos = np.arange(m, dtype=np.float64) * (frames / m)
+                    stretched = np.empty((m, 2), dtype=np.float32)
+                    stretched[:, 0] = np.interp(dst_pos, src_pos, shifted[:, 0])
+                    stretched[:, 1] = np.interp(dst_pos, src_pos, shifted[:, 1])
+                # The OLA reconstruction can overshoot the pre-clipped
+                # bus by a hair; keep the push inside the rails.
+                np.clip(stretched, -1.0, 1.0, out=stretched)
                 device_blocks[key] = stretched
         return out, device_blocks
 
@@ -1798,6 +1837,7 @@ class NumpyBackend(AudioBackend):
         )
         if not cabled:
             self._sink_ratio.pop(module.id, None)
+            self._sink_stretch.pop(module.id, None)
             return None
         cv = self._input_buffer(
             patch, buffers, module.id, "ratio_cv", collapse=False
