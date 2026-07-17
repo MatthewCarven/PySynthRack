@@ -106,6 +106,7 @@ class TestModel:
         assert sp.params == {
             "gain": 1.0, "pan": 0.0, "width": 1.0, "cv_depth": 1.0,
             "device": AUTO_DEVICE, "buffer_size": 512, "ratio_depth": 0.25,
+            "auto_govern": False,
         }
 
     def test_registered_in_outputs_category(self):

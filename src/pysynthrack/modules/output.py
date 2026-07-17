@@ -289,9 +289,13 @@ class BufferedSpecificSpeakerOutput(Module):
     ~50 ms latency on the governed path and a one-grain warm-up (brief
     silence) when the cable first lands or the transport starts. The
     engines stay in-circuit while cabled, even at ratio 1, so that
-    warm-up is never paid mid-performance; with ``ratio_cv`` unpatched
-    the push is bit-identical to before. Numpy backend only, like the
-    routing itself.
+    warm-up is never paid mid-performance. Set ``auto_govern`` and the
+    sink runs that controller *internally* — the same half-full setpoint
+    and 0.5 loop gain as the recommended patch — so it self-corrects with
+    no cables at all; a patched ``ratio_cv`` always overrides it. With
+    ``ratio_cv`` unpatched and ``auto_govern`` off (both defaults) the
+    push is bit-identical to before. Numpy backend only, like the routing
+    itself.
 
     Parameters:
         gain: Linear output gain, applied after pan/width.
@@ -308,6 +312,11 @@ class BufferedSpecificSpeakerOutput(Module):
         ratio_depth: Stretch swing per ``ratio_cv`` unit (default 0.25:
             cv +-1 pushes 25% more/fewer samples). The engine clamps the
             resulting ratio to 0.5..2 whatever the depth.
+        auto_govern: Run the ring governor internally (default off). When
+            on and ``ratio_cv`` is unpatched, the sink holds its own ring
+            at half full with no cables (the canonical setpoint + 0.5
+            gain); a patched ``ratio_cv`` overrides it. Off leaves the
+            push bit-identical.
     """
 
     TYPE = "buffered_specific_speaker_output"
@@ -320,6 +329,7 @@ class BufferedSpecificSpeakerOutput(Module):
         "device": AUTO_DEVICE,
         "buffer_size": 512,
         "ratio_depth": 0.25,
+        "auto_govern": False,
     }
     INPUT_PORTS = [
         Port("in_l", "in", "audio"),
