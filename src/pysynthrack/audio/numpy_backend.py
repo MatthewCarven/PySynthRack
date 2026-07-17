@@ -1238,6 +1238,10 @@ class NumpyBackend(AudioBackend):
         for _dev_out in list(self._device_outputs.values()):
             _dev_out.close()
         self._device_outputs = {}
+        # Governor state is per-run: drop the smoothing memory and stretch
+        # engines so the next Start begins at unity ratio with fresh grains.
+        self._sink_ratio.clear()
+        self._sink_stretch.clear()
         # Drop any captured input so a stale block can't leak into the
         # next start() (which may be output-only).
         self._input_block = None
@@ -1501,6 +1505,13 @@ class NumpyBackend(AudioBackend):
     # rather than vibrato, fast enough to track real clock drift, which
     # moves over seconds.
     _SINK_RATIO_SMOOTH = 0.2
+    # Loop gain of the BUILT-IN governor (auto_govern): the ratio target
+    # is 1 + gain*(0.5 - fill). 0.5 reproduces the recommended
+    # fill -> cv_offset(-0.5) -> cv_scale(-2) -> ratio_cv patch exactly —
+    # that chain feeds ratio_cv = 2*(0.5 - fill), and the default
+    # ratio_depth 0.25 makes the target 1 + 0.25*ratio_cv = 1 +
+    # 0.5*(0.5 - fill) — so 'auto' and the canonical patch behave alike.
+    _AUTO_GOVERN_GAIN = 0.5
 
     def _sink_block_size(self, module) -> int:
         """PortAudio block size for a device-routed sink's own stream.
@@ -1582,20 +1593,11 @@ class NumpyBackend(AudioBackend):
         # live stream (transport stopped, device empty, failed open) the
         # seed is a neutral 0.5: zero error against the half-full setpoint,
         # so an idle governor patch commands no stretch.
-        outs = self._device_outputs
         for module in modules.values():
             if module.TYPE != self._BUFFERED_SPECIFIC_SPEAKER:
                 continue
-            fill = 0.5
-            key = self._stream_key(module)
-            if key is not None:
-                dev_out = outs.get(key)
-                if dev_out is not None:
-                    queued, capacity, _u, _d = dev_out.telemetry()
-                    if capacity > 0:
-                        fill = queued / capacity
             buffers[(module.id, "fill")] = np.full(
-                frames, fill, dtype=np.float32
+                frames, self._sink_fill(module), dtype=np.float32
             )
         for module_id in order:
             module = modules.get(module_id)
@@ -1820,34 +1822,64 @@ class NumpyBackend(AudioBackend):
         out[:, 0] += l_mix
         out[:, 1] += r_mix
 
+    def _sink_fill(self, module) -> float:
+        """This buffered sink's current ring fill fraction (0..1), or a
+        neutral 0.5 when it has no live stream (device empty, transport
+        stopped, or a failed open). Read from the same telemetry the GUI
+        readout uses, so it is effectively one block old — exactly the
+        delay the governor is built around. Shared by the ``fill`` cv-out
+        seeding and the built-in ``auto_govern`` controller so the two can
+        never disagree about how full the ring is."""
+        key = self._stream_key(module)
+        if key is not None:
+            dev_out = self._device_outputs.get(key)
+            if dev_out is not None:
+                queued, capacity, _u, _d = dev_out.telemetry()
+                if capacity > 0:
+                    return queued / capacity
+        return 0.5
+
     def _governed_ratio(self, module, patch, buffers) -> float | None:
-        """The smoothed varispeed ratio a buffered sink's governor patch
-        commands, or ``None`` while ``ratio_cv`` is unpatched (the
-        bit-exact pre-governor path; smoothing state is dropped so a
-        re-patch starts from unity). Block-rate control: the cv buffer
-        collapses to its mean, maps through ``1 + cv * ratio_depth``,
-        clamps to a safe 0.5..2, then one-pole smooths
-        (:data:`_SINK_RATIO_SMOOTH`) so a twitchy patch reads as drift
+        """The smoothed varispeed ratio the ring governor commands, or
+        ``None`` when the sink is ungoverned (the bit-exact pre-governor
+        path; smoothing + stretch state are dropped so a re-patch starts
+        from unity). Two ways to be governed, patch first:
+
+        * ``ratio_cv`` CABLED — the patch drives it: the cv buffer
+          collapses to its mean and maps through ``1 + cv * ratio_depth``.
+        * else ``auto_govern`` ON — the built-in controller drives it from
+          the sink's own ring fill: ``1 + gain*(0.5 - fill)`` with
+          :data:`_AUTO_GOVERN_GAIN`, i.e. the canonical patch, no cables.
+
+        Either target clamps to a safe 0.5..2 and one-pole smooths
+        (:data:`_SINK_RATIO_SMOOTH`) so a twitchy loop reads as drift
         correction, not vibrato. Sinks sharing one (device, buffer_size)
-        stream: the last drained sink's ratio wins — a governor patch
-        should own its stream.
+        stream: the last drained sink's ratio wins — a governor should own
+        its stream.
         """
         cabled = any(
             c.dst_port == "ratio_cv" for c in patch.cables_into(module.id)
         )
-        if not cabled:
+        if cabled:
+            cv = self._input_buffer(
+                patch, buffers, module.id, "ratio_cv", collapse=False
+            )
+            level = float(np.mean(cv)) if cv is not None and cv.size else 0.0
+            try:
+                depth = float(module.params.get("ratio_depth", 0.25))
+            except (TypeError, ValueError):
+                depth = 0.25
+            target = 1.0 + level * depth
+        elif module.params.get("auto_govern"):
+            # Low ring (fill < 0.5) -> positive error -> ratio > 1 -> push
+            # MORE samples to refill; high ring drains it. Same sign the
+            # patch recipe inverts to by hand.
+            target = 1.0 + self._AUTO_GOVERN_GAIN * (0.5 - self._sink_fill(module))
+        else:
             self._sink_ratio.pop(module.id, None)
             self._sink_stretch.pop(module.id, None)
             return None
-        cv = self._input_buffer(
-            patch, buffers, module.id, "ratio_cv", collapse=False
-        )
-        level = float(np.mean(cv)) if cv is not None and cv.size else 0.0
-        try:
-            depth = float(module.params.get("ratio_depth", 0.25))
-        except (TypeError, ValueError):
-            depth = 0.25
-        target = min(max(1.0 + level * depth, 0.5), 2.0)
+        target = min(max(target, 0.5), 2.0)
         prev = self._sink_ratio.get(module.id, 1.0)
         ratio = prev + self._SINK_RATIO_SMOOTH * (target - prev)
         self._sink_ratio[module.id] = ratio

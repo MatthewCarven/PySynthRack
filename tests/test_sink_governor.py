@@ -23,7 +23,7 @@ from __future__ import annotations
 import numpy as np
 
 from pysynthrack.core.patch import Patch
-from pysynthrack.audio.numpy_backend import NumpyBackend
+from pysynthrack.audio.numpy_backend import NumpyBackend, _DeviceOutput
 
 # Importing the module files registers their types with the Patch factory.
 from pysynthrack.modules import constant as _constant  # noqa: F401
@@ -207,3 +207,79 @@ class TestPitchPreserved:
             f"fundamental at {peak_hz:.1f} Hz — varispeed bend would be "
             f"{self.F0 / 1.25:.0f} Hz, pitch-preserving keeps {self.F0:.0f} Hz"
         )
+
+
+# ----- the built-in governor (auto_govern) -----------------------------------
+
+SINK_BLOCK = 512          # the sink's own stream block; ring capacity = 8x
+CAPACITY = 8 * SINK_BLOCK
+
+
+def _inject_ring(backend, fill_frac, device="AutoDev"):
+    """Give the sink a live secondary ring pre-filled to ``fill_frac`` and
+    register it under the sink's stream key, WITHOUT opening a real
+    PortAudio stream. The built-in controller reads its fill via telemetry;
+    the fake never refills (render_block_multi doesn't run _fill_output), so
+    the fill is a fixed operating point to probe the ratio response at."""
+    ring = _DeviceOutput(device, 44100, SINK_BLOCK)
+    n = round(fill_frac * CAPACITY)
+    if n > 0:
+        ring.push(np.zeros((n, 2), dtype=np.float32))
+    backend._device_outputs[(device, SINK_BLOCK)] = ring
+    return ring
+
+
+class TestAutoGovern:
+    def _patch(self, *, auto, cable_value=None, device="AutoDev"):
+        patch = Patch()
+        sink = patch.add_module(
+            SINK,
+            params={"device": device, "buffer_size": SINK_BLOCK, "auto_govern": auto},
+        )
+        osc = patch.add_module("oscillator", params={"freq": 220.0})
+        patch.connect(osc.id, "out", sink.id, "in_l")
+        if cable_value is not None:
+            const = patch.add_module("constant", params={"value": cable_value})
+            patch.connect(const.id, "out", sink.id, "ratio_cv")
+        return patch, sink
+
+    def _run(self, patch, fill_frac, blocks=70):
+        b = _backend(patch)
+        _inject_ring(b, fill_frac)
+        blk = None
+        for _ in range(blocks):
+            _out, dev = b.render_block_multi(FRAMES)
+            blk = dev[("AutoDev", SINK_BLOCK)]
+        return b, blk
+
+    def test_auto_off_ignores_the_ring(self):
+        # auto_govern False, no cable: the sink is ungoverned even with a
+        # live off-centre ring — the push stays exactly frames.
+        patch, _sink = self._patch(auto=False)
+        b, blk = self._run(patch, fill_frac=0.05)
+        assert blk.shape[0] == FRAMES
+        assert b._sink_ratio == {} and b._sink_stretch == {}
+
+    def test_auto_low_ring_stretches_to_refill(self):
+        # A near-empty ring -> ratio > 1 -> MORE samples pushed (catch up).
+        _b, blk = self._run(self._patch(auto=True)[0], fill_frac=0.05)
+        assert blk.shape[0] > FRAMES
+
+    def test_auto_full_ring_shrinks_the_push(self):
+        # A near-full ring -> ratio < 1 -> FEWER samples pushed (drain it).
+        _b, blk = self._run(self._patch(auto=True)[0], fill_frac=0.95)
+        assert blk.shape[0] < FRAMES
+
+    def test_auto_matches_the_canonical_patch_gain(self):
+        # Gain 0.5 on the 0.5-fill error: fill 0.10 -> target 1.20.
+        _b, blk = self._run(self._patch(auto=True)[0], fill_frac=0.10)
+        assert blk.shape[0] == round(FRAMES * (1.0 + 0.5 * (0.5 - 0.10)))
+
+    def test_cable_overrides_auto_govern(self):
+        # auto ON *and* a ratio_cv cable: the cable wins. constant -3 ->
+        # target 1 + (-3)*0.25 = 0.25, clamped to 0.5x. If auto had won on
+        # this near-empty ring the push would be LONGER than frames, not
+        # half — so the length proves which path ran.
+        patch, _sink = self._patch(auto=True, cable_value=-3.0)
+        _b, blk = self._run(patch, fill_frac=0.05)
+        assert blk.shape[0] == round(FRAMES * 0.5)
