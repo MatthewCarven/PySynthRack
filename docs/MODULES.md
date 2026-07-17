@@ -221,7 +221,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`waveshaper`](#waveshaper) | Effects | `in` (audio), `fold_cv` (cv) → `out` (audio) |
 | [`ring_mod`](#ring_mod) | Effects | `in`,`carrier` (audio), `freq_cv` (cv) → `out` (audio) |
 | [`freq_shifter`](#freq_shifter) | Effects | `in` (audio), `shift_cv` (cv) → `out_up`,`out_down` (audio) |
-| [`bitcrusher`](#bitcrusher) | Effects | `in` (audio) → `out` (audio) |
+| [`bitcrusher`](#bitcrusher) | Effects | `in` (audio), `bits_cv`,`rate_cv` (cv) → `out` (audio) |
 | [`tape`](#tape) | Effects | `in` (audio) → `out` (audio) |
 | [`convolver`](#convolver) | Effects | `in` (audio) → `out_l`,`out_r` (audio) |
 | [`chorus`](#chorus) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
@@ -1620,11 +1620,25 @@ stream for a "broken converter" smear (inert unless `rate_div > 1`).
 passthrough), and `dc_filter` runs a gentle one-pole high-pass on the
 output to strip any offset the crushing introduces.
 
+**CV.** Both crush axes are voltage-controllable. Patch a modulator (LFO,
+envelope, a Crossover-rectified band…) into `bits_cv` to sweep the
+quantizer word length, or `rate_cv` to sweep the sample-rate crush. Each
+reads the block's **mean** CV (one value per block, like the Filter's
+`cutoff_cv`) and is scaled by its own depth: `bits` shifts *additively*
+(`bits + bits_cv_depth · cv`, default 1 bit per unit — each bit is an
+octave of quantizer levels), `rate_div` *multiplicatively* (`rate_div ·
+2^(rate_cv_depth · cv)`, octave-even decimation sweeps). CV can push `bits`
+below 24 or `rate_div` above 1 from an otherwise-neutral base, waking the
+crusher purely from voltage; unpatched, both inputs leave the static params
+untouched (bit-for-bit the old behaviour).
+
 **Ports**
 
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to crush. Voice-aware; a single voice row is bit-identical to mono. Unpatched → silence. |
+| `bits_cv` | in | cv | Bit-depth modulation, block-mean × `bits_cv_depth` added to `bits`. Optional. |
+| `rate_cv` | in | cv | Sample-rate modulation, `rate_div` × `2^(rate_cv_depth · block-mean)`. Optional. |
 | `out` | out | audio | Crushed (and dry-blended) signal. |
 
 **Parameters**
@@ -1632,7 +1646,9 @@ output to strip any offset the crushing introduces.
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
 | `bits` | `24` | 1 … 24 | Quantizer word length. `round(x·2^(bits−1))/2^(bits−1)`. 24 skips the quantizer (bit-exact). |
+| `bits_cv_depth` | `1.0` | −24 … 24 | Bits of shift per unit of `bits_cv` (1 = 1 bit/unit; ~23 sweeps the whole range from one unit; negative inverts). |
 | `rate_div` | `1` | 1 … 64 | Sample-hold decimation factor (hold every Nth sample, deliberately aliased). 1 skips decimation. |
+| `rate_cv_depth` | `1.0` | −6 … 6 | Octaves of decimation shift per unit of `rate_cv` (1 = one octave/unit; ±6 spans the full range). |
 | `jitter` | `0.0` | 0 … 1 | Random hold-length wobble around `rate_div` (seeded, reproducible). No effect unless `rate_div > 1`. |
 | `mix` | `1.0` | 0 … 1 | Dry/wet. 0 = bit-exact passthrough. |
 | `dc_filter` | `False` | on/off | One-pole DC blocker on the crushed signal. Off by default. |
@@ -1645,7 +1661,10 @@ lengths when it is not (quantize and decimate commute, so their order is
 immaterial to the result). The hold phase — the global sample offset, the
 per-voice held value, and the jitter boundary stream — lives in state, so
 holds stay continuous across block joins; every path (quantize, decimate,
-jitter, DC filter) is **exactly block-size independent**. Neutral is
+jitter, DC filter) is **exactly block-size independent** — with the CV
+inputs absent or constant (a time-varying `bits_cv`/`rate_cv` uses each
+block's mean, so it tracks the block boundaries, exactly as `cutoff_cv`
+does). Neutral is
 `bits = 24 ∧ rate_div = 1`: both crush ops are skipped, so the wet path
 equals the dry input — a bit-exact passthrough at any `mix` (with
 `dc_filter` off). Shape-polymorphic — the `(V, F)` core runs with `V = 1`

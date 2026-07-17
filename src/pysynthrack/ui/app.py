@@ -910,6 +910,28 @@ class App:
                 )
                 return
 
+        if module.TYPE == "bitcrusher":
+            # The two CV depths carry their natural unit in the label so the
+            # scaler reads clearly (the crush params themselves fall through
+            # to the generic numeric widgets). bits_cv_depth is bits per CV
+            # unit (default 1 = 1 bit/unit; ~23 sweeps the whole 1..24 range
+            # from a single unit); rate_cv_depth is octaves of decimation per
+            # unit (±6 spans the full 1..64 range). Negative inverts.
+            if param_name == "bits_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.1,
+                    min_value=-24.0, max_value=24.0, format="%.2f bit/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "rate_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=-6.0, max_value=6.0, format="%.2f oct/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE in ("parametric_eq", "motion_eq"):
             # (Parametric/Motion) EQ bands: ``band{i}_freq`` (Hz),
             # ``band{i}_gain`` (dB, 0 = flat), ``band{i}_q`` (width);

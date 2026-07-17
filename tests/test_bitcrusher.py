@@ -83,7 +83,9 @@ class TestModel:
         bc = Patch().add_module("bitcrusher")
         assert isinstance(bc, Bitcrusher)
         assert bc.params == {
-            "bits": 24, "rate_div": 1, "jitter": 0.0, "mix": 1.0, "dc_filter": False,
+            "bits": 24, "bits_cv_depth": 1.0,
+            "rate_div": 1, "rate_cv_depth": 1.0,
+            "jitter": 0.0, "mix": 1.0, "dc_filter": False,
         }
 
     def test_category(self):
@@ -91,7 +93,9 @@ class TestModel:
 
     def test_ports_and_signal_kinds(self):
         bc = Patch().add_module("bitcrusher")
-        assert [(p.name, p.signal_kind) for p in bc.input_ports] == [("in", "audio")]
+        assert [(p.name, p.signal_kind) for p in bc.input_ports] == [
+            ("in", "audio"), ("bits_cv", "cv"), ("rate_cv", "cv"),
+        ]
         assert [(p.name, p.signal_kind) for p in bc.output_ports] == [("out", "audio")]
 
     def test_json_round_trip(self):
@@ -283,6 +287,139 @@ class TestControls:
         half = _run(*_prime(_rig(bits=4, rate_div=6, mix=0.5)), x)
         expected = (0.5 * x.astype(np.float64) + 0.5 * wet.astype(np.float64)).astype(np.float32)
         assert np.allclose(half, expected, atol=1e-6)
+
+
+# ----- CV modulation ---------------------------------------------------------
+
+
+def _rig_cv(**params):
+    """oscillator -> bitcrusher.in, with two spare ``constant`` cv sources a
+    test can wire into ``bits_cv`` / ``rate_cv``. Returns
+    ``(patch, src, cvb, cvr, bc, backend)``; feed the matching buffers into
+    ``_render_bitcrusher`` (the constants are never rendered, just connected
+    to satisfy the signal-kind wall)."""
+    patch = Patch()
+    src = patch.add_module("oscillator")
+    cvb = patch.add_module("constant")
+    cvr = patch.add_module("constant")
+    bc = patch.add_module("bitcrusher", params=params)
+    patch.connect(src.id, "out", bc.id, "in")
+    return patch, src, cvb, cvr, bc, _backend()
+
+
+class TestCV:
+    def test_ports_and_depth_defaults_present(self):
+        bc = Patch().add_module("bitcrusher")
+        assert [p.name for p in bc.input_ports] == ["in", "bits_cv", "rate_cv"]
+        assert bc.params["bits_cv_depth"] == 1.0
+        assert bc.params["rate_cv_depth"] == 1.0
+
+    def test_cv_signal_kind_wall(self):
+        # audio can't drive a cv input; a cv source can.
+        patch = Patch()
+        osc = patch.add_module("oscillator")   # audio out
+        cvm = patch.add_module("constant")     # cv out
+        bc = patch.add_module("bitcrusher")
+        with pytest.raises(Exception):
+            patch.connect(osc.id, "out", bc.id, "bits_cv")   # audio -> cv in
+        patch.connect(cvm.id, "out", bc.id, "rate_cv")        # cv -> cv in ok
+
+    def test_bits_cv_lowers_effective_bit_depth(self):
+        # base bits=24 (quantiser off); a constant bits_cv of -16 at the
+        # default depth 1.0 => effective 8 bits, waking the quantiser from CV.
+        x = _sine(220.0, amp=0.8, n=F)
+        patch, src, cvb, cvr, bc, b = _rig_cv(bits=24, mix=1.0)
+        patch.connect(cvb.id, "out", bc.id, "bits_cv")
+        b.compile(patch)
+        cv = np.full(F, -16.0, dtype=np.float32)
+        out = b._render_bitcrusher(
+            bc, F, {(src.id, "out"): x, (cvb.id, "out"): cv}, patch
+        )
+        lv = 2.0 ** (8 - 1)
+        expected = (np.round(x.astype(np.float64) * lv) / lv).astype(np.float32)
+        assert np.array_equal(out, expected)
+
+    def test_bits_cv_depth_scales_the_shift(self):
+        # depth 0.5 halves the per-unit shift: -16 CV => -8 bits => 16 bits.
+        x = _sine(220.0, amp=0.8, n=F)
+        patch, src, cvb, cvr, bc, b = _rig_cv(bits=24, bits_cv_depth=0.5, mix=1.0)
+        patch.connect(cvb.id, "out", bc.id, "bits_cv")
+        b.compile(patch)
+        cv = np.full(F, -16.0, dtype=np.float32)
+        out = b._render_bitcrusher(
+            bc, F, {(src.id, "out"): x, (cvb.id, "out"): cv}, patch
+        )
+        lv = 2.0 ** (16 - 1)
+        expected = (np.round(x.astype(np.float64) * lv) / lv).astype(np.float32)
+        assert np.array_equal(out, expected)
+
+    def test_rate_cv_scales_decimation_exponentially(self):
+        # rate_div=2, a constant rate_cv of +2 at depth 1.0 => 2 * 2**2 = 8
+        # -> 8-sample holds (octave-even, like the filter's cutoff_cv).
+        r = _ramp(F)
+        patch, src, cvb, cvr, bc, b = _rig_cv(rate_div=2, mix=1.0)
+        patch.connect(cvr.id, "out", bc.id, "rate_cv")
+        b.compile(patch)
+        cv = np.full(F, 2.0, dtype=np.float32)
+        out = b._render_bitcrusher(
+            bc, F, {(src.id, "out"): r, (cvr.id, "out"): cv}, patch
+        )
+        assert np.array_equal(out, r[(np.arange(F) // 8) * 8])
+
+    def test_positive_bits_cv_can_disable_quantiser(self):
+        # base bits=8, +16 CV => 24 => quantiser skipped => dry passthrough.
+        x = _sine(300.0, amp=0.7, n=F)
+        patch, src, cvb, cvr, bc, b = _rig_cv(bits=8, rate_div=1, mix=1.0)
+        patch.connect(cvb.id, "out", bc.id, "bits_cv")
+        b.compile(patch)
+        cv = np.full(F, 16.0, dtype=np.float32)
+        out = b._render_bitcrusher(
+            bc, F, {(src.id, "out"): x, (cvb.id, "out"): cv}, patch
+        )
+        assert np.array_equal(out, x)
+
+    def test_unpatched_cv_is_a_no_op(self):
+        # ports exist but nothing is wired -> identical to the plain quantiser.
+        x = _sine(220.0, amp=0.8, n=F * 2)
+        patch, src, bc, b = _rig(bits=5, mix=1.0)
+        out = _run(b, patch, bc, src, x)
+        lv = 2.0 ** (5 - 1)
+        expected = (np.round(x.astype(np.float64) * lv) / lv).astype(np.float32)
+        assert np.array_equal(out, expected)
+
+    def test_block_size_independent_under_constant_cv(self):
+        # A constant CV has the same block-mean at any block size, so the
+        # bit-exact-across-block-size invariant still holds with CV engaged.
+        x = _sine(250.0, amp=0.5, n=12000)
+
+        def render(block):
+            patch = Patch()
+            src = patch.add_module("oscillator")
+            cvb = patch.add_module("constant")
+            cvr = patch.add_module("constant")
+            bc = patch.add_module(
+                "bitcrusher", params={"bits": 20, "rate_div": 2, "mix": 0.9}
+            )
+            patch.connect(src.id, "out", bc.id, "in")
+            patch.connect(cvb.id, "out", bc.id, "bits_cv")
+            patch.connect(cvr.id, "out", bc.id, "rate_cv")
+            bk = _backend()
+            bk.compile(patch)
+            outs = []
+            for i in range(0, x.shape[-1], block):
+                blk = x[i:i + block]
+                nb = blk.shape[-1]
+                bufs = {
+                    (src.id, "out"): blk,
+                    (cvb.id, "out"): np.full(nb, -10.0, dtype=np.float32),
+                    (cvr.id, "out"): np.full(nb, 1.0, dtype=np.float32),
+                }
+                outs.append(bk._render_bitcrusher(bc, nb, bufs, patch))
+            return np.concatenate(outs, axis=-1)
+
+        ref = render(512)
+        for block in (4096, 333, 101):
+            assert np.array_equal(ref, render(block)), f"block {block}"
 
 
 # ----- Invariants ------------------------------------------------------------

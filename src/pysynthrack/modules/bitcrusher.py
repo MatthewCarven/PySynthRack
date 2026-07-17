@@ -40,10 +40,33 @@ Controls:
     (seeded). 0 = perfectly periodic decimation.
   * ``mix`` — dry/wet, 0 (bit-exact dry) … 1 (fully crushed).
   * ``dc_filter`` — on/off; one-pole DC blocker on the crushed signal.
+  * ``bits_cv_depth`` — bits of word-length shift per unit of ``bits_cv``
+    (default 1.0 = 1 bit per CV unit; ~23 sweeps the whole 1…24 range from
+    a single unit). Only matters while ``bits_cv`` is patched.
+  * ``rate_cv_depth`` — octaves of decimation-rate shift per unit of
+    ``rate_cv`` (default 1.0 = one octave per unit, like the Filter's
+    ``cutoff_cv``). Only matters while ``rate_cv`` is patched.
+
+CV: patch a modulator (LFO, envelope, a Crossover-rectified band…) into
+``bits_cv`` to sweep the quantiser word length, or ``rate_cv`` to sweep the
+sample-rate crush — the two headline destruction axes under voltage
+control. Both read the block's **mean** CV (one value per block, like
+``cutoff_cv``): ``bits`` shifts *additively* in its already-logarithmic
+unit (each bit = one octave of quantiser levels), while ``rate_div`` shifts
+*multiplicatively* (``rate_div · 2^(rate_cv_depth · cv)``) so equal voltage
+steps are equal decimation octaves. Unpatched, both leave the static params
+untouched — a crusher with empty CV inputs is bit-for-bit what it was
+before, and stays exactly block-size independent under a *constant* CV. CV
+can push ``bits`` below 24 or ``rate_div`` above 1 from an otherwise-neutral
+base, waking the crusher purely from voltage.
 
 Ports:
   * ``in`` (audio): signal to crush. Voice-aware; a single voice row is
     bit-identical to the mono render. Unpatched → silence.
+  * ``bits_cv`` (cv): bit-depth modulation, scaled by ``bits_cv_depth``.
+    Optional; unpatched → a static ``bits``.
+  * ``rate_cv`` (cv): sample-rate (decimation) modulation, scaled by
+    ``rate_cv_depth``. Optional; unpatched → a static ``rate_div``.
   * ``out`` (audio): crushed (and dry-blended) signal.
 
 Neutral: ``bits = 24 ∧ rate_div = 1`` skips **both** the quantizer and
@@ -76,9 +99,16 @@ class Bitcrusher(Module):
         bits: Quantizer word length, 1 … 24. Mid-tread:
             ``round(x·2^(bits−1))/2^(bits−1)``. 24 skips the quantizer
             (bit-exact).
+        bits_cv_depth: Bits of word-length shift per unit of ``bits_cv``
+            (default 1.0 = 1 bit per CV unit). Effective bits =
+            ``clamp(bits + bits_cv_depth · mean(bits_cv), 1, 24)``.
         rate_div: Sample-hold decimation factor, 1 … 64 (hold every
             ``rate_div``-th sample, deliberately aliased). 1 skips
             decimation (bit-exact).
+        rate_cv_depth: Octaves of decimation-rate shift per unit of
+            ``rate_cv`` (default 1.0). Effective rate_div =
+            ``clamp(round(rate_div · 2^(rate_cv_depth · mean(rate_cv))),
+            1, 64)``.
         jitter: Random hold-length wobble around ``rate_div``, 0 … 1, on
             a seeded (reproducible) stream. No effect unless
             ``rate_div > 1``.
@@ -89,6 +119,10 @@ class Bitcrusher(Module):
 
     Ports:
         in (in, audio): signal to crush. Unpatched → silence.
+        bits_cv (in, cv): bit-depth modulation (× ``bits_cv_depth``).
+            Optional.
+        rate_cv (in, cv): sample-rate modulation (× ``rate_cv_depth``).
+            Optional.
         out (out, audio): crushed (and dry-blended) signal.
     """
 
@@ -96,10 +130,16 @@ class Bitcrusher(Module):
     CATEGORY = "Effects"
     DEFAULT_PARAMS = {
         "bits": 24,
+        "bits_cv_depth": 1.0,
         "rate_div": 1,
+        "rate_cv_depth": 1.0,
         "jitter": 0.0,
         "mix": 1.0,
         "dc_filter": False,
     }
-    INPUT_PORTS = [Port("in", "in", "audio")]
+    INPUT_PORTS = [
+        Port("in", "in", "audio"),
+        Port("bits_cv", "in", "cv"),
+        Port("rate_cv", "in", "cv"),
+    ]
     OUTPUT_PORTS = [Port("out", "out", "audio")]

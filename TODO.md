@@ -9,6 +9,20 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **Bitcrusher CV (`bits_cv` + `rate_cv`)** — done 2026-07-17 (Matthew:
+      "add a cv to the bit crusher"; picked both crush axes, sketched a 1V/bit
+      scaler). Two CV inputs on `bitcrusher`, house `<param>_cv` naming
+      (normalised his `cv_bits`/`cv_rate`). `bits_cv` additive via
+      `bits_cv_depth` (default 1.0 = 1 bit/unit, his 1V/bit); `rate_cv`
+      multiplicative `rate_div · 2^(rate_cv_depth · cv)` (default 1.0 =
+      1 oct/unit, octave-even like `cutoff_cv`). Block-mean CV folded in before
+      the neutral-skip test so CV wakes a transparent crusher; guarded so
+      **unpatched = byte-identical** (bit-exact + block-size-independence
+      guarantees intact, exact under constant CV). UI: depth knobs labelled
+      `bit/unit` / `oct/unit`; ports auto-render; pyo unaffected. **8 CV tests**
+      (`TestCV`) + updated model asserts; suite **2238**. Verified end-to-end via
+      `render_block` (constant +4 → exactly `rate_div=16`). Docs: MODULES.md +
+      `bitcrusher.py`. No eyeball queued (audio path is render-verified).
 - [x] **FilePlayer seek / scrub bar** — done 2026-07-17 (Matthew: "give the
       file player some love… a seek bar for the file progress/position"). A
       draggable 0..1 bar under the transport row: thumb tracks the playhead,

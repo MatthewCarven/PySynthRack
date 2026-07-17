@@ -4,6 +4,51 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-07-17 — Bitcrusher CV: `bits_cv` + `rate_cv`
+
+Matthew asked to "add a cv to the bit crusher", picked **both** crush axes
+(bits + sample-rate) from the options, and sketched the scaler ("1v/bit or
+(1/24)v … cv_bits and cv_rate"). Added two CV inputs to the `bitcrusher`.
+
+**Design reconciliation** (noted per the working agreement):
+- **Naming** — normalised his casual `cv_bits`/`cv_rate` to the codebase's
+  universal `<param>_cv` suffix: **`bits_cv`**, **`rate_cv`** (sit next to
+  `cutoff_cv`, `drive_cv`, `fold_cv`, …). Flagged to him; trivially reversible.
+- **Scaler** — used the house `<param>_cv_depth` param (adjustable) rather than
+  a fixed scaler, with the **default set to his "1v/bit"**: `bits_cv_depth = 1.0`
+  (1 bit per unit; ~23 for his "whole range over 1 V" alternative). `bits` is
+  additive in its already-logarithmic unit (1 bit = 1 octave of quantiser
+  levels); `rate_div` is multiplicative — `rate_div · 2^(rate_cv_depth · cv)`,
+  octave-even like the Filter's `cutoff_cv` (`rate_cv_depth = 1.0` = 1 oct/unit).
+
+**Backend** (`_render_bitcrusher`): reads the **block-mean** of each CV input
+(one value/block, matching `cutoff_cv`) and folds it into `bits`/`rate_div`
+before the neutral-skip test, so CV can wake an otherwise-transparent crusher
+(base `bits=24` + a `-16` CV → 8 bits). Guarded `if cv is not None and
+cv.size > 0`, so **unpatched inputs are a byte-for-byte no-op** — every existing
+bit-exact / block-size-independence guarantee holds, and stays exact under a
+*constant* CV (a time-varying CV tracks block boundaries, same accepted
+trade-off the filter documents). `mix<=0` still returns before even reading CV.
+
+**UI**: CV ports auto-render; added a small `bitcrusher` branch in
+`_add_param_widget` so the depths read in their unit (`%.2f bit/unit`,
+`%.2f oct/unit`) instead of a bare float. pyo backend unaffected (bitcrusher is
+already in its unsupported list).
+
+**Verification**: `test_bitcrusher.py::TestCV` (8) + updated model asserts —
+bits/rate behavioural (constant CV → exact quantiser grid / hold pattern),
+depth scaling, positive CV *disabling* the quantiser, unpatched no-op, and
+block-size independence under constant CV (identical-input methodology). Full
+suite **2238 passed, 1 skipped**. Also drove it end-to-end through a compiled
+graph via `render_block`: a `constant` +4 into `rate_cv` gave exactly
+`rate_div=16` (191 ≈ 3072/16 transitions) and the bitcrusher stayed
+block-size-exact given identical input (the ~1e-14 whole-graph difference is the
+live oscillator's phase accumulator, pre-existing, not the crusher).
+
+Docs: `MODULES.md` bitcrusher section + `bitcrusher.py` module/class docstrings.
+No GUI eyeball needed for the audio path (it's test- and render-verified); a
+real-window look at the two depth knobs' labels is a nice-to-have, not queued.
+
 ## 2026-07-17 — FilePlayer seek / scrub bar
 
 Matthew asked to "give the file player some love" with a seek bar for the

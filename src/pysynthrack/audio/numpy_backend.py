@@ -8705,30 +8705,60 @@ class NumpyBackend(AudioBackend):
         hold phase (a global sample offset plus the per-voice held value,
         and the seeded jitter boundary stream) lives in ``self._state``,
         so holds stay continuous across block joins and every path here is
-        *exactly* block-size independent. Shape-polymorphic: the ``(V, F)``
-        core runs with ``V == 1`` for a mono ``in``, so one voice row is
+        *exactly* block-size independent (with the CV inputs absent or
+        constant -- a time-varying ``bits_cv`` / ``rate_cv`` uses each
+        block's mean, so it tracks the block boundaries, exactly as the
+        Filter's ``cutoff_cv`` does). Those optional CV inputs shift
+        ``bits`` / ``rate_div`` by their block-mean (scaled by the matching
+        ``*_cv_depth``) before the neutral-skip test, so CV can wake an
+        otherwise-neutral crusher. Shape-polymorphic: the ``(V, F)`` core
+        runs with ``V == 1`` for a mono ``in``, so one voice row is
         bit-identical to the mono render and voices stay independent.
         """
         src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
         if src is None or src.size == 0:
             return np.zeros(frames, dtype=np.float32)
 
-        bits = int(round(float(module.params.get("bits", 24))))
-        rate_div = int(round(float(module.params.get("rate_div", 1))))
+        bits = float(module.params.get("bits", 24))
+        rate_div = float(module.params.get("rate_div", 1))
         jitter = min(max(float(module.params.get("jitter", 0.0)), 0.0), 1.0)
         mix = min(max(float(module.params.get("mix", 1.0)), 0.0), 1.0)
         dc_filter = bool(module.params.get("dc_filter", False))
 
+        # Bit-exact dry: mix folds everything to the input. Return before
+        # touching the CV inputs so the dry contract is truly untouched.
+        if mix <= 0.0:
+            return src
+
+        # CV-modulate the two crush amounts from the block-mean of each CV
+        # input (one value per block, like the Filter's cutoff_cv). Unpatched
+        # inputs leave bits/rate_div at their params, so an un-CV'd crusher is
+        # byte-identical to before and stays exactly block-size independent
+        # under a constant CV. ``bits`` shifts additively in its already-
+        # logarithmic unit (each bit == one octave of quantiser levels);
+        # ``rate_div`` shifts multiplicatively (octave-even decimation sweeps).
+        bits_cv = self._input_buffer(
+            patch, buffers, module.id, "bits_cv", collapse=False
+        )
+        if bits_cv is not None and bits_cv.size > 0:
+            depth = float(module.params.get("bits_cv_depth", 1.0))
+            bits = bits + depth * float(np.mean(bits_cv))
+        rate_cv = self._input_buffer(
+            patch, buffers, module.id, "rate_cv", collapse=False
+        )
+        if rate_cv is not None and rate_cv.size > 0:
+            depth = float(module.params.get("rate_cv_depth", 1.0))
+            rate_div = rate_div * float(2.0 ** (depth * float(np.mean(rate_cv))))
+
+        bits = int(round(bits))
+        rate_div = int(round(rate_div))
         bits = min(max(bits, 1), 24)
         rate_div = min(max(rate_div, 1), 64)
 
         quant_active = bits < 24
         decim_active = rate_div > 1
 
-        # Bit-exact dry: mix folds everything to the input, or there is
-        # simply nothing to do (both crush ops skipped, no DC filter).
-        if mix <= 0.0:
-            return src
+        # Nothing to do: both crush ops skipped and no DC filter -> dry.
         if not quant_active and not decim_active and not dc_filter:
             return src
 
