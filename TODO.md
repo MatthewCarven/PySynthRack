@@ -41,7 +41,8 @@ Living list of what's next. Edit freely.
       don't self-seek. Bookkeeping torn down on delete + patch load. **12 tests**
       (`TestSeek` ×7 through the real renderer + `test_file_player_seek_ui.py` ×5
       headless glue); suite **2230**. Docs: MODULES.md + `fileplayer.py`.
-      **Pending (meatthread0):** real-GUI eyeball — see the open item below.
+      **Eyeball PASSED 2026-07-17** (Matthew: "works flawlessly") — drag/click
+      seek, mid-drag thumb-follow then resume, and paused scrubbing all confirmed.
 - [x] **`fm_op` — DX-style FM operator** — done 2026-07-11 (Matthew picked it
       off the module-ideas backlog; "new synthesis territory, small testable
       surface"). New `fm_op` source (Sources): one phase-modulation operator,
@@ -491,10 +492,7 @@ Living list of what's next. Edit freely.
 - [ ] **Real-GUI eyeball: governor patch** (meatthread0) — fill →
       CVOffset(−0.5) → CVScale → ratio_cv against a second device; watch
       fill hold ~50% and find the gain where it starts to warble.
-- [ ] **Real-GUI eyeball: FilePlayer seek bar** (meatthread0) — load a longish
-      track, then: drag the bar and confirm the audio jumps to the drop point on
-      release; watch the thumb follow the mouse mid-drag and resume tracking the
-      playhead after; click (don't drag) partway along and confirm it seeks;
-      Stop (pause) then scrub and confirm the position moves silently and Play
-      resumes from there. Backend logic is covered by tests — this is the
-      feel/rendering pass only.
+- [x] **Real-GUI eyeball: FilePlayer seek bar** — PASSED 2026-07-17 (Matthew:
+      "works flawlessly"). Drag/click seeks, the thumb follows the mouse
+      mid-drag then resumes tracking the playhead, and paused scrubbing all
+      confirmed in the real window.

@@ -95,9 +95,10 @@ via the callback flag, teardown drops the bookkeeping. Full suite **2230 passed,
 1 skipped**.
 
 Docs: `MODULES.md` file_player Transport section + the `playing`-param note in
-`fileplayer.py`. **Real-GUI eyeball pending** (queued in TODO): drag/click the
-bar in the actual window and confirm the audio jumps, the thumb follows the
-mouse mid-drag then resumes, and scrubbing works while paused.
+`fileplayer.py`. **Real-GUI eyeball PASSED 2026-07-17** (Matthew: "works
+flawlessly") — drag/click seeks, the thumb follows the mouse mid-drag then
+resumes tracking the playhead, and scrubbing while paused all confirmed in the
+real window. Feature complete.
 
 ## 2026-07-10 — scroll-to-adjust: Ctrl = fine (÷10), Shift = coarse (×10)
 
