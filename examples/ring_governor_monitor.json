@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "next_id": 7,
+  "modules": [
+    {
+      "id": 1,
+      "type": "oscillator",
+      "name": "saw source",
+      "params": {
+        "waveform": "saw_blep",
+        "freq": 110.0,
+        "amp": 0.5
+      }
+    },
+    {
+      "id": 2,
+      "type": "lfo",
+      "name": "slow cutoff sweep",
+      "params": {
+        "waveform": "sine",
+        "rate": 0.15,
+        "depth": 1.0,
+        "bipolar": true,
+        "cv_depth": 1.4
+      }
+    },
+    {
+      "id": 3,
+      "type": "filter",
+      "name": "lowpass",
+      "params": {
+        "mode": "lowpass",
+        "cutoff": 500.0,
+        "resonance": 3.0,
+        "cv_depth": 1.0
+      }
+    },
+    {
+      "id": 4,
+      "type": "buffered_specific_speaker_output",
+      "name": "buffered out \u2014 SET your 2nd device",
+      "params": {
+        "gain": 1.0,
+        "pan": 0.0,
+        "width": 1.0,
+        "cv_depth": 1.0,
+        "device": "",
+        "buffer_size": 1024,
+        "ratio_depth": 0.25
+      }
+    },
+    {
+      "id": 5,
+      "type": "cv_offset",
+      "name": "setpoint: fill - 0.5",
+      "params": {
+        "offset": -0.5
+      }
+    },
+    {
+      "id": 6,
+      "type": "cv_scale",
+      "name": "loop gain (NEGATIVE!)",
+      "params": {
+        "scale": -2.0
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "cv",
+      "dst_module_id": 3,
+      "dst_port": "cutoff_cv"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "in_l"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "fill",
+      "dst_module_id": 5,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out",
+      "dst_module_id": 6,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "ratio_cv"
+    }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [
+        40,
+        300
+      ],
+      "2": [
+        40,
+        60
+      ],
+      "3": [
+        340,
+        300
+      ],
+      "4": [
+        640,
+        300
+      ],
+      "5": [
+        640,
+        60
+      ],
+      "6": [
+        940,
+        60
+      ]
+    }
+  }
+}

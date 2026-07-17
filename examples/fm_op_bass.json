@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    {
+      "id": 1,
+      "type": "fm_op",
+      "name": "FM bass (2:1, feedback growl)",
+      "params": {
+        "ratio": 2.0,
+        "fine": 0.0,
+        "index": 3.0,
+        "index_cv_depth": 2.0,
+        "feedback": 0.2,
+        "fixed": false,
+        "freq": 55.0
+      }
+    },
+    {
+      "id": 2,
+      "type": "lfo",
+      "name": "index wobble",
+      "params": {
+        "waveform": "triangle",
+        "rate": 0.2,
+        "depth": 1.0,
+        "bipolar": true,
+        "cv_depth": 1.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "filter",
+      "name": "lowpass tame",
+      "params": {
+        "mode": "lowpass",
+        "cutoff": 450.0,
+        "resonance": 1.5,
+        "cv_depth": 1.0
+      }
+    },
+    {
+      "id": 4,
+      "type": "speaker_output",
+      "name": "output",
+      "params": {
+        "gain": 0.7
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 2,
+      "src_port": "cv",
+      "dst_module_id": 1,
+      "dst_port": "index_cv"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "in"
+    }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [
+        40,
+        200
+      ],
+      "2": [
+        40,
+        20
+      ],
+      "3": [
+        360,
+        200
+      ],
+      "4": [
+        680,
+        200
+      ]
+    }
+  }
+}
