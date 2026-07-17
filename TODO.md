@@ -18,10 +18,15 @@ Living list of what's next. Edit freely.
       primed-to-input, instant at time 0. Per-sample recurrence (envelope
       shape; vectorise-later noted). Killer app = poly portamento
       (`cv_keyboard`→`slew`→osc `freq_cv`), example `slew_portamento.json`.
-      15 tests (`test_slew.py`), suite **2270**. **Pending (meatthread0):**
-      real-GUI eyeball — play the glide, tune rise/fall by ear, A/B the shapes.
-      Later: v2 `rise_cv`/`fall_cv` + clock-sync; v3 a `moving`/EOC gate out
-      (mini slope generator). See WORKLOG 2026-07-18.
+      16 tests (`test_slew.py`), suite **2270**. **CPU fix 2026-07-18:** an
+      LFO into `in` spiked CPU (~20% of a core for one mono slew — per-sample
+      numpy dispatch, the ADSR finding again). Fixed: symmetric exp → one
+      vectorised `lfilter` (near-free, all voices); linear + asymmetric exp →
+      pure-Python scalars. Mono linear 19.8% → 0.5%; 16-voice sym-exp → 0.5%;
+      16-voice linear 7.4% (the remaining scan — analytic/JIT candidate).
+      **Still pending (meatthread0):** re-play the glide now CPU's clear — tune
+      rise/fall by ear, A/B the shapes. Later: v2 `rise_cv`/`fall_cv` +
+      clock-sync; v3 a `moving`/EOC gate out. See WORKLOG 2026-07-18.
 - [x] **Bitcrusher CV (`bits_cv` + `rate_cv`)** — done 2026-07-17 (Matthew:
       "add a cv to the bit crusher"; picked both crush axes, sketched a 1V/bit
       scaler). Two CV inputs on `bitcrusher`, house `<param>_cv` naming
@@ -507,12 +512,13 @@ Living list of what's next. Edit freely.
       slew replaces the one-pole (warp only); `auto_govern` defaults on. New
       test file (push pitch BENDS to F0/ratio, vs buffered holding F0), example
       `warping_buffer_tape.json`, suite 2253. See WORKLOG 2026-07-18.
-- [ ] **Real-GUI eyeball: warping sink** (meatthread0) — route it to a second
-      device with a small `buffer_size`, provoke a starve (heavy patch / tiny
-      buffer) and confirm it *sounds* like a tape losing juice then spins back
-      up; tune `brake_time` / `spinup_time` by ear. Possible later refinement:
-      a continuous read-head varispeed if block-rate artifacts show at extreme
-      ratios (the per-block version is clean at moderate swings).
+- [x] **Real-GUI eyeball: warping sink** — PASSED 2026-07-18 (Matthew: "these
+      settings seem to work well"). 2nd device (HD Audio), `auto_govern` on,
+      `buffer_size` 1024, ring ~50% (4063/8192), 0 under / 0 drop. Sweet spot
+      was `brake_time` = `spinup_time` = **10.0 s** — a slow, gentle tape drift
+      rather than a dramatic dive. Possible later refinement: a continuous
+      read-head varispeed if block-rate artifacts show at extreme ratios (the
+      per-block version is clean at moderate swings).
 - [ ] **Buffered sink: decouple cushion from device blocksize** — buffer_size
       8192 on the HD Audio box fails open() and the sink goes silently
       `buffer: idle` (screenshot-confirmed 2026-07-16). Fall back

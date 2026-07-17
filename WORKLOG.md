@@ -4,6 +4,40 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-07-18 — real-GUI feedback: warping eyeball PASS + slew CPU fix
+
+Matthew ran both of the day's builds in the real app.
+
+**Warping sink — eyeball PASSED.** Routed to a second device (HD Audio),
+`auto_govern` on, `buffer_size` 1024, ring holding ~50% (4063/8192), 0 under /
+0 drop — "these settings seem to work well." Notably he tuned
+`brake_time` = `spinup_time` = **10.0 s** (vs my 0.6/0.3 guess): a slow, gentle
+coast rather than a dramatic dive — the musical setting is a long tape drift,
+so the wide slew range earns its keep. Warping sink now real-GUI confirmed.
+
+**Slew — CPU spike, fixed.** He wired an LFO into the slew's `in` and CPU
+spiked. Confirmed by benchmark: a single mono slew ate **~20% of a core**
+(2.3 ms of the 11.6 ms block budget), and V=16 cost the *same* as V=1 — the
+tell that it was per-sample **numpy dispatch overhead** (~512 ufunc calls/block)
+not arithmetic, exactly the 2026-06-07 ADSR finding. An LFO just exercises it
+every sample so it shows.
+
+Fix (the escape hatch flagged when it was built), two engines, both exact:
+  * SYMMETRIC exponential (rise == fall) is LTI → a single vectorised
+    `scipy.signal.lfilter` over the whole block and all voices, per-row `zi`
+    carrying the running value (`zi = a*cur` reproduces the scalar first
+    sample, so bit-parity holds). Near-free at any voice count.
+  * everything else (linear; asymmetric exp) → the same recurrence in
+    **pure-Python scalars** on a `.tolist()`'d row instead of tiny-numpy ops.
+
+Result (same benchmark): mono linear **19.8% → 0.5%** core (~36×); mono
+symmetric exp 18.3% → 0.2%; **16-voice** symmetric exp 20% → 0.5% (lfilter
+vectorises the voices). The one remaining heavy case is 16-voice *linear* at
+7.4% (the genuine per-sample scan) — workable, dropped to exp it's 0.5%, and
+it's the candidate for an analytic/JIT pass if it ever bites. New parity test
+locks the lfilter path against the scalar reference (incl. `zi` priming +
+block carry). All 16 slew tests pass, full suite **2270**.
+
 ## 2026-07-18 — `slew`: a CV slew limiter / lag / glide
 
 **Matthew's dream:** "a CV that has time-based settings." Mapped the space

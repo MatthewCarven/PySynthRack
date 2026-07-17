@@ -4991,10 +4991,18 @@ class NumpyBackend(AudioBackend):
 
         A per-sample recurrence (the output chases the input; ``y[n]`` depends
         on ``y[n-1]`` and, for the asymmetric case, on the direction of
-        travel), so it runs one Python loop over frames with numpy vectorised
-        across the voice axis -- the shape of the pre-vectorisation envelopes.
-        Cheap for a CV utility; if it ever shows in a profile, the ADSR's
-        analytic run-splitting is the escape hatch.
+        travel). Two engines:
+
+          * SYMMETRIC exponential (rise == fall) is a plain LTI one-pole, so
+            it runs as a single ``scipy.signal.lfilter`` over the whole block
+            and every voice at once (C speed) -- the cheap common case,
+            including one-time-knob glide.
+          * everything else (linear; asymmetric exponential) is the genuine
+            scan, run in pure-Python scalar math per voice row. The earlier
+            numpy-per-sample form paid a ufunc dispatch per sample (~20% of a
+            core for one mono slew -- overhead, not arithmetic), so scalars
+            are ~15x cheaper. Heavy polyphonic *linear* slew is the one case
+            still worth an analytic/JIT pass later, the ADSR's escape hatch.
 
         Shape-polymorphic via ``collapse=False``: a mono ``(F,)`` in slews one
         running value, a voice ``(V, F)`` in slews one per voice slot (no
@@ -5043,24 +5051,59 @@ class NumpyBackend(AudioBackend):
         rise = max(0.0, rise)
         fall = max(0.0, fall)
 
-        y = np.empty((V, frames), dtype=np.float64)
+        # Fast path: a SYMMETRIC exponential (rise == fall) is a plain LTI
+        # one-pole, so the whole block -- every voice at once -- is a single
+        # scipy.signal.lfilter call (C speed, GIL-releasing), with per-row zi
+        # carrying the running value across blocks. zi = a*cur reproduces the
+        # scalar recurrence's first sample exactly, so it stays bit-parity
+        # with the loop below (which the asymmetric case still uses).
+        if shape == "exponential" and rise == fall:
+            a = 0.0 if rise <= 0.0 else float(np.exp(-self._LN100 / (rise * sr)))
+            zi = (a * cur)[:, None]
+            y, _zf = lfilter([1.0 - a], [1.0, -a], x, axis=-1, zi=zi)
+            state["cur"] = y[:, -1].copy()
+            out = y if voiced else y[0]
+            return out.astype(np.float32)
 
+        # General path (linear any; asymmetric exponential): a per-sample
+        # recurrence, run in PURE-PYTHON SCALARS per voice row. The previous
+        # numpy-per-sample version paid ~one ufunc dispatch per sample (~20%
+        # of a core for a single mono slew, V-independent -- overhead, not
+        # arithmetic); scalar float math on a .tolist()'d row is ~15x cheaper.
+        y = np.empty((V, frames), dtype=np.float64)
         if shape == "exponential":
             a_rise = 0.0 if rise <= 0.0 else float(np.exp(-self._LN100 / (rise * sr)))
             a_fall = 0.0 if fall <= 0.0 else float(np.exp(-self._LN100 / (fall * sr)))
-            for n in range(frames):
-                xn = x[:, n]
-                a = np.where(xn >= cur, a_rise, a_fall)
-                cur = a * cur + (1.0 - a) * xn
-                y[:, n] = cur
+            for v in range(V):
+                xv = x[v].tolist()
+                c = float(cur[v])
+                row = [0.0] * frames
+                for n in range(frames):
+                    xn = xv[n]
+                    a = a_rise if xn >= c else a_fall
+                    c = a * c + (1.0 - a) * xn
+                    row[n] = c
+                y[v] = row
+                cur[v] = c
         else:
-            # Linear: max step per sample = 1/(t*sr); t<=0 -> unbounded (jump).
-            up = np.inf if rise <= 0.0 else 1.0 / (rise * sr)
-            dn = np.inf if fall <= 0.0 else 1.0 / (fall * sr)
-            for n in range(frames):
-                d = x[:, n] - cur
-                cur = cur + np.where(d >= 0.0, np.minimum(d, up), np.maximum(d, -dn))
-                y[:, n] = cur
+            # Linear: max step per sample = 1/(t*sr); t<=0 -> instant (jump).
+            up = float("inf") if rise <= 0.0 else 1.0 / (rise * sr)
+            dn = float("inf") if fall <= 0.0 else 1.0 / (fall * sr)
+            for v in range(V):
+                xv = x[v].tolist()
+                c = float(cur[v])
+                row = [0.0] * frames
+                for n in range(frames):
+                    d = xv[n] - c
+                    if d > up:
+                        c += up
+                    elif d < -dn:
+                        c -= dn
+                    else:
+                        c = xv[n]
+                    row[n] = c
+                y[v] = row
+                cur[v] = c
 
         state["cur"] = cur.copy()
         out = y if voiced else y[0]

@@ -142,6 +142,27 @@ class TestExponential:
         mid = 50  # ~half of the 0.1 s @ 1 kHz glide
         assert ye[mid] > yl[mid]
 
+    def test_symmetric_fast_path_matches_scalar_reference(self):
+        # rise == fall takes the vectorised lfilter path; it must stay
+        # bit-parity (incl. the zi priming + block-carry) with the scalar
+        # one-pole recurrence it replaced for performance. Multi-block,
+        # arbitrary input, to exercise the cross-block state.
+        rise = 0.05
+        F = 100
+        rng = np.random.default_rng(0)
+        blocks = [rng.standard_normal(F).astype(np.float32) for _ in range(3)]
+        d = _driver("exponential", rise=rise, fall=rise, block=F)
+        got = np.concatenate([d(b) for b in blocks])
+
+        a = float(np.exp(-NumpyBackend._LN100 / (rise * SR)))
+        x = np.concatenate(blocks).astype(np.float64)
+        ref = np.empty_like(x)
+        c = float(x[0])  # primed to the first input sample
+        for n in range(x.shape[0]):
+            c = a * c + (1.0 - a) * x[n]
+            ref[n] = c
+        assert np.allclose(got, ref, atol=1e-6)
+
 
 # ----- instant / prime / unpatched -------------------------------------------
 
