@@ -2506,7 +2506,11 @@ inverts; positive gain runs away.) The stretch is **pitch-preserving**
 (streaming WSOLA cancelled by the length resample), so even large
 corrections hold pitch — at the cost of ~50 ms constant latency on the
 governed path and a one-grain warm-up (brief silence) when the cable
-first lands; unpatched, the push is bit-identical to before. Numpy
+first lands. Prefer no patching? Flip **`auto_govern`** and the sink runs
+that same controller internally (canonical half-full setpoint + 0.5
+gain), holding its own ring with no cables; a patched `ratio_cv` still
+overrides it. With `ratio_cv` unpatched and `auto_govern` off (both
+defaults) the push is bit-identical to before. Numpy
 backend only.
 
 Why a per-sink buffer: the main mix might run at a tight 128-frame

@@ -7659,3 +7659,33 @@ Suite **2126 pass** (was 2125).
 **Manual-verify (meatthread0):** same governor patch as Slice 1 — but now
 crank CVScale hard: the ring readout should still walk to ~50% while the
 audio holds pitch (listen for grain texture instead of detune).
+
+## 2026-07-16 — ring governor Slice 3: built-in auto_govern controller
+
+The governor finale — self-regulation with no patch. New `auto_govern`
+bool param (default off, so nothing changes for anyone who doesn't touch
+it). `_governed_ratio` gains a middle branch: `ratio_cv` cabled still
+wins (patch drives it); else `auto_govern` on → the sink runs the loop
+itself off its own ring fill, target `1 + 0.5*(0.5 - fill)`; else
+ungoverned + bit-identical. The 0.5 gain is not arbitrary — it *is* the
+recommended `fill → cv_offset(-0.5) → cv_scale(-2) → ratio_cv` patch
+(that chain yields `ratio_cv = 2*(0.5 - fill)` and the 0.25 `ratio_depth`
+makes the target `1 + 0.5*(0.5 - fill)`), so auto and the canonical patch
+are the same controller. Both paths already shared the clamp, the
+smoothing, and the pitch-preserving actuator.
+
+Tidy-ups folded in: a `_sink_fill()` helper now reads the ring's fill
+(telemetry, one block old) and backs *both* the `fill` cv-out seeding and
+the auto controller, so they can't drift apart; `stop()` clears the
+governor's smoothing + stretch state so each Start begins at unity.
+
+Subslices: ad57340 (param + model test), ca8a554 (engine + 5 tests:
+low→stretch, full→shrink, exact-gain match, auto-off ignores the ring,
+cable overrides auto — injecting a fake pre-filled `_DeviceOutput` to
+probe the ratio response headless). Suite **2217 pass**. Governor feature
+COMPLETE (Slices 1/2/3); remaining buffered-sink work is the separate
+8192-fails-open silent-idle fallback (TODO).
+
+**Manual-verify (meatthread0):** on a real 2nd device, just tick
+`auto_govern` on a buffered sink — no cables — and the ring readout
+should settle at ~50% on its own.

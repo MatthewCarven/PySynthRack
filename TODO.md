@@ -444,6 +444,11 @@ Living list of what's next. Edit freely.
       in-circuit while cabled (warm-up paid at patch/Start, ~50 ms constant
       latency); unpatched push still bit-identical. 1 kHz-sine FFT test pins
       it. Slice 1 shipped 2026-07-16 (08d0c3e / 264eab6 / f61a80b).
+- [x] ~~**Ring governor Slice 3**~~ — **shipped 2026-07-16** (ad57340 / ca8a554):
+      `auto_govern` param runs the controller internally (law
+      `1 + 0.5*(0.5 - fill)` = the canonical patch exactly), so the sink holds
+      its own ring at half with no cables; a patched `ratio_cv` overrides it,
+      off stays bit-identical. Governor feature COMPLETE (Slices 1/2/3).
 - [ ] **Buffered sink: decouple cushion from device blocksize** — buffer_size
       8192 on the HD Audio box fails open() and the sink goes silently
       `buffer: idle` (screenshot-confirmed 2026-07-16). Fall back
