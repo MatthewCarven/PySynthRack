@@ -2128,6 +2128,8 @@ class NumpyBackend(AudioBackend):
             return self._render_cv_scale(module, frames, buffers, patch)
         if module.TYPE == "cv_offset":
             return self._render_cv_offset(module, frames, buffers, patch)
+        if module.TYPE == "slew":
+            return self._render_slew(module, frames, buffers, patch)
         if module.TYPE == "sample_hold":
             return self._render_sample_hold(module, frames, buffers, patch)
         if module.TYPE == "noise":
@@ -4976,6 +4978,93 @@ class NumpyBackend(AudioBackend):
         if cv_in is None:
             return np.full(frames, offset, dtype=np.float32)
         return (cv_in + offset).astype(np.float32)
+
+    # ----- Slew rendering -------------------------------------------------
+
+    # exp(-_LN100 / (t*sr)) is the one-pole coefficient whose step reaches
+    # 99% in t seconds, so 'exponential' and 'linear' arrive in the same
+    # wall-clock at equal rise/fall settings (only the curve differs).
+    _LN100 = 4.605170185988092
+
+    def _render_slew(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Slew-limit ``in`` toward its target with independent rise/fall times.
+
+        A per-sample recurrence (the output chases the input; ``y[n]`` depends
+        on ``y[n-1]`` and, for the asymmetric case, on the direction of
+        travel), so it runs one Python loop over frames with numpy vectorised
+        across the voice axis -- the shape of the pre-vectorisation envelopes.
+        Cheap for a CV utility; if it ever shows in a profile, the ADSR's
+        analytic run-splitting is the escape hatch.
+
+        Shape-polymorphic via ``collapse=False``: a mono ``(F,)`` in slews one
+        running value, a voice ``(V, F)`` in slews one per voice slot (no
+        crosstalk). The running value is carried across blocks and primed to
+        the first input sample, so the output starts *at* the signal rather
+        than swooping up from 0. Unpatched ``in`` -> silence (nothing to
+        slew), and its state is dropped so a re-patch primes fresh.
+
+        Two shapes (``shape`` param):
+          * ``linear`` -- constant rate; ``rise_time`` / ``fall_time`` are
+            seconds per 1.0 unit of change, so the step per sample is
+            ``1/(t*sr)`` and the output *reaches* the target.
+          * ``exponential`` -- asymmetric one-pole; the coefficient is chosen
+            (via :data:`_LN100`) so the times read as ~time-to-99%. The pole
+            depends on whether the target is above or below the current value,
+            which is why it can't collapse to a single LTI ``lfilter`` call.
+        A non-positive time means instant on that side.
+        """
+        cv_in = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
+        if cv_in is None:
+            self._state.pop(module.id, None)
+            return np.zeros(frames, dtype=np.float32)
+
+        voiced = cv_in.ndim == 2
+        x = (cv_in if voiced else cv_in[None, :]).astype(np.float64)  # (V, F)
+        V = x.shape[0]
+
+        # Per-voice running value, carried across blocks. Prime to the first
+        # input sample on the first block (or when the voice count changes).
+        state = self._state.setdefault(module.id, {})
+        cur = state.get("cur")
+        if cur is None or cur.shape[0] != V:
+            cur = x[:, 0].copy()
+        else:
+            cur = cur.astype(np.float64, copy=True)
+
+        sr = self.sample_rate
+        shape = str(module.params.get("shape", "linear"))
+        try:
+            rise = float(module.params.get("rise_time", 0.1))
+            fall = float(module.params.get("fall_time", 0.1))
+        except (TypeError, ValueError):
+            rise = fall = 0.1
+        rise = max(0.0, rise)
+        fall = max(0.0, fall)
+
+        y = np.empty((V, frames), dtype=np.float64)
+
+        if shape == "exponential":
+            a_rise = 0.0 if rise <= 0.0 else float(np.exp(-self._LN100 / (rise * sr)))
+            a_fall = 0.0 if fall <= 0.0 else float(np.exp(-self._LN100 / (fall * sr)))
+            for n in range(frames):
+                xn = x[:, n]
+                a = np.where(xn >= cur, a_rise, a_fall)
+                cur = a * cur + (1.0 - a) * xn
+                y[:, n] = cur
+        else:
+            # Linear: max step per sample = 1/(t*sr); t<=0 -> unbounded (jump).
+            up = np.inf if rise <= 0.0 else 1.0 / (rise * sr)
+            dn = np.inf if fall <= 0.0 else 1.0 / (fall * sr)
+            for n in range(frames):
+                d = x[:, n] - cur
+                cur = cur + np.where(d >= 0.0, np.minimum(d, up), np.maximum(d, -dn))
+                y[:, n] = cur
+
+        state["cur"] = cur.copy()
+        out = y if voiced else y[0]
+        return out.astype(np.float32)
 
     # ----- Noise rendering ------------------------------------------------
 

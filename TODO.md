@@ -9,6 +9,19 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **Slew / lag / glide (`slew`)** — built 2026-07-18 (Matthew: "a CV that
+      has time-based settings"; mapped the space, he picked the slew limiter).
+      New CV & Utilities module `in`→`out`; `shape` toggle
+      (`linear` constant-rate reaches target / `exponential` asymmetric
+      one-pole eased to ~99%, both arriving in the same wall-clock via
+      `_LN100`), independent `rise_time`/`fall_time` (sec), voice-aware,
+      primed-to-input, instant at time 0. Per-sample recurrence (envelope
+      shape; vectorise-later noted). Killer app = poly portamento
+      (`cv_keyboard`→`slew`→osc `freq_cv`), example `slew_portamento.json`.
+      15 tests (`test_slew.py`), suite **2270**. **Pending (meatthread0):**
+      real-GUI eyeball — play the glide, tune rise/fall by ear, A/B the shapes.
+      Later: v2 `rise_cv`/`fall_cv` + clock-sync; v3 a `moving`/EOC gate out
+      (mini slope generator). See WORKLOG 2026-07-18.
 - [x] **Bitcrusher CV (`bits_cv` + `rate_cv`)** — done 2026-07-17 (Matthew:
       "add a cv to the bit crusher"; picked both crush axes, sketched a 1V/bit
       scaler). Two CV inputs on `bitcrusher`, house `<param>_cv` naming

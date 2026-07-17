@@ -4,6 +4,54 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-07-18 — `slew`: a CV slew limiter / lag / glide
+
+**Matthew's dream:** "a CV that has time-based settings." Mapped the space
+(his sources — LFO/ADSR/seq/clock/S&H — are covered; the *processor* side is
+the gap) and he picked the **slew limiter / lag / glide** — the time-shaped
+counterpart to the pointwise `cv_offset`/`cv_scale`. Feed a CV in, chase it
+over time; independent rise and fall times.
+
+**Design (agreed in-thread).** New `slew` module in CV & Utilities: `in`→`out`
+(cv), params `shape` (`linear`/`exponential`), `rise_time`, `fall_time`
+(seconds), voice-aware, primed-to-input. Both shapes via a toggle (his call):
+  * `linear` — constant rate, REACHES the target; times read as seconds per
+    1.0 unit (a true slew limiter, step `1/(t·sr)`/sample).
+  * `exponential` — asymmetric one-pole ease, asymptotic; times read as
+    ~time-to-99% via `_LN100 = ln(100)`, chosen so the two shapes *arrive* in
+    the same wall-clock at equal settings — flip `shape` and the glide keeps
+    its length, only the curve changes. A non-positive time = instant.
+
+**Engine.** A per-sample recurrence (output chases input; the exponential pole
+also depends on direction of travel), so one Python loop over frames with
+numpy vectorised across the voice axis — the shape the envelopes had before
+vectorisation. Only *symmetric* exponential could collapse to an `lfilter`;
+independent rise/fall (the whole point) can't, so it's the loop. Cheap for a
+CV utility; the ADSR's analytic run-splitting is the escape hatch if it ever
+shows in a profile (per the 2026-06-07 lesson). Shape-polymorphic via
+`collapse=False`: mono `(F,)` → one running value, voice `(V,F)` → one per
+slot (no crosstalk), carried across blocks and primed to the first input
+sample so the output starts *at* the signal, no startup swoop. Unpatched →
+silence, state dropped.
+
+**Killer app:** polyphonic portamento — `cv_keyboard` pitch → `slew` →
+oscillator `freq_cv`, each voice gliding independently. Example
+`examples/slew_portamento.json`.
+
+**Verification.** `tests/test_slew.py` (15): linear reach-time + independent
+slower fall + constant-rate + negative targets; exponential 99%-in-rise_time,
+monotonic, no overshoot, curve-differs-from-linear; instant at time 0;
+prime-to-input; unpatched silent; voice-aware per-voice + mono==single-voice
+parity; block-size independence. Drove the renderer directly first
+(linear reaches 1.0 at sample 49/50 @1 kHz, fall 4× slower at 199, exp 99% at
+49). Full suite **2270 passed, 1 skipped**; example loads/renders; all edited
+files byte-compile.
+
+**Pending (Matthew's):** real-GUI eyeball — play it, does the glide feel
+right, tune rise/fall by ear, A/B the two shapes. Filed for later: v2
+`rise_cv`/`fall_cv` (modulate the times) + clock-sync; v3 a `moving`/EOC gate
+out to make it a mini slope generator.
+
 ## 2026-07-18 — `warping_buffered_speaker_output`: the tape-warp sink
 
 **Matthew's idea.** Copy the buffered sink, but instead of *hiding* the ring

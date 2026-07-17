@@ -62,6 +62,7 @@ from .output import (
 )
 from .samplehold import SampleHold
 from .schmitt import Schmitt
+from .slew import Slew
 from .sequencer import Sequencer
 from .fader_seq import FaderSeq
 from .sweep_eq import SweepEQ
@@ -121,6 +122,7 @@ __all__ = [
     "RightSpeakerOutput",
     "SampleHold",
     "Schmitt",
+    "Slew",
     "Sequencer",
     "SweepEQ",
     "Tape",
