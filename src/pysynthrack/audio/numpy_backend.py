@@ -1161,7 +1161,7 @@ class NumpyBackend(AudioBackend):
         src = patch.modules.get(cable.src_module_id)
         return (
             src is not None
-            and src.TYPE == NumpyBackend._BUFFERED_SPECIFIC_SPEAKER
+            and src.TYPE in NumpyBackend._BUFFERED_SPEAKERS
             and cable.src_port == "fill"
         )
 
@@ -1486,6 +1486,7 @@ class NumpyBackend(AudioBackend):
         "stereo_speaker_output",
         "specific_stereo_speaker_output",
         "buffered_specific_speaker_output",
+        "warping_buffered_speaker_output",
     })
     # Device-targetable sinks: a non-empty ``device`` pulls them off the
     # master bus onto their own secondary OutputStream. The buffered variant
@@ -1495,9 +1496,21 @@ class NumpyBackend(AudioBackend):
     # shared device — see _stream_key.
     _SPECIFIC_STEREO_SPEAKER = "specific_stereo_speaker_output"
     _BUFFERED_SPECIFIC_SPEAKER = "buffered_specific_speaker_output"
+    _WARPING_BUFFERED_SPEAKER = "warping_buffered_speaker_output"
+    # The buffered *family*: sinks that carry their own ``buffer_size``,
+    # publish a delayed ``fill`` cv out, and run the ring governor. The plain
+    # buffered sink hides its correction (pitch-preserving WSOLA); the warping
+    # sibling exposes it (audible varispeed). Every place that treats "a sink
+    # with its own ring + governor" the same checks this set; only the
+    # actuator and the ratio slew branch on which member it is.
+    _BUFFERED_SPEAKERS = frozenset({
+        "buffered_specific_speaker_output",
+        "warping_buffered_speaker_output",
+    })
     _ROUTED_SPEAKERS = frozenset({
         "specific_stereo_speaker_output",
         "buffered_specific_speaker_output",
+        "warping_buffered_speaker_output",
     })
     # One-pole smoothing applied per block to a governed sink's stretch
     # ratio. 0.2 settles in ~a dozen blocks (~0.15 s at 512/44.1k): slow
@@ -1520,7 +1533,7 @@ class NumpyBackend(AudioBackend):
         range against a corrupt patch value); every other routed sink uses the
         global block size.
         """
-        if module.TYPE == self._BUFFERED_SPECIFIC_SPEAKER:
+        if module.TYPE in self._BUFFERED_SPEAKERS:
             try:
                 raw = int(module.params.get("buffer_size", self.block_size))
             except (TypeError, ValueError):
@@ -1594,7 +1607,7 @@ class NumpyBackend(AudioBackend):
         # seed is a neutral 0.5: zero error against the half-full setpoint,
         # so an idle governor patch commands no stretch.
         for module in modules.values():
-            if module.TYPE != self._BUFFERED_SPECIFIC_SPEAKER:
+            if module.TYPE not in self._BUFFERED_SPEAKERS:
                 continue
             buffers[(module.id, "fill")] = np.full(
                 frames, self._sink_fill(module), dtype=np.float32
@@ -1631,7 +1644,9 @@ class NumpyBackend(AudioBackend):
 
         out = np.zeros((frames, 2), dtype=np.float32)
         device_blocks: dict[tuple[str, int], np.ndarray] = {}
-        governed: dict[tuple[str, int], tuple[int, float]] = {}
+        # key -> (module_id, smoothed ratio, is_warp). is_warp picks the
+        # actuator in the loop below: varispeed (pitch bends) vs WSOLA (held).
+        governed: dict[tuple[str, int], tuple[int, float, bool]] = {}
         for module in modules.values():
             if module.TYPE in self._STEREO_SPEAKERS:
                 target = out
@@ -1644,11 +1659,18 @@ class NumpyBackend(AudioBackend):
                 self._drain_stereo_speaker(module, frames, buffers, patch, target)
                 if (
                     key is not None
-                    and module.TYPE == self._BUFFERED_SPECIFIC_SPEAKER
+                    and module.TYPE in self._BUFFERED_SPEAKERS
                 ):
                     ratio = self._governed_ratio(module, patch, buffers)
                     if ratio is not None:
-                        governed[key] = (module.id, ratio)
+                        # Carry which actuator this stream wants: the warping
+                        # sibling bends pitch (varispeed), the plain buffered
+                        # sink holds it (WSOLA). See the actuation loop below.
+                        governed[key] = (
+                            module.id,
+                            ratio,
+                            module.TYPE == self._WARPING_BUFFERED_SPEAKER,
+                        )
                 continue
             channels = self._SPEAKER_CHANNELS.get(module.TYPE)
             if channels is None:
@@ -1677,57 +1699,67 @@ class NumpyBackend(AudioBackend):
         np.clip(out, -1.0, 1.0, out=out)
         for blk in device_blocks.values():
             np.clip(blk, -1.0, 1.0, out=blk)
-        # Governor actuation: PITCH-PRESERVING time-stretch of each
-        # governed stream's block to frames * ratio before it is handed
-        # to the ring. Two stages whose pitch effects cancel exactly:
-        # a streaming WSOLA shift UP by `ratio` (_GrainShifter — the
-        # pitch shifter's engine, one per channel, state persistent
-        # across blocks), then the Slice-1 linear resample DOWN by the
-        # same ratio to set the pushed length. Net: unity pitch, length
-        # frames * ratio — the ring counts in samples with push size
-        # free to differ from pop size, so the variable-length push is
-        # already legal. While ratio_cv is CABLED the engines stay
-        # in-circuit even at ratio 1.0 — bypassing at unity would spend
-        # the ~one-grain warm-up (zeros) at the exact moment the
-        # governor first corrects, mid-performance; this way it is paid
-        # once at patch/Start, and the wet path keeps one constant
-        # ~grain (50 ms) latency. Uncabled sinks never reach here (see
-        # _governed_ratio), keeping the unpatched push bit-identical.
+        # Governor actuation: time-stretch each governed stream's block to
+        # frames * ratio before it is handed to the ring (the ring counts in
+        # samples, so a push size that differs from the pop size is already
+        # legal). Both flavours share the length resample below; they differ
+        # only in what feeds it:
+        #
+        #   * PITCH-PRESERVING (plain buffered sink) — a streaming WSOLA shift
+        #     UP by `ratio` (_GrainShifter, one per channel, state persistent
+        #     across blocks) cancels the resample's pitch move, so the push
+        #     holds pitch. The engines stay in-circuit while governed even at
+        #     ratio 1.0 — bypassing at unity would spend the ~one-grain warm-up
+        #     (zeros) exactly when the governor first corrects — so the wet
+        #     path keeps one constant ~grain (50 ms) latency.
+        #   * VARISPEED (warping sibling) — no shift: the raw block is resampled
+        #     straight to length frames * ratio, so pitch bends WITH the ratio
+        #     (ratio > 1 = longer = slower = lower — the tape running out of
+        #     juice). Stateless: per-block resampling of contiguous blocks is
+        #     seam-continuous, so it never allocates a _GrainShifter.
+        #
+        # Ungoverned sinks never reach here (see _governed_ratio), keeping the
+        # unpatched push bit-identical.
         if governed and frames > 0:
             src_pos = np.arange(frames, dtype=np.float64)
-            for key, (mid, ratio) in governed.items():
+            for key, (mid, ratio, is_warp) in governed.items():
                 blk = device_blocks.get(key)
                 if blk is None:
                     continue
-                engines = self._sink_stretch.get(mid)
-                if engines is None:
-                    # The pitch shifter's house defaults: 50 ms grain,
-                    # overlap 2, and headroom for any block size the
-                    # main stream can run.
-                    grain = max(8, int(round(0.05 * self.sample_rate)))
-                    head = max(16384, 16 * int(getattr(self, "block_size", 512)))
-                    engines = [
-                        _GrainShifter(grain, 2, head),
-                        _GrainShifter(grain, 2, head),
-                    ]
-                    self._sink_stretch[mid] = engines
-                shifted = np.empty((frames, 2), dtype=np.float64)
-                shifted[:, 0] = engines[0].process(
-                    blk[:, 0].astype(np.float64), ratio
-                )
-                shifted[:, 1] = engines[1].process(
-                    blk[:, 1].astype(np.float64), ratio
-                )
+                if is_warp:
+                    # Varispeed: feed the raw block to the resample — the
+                    # pitch is meant to move. No persistent engine state.
+                    base = blk.astype(np.float64)
+                else:
+                    engines = self._sink_stretch.get(mid)
+                    if engines is None:
+                        # The pitch shifter's house defaults: 50 ms grain,
+                        # overlap 2, and headroom for any block size the
+                        # main stream can run.
+                        grain = max(8, int(round(0.05 * self.sample_rate)))
+                        head = max(16384, 16 * int(getattr(self, "block_size", 512)))
+                        engines = [
+                            _GrainShifter(grain, 2, head),
+                            _GrainShifter(grain, 2, head),
+                        ]
+                        self._sink_stretch[mid] = engines
+                    base = np.empty((frames, 2), dtype=np.float64)
+                    base[:, 0] = engines[0].process(
+                        blk[:, 0].astype(np.float64), ratio
+                    )
+                    base[:, 1] = engines[1].process(
+                        blk[:, 1].astype(np.float64), ratio
+                    )
                 m = max(1, int(round(frames * ratio)))
                 if m == frames:
                     # Sub-0.5-sample rounding: skip the resample (the
                     # residual pitch offset is a few cents at worst).
-                    stretched = shifted.astype(np.float32)
+                    stretched = base.astype(np.float32)
                 else:
                     dst_pos = np.arange(m, dtype=np.float64) * (frames / m)
                     stretched = np.empty((m, 2), dtype=np.float32)
-                    stretched[:, 0] = np.interp(dst_pos, src_pos, shifted[:, 0])
-                    stretched[:, 1] = np.interp(dst_pos, src_pos, shifted[:, 1])
+                    stretched[:, 0] = np.interp(dst_pos, src_pos, base[:, 0])
+                    stretched[:, 1] = np.interp(dst_pos, src_pos, base[:, 1])
                 # The OLA reconstruction can overshoot the pre-clipped
                 # bus by a hair; keep the push inside the rails.
                 np.clip(stretched, -1.0, 1.0, out=stretched)
@@ -1881,9 +1913,51 @@ class NumpyBackend(AudioBackend):
             return None
         target = min(max(target, 0.5), 2.0)
         prev = self._sink_ratio.get(module.id, 1.0)
-        ratio = prev + self._SINK_RATIO_SMOOTH * (target - prev)
+        if module.TYPE == self._WARPING_BUFFERED_SPEAKER:
+            # Tape-transport slew: coast toward target at a constant rate
+            # (constant-torque feel), asymmetric between braking (ratio
+            # rising — the ring starves, pitch dives) and spin-up (falling —
+            # recovering). A one-pole would ease-out of every correction; a
+            # bounded step gives the linear capstan glide the resampler brake
+            # is named for. The plain buffered sink keeps its one-pole, so
+            # that path stays bit-exact.
+            ratio = self._brake_slew(module, prev, target)
+        else:
+            ratio = prev + self._SINK_RATIO_SMOOTH * (target - prev)
         self._sink_ratio[module.id] = ratio
         return ratio
+
+    # Full swing of the governed ratio (the 0.5..2.0 clamp), used to turn the
+    # warping sink's brake_time / spinup_time seconds into a per-block step.
+    _RATIO_SWING = 2.0 - 0.5
+
+    def _brake_slew(self, module, prev: float, target: float) -> float:
+        """Move ``prev`` toward ``target`` at the warping sink's constant
+        tape-transport rate, capped per block.
+
+        ``brake_time`` sets the rate while the ratio RISES (the ring is
+        starving — the deck brakes and the pitch dives); ``spinup_time`` sets
+        the fall (recovering — the deck winds back up). Each is the seconds a
+        full-scale ratio swing (:data:`_RATIO_SWING`) would take, so the
+        per-block cap is ``swing * block / (seconds * sample_rate)``. A
+        non-positive time means an instant jump (no slew)."""
+        delta = target - prev
+        if delta == 0.0:
+            return target
+        rising = delta > 0.0
+        try:
+            secs = float(module.params.get(
+                "brake_time" if rising else "spinup_time",
+                0.5 if rising else 0.25,
+            ))
+        except (TypeError, ValueError):
+            secs = 0.5 if rising else 0.25
+        if secs <= 0.0:
+            return target
+        max_step = self._RATIO_SWING * self.block_size / (secs * self.sample_rate)
+        if abs(delta) <= max_step:
+            return target
+        return prev + (max_step if rising else -max_step)
 
     def snapshot_meter_levels(self) -> dict[tuple[int, str], float]:
         """GUI hook: a copy of the latest per-cv-port block-mean levels.

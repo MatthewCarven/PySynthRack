@@ -483,6 +483,23 @@ Living list of what's next. Edit freely.
       `1 + 0.5*(0.5 - fill)` = the canonical patch exactly), so the sink holds
       its own ring at half with no cables; a patched `ratio_cv` overrides it,
       off stays bit-identical. Governor feature COMPLETE (Slices 1/2/3).
+- [x] ~~**Warping buffered sink (`warping_buffered_speaker_output`)**~~ —
+      **built 2026-07-18** (Matthew's idea): the tape-warp sibling of the
+      buffered sink. Same fill→ratio governor, but an audible VARISPEED
+      actuator (the buffered WSOLA path *minus* the pitch-cancellation) so a
+      starving ring slows the deck (pitch dives) and refills, and recovery
+      spins it back up — an underrun becomes wow-and-flutter, not a click.
+      Subclass of the buffered sink + a `_BUFFERED_SPEAKERS` family set; the
+      buffered path stays bit-exact. Constant-torque `brake_time`/`spinup_time`
+      slew replaces the one-pole (warp only); `auto_govern` defaults on. New
+      test file (push pitch BENDS to F0/ratio, vs buffered holding F0), example
+      `warping_buffer_tape.json`, suite 2253. See WORKLOG 2026-07-18.
+- [ ] **Real-GUI eyeball: warping sink** (meatthread0) — route it to a second
+      device with a small `buffer_size`, provoke a starve (heavy patch / tiny
+      buffer) and confirm it *sounds* like a tape losing juice then spins back
+      up; tune `brake_time` / `spinup_time` by ear. Possible later refinement:
+      a continuous read-head varispeed if block-rate artifacts show at extreme
+      ratios (the per-block version is clean at moderate swings).
 - [ ] **Buffered sink: decouple cushion from device blocksize** — buffer_size
       8192 on the HD Audio box fails open() and the sink goes silently
       `buffer: idle` (screenshot-confirmed 2026-07-16). Fall back

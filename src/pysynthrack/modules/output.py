@@ -339,3 +339,66 @@ class BufferedSpecificSpeakerOutput(Module):
         Port("ratio_cv", "in", "cv"),
     ]
     OUTPUT_PORTS = [Port("fill", "out", "cv")]
+
+
+@register_module_type
+class WarpingBufferedSpeakerOutput(BufferedSpecificSpeakerOutput):
+    """A :class:`BufferedSpecificSpeakerOutput` whose ring governor is
+    *audible on purpose* — the tape-warp sibling.
+
+    Same sink, same jacks, same async hand-off ring as the buffered speaker
+    (see that class for pan/width/CV, per-device routing, ``buffer_size``,
+    and the live ring readout). The one difference is the **actuator** the
+    governor drives. The buffered sink hides its ring correction with a
+    pitch-preserving WSOLA stretch; this one does the opposite and lets the
+    correction *bend the pitch*, like a tape deck whose capstan speeds up
+    and slows down. Same fill→ratio control loop, opposite actuator: a plain
+    varispeed resample instead of the WSOLA-cancelled one.
+
+    The result is a feature made out of a failure mode. When the ring runs
+    low (the producer briefly can't keep up, or two device clocks drift) the
+    governor commands ``ratio > 1`` — which both pushes MORE samples to
+    refill the ring *and* plays that block slower, so the pitch dives: the
+    deck sounds like it's running out of juice. When the load lifts and the
+    ring refills past half, ``ratio`` drops back through 1 (and briefly under
+    it to drain the cushion), so the pitch spins back up — fully juiced
+    again. A buffer underrun stops being a click and becomes a musical
+    wow-and-flutter dip.
+
+    Governed exactly like the buffered sink — a patched ``ratio_cv`` drives
+    it (``1 + cv * ratio_depth``), else the built-in controller runs off the
+    sink's own ring fill. Unlike the buffered sink this one defaults
+    ``auto_govern`` **on**, because warping *is* the point: drop it in, pick a
+    device, and it self-warps with no cables. It only engages once routed to
+    a named device (a ring to regulate exists); left on the master bus it is
+    an ordinary stereo speaker.
+
+    Where the buffered sink smooths its ratio with a gentle one-pole, this
+    one shapes the move like a real transport with two extra params:
+
+        brake_time: Seconds the pitch takes to coast DOWN when the ring
+            starves (the ratio ramps up). Longer = a slower, more dramatic
+            tape-slowdown; 0 = snap. Default 0.5.
+        spinup_time: Seconds the pitch takes to wind back UP when the ring
+            recovers (the ratio ramps down). Default 0.25 — a touch quicker
+            than the brake, so it recovers eagerly.
+
+    The ramp is a constant-rate slew in ratio (the resampler brake's
+    constant-torque feel), asymmetric between braking and spin-up, replacing
+    the buffered sink's one-pole. Everything else — clamp to 0.5..2×, the
+    ``fill`` cv-out, ``ratio_cv`` override, the ring readout, per-device
+    routing — is inherited unchanged. Numpy backend only, like the routing.
+    """
+
+    TYPE = "warping_buffered_speaker_output"
+    DEFAULT_PARAMS = {
+        **BufferedSpecificSpeakerOutput.DEFAULT_PARAMS,
+        # Warping is this sink's identity, so it self-regulates out of the
+        # box (the buffered parent defaults this off for a bit-exact push).
+        "auto_govern": True,
+        # Tape-transport slew: seconds to coast the pitch down when the ring
+        # starves (brake) and back up when it recovers (spin-up). See the
+        # class docstring; consumed by the backend's warp actuator.
+        "brake_time": 0.5,
+        "spinup_time": 0.25,
+    }

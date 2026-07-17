@@ -4,6 +4,70 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-07-18 — `warping_buffered_speaker_output`: the tape-warp sink
+
+**Matthew's idea.** Copy the buffered sink, but instead of *hiding* the ring
+governor's correction with the pitch-preserving WSOLA stretch, *expose* it as
+audible varispeed — a tape brake. When the ring starves the deck slows and
+the pitch dives ("running out of juice"); when the load lifts it spins back
+up. The failure mode becomes the instrument: a buffer underrun stops being a
+click and becomes wow-and-flutter. His steer: a new module, not an option on
+the original ("it's already getting complicated"), and reuse the resampler's
+tape brake for the feel.
+
+**It's the existing governor minus the pitch-cancellation.** The whole point
+of the buffered actuator is a WSOLA shift UP by `ratio` that *cancels* the
+length resample's pitch move. Drop the WSOLA stage and keep the resample and
+you get varispeed for free — *less* DSP, and no ~50 ms grain latency or
+warm-up. The control law (`_governed_ratio`: fill→ratio, 0.5 setpoint, clamp,
+smooth) is reused verbatim, and its sign already gives the right physics:
+`ratio > 1` → longer push (refills the ring) *and* slower playback (pitch
+down). Starve→slow, recover→spin up falls straight out. Stateless: per-block
+resampling of contiguous device blocks is seam-continuous, so — unlike the
+WSOLA path — it allocates no `_GrainShifter`.
+
+**Sibling, not fork.** `WarpingBufferedSpeakerOutput` subclasses
+`BufferedSpecificSpeakerOutput` (inherits every jack + param). Introduced a
+`_BUFFERED_SPEAKERS` family frozenset so every place that means "a sink with
+its own `buffer_size` + `fill` out + ring governor" checks the set — the
+`fill` seed, the delayed-edge test (`_is_delayed_edge`), `_sink_block_size`,
+and the governor-population gate. Only two things branch on *which* member it
+is: the actuator (varispeed vs WSOLA, via an `is_warp` flag carried in the
+`governed` tuple) and the ratio slew. The buffered path is byte-identical —
+proven by the suite (its pitch-preserving test still passes) and a new
+contrast test.
+
+**Tape-transport feel.** Two params, `brake_time` (coast the pitch DOWN when
+starving; ratio rising) and `spinup_time` (wind back UP; ratio falling). A new
+`_brake_slew` replaces the one-pole *for the warp sink only* with a
+constant-rate, asymmetric slew (the resampler brake's constant-torque
+physics): each full-scale swing takes that many seconds. Defaults 0.5 / 0.25,
+so recovery is a touch eager. `auto_govern` defaults **on** (warping is the
+identity — drop it in, pick a 2nd device, it self-warps); it only engages once
+routed to a named device, and is an ordinary stereo speaker on the master bus.
+
+**UI / plumbing.** Joined the buffered family in six app.py sites (ring
+readout, pan/width/gain handling, device picker + its two list helpers, the
+`buffer_size` dropdown); `brake_time`/`spinup_time` render through the generic
+param-widget path. Listed in the pyo stub set (silent stub, like its sibling).
+New example `examples/warping_buffer_tape.json` (small `buffer_size` = more
+warp).
+
+**Verification.** New `tests/test_warping_buffered_sink.py`: family
+membership, the governor still moves the push length (low ring longer, full
+ring shorter), the defining **pitch-bend** test (a governed 1 kHz sine lands
+at 800 Hz = F0/ratio, the varispeed the buffered sink was built to avoid —
+with the buffered sibling asserted to still hold 1000 Hz), and the brake slew
+(asymmetric, linear-not-exponential, instant at time 0). Full suite **2253
+passed, 1 skipped**; `test_examples` green with the new patch; all four edited
+files byte-compile.
+
+**Pending (Matthew's to run):** the real-GUI + second-device eyeball — does it
+actually *sound* like a tape losing juice? — and tuning `brake_time` /
+`spinup_time` by ear. Possible later refinement: a continuous read-head
+varispeed (vs per-block) if block-rate artifacts show at extreme ratios; the
+per-block version is clean at moderate swings and the whole point is lo-fi.
+
 ## 2026-07-17 — Bitcrusher CV: `bits_cv` + `rate_cv`
 
 Matthew asked to "add a cv to the bit crusher", picked **both** crush axes

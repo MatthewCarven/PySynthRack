@@ -586,13 +586,16 @@ class App:
                         if wid:
                             self._param_widgets[wid] = (module.id, param_name)
 
-            # BufferedSpecificSpeakerOutput: a live readout of the sink's
+            # Buffered family (plain + warping): a live readout of the sink's
             # secondary-stream hand-off ring — fill %, queued/capacity
             # samples, and cumulative underrun / drop counts
             # (_update_sink_buffers ticks it each frame from the backend's
             # snapshot hook). Idle grey until the sink actually has a
             # stream: transport running AND a named device picked.
-            if module.TYPE == "buffered_specific_speaker_output":
+            if module.TYPE in (
+                "buffered_specific_speaker_output",
+                "warping_buffered_speaker_output",
+            ):
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                     label = dpg.add_text(
                         format_sink_buffer(None),
@@ -1554,7 +1557,7 @@ class App:
 
         if module.TYPE in (
             "stereo_speaker_output", "specific_stereo_speaker_output",
-            "buffered_specific_speaker_output",
+            "buffered_specific_speaker_output", "warping_buffered_speaker_output",
         ):
             # The stereo sink. ``pan`` places a mono source
             # (constant-power) or balances a stereo pair; ``width`` is
@@ -1929,7 +1932,7 @@ class App:
         # so saved patches that don't pin a device still load and run.
         if param_name == "device" and module.TYPE in (
             "midi_input", "mic_input", "specific_stereo_speaker_output",
-            "buffered_specific_speaker_output",
+            "buffered_specific_speaker_output", "warping_buffered_speaker_output",
         ):
             # Device list snapshot at widget creation, plus a Refresh
             # button that re-enumerates in place after hot-plugging (no
@@ -2002,7 +2005,10 @@ class App:
 
         if (
             param_name == "buffer_size"
-            and module.TYPE == "buffered_specific_speaker_output"
+            and module.TYPE in (
+                "buffered_specific_speaker_output",
+                "warping_buffered_speaker_output",
+            )
         ):
             # The buffered sink's own output-stream block size: a dropdown of
             # the sink sizes — the global slider's stops plus the roomy
@@ -2509,7 +2515,8 @@ class App:
         if module_type == "midi_input":
             devices = midi_available_devices()
         elif module_type in (
-            "specific_stereo_speaker_output", "buffered_specific_speaker_output"
+            "specific_stereo_speaker_output", "buffered_specific_speaker_output",
+            "warping_buffered_speaker_output",
         ):
             devices = spk_available_devices()
         else:
@@ -2536,7 +2543,8 @@ class App:
         if module_type == "midi_input":
             kind = "MIDI"
         elif module_type in (
-            "specific_stereo_speaker_output", "buffered_specific_speaker_output"
+            "specific_stereo_speaker_output", "buffered_specific_speaker_output",
+            "warping_buffered_speaker_output",
         ):
             kind = "audio output"
         else:
