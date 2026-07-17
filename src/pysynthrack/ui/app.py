@@ -240,6 +240,16 @@ class App:
         # tag showing 'elapsed / total'; refreshed each frame in
         # _update_file_positions from the backend's snapshot hook.
         self._file_pos_labels: dict[int, int] = {}
+        # FilePlayer seek / scrub bar. ``_file_seek_sliders`` maps module_id
+        # -> the dpg slider (0..1 fraction) under the transport row. Each
+        # frame _update_file_positions drives the thumb to the playhead —
+        # unless the module_id is in ``_file_seek_active`` (the user is
+        # dragging it), in which case the thumb is left to follow the mouse
+        # and the fractional position is handed to the backend on release.
+        # Interaction is polled via dpg.is_item_active, so there is no
+        # per-widget handler registry to track and free.
+        self._file_seek_sliders: dict[int, int] = {}
+        self._file_seek_active: set[int] = set()
         # Buffered-sink ring readouts (buffered_specific_speaker_output).
         # ``_sink_buffer_labels`` maps module_id -> the dpg text tag showing
         # the sink's secondary-stream ring fill / underruns / drops;
@@ -627,6 +637,26 @@ class App:
                         )
                         label = dpg.add_text("0:00 / 0:00")
                         self._file_pos_labels[module.id] = label
+                # A seek / scrub bar under the transport row. Its thumb is
+                # driven to the playhead each frame by _update_file_positions;
+                # while the user drags it (dpg.is_item_active) the thumb is
+                # left to follow the mouse, and on release the fractional
+                # position is handed to the backend to seek. format="" hides
+                # the raw 0..1 value — the 'elapsed / total' text above is the
+                # readable time. The callback only flags an in-progress scrub
+                # so a quick click, which can fall between two frame polls,
+                # still commits on the release check.
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                    seek = dpg.add_slider_float(
+                        default_value=0.0,
+                        min_value=0.0,
+                        max_value=1.0,
+                        format="",
+                        width=200,
+                        callback=self._on_file_seek,
+                        user_data=module.id,
+                    )
+                    self._file_seek_sliders[module.id] = seek
                 # File list / queue: tracks here auto-play (then drop off the
                 # list) as each one-shot finishes. 'Add to list...' reuses the
                 # same WAV picker as Browse; Clear empties the queue.
@@ -2234,6 +2264,16 @@ class App:
         if dpg.does_item_exist(tag):
             dpg.set_value(tag, playing)
 
+    def _on_file_seek(self, sender, app_data, user_data) -> None:
+        """A FilePlayer seek bar moved (user drag or click): flag the scrub
+        so _update_file_positions stops driving the thumb from the playhead
+        and commits the seek on release. Kept deliberately thin — recording
+        the intent here rather than seeking straight away means a click that
+        lands and releases between two frame polls is still caught by the
+        release check, and a held drag doesn't spam the backend per pixel.
+        """
+        self._file_seek_active.add(user_data)
+
     def _show_wav_dialog(self, sender, app_data, user_data) -> None:
         """A FilePlayer Browse / Add-to-list button was clicked: open the
         shared WAV picker.
@@ -2959,6 +2999,8 @@ class App:
             # Drop any per-module file_player bookkeeping so a deleted queue
             # stops being polled (and its listbox tag isn't reused stale).
             self._file_pos_labels.pop(module_id, None)
+            self._file_seek_sliders.pop(module_id, None)
+            self._file_seek_active.discard(module_id)
             self._playlist_listboxes.pop(module_id, None)
             self._fileplayer_advanced_gen.pop(module_id, None)
             # Same for a buffered sink's ring readout: the text item dies
@@ -3476,6 +3518,8 @@ class App:
         self._meter_bounds.clear()
         self._audio_meter_bars.clear()
         self._file_pos_labels.clear()
+        self._file_seek_sliders.clear()
+        self._file_seek_active.clear()
         self._playlist_listboxes.clear()
         self._fileplayer_advanced_gen.clear()
         self._sink_buffer_labels.clear()
@@ -3612,14 +3656,23 @@ class App:
 
     def _update_file_positions(self) -> None:
         """Push each FilePlayer's elapsed / total playhead time into its
-        node readout. Once per frame; backends without the hook (the pyo
-        stub) no-op, and a node with no current entry keeps its last text.
+        node readout and drive its seek bar's thumb. Once per frame; backends
+        without the hook (the pyo stub) no-op, and a node with no current
+        entry keeps its last text.
+
+        The seek bar is a 0..1 slider whose thumb normally tracks the
+        playhead (``elapsed / total``). While the user is dragging it
+        (``dpg.is_item_active``) — or on the frame their ``_on_file_seek``
+        callback just flagged a quick click — the thumb is left alone so it
+        follows the mouse; on release the fractional position is handed to
+        the backend's ``seek_file_player`` so the jump is block-aligned.
         """
         if not self._file_pos_labels:
             return
         snapshot = getattr(self.backend, "snapshot_file_positions", None)
         if snapshot is None:
             return
+        seek = getattr(self.backend, "seek_file_player", None)
         positions = snapshot()
         for mid, label in self._file_pos_labels.items():
             pair = positions.get(mid)
@@ -3630,6 +3683,21 @@ class App:
                 label,
                 f"{self._format_time(elapsed)} / {self._format_time(total)}",
             )
+            slider = self._file_seek_sliders.get(mid)
+            if slider is None:
+                continue
+            if dpg.is_item_active(slider):
+                # Being dragged: let the thumb follow the mouse, don't stomp it.
+                self._file_seek_active.add(mid)
+            elif mid in self._file_seek_active:
+                # Just released (or a quick click): seek to where it was left.
+                self._file_seek_active.discard(mid)
+                if seek is not None:
+                    seek(mid, float(dpg.get_value(slider)))
+            else:
+                # Idle: reflect the playhead as a 0..1 fill.
+                frac = (elapsed / total) if total > 0 else 0.0
+                dpg.set_value(slider, min(1.0, max(0.0, frac)))
 
     @staticmethod
     def _format_time(seconds: float) -> str:

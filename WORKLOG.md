@@ -4,6 +4,56 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-07-17 — FilePlayer seek / scrub bar
+
+Matthew asked to "give the file player some love" with a seek bar for the
+current track's position. Added a draggable 0..1 scrub bar under the transport
+row that shows the playhead as a fill and lets you jump anywhere in the track.
+
+**Backend** (`numpy_backend.py`): one new hook, `seek_file_player(module_id,
+fraction)`. It mirrors `rewind_file_player` exactly — stores a frame index in
+`state["seek"]` that the renderer consumes at the next block boundary (single
+reference store, atomic under the GIL), so a scrub is block-aligned and lands
+whether the player is playing or paused (the renderer already consumes `seek`
+before the paused check, so pause-then-scrub-then-play works). The fraction is
+taken along the *known* length — `total_frames` once decoded, else the buffered
+`frames_ready` — the same quantity `snapshot_file_positions` reports as `total`,
+so the bar and the `m:ss / m:ss` readout always agree. No-op for an unknown id,
+a non-file_player, a failed decode, or a player with nothing decoded yet
+(nowhere to seek). Rewind stays independent (seek-to-0 must work even before any
+length is known, which the length-gated seek path would refuse).
+
+**UI** (`ui/app.py`): a `dpg.add_slider_float(min=0, max=1, format="")` (raw
+fraction hidden — the existing time readout carries the human-readable time).
+The tricky part is one slider that is *both* driven by the playhead and dragged
+by the user. Solved by polling `dpg.is_item_active` in the per-frame
+`_update_file_positions`, no per-widget handler registry to track/free:
+
+- **idle** → drive the thumb to `elapsed/total`;
+- **active (dragging)** → leave the thumb for the mouse, flag the scrub;
+- **released** (was flagged, now inactive) → commit `seek_file_player(frac)`.
+
+A quick click can land+release between two frame polls and never read as
+`is_item_active`; the slider's thin callback (`_on_file_seek`) sets the same
+scrub flag, so the release branch still commits it. `set_value` doesn't fire DPG
+callbacks, so the per-frame thumb updates never self-trigger a phantom seek.
+Bookkeeping (`_file_seek_sliders`, `_file_seek_active`) is torn down on node
+delete and cleared on patch load, alongside the existing file-player maps.
+
+**Tests.** `test_file_player.py::TestSeek` (7) drives the backend hook through
+the real renderer — seek→render→exact samples, pause-scrub-resume, [0,1] clamp,
+seek-to-end parks+`finished`, buffered-length-while-streaming, no-op guards. A
+new `test_file_player_seek_ui.py` (5) exercises the GUI glue headlessly (mocked
+`dpg`, real backend, à la `test_file_player_queue`): idle reflects the playhead,
+drag doesn't stomp or seek, release commits to the backend, quick-click commits
+via the callback flag, teardown drops the bookkeeping. Full suite **2230 passed,
+1 skipped**.
+
+Docs: `MODULES.md` file_player Transport section + the `playing`-param note in
+`fileplayer.py`. **Real-GUI eyeball pending** (queued in TODO): drag/click the
+bar in the actual window and confirm the audio jumps, the thumb follows the
+mouse mid-drag then resumes, and scrubbing works while paused.
+
 ## 2026-07-10 — scroll-to-adjust: Ctrl = fine (÷10), Shift = coarse (×10)
 
 Matthew wanted a fine-adjust modifier for scrolling a param (fine-tuning a

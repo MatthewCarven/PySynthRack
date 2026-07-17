@@ -9,6 +9,25 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **FilePlayer seek / scrub bar** — done 2026-07-17 (Matthew: "give the
+      file player some love… a seek bar for the file progress/position"). A
+      draggable 0..1 bar under the transport row: thumb tracks the playhead,
+      drag/click jumps the track. **Backend:** one hook `seek_file_player(id,
+      fraction)` — twin of `rewind_file_player`, stores a frame in `state["seek"]`
+      the renderer consumes next block (block-aligned; lands playing *or* paused).
+      Fraction is along the known length (`total_frames`, else buffered
+      `frames_ready`) so bar and `m:ss / m:ss` readout agree; no-op for unknown
+      id / non-player / failed / undecoded. Rewind kept separate (seek-to-0 must
+      work before any length is known). **UI:** a `format=""` slider driven by the
+      playhead each frame *unless* the user is on it — polled via
+      `dpg.is_item_active` (no handler registry to free): idle→drive thumb,
+      drag→hands off + flag, release→commit the seek. A quick click that falls
+      between two polls still commits via the slider callback's flag
+      (`_on_file_seek`); `set_value` doesn't fire DPG callbacks so thumb updates
+      don't self-seek. Bookkeeping torn down on delete + patch load. **12 tests**
+      (`TestSeek` ×7 through the real renderer + `test_file_player_seek_ui.py` ×5
+      headless glue); suite **2230**. Docs: MODULES.md + `fileplayer.py`.
+      **Pending (meatthread0):** real-GUI eyeball — see the open item below.
 - [x] **`fm_op` — DX-style FM operator** — done 2026-07-11 (Matthew picked it
       off the module-ideas backlog; "new synthesis territory, small testable
       surface"). New `fm_op` source (Sources): one phase-modulation operator,
@@ -458,3 +477,10 @@ Living list of what's next. Edit freely.
 - [ ] **Real-GUI eyeball: governor patch** (meatthread0) — fill →
       CVOffset(−0.5) → CVScale → ratio_cv against a second device; watch
       fill hold ~50% and find the gain where it starts to warble.
+- [ ] **Real-GUI eyeball: FilePlayer seek bar** (meatthread0) — load a longish
+      track, then: drag the bar and confirm the audio jumps to the drop point on
+      release; watch the thumb follow the mouse mid-drag and resume tracking the
+      playhead after; click (don't drag) partway along and confirm it seeks;
+      Stop (pause) then scrub and confirm the position moves silently and Play
+      resumes from there. Backend logic is covered by tests — this is the
+      feel/rendering pass only.

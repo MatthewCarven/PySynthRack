@@ -37,8 +37,9 @@ Parameters:
     playing: Tape-transport pause. When False the playhead holds exactly
         where it is and the outputs go silent; back to True resumes from
         the same spot. Driven by the node's Play / Stop buttons (Rewind
-        seeks to 0:00 whether playing or paused, without touching this
-        param). Contrast with ``armed``, which parks at the start.
+        seeks to 0:00, and the node's seek bar scrubs anywhere in the
+        track, whether playing or paused, without touching this param).
+        Contrast with ``armed``, which parks at the start.
     playlist: An ordered queue of file paths that play *after* the current
         ``path``. When a one-shot track (``loop`` False) reaches its end,
         the GUI pops the head of this list into ``path`` and it plays from

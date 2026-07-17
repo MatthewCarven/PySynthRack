@@ -498,6 +498,16 @@ mate to the auto-advance; a no-op when the queue is empty). `armed` remains the
 coarser control (off = silent *and* parked at the start). One-shots also rewind
 when the audio transport stops.
 
+**Seek bar.** Below the transport row a **seek / scrub bar** shows the current
+position as a fill and lets you jump anywhere in the track: drag its thumb (or
+click the bar) and the playhead moves there on release — block-aligned and
+honoured whether playing or paused, exactly like **|<**. While you drag, the
+thumb follows the mouse instead of the playhead; let go and it resumes tracking.
+The `m:ss / m:ss` readout beside the buttons is the human-readable time (during a
+long decode the right-hand number is the *buffered* length so far, and the bar
+seeks within that). Backends without the seek hook (the pyo stub) leave the bar
+inert.
+
 **Notes.** A **Browse...** button beside the path field opens a file picker
 (audio + video formats) and writes the chosen path back into the field; the
 player starts a fresh background decode on the next block. Non-WAV formats

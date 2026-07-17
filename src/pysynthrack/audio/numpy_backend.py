@@ -8520,6 +8520,38 @@ class NumpyBackend(AudioBackend):
         if state is not None and self._state_types.get(module_id) == "file_player":
             state["seek"] = 0
 
+    def seek_file_player(self, module_id: int, fraction: float) -> None:
+        """UI hook: seek a file_player to a fractional position in [0, 1].
+
+        ``fraction`` is a 0..1 position along the *known* length — the true
+        duration once decoded, or the buffered length while a long file is
+        still streaming (the same quantity ``snapshot_file_positions``
+        reports as ``total``, so the node's seek bar and its
+        ``elapsed / total`` readout always agree). Like
+        ``rewind_file_player`` it only stores a frame index the renderer
+        consumes at the next block boundary (one reference store, atomic
+        under the GIL), so scrubbing is block-aligned and lands whether the
+        player is playing or paused. A no-op for an unknown id, a
+        non-file_player, or a player with nothing decoded yet (there is
+        nowhere to seek to).
+        """
+        if self._state_types.get(module_id) != "file_player":
+            return
+        state = self._state.get(module_id)
+        if state is None:
+            return
+        decoder = state.get("decoder")
+        if decoder is None or decoder.failed:
+            return
+        length = (
+            int(decoder.total_frames) if decoder.done
+            else int(decoder.frames_ready)
+        )
+        if length <= 0:
+            return
+        frac = min(1.0, max(0.0, float(fraction)))
+        state["seek"] = int(frac * length)
+
     def file_player_finished(self, module_id: int) -> bool:
         """UI hook: True once a one-shot ``file_player`` has run off its end.
 

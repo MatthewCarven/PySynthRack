@@ -417,6 +417,67 @@ class TestTransport:
         assert be._state[fp.id]["seek"] is None
 
 
+class TestSeek:
+    """``seek_file_player`` — the hook the node's seek/scrub bar commits to
+    on release. A fractional position in [0, 1] along the known length,
+    consumed at the next block boundary exactly like a rewind."""
+
+    def test_seek_to_fraction_plays_from_there(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=2000)
+        be.seek_file_player(fp.id, 0.5)  # half of 2000 frames -> 1000
+        assert be._state[fp.id]["seek"] == 1000
+        b = _ports(be, fp, patch, 512)
+        assert np.array_equal(b["left"], ref[0][1000:1512])
+        assert be._state[fp.id]["pos"] == 1512
+
+    def test_seek_while_paused_lands_then_resumes(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=2000)
+        fp.params["playing"] = False
+        be.seek_file_player(fp.id, 0.25)  # -> frame 500
+        b = _ports(be, fp, patch, 512)    # paused: silent, but the seek lands
+        assert np.all(b["left"] == 0.0)
+        assert be._state[fp.id]["pos"] == 500
+        fp.params["playing"] = True
+        b = _ports(be, fp, patch, 512)
+        assert np.array_equal(b["left"], ref[0][500:1012])  # resumed at the spot
+
+    def test_fraction_is_clamped_to_unit_interval(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=2000)
+        be.seek_file_player(fp.id, 5.0)   # over-range clamps to the end
+        assert be._state[fp.id]["seek"] == 2000
+        be.seek_file_player(fp.id, -1.0)  # under-range clamps to the start
+        assert be._state[fp.id]["seek"] == 0
+
+    def test_seek_to_end_parks_and_reports_finished(self, tmp_path):
+        be, patch, fp, ref = _compiled_player(tmp_path, n=2000)
+        be.seek_file_player(fp.id, 1.0)
+        b = _ports(be, fp, patch, 512)
+        assert np.all(b["left"] == 0.0)              # nothing past the end
+        assert be.file_player_finished(fp.id) is True
+
+    def test_seek_uses_buffered_length_while_streaming(self, tmp_path):
+        # Mid-decode the "length" is the buffered watermark, matching what the
+        # readout shows as total — so a fraction seeks within what exists.
+        be, patch, fp, ref = _compiled_player(tmp_path, n=2000)
+        be._state[fp.id]["decoder"] = _FakeDecoder(ref, ready=600, done=False)
+        be.seek_file_player(fp.id, 0.5)  # 0.5 of the 600 buffered -> 300
+        assert be._state[fp.id]["seek"] == 300
+
+    def test_seek_noop_when_nothing_decoded(self, tmp_path):
+        be = NumpyBackend(sample_rate=SR, block_size=512)
+        patch = Patch()
+        fp = patch.add_module("file_player", params={"path": ""})
+        be.compile(patch)
+        be.wait_for_file_decodes()
+        be.seek_file_player(fp.id, 0.5)  # no decoder -> nowhere to seek
+        assert be._state[fp.id].get("seek") is None
+
+    def test_seek_ignores_unknown_and_non_file_player_ids(self, tmp_path):
+        be, patch, fp, _ = _compiled_player(tmp_path)
+        be.seek_file_player(999999, 0.5)  # unknown id: silently ignored
+        assert be._state[fp.id].get("seek") is None
+
+
 class TestStreamingPlayback:
     def test_prebuffer_gates_start_until_ready_or_done(self, tmp_path):
         be, patch, fp, ref = _compiled_player(tmp_path, n=1000)
