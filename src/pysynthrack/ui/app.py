@@ -48,7 +48,15 @@ from ..modules.waveshaper import WAVESHAPER_MODES
 from ..modules.noise import NOISE_COLORS
 from ..modules.oscillator import WAVEFORMS
 from ..modules.sweep_eq import SWEEP_EQ_MODES
-from .dsp_load import IDLE_COLOR, format_dsp_load, load_color
+from .dsp_load import (
+    IDLE_COLOR,
+    diagnose,
+    format_dsp_load,
+    format_host_api,
+    format_xruns,
+    load_color,
+    xrun_color,
+)
 from .node_layout import find_free_position
 from .zoom import (
     ZOOM_DEFAULT,
@@ -146,6 +154,10 @@ MAIN_WINDOW_TAG = "main_window"
 ZOOM_SLIDER_TAG = "zoom_slider"
 BUFFER_SLIDER_TAG = "buffer_slider"
 DSP_TEXT_TAG = "dsp_load_text"
+XRUN_TEXT_TAG = "xrun_text"
+HOSTAPI_TEXT_TAG = "hostapi_text"
+DSP_TOOLTIP_TAG = "dsp_load_tooltip_text"
+XRUN_TOOLTIP_TAG = "xrun_tooltip_text"
 
 from .._resources import examples_dir
 
@@ -397,6 +409,34 @@ class App:
                 # smoothed by the backend (see ui/dsp_load.py). Grey
                 # dashes while audio is stopped.
                 dpg.add_text("DSP --", tag=DSP_TEXT_TAG, color=IDLE_COLOR)
+                with dpg.tooltip(DSP_TEXT_TAG):
+                    dpg.add_text(
+                        "Share of the block budget recent renders used.\n"
+                        "Above 100% the block missed real time.",
+                        tag=DSP_TOOLTIP_TAG,
+                    )
+                dpg.add_spacer(width=12)
+                # Device underflows reported by PortAudio itself. Read
+                # next to DSP% these separate a patch that is too
+                # expensive from a callback that merely arrived late --
+                # see ui/dsp_load.diagnose, which writes the tooltip.
+                dpg.add_text("xrun --", tag=XRUN_TEXT_TAG, color=IDLE_COLOR)
+                with dpg.tooltip(XRUN_TEXT_TAG):
+                    dpg.add_text("Audio stopped.", tag=XRUN_TOOLTIP_TAG)
+                dpg.add_spacer(width=12)
+                # Which host API the stream actually landed on. The
+                # stream opens on the system default, so this is
+                # informational rather than a setting -- but it decides
+                # whether jitter is ours or the host API's.
+                dpg.add_text(
+                    "api --", tag=HOSTAPI_TEXT_TAG, color=IDLE_COLOR
+                )
+                with dpg.tooltip(HOSTAPI_TEXT_TAG):
+                    dpg.add_text(
+                        "PortAudio host API the output stream opened on.\n"
+                        "MME is the Windows default and the most "
+                        "jitter-prone; WASAPI generally schedules better."
+                    )
 
             dpg.add_separator()
             dpg.add_text(
@@ -3590,6 +3630,31 @@ class App:
                 load = snap()[0]
         dpg.set_value(DSP_TEXT_TAG, format_dsp_load(load))
         dpg.configure_item(DSP_TEXT_TAG, color=load_color(load))
+        self._update_stream_health(load)
+
+    def _update_stream_health(self, load: float | None) -> None:
+        """Refresh the underflow count and host-API readouts.
+
+        Same getattr-guarded, lock-free discipline as the DSP figure: a
+        backend without ``stream_health_snapshot`` (the pyo stub) just
+        leaves both slots greyed out. The tooltip is rewritten each tick
+        because its reading depends on load *and* underflows together --
+        the pair is what tells jitter from overload.
+        """
+        if not dpg.does_item_exist(XRUN_TEXT_TAG):
+            return
+        xruns: int | None = None
+        host_api = ""
+        if self.backend.is_running:
+            snap = getattr(self.backend, "stream_health_snapshot", None)
+            if snap is not None:
+                xruns, _in_xruns, host_api = snap()
+        dpg.set_value(XRUN_TEXT_TAG, format_xruns(xruns))
+        dpg.configure_item(XRUN_TEXT_TAG, color=xrun_color(xruns))
+        if dpg.does_item_exist(HOSTAPI_TEXT_TAG):
+            dpg.set_value(HOSTAPI_TEXT_TAG, format_host_api(host_api))
+        if dpg.does_item_exist(XRUN_TOOLTIP_TAG):
+            dpg.set_value(XRUN_TOOLTIP_TAG, diagnose(load, xruns))
 
     def _update_cv_meters(self) -> None:
         """Push the backend's latest per-cv-port levels into the bars.

@@ -944,6 +944,20 @@ class NumpyBackend(AudioBackend):
         self._dsp_load: float = 0.0
         self._dsp_load_peak: float = 0.0
         self._dsp_overloads: int = 0
+        # Stream-health counters, the other half of the DSP readout.
+        # _dsp_overloads counts blocks whose *render* missed the budget;
+        # these count what PortAudio itself reports about the *device*:
+        # an output_underflow means the device ran dry before this
+        # callback delivered samples, i.e. the callback arrived late.
+        # The two together tell throughput apart from jitter -- see
+        # _note_stream_status for why that distinction is the whole
+        # point of this readout. Same no-lock discipline as above.
+        self._xruns: int = 0
+        self._input_xruns: int = 0
+        # Name of the host API the main stream actually opened on
+        # ("MME", "Windows WASAPI", ...), resolved once in start().
+        # Empty while stopped or if the lookup fails.
+        self._host_api: str = ""
 
     # ----- availability ----------------------------------------------------
 
@@ -1182,6 +1196,9 @@ class NumpyBackend(AudioBackend):
         self._dsp_load = 0.0
         self._dsp_load_peak = 0.0
         self._dsp_overloads = 0
+        self._xruns = 0
+        self._input_xruns = 0
+        self._host_api = ""
         # Full-duplex only when a mic module is present; otherwise the
         # cheaper output-only stream (no input device / permission
         # needed). A duplex open that fails (no device, rate mismatch,
@@ -1202,6 +1219,7 @@ class NumpyBackend(AudioBackend):
                     callback=self._duplex_callback,
                 )
                 self._stream.start()
+                self._host_api = self._resolve_host_api()
                 self._sync_device_outputs()
                 self._running = True
                 return
@@ -1221,6 +1239,7 @@ class NumpyBackend(AudioBackend):
             callback=self._audio_callback,
         )
         self._stream.start()
+        self._host_api = self._resolve_host_api()
         self._sync_device_outputs()
         self._running = True
 
@@ -1343,7 +1362,7 @@ class NumpyBackend(AudioBackend):
 
     def _audio_callback(self, outdata: np.ndarray, frames: int, time, status) -> None:
         if status:
-            print(f"[NumpyBackend] stream status: {status}")
+            self._note_stream_status(status)
         self._fill_output(outdata, frames)
 
     def _duplex_callback(
@@ -1356,9 +1375,62 @@ class NumpyBackend(AudioBackend):
         it synchronously within the same render_block below.
         """
         if status:
-            print(f"[NumpyBackend] stream status: {status}")
+            self._note_stream_status(status)
         self._input_block = indata
         self._fill_output(outdata, frames)
+
+    def _note_stream_status(self, status: Any) -> None:
+        """Tally one PortAudio status report (audio thread).
+
+        ``status`` is a ``sounddevice.CallbackFlags``. The flag worth
+        counting is ``output_underflow``: PortAudio sets it when the
+        device ran dry *before* this callback handed over samples --
+        that is, the callback itself arrived late. Read against
+        ``_dsp_overloads`` it separates the two failure modes that both
+        sound like a click:
+
+        * underflows climbing while overloads stay at zero -- the render
+          fits the budget comfortably and the *dispatch* was late (OS
+          scheduling, GIL contention, host-API jitter). Rendering ahead
+          into a queue fixes this, because the work can be banked early.
+        * underflows and overloads climbing together -- genuine
+          throughput overload. Deeper buffering only postpones the
+          glitch; the patch has to get cheaper.
+
+        Deliberately counters and not a ``print``: writing to stdout from
+        the audio thread takes a lock and does I/O on the one thread that
+        must never block, so the old logging made a glitch storm worse
+        exactly when it mattered. Plain int increments, read unlocked by
+        the GUI (see the __init__ notes) -- a stale count is harmless.
+        """
+        if getattr(status, "output_underflow", False):
+            self._xruns += 1
+        if getattr(status, "input_overflow", False):
+            self._input_xruns += 1
+
+    def _resolve_host_api(self) -> str:
+        """Name of the host API the open stream actually landed on.
+
+        The main stream opens with no ``device`` or ``latency`` hint, so
+        PortAudio picks the system default -- which on Windows is
+        typically MME, whose buffering and callback scheduling are
+        markedly worse than WASAPI's. Worth *showing* rather than
+        assuming: it decides whether a jitter problem is ours to fix in
+        the render path or the host API's to fix by picking another one.
+
+        Never raises -- a failed lookup just yields "" and the readout
+        stays blank.
+        """
+        if sd is None or self._stream is None:
+            return ""
+        try:
+            device = self._stream.device
+            if isinstance(device, (tuple, list)):
+                device = device[-1]      # duplex reports (input, output)
+            info = sd.query_devices(device)
+            return str(sd.query_hostapis(info["hostapi"])["name"])
+        except Exception:
+            return ""
 
     # Exponential smoothing for the DSP-load readout. Per-block render
     # times are spiky (GC pauses, OS scheduling); 0.9 over 512-sample
@@ -1417,6 +1489,17 @@ class NumpyBackend(AudioBackend):
         safe -- plain attribute reads, see the __init__ notes.
         """
         return self._dsp_load, self._dsp_load_peak, self._dsp_overloads
+
+    def stream_health_snapshot(self) -> tuple[int, int, str]:
+        """``(xruns, input_xruns, host_api)`` for the toolbar readout.
+
+        ``xruns`` counts device output underflows since start(),
+        ``input_xruns`` input overflows on the duplex stream, and
+        ``host_api`` names the API the stream opened on ("" while
+        stopped or if the lookup failed). GUI-thread safe -- plain
+        attribute reads, see the __init__ notes.
+        """
+        return self._xruns, self._input_xruns, self._host_api
 
     def _handle_audio_crash(self, exc: BaseException) -> None:
         """Called from the audio callback on the first render_block
