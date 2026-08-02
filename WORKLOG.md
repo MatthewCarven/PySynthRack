@@ -10,6 +10,72 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-03 — module polish: audit + slice 1 (docs, exports, widget gaps)
+
+Matthew asked for a polish pass across all the modules. Before starting, the
+2026-07-20 session's loose ends were landed (previous commit): the worklog
+compaction (May–June → WORKLOG-ARCHIVE.md), the stream-health doc snippets
+merged into WORKLOG/TODO, the applied `0001-*.patch` + snippets file removed,
+and a stale `.git/index.lock` (dated Jul 20, no git process alive) cleared.
+
+**The audit.** A registry-walking script cross-checked all 64 module types
+against MODULES.md headings + index rows, `modules.__all__`, app.py's
+`_add_param_widget` dispatch (literal + pattern branches), the pyo punt
+list, and the CV/depth conventions. Findings fixed this slice:
+
+  * **Docs drift** — `slew` and `warping_buffered_speaker_output` had no
+    MODULES.md entry at all, and `disk_writer` was still a "_To document._"
+    stub. All three written (index rows + full entries, house style per
+    section).
+  * **Exports** — `modules.__all__` was missing `FaderSeq`,
+    `BufferedSpecificSpeakerOutput` and `WarpingBufferedSpeakerOutput`
+    (the sinks weren't even imported by name). Fixed.
+  * **pyo punt list** — missing `slew` and `key_trigger`. Benign (the
+    dispatch falls through to the same silent `None`) but those two skipped
+    the courtesy "not supported in pyo" console notice. Added.
+  * **Text-box params** — `slew.shape` rendered as a raw input_text (type
+    `exponential` by hand); `transient_shaper.speed` likewise — the exact
+    follow-up the TODO promised when the shaper shipped. Both are combos
+    now (new `SLEW_SHAPES` constant; `TRANSIENT_SHAPER_SPEEDS` already
+    existed). `slew.rise_time`/`fall_time` also got real drags
+    (0..10 s, `%.3f s`, fine speed) instead of the unbounded generic.
+  * **Warping-sink widgets** — `brake_time`/`spinup_time` fell to the
+    GENERIC unbounded drag: the 0..5 s branch the audit's grep "saw" is
+    inside the *resampler's* TYPE block. Notably Matthew's eyeballed sweet
+    spot is 10 s — off the end of even that range. New branch in the
+    stereo-sink family block: 0..30 s, `%.2f s`. `ratio_depth` (both
+    buffered sinks) got 0..1 `%.2f x/unit` (±1 CV at 1.0 spans the
+    engine's full 0.5..2 ratio clamp).
+  * **Tripwires** — new `tests/test_docs_coverage.py` (4 tests): every
+    registered type has a MODULES.md heading AND an index row, every
+    heading maps to a registered type, every registered class is exported
+    (and every `__all__` name resolves). Undocumented modules are now a
+    test failure, not an audit finding.
+
+**Audited and fine** (recorded so nobody re-audits): mixer `gainN_cv` and
+oscillator `freq_cv`/`amp_cv` are depthless *by convention* (unity-normal
+level jacks / calibrated 1 V/oct — a depth knob on osc `freq_cv` would
+break keyboard tracking); motion_eq's shared `gain_cv_depth`/`q_cv_depth`
+scaling its per-band ports is correct, not an orphan; sequencer/fader_seq
+steps and the EQ band params ride pattern-based widget rules
+(`endswith("_pitch")` / `_freq` / `_gain` / `_q`), fader_seq draws its own
+panel; and the "thin" class docstrings on combiner/cv_combiner/disk_writer
+sit atop rich module docstrings — house style, not neglect.
+
+Suite **2310** pass / 1 skip (+4 on the 2306 baseline measured pre-change).
+
+**Pending (meatthread0):** a real-GUI eyeball of the new widgets — slew's
+`shape` combo, the shaper's `speed` combo, and the warping sink's
+`brake_time`/`spinup_time`/`ratio_depth` drags (render + apply are
+dpg-only paths).
+
+**Remaining — slice 2, queued in TODO:** the bounded-widget sweep. Seven
+modules still park numeric params on the generic unbounded drag_float:
+audio_to_cv, bitcrusher, compressor, convolver (the long-queued predelay
+slider), cv_to_frequency, freq_shifter, midi_input. Each format string
+added also tightens scroll-to-adjust's step sizing for free (it keys off
+displayed precision).
+
 ## 2026-07-20 — stream-health readout: measuring before rewriting the render path
 
 Matthew raised the real motivation behind the buffer-size slider: the output

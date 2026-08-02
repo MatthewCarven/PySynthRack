@@ -9,6 +9,33 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **Module polish — slice 1 (audit + docs/exports/widget gaps)** — done
+      2026-08-03 (Matthew: "polish all the modules"). Registry-walking audit
+      of all 64 types vs MODULES.md / `__all__` / widget dispatch / pyo punts
+      / CV conventions. Fixed: `slew` + `warping_buffered_speaker_output`
+      MODULES.md entries written (they had none) + `disk_writer` stub
+      replaced; `FaderSeq` + both buffered sinks exported in `__all__`;
+      `slew`/`key_trigger` added to the pyo punt notice; `slew.shape` and
+      `transient_shaper.speed` text boxes → combos (the shaper's was the
+      follow-up promised at ship); slew rise/fall + warping
+      `brake_time`/`spinup_time` (0..30 s — the eyeball sweet spot is 10 s,
+      past the old generic range) + `ratio_depth` got bounded/united drags.
+      4 new tripwire tests (`test_docs_coverage.py`) make undocumented /
+      unexported modules a test failure. Suite **2310**. **Pending
+      (meatthread0):** real-GUI eyeball of the new combos/drags. See
+      WORKLOG 2026-08-03.
+- [ ] **Module polish — slice 2: bounded-widget sweep** — queued 2026-08-03
+      by the audit. Seven modules still park numeric params on the generic
+      unbounded drag_float; give each real bounds/units/speed in
+      `_add_param_widget`: audio_to_cv `attack_ms`/`release_ms` (ms);
+      bitcrusher `bits` 1..24 + `rate_div` 1..64 (int sliders) + `jitter`
+      0..1; compressor `knee` (dB) + `threshold_cv_depth` (dB/unit);
+      convolver `predelay` 0..500 ms (the follow-up queued since it
+      shipped); cv_to_frequency `f0`/`fm`/`f1` + `_neg` trio (Hz);
+      freq_shifter `shift` ±2000 Hz + `shift_cv_depth` (Hz/unit);
+      midi_input `bend_range` (st) + `mod_scale`/`pressure_scale`. Bonus:
+      every format string added tightens scroll-to-adjust's step size for
+      free (it keys off displayed precision).
 - [x] **Stream-health readout (`xrun` + `api`)** — built 2026-07-20, the
       measure-first slice under the output-skipping thread. PortAudio's
       `status` flags counted instead of printed (`_note_stream_status`),
