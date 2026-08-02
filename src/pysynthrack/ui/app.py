@@ -956,12 +956,43 @@ class App:
                 return
 
         if module.TYPE == "bitcrusher":
-            # The two CV depths carry their natural unit in the label so the
-            # scaler reads clearly (the crush params themselves fall through
-            # to the generic numeric widgets). bits_cv_depth is bits per CV
-            # unit (default 1 = 1 bit/unit; ~23 sweeps the whole 1..24 range
-            # from a single unit); rate_cv_depth is octaves of decimation per
-            # unit (±6 spans the full 1..64 range). Negative inverts.
+            # ``bits`` (1..24, 24 = quantizer skipped) and ``rate_div``
+            # (1..64, 1 = no decimation) are the two crush axes;
+            # ``jitter`` wobbles the hold length (needs rate_div > 1);
+            # ``mix`` is dry/wet. The two CV depths carry their natural
+            # unit in the label so the scaler reads clearly: bits_cv_depth
+            # is bits per CV unit (default 1 = 1 bit/unit; ~23 sweeps the
+            # whole 1..24 range from a single unit); rate_cv_depth is
+            # octaves of decimation per unit (±6 spans the full 1..64
+            # range). Negative inverts.
+            if param_name == "bits":
+                dpg.add_slider_int(
+                    label=param_name, default_value=int(current),
+                    min_value=1, max_value=24,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "rate_div":
+                dpg.add_slider_int(
+                    label=param_name, default_value=int(current),
+                    min_value=1, max_value=64,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "jitter":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "mix":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
             if param_name == "bits_cv_depth":
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=0.1,
@@ -1346,6 +1377,41 @@ class App:
                 )
                 return
 
+        if module.TYPE == "freq_shifter":
+            # Bode single-sideband shifter. ``shift`` is linear Hz (not a
+            # ratio — the inharmonic point of the module); ``shift_cv_depth``
+            # is Hz of shift per CV unit; ``feedback`` recirculates out_up
+            # (0..0.9, the engine's stability clamp); ``mix`` is dry/wet
+            # with the dry path latency-matched.
+            if param_name == "shift":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=-2000.0, max_value=2000.0, format="%.0f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "shift_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=0.0, max_value=2000.0, format="%.0f Hz/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "feedback":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=0.9, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "mix":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "chorus":
             # Stereo chorus: rate is the LFO speed (Hz); depth is the
             # sweep amount (0..1); voices sets how many detuned copies;
@@ -1655,6 +1721,73 @@ class App:
                 )
                 return
 
+        if module.TYPE == "compressor":
+            # Feed-forward dynamics. ``threshold`` is where reduction
+            # starts (dBFS); ``ratio`` is dB-in per dB-out above it;
+            # ``attack``/``release`` are the gain-move times in MS (the
+            # generic attack/release branch below reads seconds — wrong
+            # unit and range for this module); ``knee`` softens the bend;
+            # ``gain`` is make-up in dB (not the generic 0..2 linear
+            # trim); ``mix`` blends dry back in for parallel compression;
+            # ``threshold_cv_depth`` scales threshold_cv in dB per unit.
+            # ``detector`` hits the shared peak/rms combo branch.
+            if param_name == "threshold":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-60.0, max_value=0.0, format="%.1f dBFS",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "ratio":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.05,
+                    min_value=1.0, max_value=20.0, format="%.1f:1",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "attack":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.1,
+                    min_value=0.1, max_value=250.0, format="%.1f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "release":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=2.0,
+                    min_value=5.0, max_value=2500.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "knee":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=24.0, format="%.1f dB",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "gain":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=24.0, format="%.1f dB",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "mix":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "threshold_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.1,
+                    min_value=0.0, max_value=24.0, format="%.1f dB/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "limiter":
             # Brickwall lookahead limiter. ``ceiling`` is the hard output
             # ceiling in dBFS (the output peak never exceeds it); ``release``
@@ -1678,6 +1811,20 @@ class App:
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
                     min_value=1.0, max_value=10.0, format="%.1f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "transient_shaper":
+            # Attack/sustain rebalance. Both params are BIPOLAR gains,
+            # -1 (cut up to -12 dB) .. +1 (boost up to +12 dB), 0 =
+            # untouched — NOT the generic envelope-time / 0..1 sustain
+            # widgets, which can't reach the cut half at all. ``speed``
+            # hits the fast/med/slow combo branch below.
+            if param_name in ("attack", "sustain"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-1.0, max_value=1.0, format="%.2f",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
@@ -1812,6 +1959,41 @@ class App:
                 )
                 return
 
+        if module.TYPE == "tape":
+            # Tape character macros. wow/flutter/drift are pitch-instability
+            # depths, sat is saturation drive — all 0..1; ``hiss`` is the
+            # noise-floor level in dB (-80 = off .. -30 = max, per the
+            # module's calibrated bed); ``bump`` is the ~60 Hz head-bump
+            # shelf in dB; ``mix`` is dry/wet (0 bit-exact dry).
+            if param_name in ("wow", "flutter", "drift", "sat"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "hiss":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-80.0, max_value=-30.0, format="%.1f dB",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "bump":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=6.0, format="%.1f dB",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "mix":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "delay":
             # Echo controls. ``time`` is the delay in ms; ``feedback`` sets
             # how many repeats; ``tone`` damps the feedback path (dark <->
@@ -1874,6 +2056,34 @@ class App:
                 )
                 return
 
+        if module.TYPE == "convolver":
+            # IR reverb / cab. ``predelay`` delays the wet onset behind the
+            # dry (articulation gap); ``tone`` low-passes the wet only
+            # (20 kHz = out of circuit); ``mix`` is dry/wet with the dry
+            # latency-comped. ``gain`` (wet trim) rides the generic 0..2
+            # slider; ``path`` has the Browse branch up top.
+            if param_name == "predelay":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=0.0, max_value=500.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "tone":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=10.0,
+                    min_value=1000.0, max_value=20000.0, format="%.0f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "mix":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "loudness":
             # Equal-loudness contour: level drives the auto curve; bass/
             # treble are manual dB trims; cv_depth scales level_cv.
@@ -1895,6 +2105,38 @@ class App:
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=0.02,
                     min_value=0.0, max_value=2.0, format="%.2f lvl/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "audio_to_cv":
+            # Envelope follower: one-pole attack/release time constants in
+            # MILLISECONDS (the generic attack/release branch reads
+            # seconds). ``gain`` rides the generic 0..2 slider.
+            if param_name == "attack_ms":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.5,
+                    min_value=0.1, max_value=500.0, format="%.1f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "release_ms":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=2.0,
+                    min_value=1.0, max_value=2000.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "cv_to_frequency":
+            # The three-point CV→Hz mapping anchors (f0 at CV=0, fm at
+            # CV=0.5, f1 at CV=1) and their negative-side twins. Same
+            # 20..20k Hz drag as the EQ band freqs. ``freq``/``waveform``/
+            # ``mode``/``mode_neg`` hit their shared branches elsewhere.
+            if param_name in ("f0", "fm", "f1", "f0_neg", "fm_neg", "f1_neg"):
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=20.0, max_value=20000.0, format="%.0f Hz",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
@@ -2092,6 +2334,27 @@ class App:
                 width=140,
                 callback=self._on_param_changed,
                 user_data=user_data,
+            )
+            return
+
+        if param_name == "bend_range":
+            # MIDIInput pitch-wheel span: full deflection = ±this many
+            # semitones on pitch_cv (1 V/oct). 2 is the hardware default,
+            # 12/24 the synth-lead octave conventions.
+            dpg.add_drag_float(
+                label=param_name, default_value=float(current), speed=0.1,
+                min_value=0.0, max_value=24.0, format="%.1f st",
+                width=140, callback=self._on_param_changed, user_data=user_data,
+            )
+            return
+
+        if param_name in ("mod_scale", "pressure_scale"):
+            # MIDIInput CV trims: multiplier on the normalized mod-wheel /
+            # channel-pressure value emitted on mod_cv / pressure_cv.
+            dpg.add_drag_float(
+                label=param_name, default_value=float(current), speed=0.01,
+                min_value=0.0, max_value=4.0, format="%.2f x",
+                width=140, callback=self._on_param_changed, user_data=user_data,
             )
             return
 
