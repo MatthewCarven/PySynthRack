@@ -24,18 +24,24 @@ Living list of what's next. Edit freely.
       unexported modules a test failure. Suite **2310**. **Pending
       (meatthread0):** real-GUI eyeball of the new combos/drags. See
       WORKLOG 2026-08-03.
-- [ ] **Module polish — slice 2: bounded-widget sweep** — queued 2026-08-03
-      by the audit. Seven modules still park numeric params on the generic
-      unbounded drag_float; give each real bounds/units/speed in
-      `_add_param_widget`: audio_to_cv `attack_ms`/`release_ms` (ms);
-      bitcrusher `bits` 1..24 + `rate_div` 1..64 (int sliders) + `jitter`
-      0..1; compressor `knee` (dB) + `threshold_cv_depth` (dB/unit);
-      convolver `predelay` 0..500 ms (the follow-up queued since it
-      shipped); cv_to_frequency `f0`/`fm`/`f1` + `_neg` trio (Hz);
-      freq_shifter `shift` ±2000 Hz + `shift_cv_depth` (Hz/unit);
-      midi_input `bend_range` (st) + `mod_scale`/`pressure_scale`. Bonus:
-      every format string added tightens scroll-to-adjust's step size for
-      free (it keys off displayed precision).
+- [x] **Module polish — slice 2: bounded-widget sweep** — done 2026-08-03,
+      same day as slice 1 (Matthew: "lets continue"). Scope grew on
+      contact: the audit's literal-mention heuristic had hidden that
+      compressor / tape / freq_shifter / convolver had NO TYPE block at
+      all, and two widgets were actively misleading — transient_shaper
+      `attack`/`sustain` (bipolar ±1 gains stuck on the 0..5 s
+      envelope-time / 0..1 sustain widgets: **the cut half was unreachable
+      from the UI**) and compressor `attack`/`release` (ms params on the
+      seconds branch — "10.000 s" for a 10 ms attack, drag clamped below
+      the release default) + `gain` (make-up dB on the 0..2 linear
+      slider). New blocks: compressor, transient_shaper, tape,
+      freq_shifter, convolver (incl. the long-queued predelay 0..500 ms +
+      tone), audio_to_cv, cv_to_frequency; extended: bitcrusher (int
+      sliders + jitter/mix), midi_input (bend_range/mod_scale/
+      pressure_scale). Audit section C (params on the bare generic drag)
+      now EMPTY across all 64 types. Suite 2310. **Pending (meatthread0):**
+      real-GUI feel pass over the reshaped nodes (listed in WORKLOG).
+      See WORKLOG 2026-08-03 slice 2.
 - [x] **Stream-health readout (`xrun` + `api`)** — built 2026-07-20, the
       measure-first slice under the output-skipping thread. PortAudio's
       `status` flags counted instead of printed (`_note_stream_status`),

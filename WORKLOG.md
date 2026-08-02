@@ -10,6 +10,54 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-03 — module polish slice 2: the bounded-widget sweep (same day)
+
+Matthew said continue, so slice 2 followed slice 1 straight away. The
+audit's "seven modules on generic drags" under-counted: its literal-mention
+heuristic saw params like compressor `attack` "mentioned" in app.py, but
+the mentions were *other* modules' TYPE-gated branches. Implementing
+verified every param of the touched modules end-to-end and found two
+genuinely **misleading widgets**, not just missing bounds:
+
+  * **transient_shaper `attack` / `sustain`** — bipolar −1..+1 rebalance
+    gains (±12 dB at the rails), but `attack` hit the generic
+    envelope-TIME branch (0..5 s, `%.3f s` — wrong unit, wrong semantic)
+    and `sustain` the generic 0..1 level slider. Neither could reach the
+    **cut half of its range from the UI at all.** Now ±1 sliders.
+  * **compressor** — `attack`/`release` are in **ms** (defaults 10/120)
+    but hit the generic *seconds* branch: a 10 ms attack displayed as
+    "10.000 s" and the drag clamped at 5 — under the release's own
+    default — while `gain` (make-up, dB) sat on the generic 0..2 *linear*
+    slider. Full block now: threshold −60..0 dBFS, ratio `%.1f:1` 1..20,
+    attack 0.1..250 ms, release 5..2500 ms, knee 0..24 dB, gain 0..24 dB,
+    mix 0..1, threshold_cv_depth 0..24 dB/unit.
+
+New TYPE blocks: **compressor**, **transient_shaper**, **tape**
+(wow/flutter/drift/sat 0..1, hiss −80..−30 dB, bump 0..6 dB, mix),
+**freq_shifter** (shift ±2000 Hz, shift_cv_depth Hz/unit, feedback 0..0.9
+— the engine's stability clamp — mix), **convolver** (predelay 0..500 ms —
+the follow-up queued since it shipped — tone 1k..20k Hz, mix),
+**audio_to_cv** (attack_ms 0.1..500 / release_ms 1..2000, honest ms
+labels), **cv_to_frequency** (all six Hz anchors, f0/fm/f1 + `_neg` trio,
+the EQ-style 20..20k drag). Extended blocks: **bitcrusher** (bits 1..24 +
+rate_div 1..64 int sliders, jitter + mix 0..1), **midi_input** (bend_range
+0..24 st, mod_scale/pressure_scale 0..4 ×).
+
+Checked-and-already-fine along the way: vocoder / limiter / meter /
+noise_gate had correct ms-or-seconds branches all along; every other
+`mix`/`feedback` lives inside its module's own block; `mix` has NO generic
+branch (it was landing on the bare unbounded drag wherever a block missed
+it — bitcrusher, convolver, freq_shifter, tape — all now covered).
+
+The audit's section C — params falling to the bare generic widget — is now
+**empty across all 64 types**. Suite 2310 pass / 1 skip, unchanged (widget
+branches are dpg-only per house pattern; no render path touched).
+
+**Pending (meatthread0):** one real-GUI pass over the reshaped nodes —
+compressor (honest ms + dB now), transient_shaper (bipolar sliders), tape,
+freq_shifter, convolver, bitcrusher, cv_to_frequency, midi_input, and
+slice 1's slew/speed combos — to confirm the ranges feel right in play.
+
 ## 2026-08-03 — module polish: audit + slice 1 (docs, exports, widget gaps)
 
 Matthew asked for a polish pass across all the modules. Before starting, the
