@@ -9,6 +9,42 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **Stream-health readout (`xrun` + `api`)** — built 2026-07-20, the
+      measure-first slice under the output-skipping thread. PortAudio's
+      `status` flags counted instead of printed (`_note_stream_status`),
+      host API resolved on `start()` (`_resolve_host_api`), both exposed via
+      `stream_health_snapshot()` and shown on the toolbar next to DSP% with a
+      `diagnose()` tooltip that reads load and underflows *together*. Also
+      removed a `print()` from both audio callbacks (stdout lock + I/O on the
+      realtime thread). 35 tests. **Pending (meatthread0):** run it under load
+      and report `DSP%` / `xrun` / `api` — that reading decides the next slice.
+
+- [ ] **Off-thread audio rendering (render thread + ring buffer)** — SCOPED
+      2026-07-20, gated on the readout above. `_fill_output` currently renders
+      the whole graph inside the PortAudio callback, so there is zero slack for
+      a scheduling spike. Move `render_block_multi` onto a dedicated thread
+      feeding a sample-counted ring; the callback becomes a memcpy.
+      `_DeviceOutput` is already exactly this pattern (ring + thin callback +
+      underrun/drop telemetry + live on-node readout) — same shape, producer
+      and consumer swapped. Queue depth as a toolbar slider beside the buffer
+      size; **depth is added latency**, so the two trade against each other and
+      async lets you go *smaller* on the device block and spend the budget on
+      depth instead, which is the better deal. Companions: raise thread
+      priority (`AvSetMmThreadCharacteristicsW("Pro Audio")` +
+      `SetThreadPriority` via ctypes — without it the render lands on an
+      *unboosted* thread and could regress), and `sys.setswitchinterval(0.001)`
+      so per-sample loops can't hold the GIL for 5 ms. Only worth building if
+      the readout shows underflows **without** overloads. Moderate/medium-risk:
+      touches the duplex mic path (`_input_block` is read synchronously inside
+      the callback today) and every `_device_outputs` push.
+
+- [ ] **Host-API / device selection for the main stream** — cheap follow-up.
+      The main stream opens with no `device`, `latency` or host-API hint, so
+      PortAudio takes the system default (typically MME on Windows). Offer a
+      host-API picker (WASAPI, optionally `sd.WasapiSettings(exclusive=True)`)
+      and a `latency` hint. Possibly a bigger win than the render rewrite for a
+      fraction of the work — the new `api` readout says whether it's worth it.
+
 - [x] **Slew / lag / glide (`slew`)** — built 2026-07-18 (Matthew: "a CV that
       has time-based settings"; mapped the space, he picked the slew limiter).
       New CV & Utilities module `in`→`out`; `shape` toggle
