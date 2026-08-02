@@ -54,11 +54,13 @@ from .reverb import Reverb
 from .ring_mod import RingMod
 from .pitch_shifter import PitchShifter
 from .output import (
+    BufferedSpecificSpeakerOutput,
     LeftSpeakerOutput,
     RightSpeakerOutput,
     SpeakerOutput,
     SpecificStereoSpeakerOutput,
     StereoSpeakerOutput,
+    WarpingBufferedSpeakerOutput,
 )
 from .samplehold import SampleHold
 from .schmitt import Schmitt
@@ -77,6 +79,7 @@ __all__ = [
     "ADSR",
     "AudioToCV",
     "Bitcrusher",
+    "BufferedSpecificSpeakerOutput",
     "Chorus",
     "Clock",
     "Combiner",
@@ -94,6 +97,7 @@ __all__ = [
     "Delay",
     "DiskWriter",
     "Distortion",
+    "FaderSeq",
     "FilePlayer",
     "Filter",
     "Flanger",
@@ -133,5 +137,6 @@ __all__ = [
     "StereoSpeakerOutput",
     "VCA",
     "Vocoder",
+    "WarpingBufferedSpeakerOutput",
     "Waveshaper",
 ]

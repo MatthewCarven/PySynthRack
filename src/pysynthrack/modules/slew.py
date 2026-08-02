@@ -62,6 +62,10 @@ from __future__ import annotations
 from ..core.module import Module, register_module_type
 from ..core.port import Port
 
+# Valid ``shape`` values; the UI combo renders these. Anything else is
+# treated as ``linear`` by the renderer.
+SLEW_SHAPES = ("linear", "exponential")
+
 
 @register_module_type
 class Slew(Module):

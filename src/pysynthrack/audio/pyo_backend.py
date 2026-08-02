@@ -269,6 +269,8 @@ class PyoBackend(AudioBackend):
             "sequencer",
             "fader_seq",
             "vocoder",
+            "key_trigger",
+            "slew",
         ):
             # v0.3+ routing / bridge / CV-oscillator modules. The numpy
             # backend is the real implementation; pyo support arrives

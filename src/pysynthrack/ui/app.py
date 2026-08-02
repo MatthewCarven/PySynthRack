@@ -47,7 +47,9 @@ from ..modules.meter import METER_MODES
 from ..modules.waveshaper import WAVESHAPER_MODES
 from ..modules.noise import NOISE_COLORS
 from ..modules.oscillator import WAVEFORMS
+from ..modules.slew import SLEW_SHAPES
 from ..modules.sweep_eq import SWEEP_EQ_MODES
+from ..modules.transient_shaper import TRANSIENT_SHAPER_SPEEDS
 from .dsp_load import (
     IDLE_COLOR,
     diagnose,
@@ -1632,6 +1634,26 @@ class App:
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
+            if param_name == "ratio_depth":
+                # Buffered-family governor swing: stretch per ratio_cv unit
+                # (cv +-1 at 1.0 spans the engine's full 0.5..2 ratio clamp).
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.005,
+                    min_value=0.0, max_value=1.0, format="%.2f x/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("brake_time", "spinup_time"):
+                # Warping sink only: tape-transport slew of the audible
+                # governor's ratio — coast-down / wind-up seconds. The
+                # real-GUI sweet spot was ~10 s each (a slow gentle drift),
+                # so the range runs long.
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.01,
+                    min_value=0.0, max_value=30.0, format="%.2f s",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
 
         if module.TYPE == "limiter":
             # Brickwall lookahead limiter. ``ceiling`` is the hard output
@@ -1876,6 +1898,36 @@ class App:
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
+
+        if module.TYPE == "slew":
+            # CV slew limiter: ``shape`` picks the glide curve (linear
+            # constant-rate reach vs exponential one-pole ease); the times
+            # are seconds — per 1.0 unit of change in linear, ~time-to-99%
+            # in exponential. 0 = instant on that side.
+            if param_name == "shape":
+                dpg.add_combo(
+                    label=param_name, items=list(SLEW_SHAPES),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("rise_time", "fall_time"):
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.005,
+                    min_value=0.0, max_value=10.0, format="%.3f s",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if param_name == "speed":
+            # Transient shaper follower-pair responsiveness: fast (tight
+            # percussion) / med (general) / slow (bass, sustained).
+            dpg.add_combo(
+                label=param_name, items=list(TRANSIENT_SHAPER_SPEEDS),
+                default_value=str(current),
+                width=120, callback=self._on_param_changed, user_data=user_data,
+            )
+            return
 
         if param_name == "waveform":
             # LFO has its own waveform list (includes "random"); other

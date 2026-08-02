@@ -244,6 +244,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`cv_scale`](#cv_scale) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`cv_offset`](#cv_offset) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`sample_hold`](#sample_hold) | CV & Utilities | `in` (cv), `trig` (gate) → `out` (cv) |
+| [`slew`](#slew) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`meter`](#meter) | CV & Utilities | `in`, `in_r` (audio) → `out`, `out_r` (audio) |
 | [`speaker_output`](#speaker_output) | Outputs | `in` (audio) → — |
 | [`left_speaker_output`](#left_speaker_output) | Outputs | `in` (audio) → — |
@@ -251,6 +252,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`stereo_speaker_output`](#stereo_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv` (cv) → — |
 | [`specific_stereo_speaker_output`](#specific_stereo_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv` (cv) → — |
 | [`buffered_specific_speaker_output`](#buffered_specific_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv`,`ratio_cv` (cv) → `fill` (cv) |
+| [`warping_buffered_speaker_output`](#warping_buffered_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv`,`ratio_cv` (cv) → `fill` (cv) |
 | [`disk_writer`](#disk_writer) | Outputs | `in` (audio) → — |
 
 ---
@@ -2297,6 +2299,31 @@ Shape-polymorphic: mono `(F,)` or per-voice `(V, F)` with per-voice held
 values, a mono partner broadcasting across the voice axis. See
 `examples/sample_hold_arp.json`.
 
+#### `slew`
+
+A **slew limiter / lag / glide** for control signals — the time-shaped
+counterpart to the pointwise `cv_scale` / `cv_offset`. Feed a CV into `in`
+and `out` *chases* it: when the input jumps, the output ramps toward it
+instead of snapping, with independent `rise_time` and `fall_time` (seconds;
+0 = instant on that side). `shape` picks the character: `linear` moves at a
+constant rate and **reaches** the target (times read as seconds per 1.0 unit
+of change — a rate, like an analog slew), while `exponential` eases toward
+it one-pole style, fast then asymptotic (times read as ~time-to-99%, chosen
+so the two shapes arrive in about the same wall-clock — flip the combo and
+the glide keeps its length, only its curve changes).
+
+The killer app is **polyphonic portamento**: `cv_keyboard` pitch CV →
+`slew` → `cv_to_frequency` → oscillator, and every voice glides
+independently between notes (voice-aware per-voice state, no crosstalk).
+Also good for lagging a stepped `sequencer` into smooth sweeps, turning a
+raw gate into a sloped poor-man's AR (instant rise + slow fall = peak
+follower), or adding physical inertia to a filter-cutoff sweep. The running
+value is carried across blocks (block-size independent) and **primed to the
+first input sample**, so the output starts at the signal rather than
+swooping up from zero; unpatched `in` emits 0. Params: `shape` (default
+`linear`), `rise_time` / `fall_time` (default 0.1 s). See
+`examples/slew_portamento.json`.
+
 #### `meter`
 
 A **level indicator** you patch any audio signal into — `in` passes
@@ -2624,11 +2651,76 @@ design. (numpy backend only, like the routing itself.)
 
 ---
 
+#### `warping_buffered_speaker_output`
+
+The **tape-warp sibling** of
+[`buffered_specific_speaker_output`](#buffered_specific_speaker_output):
+same sink, same jacks, same per-device routing, `buffer_size`, hand-off
+ring, live ring readout and governor loop — but the ring correction is
+*audible on purpose*. Where the buffered sink hides its stretch behind a
+pitch-preserving WSOLA engine, this one drives a plain varispeed resample,
+like a tape deck whose capstan speeds up and slows down. When the ring runs
+low the governor commands `ratio > 1`, which both pushes more samples to
+refill the ring **and** plays the block slower — the pitch dives, the deck
+sounds like it's running out of juice. When the ring recovers the ratio
+falls back through 1 and the pitch spins back up. A buffer underrun stops
+being a click and becomes musical wow-and-flutter.
+
+`auto_govern` defaults **on** here (warping *is* the point): drop the sink
+in, pick a device, and it self-warps with no cables — it only engages once
+routed to a named device (a ring to regulate has to exist; on the master
+bus it's an ordinary stereo speaker). A patched `ratio_cv` overrides the
+internal controller, exactly as on the buffered sink. Instead of the
+buffered sink's one-pole ratio smoothing, the move is shaped like a real
+transport: a constant-rate slew in ratio (the resampler brake's
+constant-torque feel), asymmetric between the two directions. The real-GUI
+sweet spot found in testing: `brake_time` = `spinup_time` = **10 s** gives
+a slow, gentle tape drift rather than a dramatic dive. Numpy backend only,
+like the routing itself.
+
+**Ports** — identical to
+[`buffered_specific_speaker_output`](#buffered_specific_speaker_output)
+(`in_l` / `in_r`, `pan_cv` / `width_cv`, `ratio_cv` → `fill`).
+
+**Parameters** — the buffered sink's set (`gain`, `pan`, `width`,
+`cv_depth`, `device`, `buffer_size`, `ratio_depth`) plus:
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `auto_govern` | `True` | bool | Inherited, but defaults **on**: the sink self-regulates its ring audibly out of the box. |
+| `brake_time` | `0.5` | 0 … 30 s | Seconds the pitch takes to coast DOWN when the ring starves (ratio ramps up). Longer = a slower, more dramatic tape-slowdown; 0 = snap. |
+| `spinup_time` | `0.25` | 0 … 30 s | Seconds the pitch takes to wind back UP as the ring recovers. Slightly quicker than the brake by default, so it recovers eagerly. |
+
+See `examples/warping_buffer_tape.json`.
+
+---
+
 #### `disk_writer`
 
-_To document._ Records its `in` to a 16-bit mono WAV while the transport runs
-(threaded, so it never glitches the audio). Params: `path`, `armed`. See
-`examples/record_a_take.json`.
+Records its `in` to a **16-bit mono WAV** at the backend's sample rate — a
+sink: audio in, nothing out, a file on disk. The renderer opens the file
+lazily the first time a compiled patch contains an armed writer and closes
+it when the transport stops; re-arming creates a new take under the same
+name (existing files are overwritten without prompting — no modal dialogs
+mid-take). Disk I/O never touches the audio callback: each writer owns a
+daemon worker thread behind a bounded queue, and in the rare case the queue
+is momentarily full the block is dropped (counted) rather than letting the
+audible output glitch.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | The bus to record. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `path` | `"recording.wav"` | filename | Where the WAV lands. Relative paths resolve against the process working directory; add `.wav` yourself. |
+| `armed` | `True` | bool | Off = the writer sits in the patch inert, no file opened; lets you keep it wired without cutting a take every play. |
+
+See `examples/record_a_take.json`.
 
 ---
 
