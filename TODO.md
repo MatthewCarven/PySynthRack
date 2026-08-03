@@ -9,6 +9,21 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **`scope` — oscilloscope pass-through tap** — SHIPPED 2026-08-03
+      (same day, part three; Matthew: "lets continue with a scope").
+      Bit-exact pass-through (meter precedent) + a 220×110 waveform face
+      on the node: 10-division window (`time_div` 1..500 ms/div), spike-
+      proof min/max columns, rising/falling/free trigger + level, external
+      `trig` override, `cv` jack as fallback trace (no bridge needed),
+      mono/dual/xy (goniometer), freeze, gain. Audio thread = ring memcpy
+      only; all display maths in new dpg-free `ui/scope_math.py`
+      (headless-tested end to end); GUI repaints one zig-zag polyline per
+      trace per frame. 25 tests; suite **2380**. Example `scope_tap.json`
+      (LFO-swept resonant filter on a saw — watch corners round off).
+      **Pending (meatthread0):** real-GUI eyeball (face at 60 fps, trigger
+      holds the saw still, dual/xy, freeze, CPU with 2+ scopes). Later
+      ideas: `spectrum` sibling (FFT tap, spec in MODULE_IDEAS); ms/div
+      readout text on the face; a trigger-level drag-line on the face.
 - [x] **`quantizer` + `shift_random` — the generative pair** — SHIPPED
       2026-08-03 (Matthew picked the recommendation off MODULE_IDEAS.md).
       `quantizer` (CV & Utilities): CV → nearest scale note, 1 V/oct; ten

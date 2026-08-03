@@ -10,6 +10,76 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-03 — scope: the waveform on the node (same day, part three)
+
+Matthew: "lets continue with a scope". The MODULE_IDEAS spec, adapted to
+the house architecture — the force-multiplier module: every "what is this
+module doing to the wave?" question becomes a glance at the node.
+
+**Design.** A pass-through tap (the meter precedent, extended): `in` →
+`out` and `in_r` → `out_r` bit-exact (same array, voice shapes intact),
+with the display fed off capture rings beside the path. The spec said
+"audio or cv" on one jack — the port model enforces kind equality, so the
+scope instead grew a dedicated **`cv` jack as the fallback main trace**
+(`in` wins when both patched): LFOs/envelopes/quantizer steps display
+with no `cv_to_audio` bridge. `trig` (gate) is an external trigger that
+overrides the level trigger — clock-locked sweeps.
+
+**Split across layers, deliberately.** The audio thread only memcpys
+into per-jack capture rings (6 s: the 500 ms/div × 10 div max window + 1 s
+of trigger-search history; rings lazily created, one shared write pos so
+they stay sample-aligned). The backend exposes a raw-data hook
+`scope_window(id, n)` (tail reconstruction, two slices). ALL display
+maths — window sizing, trigger search, min/max decimation, polyline
+geometry — lives in the new dpg-free **`ui/scope_math.py`** (zoom.py
+precedent), called GUI-side per frame: `build_snapshot()` orchestrates
+(trig-ring override → level trigger → free-run end-aligned; mono/dual
+columns or xy decimation). This deviates from the spec's "render thread
+writes decimated columns" — GUI-side compute keeps the audio thread
+lean, and the whole pipeline (renderer → scope_window → build_snapshot →
+geometry) tests headless. A GUI read can catch a torn ring frame:
+one glitchy visual frame, self-heals (meter precedent, documented).
+
+**Decimation.** `minmax_columns` buckets every sample into exactly one
+column via `floor(i·columns/n)` and takes per-column min+max with
+`np.minimum.at`/`maximum.at` — a one-sample click can never fall between
+pixels (pinned by test); short windows zero-order-hold. The face draws
+ONE zig-zag polyline (max then min per column) instead of per-column
+lines — 2·columns points, cheap. `xy` mode is the goniometer: `in` vs
+`in_r`, stride-decimated.
+
+**Trigger.** `find_trigger_index` picks the LAST level crossing that
+still fits a full window (newest aligned sweep); rising/falling via
+vectorised crossing masks. Phase-lock pinned by test — with a lesson:
+the first version used a sine whose zeros landed exactly ON sample
+points, and ±2e-15 rounding flipped which sample "crossed". Real signals
+don't sit on the boundary; the test now offsets phase. Free-run (or no
+crossing) shows the end-aligned newest window.
+
+**UI.** The node carries a 220×110 drawlist face (dark green, centre
+gridlines, green main trace + amber second trace); `_update_scopes` in
+the frame loop asks the hook, runs scope_math, reconfigures the
+polylines (per-scope try/except self-heal; `_scope_displays` pruned on
+delete + patch load — the meter-bar lifecycle). `freeze` simply skips
+the repaint: the picture stops, the audio doesn't. Params: time_div
+1..500 ms/div, gain 0.1..10×, trigger combo, level slider, mode via the
+shared mode-combo branch (scope arm added).
+
+**Tests.** 25 (`test_scope.py`): bit-exact pass-through mono + voice
+(same-array identity), cv-fallback trace, ring accumulation/tail/cap,
+block-size-independent capture, spike-proof decimation, exact column
+counts, trigger rising/falling/free/none/phase-lock/external-override,
+snapshot shapes for all three modes, geometry (gain scaling, clipping,
+flat-column single point). Suite **2380** pass / 1 skip (+25 +1 example).
+Example `examples/scope_tap.json`: saw → resonant LP (LFO-swept cutoff)
+→ scope → speaker; renders 0.64 peak with a live snapshot verified
+headless.
+
+**Pending (meatthread0):** the real-GUI eyeball — the face drawing at
+60 fps, trigger holding a 110 Hz saw still, the LFO sweep visibly
+rounding the corners off, dual/xy modes, freeze, and CPU staying calm
+with a couple of scopes in the patch.
+
 ## 2026-08-03 — quantizer + shift_random: the rack writes its own melodies
 
 With the polish arc closed, Matthew took the recommendation off the module
