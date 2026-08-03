@@ -43,6 +43,7 @@ from .micinput import MicInput
 from .meter import Meter
 from .midiinput import MIDIInput
 from .mixer import Mixer
+from .modal import Modal
 from .motion_eq import MotionEQ
 from .noise import Noise
 from .noise_gate import NoiseGate
@@ -117,6 +118,7 @@ __all__ = [
     "Meter",
     "MIDIInput",
     "Mixer",
+    "Modal",
     "MotionEQ",
     "Noise",
     "NoiseGate",

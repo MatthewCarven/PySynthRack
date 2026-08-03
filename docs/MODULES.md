@@ -202,6 +202,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`noise`](#noise) | Sources | — → `out` (audio), `cv` (cv) |
 | [`fm_op`](#fm_op) | Sources | `pitch_cv`,`amp_cv`,`index_cv` (cv), `pm` (audio) → `out` (audio) |
 | [`pluck`](#pluck) | Sources | `pitch_cv` (cv), `trigger` (gate) → `out` (audio) |
+| [`modal`](#modal) | Sources | `excite` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`filter`](#filter) | Filters & EQ | `in` (audio), `cutoff_cv` (cv) → `out` (audio) |
 | [`crossover`](#crossover) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
 | [`parametric_eq`](#parametric_eq) | Filters & EQ | `in` (audio) → `out` (audio) |
@@ -666,6 +667,50 @@ backend only; silent stub under pyo. See `examples/pluck_strings.json`.
 | `damping` | `0.5` | 0 … 1 | Loop lowpass blend; higher = darker, faster HF fade. |
 | `color` | `0.7` | 0 … 1 | Exciter spectrum: soft thumb → hard plectrum. |
 | `position` | `0.2` | 0 … 1 | Pick-position comb on the burst; 0 disables. |
+| `level` | `0.5` | 0 … 1 | Output level. |
+
+#### `modal`
+
+A **struck/blown resonator bank** — physical modelling's other half:
+where [`pluck`](#pluck) is a string you pluck, `modal` is a *body* you
+strike. Feed anything into `excite` (a short noise burst through a gated
+VCA is the classic mallet; a drum click, a full mix, anything) and a
+bank of two-pole resonators rings at `pitch × ratio[i]` like the modes
+of a real object. The ratio tables are physics-textbook, not product
+clones: `bar` (free-free bar, the 1 : 2.76 : 5.40 xylophone series),
+`bell` (stylized minor-third bell stack), `membrane` (circular drumhead
+— Bessel-function zeros, computed not tabulated), `string` (plain
+harmonics).
+
+`modes` sets the resonator count (4..24); `decay` is the lowest mode's
+t60 with `decay_tilt` making higher modes die faster (0 glassy, 1
+woody); `brightness` tilts the mode gains; `inharm` stretches the ratio
+table upward (a little = piano-ish, a lot = clangorous plate). Pitch is
+1 V/oct (C4 = 0 V), read per block; modes that would land above
+~0.45·sr are dropped, not aliased. Voice-aware: per-voice banks with
+per-voice pitches; voices sharing a pitch share coefficients and are
+**batched into single vectorized filter calls** (16 unison voices cost
+the same as one); rung-out voices early-out. Numpy backend only; silent
+stub under pyo. See `examples/modal_bells.json`.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `excite` | in | audio | The strike/breath. Unpatched → silence. |
+| `pitch_cv` | in | cv | 1 V/oct, C4 = 0 V. Unpatched → C4. |
+| `out` | out | audio | The ringing body. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `material` | `bar` | combo | bar · bell · membrane · string. |
+| `modes` | `12` | 4 … 24 | Resonator count. |
+| `decay` | `2.0` | 0.1 … 30 s | Lowest-mode t60. |
+| `decay_tilt` | `0.5` | 0 … 1 | Higher modes die faster. |
+| `brightness` | `0.5` | 0 … 1 | Mode-gain tilt, dark → bright. |
+| `inharm` | `0.0` | 0 … 1 | Ratio stretch. |
 | `level` | `0.5` | 0 … 1 | Output level. |
 
 ---

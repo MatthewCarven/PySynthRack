@@ -275,6 +275,7 @@ class PyoBackend(AudioBackend):
             "shift_random",
             "scope",
             "pluck",
+            "modal",
         ):
             # v0.3+ routing / bridge / CV-oscillator modules. The numpy
             # backend is the real implementation; pyo support arrives

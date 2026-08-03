@@ -53,6 +53,7 @@ from ..modules.quantizer import (
     QUANTIZER_ROOTS,
     QUANTIZER_SCALES,
 )
+from ..modules.modal import MODAL_MATERIALS
 from ..modules.scope import SCOPE_MODES, SCOPE_TRIGGER_MODES
 from ..modules.slew import SLEW_SHAPES
 from ..modules.sweep_eq import SWEEP_EQ_MODES
@@ -2273,6 +2274,40 @@ class App:
                 dpg.add_drag_int(
                     label=param_name, default_value=int(current), speed=1,
                     min_value=0, max_value=999999,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "modal":
+            # Resonator bank. ``material`` picks the physics table;
+            # ``modes`` is the resonator count; ``decay`` is the lowest
+            # mode's t60; ``decay_tilt`` kills highs faster; ``brightness``
+            # tilts mode gains; ``inharm`` stretches the ratio table.
+            if param_name == "material":
+                dpg.add_combo(
+                    label=param_name, items=list(MODAL_MATERIALS),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "modes":
+                dpg.add_slider_int(
+                    label=param_name, default_value=int(current),
+                    min_value=4, max_value=24,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "decay":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.05,
+                    min_value=0.1, max_value=30.0, format="%.2f s",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("decay_tilt", "brightness", "inharm", "level"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

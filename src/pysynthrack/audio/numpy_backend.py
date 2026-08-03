@@ -2238,6 +2238,8 @@ class NumpyBackend(AudioBackend):
             return self._render_fm_op(module, frames, buffers, patch)
         if module.TYPE == "pluck":
             return self._render_pluck(module, frames, buffers, patch)
+        if module.TYPE == "modal":
+            return self._render_modal(module, frames, buffers, patch)
         if module.TYPE == "lfo":
             return self._render_lfo(module, frames, buffers, patch)
         if module.TYPE == "mixer":
@@ -10907,6 +10909,122 @@ class NumpyBackend(AudioBackend):
             pos += chunk
         st["widx"][v] = w
         st["ap_z"][v] = z
+
+    # ----- Modal rendering -------------------------------------------------
+
+    _MODAL_C4 = 261.6255653005986
+    _MODAL_MAX_F_FRACTION = 0.45  # modes above this × sr are dropped
+
+    def _render_modal(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Two-pole resonator bank (see modules/modal.py for the contract).
+
+        Each mode is the classic resonator ``y[n] = 2r·cosθ·y[n−1] −
+        r²·y[n−2] + b₀·x[n]`` with ``r`` set from that mode's t60 and
+        ``b₀ = gain·sinθ`` normalizing the STRIKE response (impulse-
+        response peak ≈ gain, independent of decay — a ``(1−r)`` drive
+        would normalize the ring-out integral instead and starve long
+        decays to silence) — run as
+        one ``lfilter`` per mode per *pitch group* (voices whose
+        block-mean pitch matches share coefficients, so their rows batch
+        into a single vectorized call — the slice-4 pattern; 16 unison
+        voices cost the same as one). Coefficients rebuild each block
+        from the block-mean pitch; ``zi`` carries per (voice, mode)
+        across blocks, so the bank stays block-size independent under
+        constant pitch. Quiet voices (silent excite + decayed state)
+        early-out; modes past ``modes`` have their state zeroed so a
+        live mode-count change can't resurrect stale ring-outs.
+        """
+        from ..modules.modal import MODAL_MAX_MODES, modal_ratios
+
+        excite = self._input_buffer(
+            patch, buffers, module.id, "excite", collapse=False
+        )
+        if excite is None:
+            self._state.pop(module.id, None)
+            return np.zeros(frames, dtype=np.float32)
+        pitch = self._input_buffer(
+            patch, buffers, module.id, "pitch_cv", collapse=False
+        )
+
+        voiced = excite.ndim == 2 or (pitch is not None and pitch.ndim == 2)
+        V = 1
+        for sig in (excite, pitch):
+            if sig is not None and sig.ndim == 2:
+                V = max(V, sig.shape[0])
+
+        material = str(module.params.get("material", "bar"))
+        modes = max(4, min(MODAL_MAX_MODES, int(module.params.get("modes", 12))))
+        try:
+            decay = float(module.params.get("decay", 2.0))
+        except (TypeError, ValueError):
+            decay = 2.0
+        decay = min(30.0, max(0.1, decay))
+        tilt = min(1.0, max(0.0, float(module.params.get("decay_tilt", 0.5))))
+        bright = min(1.0, max(0.0, float(module.params.get("brightness", 0.5))))
+        inharm = min(1.0, max(0.0, float(module.params.get("inharm", 0.0))))
+        level = float(module.params.get("level", 0.5))
+        sr = float(self.sample_rate)
+
+        st = self._state.setdefault(module.id, {})
+        if st.get("V") != V:
+            st.clear()
+            st.update(
+                {"V": V, "zi": np.zeros((V, MODAL_MAX_MODES, 2), dtype=np.float64)}
+            )
+        zi = st["zi"]
+        zi[:, modes:, :] = 0.0  # stale modes stay dead
+
+        ratios = np.array(modal_ratios(material, modes)) ** (1.0 + 0.3 * inharm)
+        gains = ratios ** (2.0 * (bright - 0.5))
+        gains = gains / gains.sum()
+        t60 = np.maximum(0.01, decay / (1.0 + 3.0 * tilt * (ratios - 1.0)))
+        r = 10.0 ** (-3.0 / (sr * t60))
+
+        # Per-voice pitch (block mean) → group voices sharing a value.
+        def cv_for(v: int) -> float:
+            if pitch is None:
+                return 0.0
+            row = pitch[v] if pitch.ndim == 2 and v < pitch.shape[0] else (
+                pitch[0] if pitch.ndim == 2 else pitch
+            )
+            return float(np.mean(row))
+
+        x = excite if excite.ndim == 2 else excite[None, :]
+        out = np.zeros((V, frames), dtype=np.float64)
+        groups: dict[float, list[int]] = {}
+        for v in range(V):
+            xv = x[v] if v < x.shape[0] else x[0]
+            if (
+                float(np.max(np.abs(xv))) < 1e-9
+                and float(np.max(np.abs(zi[v, :modes]))) < 1e-7
+            ):
+                continue  # silent, rung out: free
+            groups.setdefault(round(cv_for(v), 6), []).append(v)
+
+        for cv_val, rows in groups.items():
+            f0 = self._MODAL_C4 * (2.0 ** cv_val)
+            f0 = min(self._MODAL_MAX_F_FRACTION * sr, max(20.0, f0))
+            freqs = f0 * ratios
+            X = np.stack([x[v] if v < x.shape[0] else x[0] for v in rows]).astype(
+                np.float64
+            )
+            acc = np.zeros_like(X)
+            for i in range(modes):
+                if freqs[i] >= self._MODAL_MAX_F_FRACTION * sr:
+                    zi[rows, i, :] = 0.0
+                    continue
+                theta = 2.0 * np.pi * freqs[i] / sr
+                a = [1.0, -2.0 * r[i] * np.cos(theta), r[i] * r[i]]
+                b = [gains[i] * np.sin(theta)]
+                y, zf = lfilter(b, a, X, axis=-1, zi=zi[rows, i, :])
+                acc += y
+                zi[rows, i, :] = zf
+            for k, v in enumerate(rows):
+                out[v] = acc[k]
+
+        out *= level
+        result = out if voiced else out[0]
+        return result.astype(np.float32)
 
     # ----- Scope rendering -------------------------------------------------
 
