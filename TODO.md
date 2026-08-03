@@ -9,6 +9,21 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **`pluck` — Karplus–Strong string voice** — SHIPPED 2026-08-03
+      (same day, part four). Extended KS: allpass fractional delay +
+      damping-phase compensation (**±5 ct C2..C6**, pinned), `decay` as a
+      real pitch-independent t60 (±10%, pinned), `damping` loop LP blend,
+      `color`/`position` exciter shaping (seeded per hit → deterministic),
+      re-pluck ADDS into the linear loop (click-free superposition,
+      pinned). Chunked ≤-loop-length ring advance vectorizes without a
+      per-sample fallback; silent voices early-out to exact zeros. Two KS
+      gotchas found + fixed/pinned: exciter DC rings as a near-undamped
+      pedestal (zero-mean the burst), and a bright pluck's FFT global
+      peak is an upper harmonic (measure the fundamental *partial*).
+      21 tests; suite **2402**. Example `pluck_strings.json` (keys → 16
+      strings → reverb). **Pending (meatthread0):** play it. Later ideas:
+      stereo spread (per-voice pan), `pluck_cv` velocity input scaling
+      the burst, a `mute` gate (palm-mute choke), sympathetic-string send.
 - [x] **`scope` — oscilloscope pass-through tap** — SHIPPED 2026-08-03
       (same day, part three; Matthew: "lets continue with a scope").
       Bit-exact pass-through (meter precedent) + a 220×110 waveform face

@@ -10,6 +10,66 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-03 — pluck: the Karplus–Strong string (same day, part four)
+
+Matthew pushed everything (089a695..8a3eede on origin) and picked
+`pluck` off the menu — the extended Karplus–Strong string from
+MODULE_IDEAS. A `cv_keyboard`'s 16 voices = 16 independent strings free.
+
+**The loop.** Per voice: a ring buffer one pitch period long, fed back
+through a damping one-zero and an allpass fractional delay, gain-scaled
+per pass. The extensions that make it an instrument, not a demo:
+
+  * **Tuning.** The blend `(1−d)·dry + d·avg` collapses to the one-zero
+    `(1−d/2) + (d/2)z⁻¹`, whose low-frequency phase delay is exactly
+    d/2 samples — compensated when splitting `sr/f0` into integer +
+    allpass fraction (frac held in [0.1, 1.1) so the allpass coefficient
+    stays conditioned). Pinned: **±5 cents C2..C6**.
+  * **`decay` = real t60**: per-pass gain `g = 10^(−3·N/(sr·decay))` —
+    the ring time reads in seconds at any pitch (textbook KS rings
+    longer the lower the note). Pinned within 10% (at damping 0, where
+    the formula is exact; damping adds HF loss on top, monotone-pinned
+    separately).
+  * **Exciter**: seeded noise per (module, voice, hit) — deterministic
+    renders — shaped by `color` (one-pole LP: thumb → plectrum) and
+    `position` (pick-position comb: burst minus itself delayed
+    pos·period). **Zero-meaned before normalizing** — the fix of the
+    session: the loop is unity-gain at DC (damping and allpass both
+    pass DC), so a random burst mean rang as a slowly-decaying pedestal
+    that buried the fundamental (the first pitch tests measured 1.7 Hz).
+    Classic KS gotcha, now a comment + the contract test.
+  * **Re-pluck ADDS into the ring** rather than replacing — the loop is
+    linear so plucks superpose: physically right and click-free by
+    construction (pinned: the retrigger step stays in the same class as
+    a fresh pluck's own attack).
+
+**Engine.** Chunked ring advance: chunks of ≤ one loop length mean every
+read (the N and N+1 taps) lands before the chunk's writes, so each chunk
+vectorizes — damping is an array blend, the allpass is one `lfilter`
+with carried `zi`. Low notes = 1–2 chunks/block; high notes degrade into
+more, smaller chunks instead of a per-sample loop (the spec's "dual
+engine" made unnecessary). Decayed voices early-out to exact zeros
+(ring zeroed, so a silent 16-voice pluck costs nothing). Block-size
+independent bit-exact under constant pitch (pinned); pitch re-read per
+block (mean) for glides, locked from the trigger sample for the pluck.
+
+**Test-side lesson #2:** the naive "FFT global peak = fundamental"
+failed even after the DC fix — a bright pluck's strongest partial was
+harmonic 5. The tuning tests now measure the *fundamental partial*
+(local peak within ±6% of expected, parabolic-interpolated), plus a
+separate fundamental-energy-present guard.
+
+21 tests (`test_pluck.py`); suite **2402** pass / 1 skip (+21 +1
+example). Example `examples/pluck_strings.json` (keys → pluck → a little
+reverb → stereo out) renders a C-major chord at 0.71 peak, natural
+decay. Docs entry + index row; MODULE_IDEAS SHIPPED annotation; pyo
+punt; UI block (decay s + four 0..1 sliders).
+
+**Pending (meatthread0):** the ears eyeball — play it! Chords, damping
+0 vs 1, color/position feels, fast trills on one key (the re-pluck
+superposition), and long-decay low notes. `modal` and the drum voices
+remain the natural siblings on the backlog.
+
 ## 2026-08-03 — scope: the waveform on the node (same day, part three)
 
 Matthew: "lets continue with a scope". The MODULE_IDEAS spec, adapted to
