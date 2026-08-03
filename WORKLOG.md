@@ -10,6 +10,84 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-03 — quantizer + shift_random: the rack writes its own melodies
+
+With the polish arc closed, Matthew took the recommendation off the module
+backlog: the generative pair. Both specs came from docs/MODULE_IDEAS.md
+(adapted, not followed verbatim — deviations below) and both shipped in
+one session with the docs-coverage tripwires doing their job (the build
+literally can't ship an undocumented module now).
+
+**`quantizer` (CV & Utilities).** CV → nearest scale note, 1 V/oct C4=0.
+Ten built-in scales + `custom` (twelve pitch-class tickboxes, empty set →
+chromatic fallback so it can't wedge); `root`; `transpose` applied AFTER
+quantization (a transposition, not a scale rotation — can leave the
+scale, documented + pinned). Two modes by patching: continuous (every
+sample; `hysteresis` cents make the held note sticky — a new note must be
+more-than-margin closer, killing boundary flutter) and gated (rising
+edges only, drift-proof clocked melodies; gate read mono, applies to all
+voices). `changed` fires a ~5 ms per-voice trigger per new held note,
+carried across blocks; held note primed to the first input so patch load
+fires nothing. Voice-aware (V,F) with per-voice held/pulse state.
+**Engine notes:** allowed-note table ±5 oct via `searchsorted`; hyst=0
+fully vectorized; hyst>0 fast-path skips any block whose stateless
+nearest never leaves the held note, else a pure-Python scalar scan on
+`.tolist()`'d rows (the slew CPU lesson applied from day one). Ties round
+down, documented in the nearest() helper.
+
+**`shift_random` (Modulation).** The Turing-machine-style looping shift
+register: 16 bits, rotate per clock rising edge, the bit recirculating
+from position `length` flips with `probability` — 0 = locked loop
+(a found melody), 1 = every bit flips (the complemented loop, period
+exactly 2×length — pinned by test), ~0.1 = a motif that slowly mutates.
+CV = first 8 bits as a byte (newest = MSB, documented) / 255 × `range`
+(`bipolar` centres it); `gate` mirrors bit 0 held between clocks — a free
+rhythm line. `write` held high forces incoming bits to 1 (performance
+handle). All randomness from `seed` (register fill + every flip):
+deterministic, block-size independent by construction (RNG consumed once
+per edge), live seed change re-rolls. Mono like the clock that drives it.
+
+**Spec deviations (worklog-noted per the working agreement):** the spec
+gave no `probability` default — chose 0.1 (locked-ish, musical) and
+documented; `write` semantics pinned as force-to-1-while-high; the byte
+mapping's bit order pinned as newest-bit-MSB. The quantizer's gated mode
+skips hysteresis (edges are discrete events — nothing to flutter).
+
+**UI.** quantizer: root/scale combos, hysteresis 0..50 ct, transpose
+±24 st, and the twelve custom tickboxes drawn as two compact rows of six
+(the bank renders when the first tickbox param comes up; the rest draw
+nothing — a new widget pattern worth remembering). shift_random:
+probability/length/range/seed with bounds; bipolar rides the generic
+checkbox.
+
+**Tests.** 43 new (`test_quantizer.py` 22 + `test_shift_random.py` 21):
+scale membership per built-in scale, root shift, semitone-rounding
+neutral, hysteresis holds ±4 ct wobble at a boundary (and flutters at
+hyst 0), changed-pulse length + cross-block carry + no-spurious-priming,
+gated edge/hold/no-retrigger, custom tickboxes + chromatic fallback,
+post-quantize transpose, voice independence + mono≡single-voice,
+block-size independence (both), p=0 exact period, p=1 period 2×length
+(both after the 16-clock drain of the initial fill through the register —
+the tests initially read the byte too early, a good reminder the byte
+carries history), seeded reproducibility + live re-roll, write fill,
+uni/bipolar mapping, held-high no-retrigger, unpatched holds.
+Suite **2354** pass / 1 skip (+43 new + the example picked up by the
+examples loader test).
+
+**Example.** `examples/shift_random_melody.json` — the endless melody
+box: clock → shift_random → quantizer (pent. minor, −12 st) → osc;
+register gate → ADSR → VCA. Renders at 0.39 peak, rhythm rests and all.
+
+**Gaps left on the shelf, deliberately:** pyo runs both as silent stubs
+(punt list, notice printed); a scale-aware *display* (note names on the
+node) would be a nice later touch; MODULE_IDEAS.md got SHIPPED
+annotations for both (+ the missing one on slew, drift found in passing).
+
+**Pending (meatthread0):** real-GUI eyeball — load
+`shift_random_melody.json`, listen to the loop mutate at a few
+`probability` settings, flip scales/roots live, and check the custom
+tickbox rows render sanely at zoom.
+
 ## 2026-08-03 — module polish slice 2: the bounded-widget sweep (same day)
 
 Matthew said continue, so slice 2 followed slice 1 straight away. The

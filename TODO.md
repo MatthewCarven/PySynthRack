@@ -9,6 +9,23 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **`quantizer` + `shift_random` — the generative pair** — SHIPPED
+      2026-08-03 (Matthew picked the recommendation off MODULE_IDEAS.md).
+      `quantizer` (CV & Utilities): CV → nearest scale note, 1 V/oct; ten
+      scales + custom tickboxes (empty → chromatic fallback), root,
+      post-quantize transpose, hysteresis (cents) anti-flutter in
+      continuous mode, gated sample-on-edge mode, per-voice ~5 ms
+      `changed` triggers, voice-aware, primed (no patch-load pulse).
+      `shift_random` (Modulation): 16-bit Turing-machine loop — p=0
+      locked, p=1 complemented loop (period 2×length, pinned), seed-
+      deterministic (live re-roll), byte CV newest-bit-MSB, gate = bit 0,
+      `write` forces ones. 43 tests; suite **2354**. Example
+      `shift_random_melody.json` (endless melody box). Docs + tripwires
+      + pyo punts + bounded UI all landed with it. **Pending
+      (meatthread0):** real-GUI eyeball (listen to the loop mutate; check
+      the custom-scale tickbox rows). Later ideas: note-name display on
+      the quantizer node; a `changed`-driven strum helper; scale presets
+      beyond the ten.
 - [x] **Module polish — slice 1 (audit + docs/exports/widget gaps)** — done
       2026-08-03 (Matthew: "polish all the modules"). Registry-walking audit
       of all 64 types vs MODULES.md / `__all__` / widget dispatch / pyo punts
