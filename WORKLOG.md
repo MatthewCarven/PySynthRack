@@ -10,6 +10,64 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-03 — modal + the drum trio: strike section (same day, part five)
+
+Matthew: continue with pluck's siblings. Two commits — `modal` (13ef181)
+and `kick_drum`/`snare_drum`/`hat_drum` (12e57ed).
+
+**modal — the struck resonator bank.** Two-pole resonators at
+`pitch × ratio[i]`; ratio tables from the physics shelf, not products:
+free-free bar (β² series, exact first five betas then the (k+1.5)π
+asymptote), stylized minor-third bell, circular membrane (**Bessel
+zeros computed via scipy.special.jn_zeros**, not tabulated), plain
+harmonics. `decay` = lowest-mode t60, `decay_tilt` kills highs faster,
+`brightness` tilts gains, `inharm` stretches ratios (exponent
+1 + 0.3·inharm). Engine = the slice-4 pattern: one lfilter per mode per
+PITCH GROUP — voices sharing a block-mean pitch batch into one
+vectorized call over their rows. **Measured (512 @ 44.1k): 16 unison
+voices × 24 modes = 0.98 ms/block (8.4% of budget); worst case 16
+distinct pitches × 24 modes = 3.44 ms (29.6%)** — the number the spec
+asked to record. Rung-out voices early-out; stale modes zeroed on live
+mode-count changes; modes above 0.45·sr dropped, not aliased.
+
+*The lesson of the day:* the first drive normalization `b₀ = g(1−r)`
+made the example render at −60 dB — it normalizes the ring-out
+INTEGRAL, so long decays are fed proportionally less. A struck body
+wants the STRIKE normalized: `b₀ = g·sinθ` (impulse-response peak ≈ g,
+decay-independent). Also two test traps: the tilt comparison must use
+the decay-rate *ratio* (drive normalization skews absolute tail
+energies), and the inharm check needs ±3% windows — stretched mode 3
+(1091 Hz) sits close enough to plain 4×C4 (1046 Hz) to spoof a sloppy
+window. 17 tests; `examples/modal_bells.json` (noise-burst mallet via
+gated VCA → 16-mode bell, per-voice bells from cv_keyboard).
+
+**The drum trio — one shared engine.** Each hit is synthesized WHOLE
+into a buffer at the trigger edge (seeded per module+hit), playback
+advances through active buffers, and any retrigger fades the old tail
+over ~2 ms — deterministic, bit-exact block-size independent, and
+declicked by construction. kick = analytic pitch-dive sine (phase is
+the exact integral of the exponential bend — pinned sample-exact
+against the closed form) + 2 ms click + normalized tanh drive (NOT the
+oversampling infra: kick is LF-dominant, foldover negligible —
+deviation noted per the working agreement). snare = 185/330 Hz head
+modes + band-passed wire noise, snappy balance. hat = six detuned
+squares HP'd at 7 kHz (deterministic — the stack IS the noise; mild
+square aliasing reads as character), closed/open sharing the voice with
+the closed hit CHOKING open via the same fade — the pedal. 19 tests;
+`examples/drum_machine.json` (three clocks + a backbeat sequencer →
+kick/snare/hats → mixer; 0.89 peak over two rendered bars).
+
+Suite **2440** pass / 1 skip (2402 + 17 modal + 19 drums + 2 example
+loads). Day tally: suite 2306 → 2440.
+
+**Pending (meatthread0):** ears on all four — `modal_bells.json`
+(materials A/B, inharm cranked), `drum_machine.json` (the groove:
+kick drive, snappy, open-hat chokes if you wire an open pattern).
+**Remaining backlog siblings:** `granular` (L, sliced in the ideas
+doc), `euclidean`/`burst`/`bernoulli_gate` (the clockwork trio that
+makes the drums *play themselves* interestingly), `arpeggiator`/
+`chord`, `spectrum`, and the quick hits.
+
 ## 2026-08-03 — pluck: the Karplus–Strong string (same day, part four)
 
 Matthew pushed everything (089a695..8a3eede on origin) and picked

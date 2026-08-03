@@ -9,6 +9,26 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **`modal` — struck resonator bank** — SHIPPED 2026-08-03 (13ef181,
+      same day part five). bar/bell/membrane(Bessel-zeros)/string tables,
+      modes 4..24, t60 decay + tilt, brightness, inharm stretch;
+      pitch-group-batched lfilter engine — RECORDED: 16 unison × 24
+      modes = 8.4% of budget, 16 distinct pitches = 29.6% (the spec's
+      asked-for measurement). Drive lesson: b₀ = g·sinθ (strike-peak
+      norm), NOT g(1−r) (integral norm — starved long decays to −60 dB).
+      17 tests; `modal_bells.json`. **Pending (meatthread0):** ears.
+      Later: strike-position macro (per-mode gain comb), stereo mode
+      spread, `pitch_cv`-tracking excite filter.
+- [x] **Drum voices `kick_drum` / `snare_drum` / `hat_drum`** — ALL
+      SHIPPED 2026-08-03 (12e57ed, same commit — one shared engine:
+      whole-hit buffers at the edge, seeded per hit, 2 ms retrigger
+      declick fades). Kick analytic pitch-dive (pinned sample-exact) +
+      click + tanh drive (no oversampling — LF-dominant, noted); snare
+      185/330 modes + banded wires + snappy; hat 6-square metallic
+      stack HP 7 kHz with closed-chokes-open. 19 tests; suite **2440**;
+      `drum_machine.json` (backbeat groove, 0.89 peak). **Pending
+      (meatthread0):** play the groove. Later: velocity inputs, kick
+      `pitch_cv`, hat `tone` (stack base), per-drum `out` gain_cv.
 - [x] **`pluck` — Karplus–Strong string voice** — SHIPPED 2026-08-03
       (same day, part four). Extended KS: allpass fractional delay +
       damping-phase compensation (**±5 ct C2..C6**, pinned), `decay` as a
