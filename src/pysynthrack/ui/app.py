@@ -2277,6 +2277,26 @@ class App:
                 )
                 return
 
+        if module.TYPE == "pluck":
+            # Karplus–Strong string. ``decay`` is a real t60 in seconds
+            # (pitch-independent); ``damping`` darkens the loop; ``color``
+            # brightens the exciter (thumb → plectrum); ``position`` is
+            # the pick-position comb; ``level`` trims the output.
+            if param_name == "decay":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.05,
+                    min_value=0.1, max_value=30.0, format="%.2f s",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("damping", "color", "position", "level"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "scope":
             # Scope face controls. ``time_div`` is ms per division (×10
             # divisions across the face); ``gain`` scales vertically

@@ -369,7 +369,7 @@ everything.
   per-voice phase independence; fb=0 path equivalence.
 - Ships with examples/: 2-op bell, 3-op e-piano.
 
-### `pluck` (M–L)
+### `pluck` (M–L) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
 Extended Karplus–Strong string. Polyphonic plucks from cv_keyboard — 16
 strings for free.

@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    {
+      "id": 1,
+      "type": "cv_keyboard",
+      "name": "keys — every voice is its own string",
+      "params": {
+        "octave": 4
+      }
+    },
+    {
+      "id": 2,
+      "type": "pluck",
+      "name": "STRINGS — try damping/color/position",
+      "params": {
+        "decay": 2.5,
+        "damping": 0.4,
+        "color": 0.8,
+        "position": 0.18,
+        "level": 0.6
+      }
+    },
+    {
+      "id": 3,
+      "type": "reverb",
+      "name": "a little air",
+      "params": {
+        "size": 0.55,
+        "decay": 0.45,
+        "damping": 0.4,
+        "mix": 0.22
+      }
+    },
+    {
+      "id": 4,
+      "type": "stereo_speaker_output",
+      "name": "Output",
+      "params": {
+        "gain": 0.9
+      }
+    }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "pitch_cv", "dst_module_id": 2, "dst_port": "pitch_cv" },
+    { "src_module_id": 1, "src_port": "gate",     "dst_module_id": 2, "dst_port": "trigger" },
+    { "src_module_id": 2, "src_port": "out",      "dst_module_id": 3, "dst_port": "in" },
+    { "src_module_id": 3, "src_port": "out_l",    "dst_module_id": 4, "dst_port": "in_l" },
+    { "src_module_id": 3, "src_port": "out_r",    "dst_module_id": 4, "dst_port": "in_r" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 200],
+      "2": [320, 200],
+      "3": [600, 200],
+      "4": [880, 200]
+    }
+  }
+}

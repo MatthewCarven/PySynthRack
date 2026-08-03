@@ -360,6 +360,38 @@ def _hermite4(pm1, p0, p1, p2, t):
     return ((c3 * t + c2) * t + c1) * t + c0
 
 
+def _pluck_exciter(n: int, color: float, position: float, rng) -> np.ndarray:
+    """One seeded pluck burst: shaped noise, peak-normalized, length ``n``.
+
+    ``color`` blends the burst's spectrum from lowpassed (soft thumb) to
+    raw white noise (hard plectrum) via a one-pole whose coefficient
+    rises with color². ``position`` applies the pick-position comb — the
+    burst minus itself delayed ``position·n`` samples, which notches the
+    harmonics a pluck at that point along the string cancels (0 = off).
+    Peak-normalizing last keeps the pluck level independent of the
+    shaping. Deterministic per ``rng`` — the caller seeds per hit.
+    """
+    e = rng.uniform(-1.0, 1.0, n)
+    if color < 1.0:
+        a = 0.04 + 0.96 * color * color
+        e = lfilter([a], [1.0, -(1.0 - a)], e)
+    if position > 0.0:
+        d = int(round(position * n))
+        if 1 <= d < n:
+            delayed = np.zeros(n)
+            delayed[d:] = e[:-d]
+            e = e - delayed
+    # Zero-mean BEFORE normalizing: the loop recirculates DC almost
+    # undamped (damping and allpass are both unity at DC), so a random
+    # burst mean would ring as a slowly-decaying pedestal that dwarfs
+    # the string's fundamental. Classic KS gotcha.
+    e = e - float(np.mean(e))
+    peak = float(np.max(np.abs(e)))
+    if peak > 0.0:
+        e = e / peak
+    return e
+
+
 def _brake_ramp(pos, gate, down, up):
     """Integrate the resampler's tape-stop brake position over one block.
 
@@ -2204,6 +2236,8 @@ class NumpyBackend(AudioBackend):
             return self._render_cv_to_frequency(module, frames, buffers, patch)
         if module.TYPE == "fm_op":
             return self._render_fm_op(module, frames, buffers, patch)
+        if module.TYPE == "pluck":
+            return self._render_pluck(module, frames, buffers, patch)
         if module.TYPE == "lfo":
             return self._render_lfo(module, frames, buffers, patch)
         if module.TYPE == "mixer":
@@ -10660,6 +10694,219 @@ class NumpyBackend(AudioBackend):
         )
 
         return {"out": out, "out_r": out_r}
+
+    # ----- Pluck rendering -------------------------------------------------
+
+    # Pitch clamps: below 20 Hz the ring outgrows its allocation; above
+    # sr/4 the loop is too short for the machinery (and sounds like a
+    # click anyway).
+    _PLUCK_MIN_F0 = 20.0
+    _PLUCK_C4 = 261.6255653005986
+    # A decayed string below this output peak early-outs (ring zeroed so
+    # the voice renders exact silence for free until re-plucked).
+    _PLUCK_SILENCE = 1e-5
+    _PLUCK_SEED = 0x504C5543  # "PLUC"
+
+    def _render_pluck(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Extended Karplus–Strong (see modules/pluck.py for the contract).
+
+        Per voice, the string is a ring buffer advanced in CHUNKS of at
+        most one loop length: within a chunk every read (the ``N`` and
+        ``N+1`` taps) lands before this chunk's writes, so the whole
+        chunk vectorizes — the damping one-zero is an array blend and the
+        allpass fractional delay is one ``lfilter`` call with carried
+        ``zi``. Low notes take one or two chunks per block; high notes
+        degrade gracefully into more, smaller chunks instead of a
+        per-sample loop.
+
+        Tuning: the loop's effective delay is ``N_int + frac + d/2``
+        samples — the damping blend ``(1−d/2) + (d/2)z⁻¹`` contributes a
+        ``d/2``-sample phase delay, compensated when splitting
+        ``sr/f0`` into integer + allpass fraction (``frac`` kept in
+        [0.1, 1.1) so the allpass coefficient stays well-conditioned).
+        Loop gain ``g = 10^(−3·N/(sr·decay))`` makes ``decay`` read as a
+        real t60 independent of pitch.
+
+        Triggers segment the block: at each rising edge the pluck pitch
+        is locked from that sample, coefficients rebuilt, the allpass
+        state cleared, and a seeded exciter burst is **added** into the
+        ring (a re-pluck superposes on the ringing string — linear loop,
+        so click-free by construction). Between triggers an active voice
+        re-reads the block-mean pitch each block (glides track at block
+        rate). Determinism: each burst's rng is seeded from (module id,
+        voice, hit number). Exact block-size independence holds under
+        constant pitch (coefficients then rebuild identically).
+        """
+        pitch = self._input_buffer(
+            patch, buffers, module.id, "pitch_cv", collapse=False
+        )
+        trig = self._input_buffer(
+            patch, buffers, module.id, "trigger", collapse=False
+        )
+        if pitch is None and trig is None:
+            self._state.pop(module.id, None)
+            return np.zeros(frames, dtype=np.float32)
+
+        voiced = (pitch is not None and pitch.ndim == 2) or (
+            trig is not None and trig.ndim == 2
+        )
+        V = 1
+        for sig in (pitch, trig):
+            if sig is not None and sig.ndim == 2:
+                V = max(V, sig.shape[0])
+
+        def row(sig, v):
+            if sig is None:
+                return None
+            if sig.ndim == 2:
+                return sig[v] if v < sig.shape[0] else sig[0]
+            return sig
+
+        try:
+            decay = float(module.params.get("decay", 2.0))
+        except (TypeError, ValueError):
+            decay = 2.0
+        decay = min(30.0, max(0.1, decay))
+        damping = min(1.0, max(0.0, float(module.params.get("damping", 0.5))))
+        color = min(1.0, max(0.0, float(module.params.get("color", 0.7))))
+        position = min(1.0, max(0.0, float(module.params.get("position", 0.2))))
+        level = float(module.params.get("level", 0.5))
+
+        sr = float(self.sample_rate)
+        maxlen = int(sr / self._PLUCK_MIN_F0) + 4
+
+        st = self._state.setdefault(module.id, {})
+        if st.get("V") != V or st.get("maxlen") != maxlen:
+            st.clear()
+            st.update(
+                {
+                    "V": V,
+                    "maxlen": maxlen,
+                    "ring": np.zeros((V, maxlen), dtype=np.float64),
+                    "widx": np.zeros(V, dtype=np.int64),
+                    "n_int": np.full(V, 100, dtype=np.int64),
+                    "ap_c": np.zeros(V, dtype=np.float64),
+                    "ap_z": np.zeros(V, dtype=np.float64),
+                    "g": np.ones(V, dtype=np.float64),
+                    "prev_trig": np.zeros(V, dtype=bool),
+                    "hits": np.zeros(V, dtype=np.int64),
+                    "active": np.zeros(V, dtype=bool),
+                }
+            )
+        ring = st["ring"]
+
+        a0 = 1.0 - damping / 2.0  # damping one-zero: a0 + a1·z⁻¹
+        a1 = damping / 2.0
+
+        def set_coeffs(v: int, cv_value: float) -> None:
+            f0 = self._PLUCK_C4 * (2.0 ** float(cv_value))
+            f0 = min(sr / 4.0, max(self._PLUCK_MIN_F0, f0))
+            n_target = sr / f0
+            n_eff = n_target - damping / 2.0  # compensate the filter delay
+            n_int = int(n_eff - 0.1)
+            frac = n_eff - n_int  # in [0.1, 1.1)
+            if n_int < 2:
+                n_int, frac = 2, max(0.1, n_eff - 2)
+            st["n_int"][v] = n_int
+            st["ap_c"][v] = (1.0 - frac) / (1.0 + frac)
+            st["g"][v] = 10.0 ** (-3.0 * n_target / (sr * decay))
+
+        out = np.zeros((V, frames), dtype=np.float64)
+        gate_high = self._GATE_HIGH
+
+        for v in range(V):
+            p_row = row(pitch, v)
+            t_row = row(trig, v)
+
+            if t_row is not None:
+                gt = t_row > gate_high
+                prev = np.empty_like(gt)
+                prev[0] = bool(st["prev_trig"][v])
+                prev[1:] = gt[:-1]
+                edges = np.flatnonzero(gt & ~prev).tolist()
+                st["prev_trig"][v] = bool(gt[-1])
+            else:
+                edges = []
+
+            if not edges and not st["active"][v]:
+                continue  # silent string: free
+
+            if st["active"][v] and not edges:
+                # Follow the block-mean pitch (glide/vibrato, block rate).
+                set_coeffs(v, float(np.mean(p_row)) if p_row is not None else 0.0)
+
+            # Segment the block at trigger edges: advance up to each edge
+            # with the old state, then pluck and continue.
+            bounds = edges + [frames]
+            seg_start = 0
+            for i, seg_end in enumerate(bounds):
+                if seg_end > seg_start:
+                    self._pluck_advance(
+                        st, v, ring, out[v], seg_start, seg_end, a0, a1
+                    )
+                if i < len(edges):
+                    e = edges[i]
+                    cv_at = float(p_row[e]) if p_row is not None else 0.0
+                    set_coeffs(v, cv_at)
+                    n_int = int(st["n_int"][v])
+                    rng = np.random.default_rng(
+                        (self._PLUCK_SEED, module.id, v, int(st["hits"][v]))
+                    )
+                    st["hits"][v] += 1
+                    burst = _pluck_exciter(n_int, color, position, rng)
+                    # Add the burst into the last n_int ring positions so
+                    # the loop reads it starting at the edge sample.
+                    w = int(st["widx"][v])
+                    start = (w - n_int) % st["maxlen"]
+                    first = min(n_int, st["maxlen"] - start)
+                    ring[v, start : start + first] += burst[:first]
+                    if n_int > first:
+                        ring[v, : n_int - first] += burst[first:]
+                    st["ap_z"][v] = 0.0
+                    st["active"][v] = True
+                    seg_start = e
+            # Early-out bookkeeping: a decayed string goes fully silent.
+            if st["active"][v] and not edges:
+                if float(np.max(np.abs(out[v]))) < self._PLUCK_SILENCE:
+                    st["active"][v] = False
+                    ring[v, :] = 0.0
+                    out[v, :] = 0.0
+
+        out *= level
+        result = out if voiced else out[0]
+        return result.astype(np.float32)
+
+    def _pluck_advance(
+        self, st, v: int, ring, out_row, start: int, end: int, a0, a1
+    ) -> None:
+        """Advance one voice's string loop over out_row[start:end]."""
+        if not st["active"][v]:
+            return  # nothing ringing; output stays zero
+        maxlen = int(st["maxlen"])
+        n_int = int(st["n_int"][v])
+        c = float(st["ap_c"][v])
+        g = float(st["g"][v])
+        w = int(st["widx"][v])
+        z = float(st["ap_z"][v])
+        row = ring[v]
+        pos = start
+        while pos < end:
+            chunk = min(end - pos, n_int)
+            # Delayed taps (all strictly before this chunk's writes).
+            i0 = (np.arange(chunk) + (w - n_int)) % maxlen
+            x0 = row[i0]
+            x1 = row[(i0 - 1) % maxlen]
+            vsig = a0 * x0 + a1 * x1
+            y, zf = lfilter([c, 1.0], [1.0, c], vsig, zi=np.array([z]))
+            z = float(zf[0])
+            y *= g
+            i_w = (np.arange(chunk) + w) % maxlen
+            row[i_w] = y
+            out_row[pos : pos + chunk] = y
+            w = (w + chunk) % maxlen
+            pos += chunk
+        st["widx"][v] = w
+        st["ap_z"][v] = z
 
     # ----- Scope rendering -------------------------------------------------
 

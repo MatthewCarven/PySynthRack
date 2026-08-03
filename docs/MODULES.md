@@ -201,6 +201,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`cv_to_frequency`](#cv_to_frequency) | Sources | `cv` (cv) → `out` (audio) |
 | [`noise`](#noise) | Sources | — → `out` (audio), `cv` (cv) |
 | [`fm_op`](#fm_op) | Sources | `pitch_cv`,`amp_cv`,`index_cv` (cv), `pm` (audio) → `out` (audio) |
+| [`pluck`](#pluck) | Sources | `pitch_cv` (cv), `trigger` (gate) → `out` (audio) |
 | [`filter`](#filter) | Filters & EQ | `in` (audio), `cutoff_cv` (cv) → `out` (audio) |
 | [`crossover`](#crossover) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
 | [`parametric_eq`](#parametric_eq) | Filters & EQ | `in` (audio) → `out` (audio) |
@@ -619,6 +620,53 @@ drops to a per-sample loop (bit-identical to the block path at 0). Pairs with
 `ring_mod` / `freq_shifter` as the inharmonic corner, but is a full voice. See
 `examples/fm_op_bell.json` (2-op bell) and `examples/fm_op_epiano.json`
 (3-op electric piano).
+
+#### `pluck`
+
+An **extended Karplus–Strong plucked string**: a delay line one pitch
+period long, fed back through a gentle lowpass, excited by a seeded noise
+burst on every `trigger` rising edge. `pitch_cv` is 1 V/oct (C4 = 0 V,
+the `fm_op` convention), and a polyphonic source gives **one independent
+string per voice** — wire a `cv_keyboard` or `midi_input` and it's a
+16-string instrument with no extra patching (`pitch_cv` → `pitch_cv`,
+`gate` → `trigger`).
+
+Beyond the textbook: the loop uses an **allpass fractional delay** with
+the damping filter's phase delay compensated, so pitch lands within a few
+cents across the range instead of quantizing to whole-sample loop lengths
+(naive KS goes audibly out of tune above ~500 Hz); `decay` is a **real
+t60 in seconds**, pitch-independent (textbook KS rings longer the lower
+the note); `damping` darkens the string (0 = bright and wiry, 1 = the
+classic two-point average, nylon-ish); `color` shapes the exciter from
+lowpassed thumb (0) to white-noise plectrum (1); `position` is the
+pick-position comb — the burst minus itself delayed `position`·period,
+notching the harmonics a pluck at that spot cancels (0 = off).
+
+Re-plucking a ringing string **adds** the new burst into the loop —
+physical (the string was still moving) and click-free by construction
+(the loop is linear, so plucks superpose). Every burst is seeded per
+(voice, hit), so renders are deterministic. Decayed voices early-out to
+exact silence for free. Pitch is re-read per block (glides track at
+block rate); the pluck pitch itself locks from the trigger sample. Numpy
+backend only; silent stub under pyo. See `examples/pluck_strings.json`.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `pitch_cv` | in | cv | 1 V/oct, C4 = 0 V. Unpatched → C4. |
+| `trigger` | in | gate | Pluck on each rising edge, per voice. |
+| `out` | out | audio | The string(s). |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `decay` | `2.0` | 0.1 … 30 s | Ring time (t60), pitch-independent. |
+| `damping` | `0.5` | 0 … 1 | Loop lowpass blend; higher = darker, faster HF fade. |
+| `color` | `0.7` | 0 … 1 | Exciter spectrum: soft thumb → hard plectrum. |
+| `position` | `0.2` | 0 … 1 | Pick-position comb on the burst; 0 disables. |
+| `level` | `0.5` | 0 … 1 | Output level. |
 
 ---
 

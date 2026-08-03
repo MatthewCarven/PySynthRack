@@ -49,6 +49,7 @@ from .noise_gate import NoiseGate
 from .oscillator import Oscillator
 from .parametric_eq import ParametricEQ
 from .phaser import Phaser
+from .pluck import Pluck
 from .quantizer import Quantizer
 from .resampler import Resampler
 from .reverb import Reverb
@@ -122,6 +123,7 @@ __all__ = [
     "Oscillator",
     "ParametricEQ",
     "Phaser",
+    "Pluck",
     "Quantizer",
     "Resampler",
     "Reverb",
