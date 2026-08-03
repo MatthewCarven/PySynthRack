@@ -2299,6 +2299,12 @@ class NumpyBackend(AudioBackend):
             return self._render_arpeggiator(module, frames, buffers, patch)
         if module.TYPE == "chord":
             return self._render_chord(module, frames, buffers, patch)
+        if module.TYPE == "logic":
+            return self._render_logic(module, frames, buffers, patch)
+        if module.TYPE == "mid_side":
+            return self._render_mid_side(module, frames, buffers, patch)
+        if module.TYPE == "octaver":
+            return self._render_octaver(module, frames, buffers, patch)
         if module.TYPE == "midi_input":
             return self._render_midi_input(module, frames)
         if module.TYPE == "filter":
@@ -11605,6 +11611,184 @@ class NumpyBackend(AudioBackend):
         st["active"] = active
         st["pending"] = pending
         return {"pitch_cv": out_pitch, "gate": out_gate}
+
+    # ----- Session A utilities (logic / mid_side / octaver) ----------------
+
+    def _render_logic(self, module, frames: int, buffers, patch) -> dict:
+        """Two-in gate algebra (see modules/logic.py).
+
+        Pure elementwise boolean math on thresholded inputs — stateless,
+        vectorized, exact. An unpatched operand reads low, which makes
+        ``nand``/``not_a`` idle high (the normalled-NAND trick,
+        documented). A voice-aware gate source collapses on fetch
+        (any-voice-high after the house sum).
+        """
+        a_in = self._input_buffer(patch, buffers, module.id, "a")
+        b_in = self._input_buffer(patch, buffers, module.id, "b")
+        thresh = self._GATE_HIGH
+        a = (a_in > thresh) if a_in is not None else np.zeros(frames, dtype=bool)
+        b = (b_in > thresh) if b_in is not None else np.zeros(frames, dtype=bool)
+        and_ = a & b
+        return {
+            "and": and_.astype(np.float32),
+            "or": (a | b).astype(np.float32),
+            "xor": (a ^ b).astype(np.float32),
+            "nand": (~and_).astype(np.float32),
+            "not_a": (~a).astype(np.float32),
+        }
+
+    def _render_mid_side(self, module, frames: int, buffers, patch) -> dict:
+        """M/S encode/decode + width (see modules/mid_side.py).
+
+        Standard sum/difference pair; ``width_cv`` adds per sample with
+        the final width clamped 0..2. One patched input is treated as
+        the mid itself (level preserved, width inert) rather than a
+        half-level L+0 pair — the mono-passthrough contract. Stateless.
+        """
+        in_l = self._input_buffer(patch, buffers, module.id, "in_l")
+        in_r = self._input_buffer(patch, buffers, module.id, "in_r")
+        width_cv = self._input_buffer(patch, buffers, module.id, "width_cv")
+
+        try:
+            width = float(module.params.get("width", 1.0))
+        except (TypeError, ValueError):
+            width = 1.0
+        width = min(2.0, max(0.0, width))
+
+        if in_l is None and in_r is None:
+            zeros = np.zeros(frames, dtype=np.float32)
+            return {"mid": zeros, "side": zeros, "out_l": zeros, "out_r": zeros}
+        if in_l is None or in_r is None:
+            # Mono: the one input IS the mid; width has nothing to act on.
+            mono = (in_l if in_l is not None else in_r).astype(np.float32)
+            zeros = np.zeros(frames, dtype=np.float32)
+            return {"mid": mono, "side": zeros, "out_l": mono, "out_r": mono}
+
+        mid = (in_l.astype(np.float64) + in_r) * 0.5
+        side = (in_l.astype(np.float64) - in_r) * 0.5
+        if width_cv is not None:
+            w = np.clip(width + width_cv.astype(np.float64), 0.0, 2.0)
+        else:
+            w = width
+        ws = w * side
+        return {
+            "mid": mid.astype(np.float32),
+            "side": side.astype(np.float32),
+            "out_l": (mid + ws).astype(np.float32),
+            "out_r": (mid - ws).astype(np.float32),
+        }
+
+    # Octaver envelope-follower time constants (the audio_to_cv core with
+    # fixed, musical values): fast attack so note onsets land, slower
+    # release so tails decay naturally instead of chattering.
+    _OCTAVER_ATTACK_S = 0.005
+    _OCTAVER_RELEASE_S = 0.05
+
+    def _render_octaver(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Flip-flop sub-octave generator (see modules/octaver.py).
+
+        Rising zero-crossings are found vectorized; the ÷2 flip-flop is
+        the running parity of their cumsum (carried across blocks), and
+        the ÷4 flip-flop is the parity of the FIRST flip-flop's rising
+        edges — no per-sample loop anywhere. Each ±1 square rides the
+        input's envelope (the shared ``_audio_to_cv_block`` asymmetric
+        one-pole, fixed 5 ms / 50 ms), the summed subs go through one
+        one-pole low-pass at ``tone`` (state carried), and the result
+        mixes under the dry. ``dry`` 1 + subs 0 returns the input
+        buffer itself — bit-exact passthrough (state still advances so
+        re-enabling a sub doesn't restart the flip-flops).
+        """
+        audio_in = self._input_buffer(patch, buffers, module.id, "in")
+        if audio_in is None:
+            self._state.pop(module.id, None)
+            return np.zeros(frames, dtype=np.float32)
+
+        try:
+            dry = float(module.params.get("dry", 1.0))
+        except (TypeError, ValueError):
+            dry = 1.0
+        dry = min(1.0, max(0.0, dry))
+        try:
+            sub1 = float(module.params.get("sub1", 0.5))
+        except (TypeError, ValueError):
+            sub1 = 0.5
+        sub1 = min(1.0, max(0.0, sub1))
+        try:
+            sub2 = float(module.params.get("sub2", 0.0))
+        except (TypeError, ValueError):
+            sub2 = 0.0
+        sub2 = min(1.0, max(0.0, sub2))
+        try:
+            tone = float(module.params.get("tone", 800.0))
+        except (TypeError, ValueError):
+            tone = 800.0
+        tone = min(2000.0, max(200.0, tone))
+
+        st = self._state.setdefault(
+            module.id,
+            {"prev_pos": False, "ff1": 0, "ff2": 0, "level": 0.0, "lp": 0.0},
+        )
+
+        x = audio_in.astype(np.float64)
+        pos = x > 0.0
+        prev = np.empty_like(pos)
+        prev[0] = bool(st["prev_pos"])
+        prev[1:] = pos[:-1]
+        crossings = (pos & ~prev).astype(np.int64)
+
+        # ÷2: parity of the crossing count; ÷4: parity of ff1's rises.
+        ff1 = (int(st["ff1"]) + np.cumsum(crossings)) & 1
+        ff1_prev = np.empty_like(ff1)
+        ff1_prev[0] = int(st["ff1"])
+        ff1_prev[1:] = ff1[:-1]
+        ff1_rises = ((ff1 == 1) & (ff1_prev == 0)).astype(np.int64)
+        ff2 = (int(st["ff2"]) + np.cumsum(ff1_rises)) & 1
+        st["prev_pos"] = bool(pos[-1])
+        if frames:
+            st["ff1"] = int(ff1[-1])
+            st["ff2"] = int(ff2[-1])
+
+        # Envelope: the shared asymmetric one-pole (fixed constants).
+        sr = self.sample_rate
+        attack_coef = 1.0 - float(np.exp(-1.0 / (self._OCTAVER_ATTACK_S * sr)))
+        release_coef = 1.0 - float(np.exp(-1.0 / (self._OCTAVER_RELEASE_S * sr)))
+        abs_in = np.abs(x)
+        env = self._audio_to_cv_block(
+            abs_in[None, :],
+            np.array([float(st["level"])], dtype=np.float64),
+            attack_coef,
+            release_coef,
+        )
+        if env is None:
+            env_row, level = self._audio_to_cv_loop_mono(
+                abs_in, float(st["level"]), attack_coef, release_coef
+            )
+        else:
+            env_row = env[0]
+            level = float(env_row[-1]) if frames else float(st["level"])
+        st["level"] = level
+
+        subs = (
+            sub1 * (ff1.astype(np.float64) * 2.0 - 1.0)
+            + sub2 * (ff2.astype(np.float64) * 2.0 - 1.0)
+        ) * env_row
+
+        if sub1 == 0.0 and sub2 == 0.0:
+            st["lp"] = 0.0  # tone filter idles; flip-flops kept warm above
+            if dry == 1.0:
+                return audio_in  # bit-exact passthrough
+            return (x * dry).astype(np.float32)
+
+        # One-pole LP on the summed subs (rounds the squares).
+        coef = 1.0 - float(np.exp(-2.0 * np.pi * tone / sr))
+        filtered, zf = lfilter(
+            [coef], [1.0, coef - 1.0], subs,
+            zi=np.array([(1.0 - coef) * float(st["lp"])], dtype=np.float64),
+        )
+        if frames:
+            st["lp"] = float(filtered[-1])
+
+        return (x * dry + filtered).astype(np.float32)
 
     # ----- Drum voices (kick / snare / hat) --------------------------------
 

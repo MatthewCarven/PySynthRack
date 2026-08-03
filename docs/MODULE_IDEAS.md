@@ -494,7 +494,7 @@ tripwires green):
 > `wavetable_morph` (M) — shared anti-aliasing/mipmap infra, and the
 > obvious demo patch is `chord` → both.
 
-### `logic` (S) — "Modulation" (Session A)
+### `logic` (S) — "Modulation" (Session A) — **SHIPPED 2026-08-03**
 
 2-in gate algebra; every jack live at once, no mode combo — swap cables,
 not settings.
@@ -511,7 +511,7 @@ not settings.
 - Tests: full truth table per jack; unpatched-`b` contract; xor of a
   clock against its own division = ratchet pattern (integration).
 
-### `mid_side` (S) — "Routing & VCA" (Session A)
+### `mid_side` (S) — "Routing & VCA" (Session A) — **SHIPPED 2026-08-03**
 
 M/S encode/decode + width — completes the stereo utility story beside
 `stereo_speaker_output`. All four outs always computed, no mode combo.
@@ -525,7 +525,7 @@ M/S encode/decode + width — completes the stereo utility story beside
   out_r ≡ M; width response linear in S; mono-in edge; encode outs of a
   hard-panned input land ±.
 
-### `octaver` (S) — "Effects" (Session A)
+### `octaver` (S) — "Effects" (Session A) — **SHIPPED 2026-08-03**
 
 Zero-crossing flip-flop sub-octave — −1/−2 oct squares under the dry;
 dirty analog charm for bass.

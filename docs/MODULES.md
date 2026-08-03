@@ -224,6 +224,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`loudness`](#loudness) | Filters & EQ | `in` (audio), `level_cv` (cv) → `out` (audio) |
 | [`distortion`](#distortion) | Effects | `in` (audio), `drive_cv` (cv) → `out` (audio) |
 | [`waveshaper`](#waveshaper) | Effects | `in` (audio), `fold_cv` (cv) → `out` (audio) |
+| [`octaver`](#octaver) | Effects | `in` (audio) → `out` (audio) |
 | [`ring_mod`](#ring_mod) | Effects | `in`,`carrier` (audio), `freq_cv` (cv) → `out` (audio) |
 | [`freq_shifter`](#freq_shifter) | Effects | `in` (audio), `shift_cv` (cv) → `out_up`,`out_down` (audio) |
 | [`bitcrusher`](#bitcrusher) | Effects | `in` (audio), `bits_cv`,`rate_cv` (cv) → `out` (audio) |
@@ -244,12 +245,14 @@ signal-flow role (sources → processors → … → sinks).
 | [`burst`](#burst) | Modulation | `trigger`,`clock` (gate) → `gate` (gate), `env` (cv) |
 | [`bernoulli_gate`](#bernoulli_gate) | Modulation | `in` (gate), `p_cv` (cv) → `out_a`,`out_b` (gate) |
 | [`arpeggiator`](#arpeggiator) | Modulation | `pitch_cv` (cv), `gate`,`clock`,`reset` (gate) → `pitch_cv` (cv), `gate` (gate) |
+| [`logic`](#logic) | Modulation | `a`,`b` (gate) → `and`,`or`,`xor`,`nand`,`not_a` (gate) |
 | [`audio_to_cv`](#audio_to_cv) | CV & Utilities | `in` (audio) → `cv` (cv) |
 | [`cv_to_audio`](#cv_to_audio) | CV & Utilities | `cv` (cv) → `out` (audio) |
 | [`schmitt`](#schmitt) | CV & Utilities | `in` (cv) → `gate` (gate) |
 | [`mixer`](#mixer) | Routing & VCA | `in1`–`in4` (audio), `gain1_cv`–`gain4_cv` (cv) → `out` (audio) |
 | [`combiner`](#combiner) | Routing & VCA | `in1`–`in4` (audio) → `out` (audio) |
 | [`cv_combiner`](#cv_combiner) | Routing & VCA | `in1`–`in4` (cv) → `out` (cv) |
+| [`mid_side`](#mid_side) | Routing & VCA | `in_l`,`in_r` (audio), `width_cv` (cv) → `mid`,`side`,`out_l`,`out_r` (audio) |
 | [`constant`](#constant) | CV & Utilities | — → `out` (cv) |
 | [`cv_scale`](#cv_scale) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`cv_offset`](#cv_offset) | CV & Utilities | `in` (cv) → `out` (cv) |
@@ -1630,6 +1633,24 @@ Shape-polymorphic, per-voice state, block-size independent. See
 
 ---
 
+#### `octaver`
+
+The **zero-crossing flip-flop sub-octave** (Boss OC-2 lineage): every
+rising zero-crossing of the input toggles a flip-flop — a square at
+**half** the input frequency; a second flip-flop toggling on the first
+gives **quarter**. Each square rides the input's own envelope (the
+`audio_to_cv` asymmetric follower, 5 ms attack / 50 ms release — so
+silence stays silent and playing dynamics survive), the summed subs
+pass one one-pole low-pass (`tone`) to round the corners, and the
+result mixes under the dry. A lead line in, an instant bass line
+underneath. Proudly **monophonic-minded**: chords and bright timbres
+make the flip-flops stutter — that's the hardware's charm too; feed it
+single-note lines for clean tracking. `dry` 1 + subs 0 is a bit-exact
+passthrough. All state carries across blocks. **Ports**: `in` (audio)
+→ `out` (audio). **Params**: `dry` 0..1 (1) · `sub1` 0..1 (0.5) ·
+`sub2` 0..1 (0) · `tone` 200..2000 Hz (800). See
+`examples/octaver_bass_lead.json`.
+
 #### `ring_mod`
 
 A **ring modulator** — the metallic, inharmonic corner of the rack. A
@@ -2419,6 +2440,24 @@ instant octave arp. **Ports**: `pitch_cv` (cv), `gate`, `clock`,
 (up) · `octaves` 1..4 (1) · `gate_len` 0.05..0.95 step (0.5) · `hold`
 (off) · `seed` (1). See `examples/chord_arp_factory.json`.
 
+#### `logic`
+
+**Two-input gate algebra**, every jack live at once — no mode combo,
+you swap cables, not settings. `a`/`b` in; `and`, `or`, `xor`, `nand`,
+`not_a` out, all computed every block, all exact. Cross a clock with a
+[`euclidean`](#euclidean) pattern: `and` is the pattern gated to the
+clock's width, `xor` is the **complementary rhythm** (hits where the
+pattern rests — instant interlocking drums), `not_a` inverts for
+"everything except" patching. An unpatched operand reads **low**, so
+`nand` idles *high* with nothing connected — the classic normalled-
+NAND trick, a free gate-off signal. **Zero parameters, deliberately**:
+the idea-list's "comparator mode" was dropped because port kinds are
+strict (a cv out cannot cable into a gate in) — cv→gate conversion is
+[`schmitt`](#schmitt)'s whole job. Stateless; a voice-aware gate
+source collapses to any-voice-high on fetch. **Ports**: `a`, `b`
+(gate) → `and`, `or`, `xor`, `nand`, `not_a` (gate). **Params**: none.
+See `examples/logic_offbeat_drums.json`.
+
 #### `lfo`
 
 _To document._ Low-frequency oscillator as a `cv` source (sine/tri/square/
@@ -2507,6 +2546,23 @@ Use to recombine crossover bands or sum voices.
 _To document._ Four `cv` inputs summed or averaged (param `mode`: `sum` /
 `average`) — lets an LFO and an ADSR modulate the same destination. See
 `examples/mod_matrix.json`.
+
+#### `mid_side`
+
+**M/S encode/decode + stereo width** — the missing stereo utility
+beside [`stereo_speaker_output`](#stereo_speaker_output). Feed a
+stereo pair in and every view is live at once: `mid`/`side` are the
+encode (`M = (L+R)/2`, `S = (L−R)/2` — process them separately,
+recombine however you like), `out_l`/`out_r` are the decode
+`M ± width·S`. `width` 0..2: **0** collapses to dual mono, **1** is
+unity (decode ≡ input, bit-close), **2** doubles the side — wider than
+the room. `width_cv` adds per sample (clamped 0..2): an LFO breathes
+the field, an envelope ducks width on transients. Mono-friendly: one
+patched input **is** the mid (level preserved, not halved; width
+inert) — a free passthrough. Stateless and exact. **Ports**: `in_l`,
+`in_r` (audio), `width_cv` (cv) → `mid`, `side`, `out_l`, `out_r`
+(audio). **Params**: `width` 0..2 (1). See
+`examples/mid_side_breathe.json`.
 
 ---
 

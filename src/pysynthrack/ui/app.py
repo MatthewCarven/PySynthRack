@@ -2450,6 +2450,34 @@ class App:
                 )
                 return
 
+        if module.TYPE == "mid_side":
+            # Stereo width: 0 mono, 1 unity (decode ≡ input), 2 extra
+            # wide. width_cv adds per sample.
+            if param_name == "width":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=2.0, format="%.2f x",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "octaver":
+            # Sub-octave mixer: dry/sub1/sub2 levels + the subs' LP tone.
+            if param_name in ("dry", "sub1", "sub2"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "tone":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=5.0,
+                    min_value=200.0, max_value=2000.0, format="%.0f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE in ("kick_drum", "snare_drum", "hat_drum"):
             # Percussion voices. All ms params carry their unit; ``tune``
             # is a shared ±12 st shift; click/drive/snappy/level are 0..1.

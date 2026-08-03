@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "next_id": 6,
+  "modules": [
+    {
+      "id": 1,
+      "type": "oscillator",
+      "name": "left voice",
+      "params": {
+        "waveform": "saw_blep",
+        "freq": 220.0,
+        "amp": 0.35
+      }
+    },
+    {
+      "id": 2,
+      "type": "oscillator",
+      "name": "right voice (detuned — the side signal)",
+      "params": {
+        "waveform": "saw_blep",
+        "freq": 223.0,
+        "amp": 0.35
+      }
+    },
+    {
+      "id": 3,
+      "type": "mid_side",
+      "name": "MID/SIDE — width breathes on the LFO",
+      "params": {
+        "width": 1.0
+      }
+    },
+    {
+      "id": 4,
+      "type": "lfo",
+      "name": "slow breath (bipolar: width sweeps 0..2)",
+      "params": {
+        "waveform": "sine",
+        "rate": 0.15,
+        "depth": 1.0,
+        "bipolar": true
+      }
+    },
+    {
+      "id": 5,
+      "type": "stereo_speaker_output",
+      "name": "Output — mono-collapses at width 0, huge at 2",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",   "dst_module_id": 3, "dst_port": "in_l" },
+    { "src_module_id": 2, "src_port": "out",   "dst_module_id": 3, "dst_port": "in_r" },
+    { "src_module_id": 4, "src_port": "cv",    "dst_module_id": 3, "dst_port": "width_cv" },
+    { "src_module_id": 3, "src_port": "out_l", "dst_module_id": 5, "dst_port": "in_l" },
+    { "src_module_id": 3, "src_port": "out_r", "dst_module_id": 5, "dst_port": "in_r" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [60, 120],
+      "2": [60, 400],
+      "3": [360, 200],
+      "4": [60, 650],
+      "5": [660, 200]
+    }
+  }
+}

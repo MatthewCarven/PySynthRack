@@ -284,6 +284,9 @@ class PyoBackend(AudioBackend):
             "bernoulli_gate",
             "arpeggiator",
             "chord",
+            "logic",
+            "mid_side",
+            "octaver",
         ):
             # v0.3+ routing / bridge / CV-oscillator modules. The numpy
             # backend is the real implementation; pyo support arrives

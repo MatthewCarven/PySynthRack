@@ -42,15 +42,18 @@ from .keyboard import Keyboard
 from .key_trigger import KeyTrigger
 from .lfo import LFO
 from .limiter import Limiter
+from .logic import Logic
 from .loudness import Loudness
 from .micinput import MicInput
 from .meter import Meter
+from .mid_side import MidSide
 from .midiinput import MIDIInput
 from .mixer import Mixer
 from .modal import Modal
 from .motion_eq import MotionEQ
 from .noise import Noise
 from .noise_gate import NoiseGate
+from .octaver import Octaver
 from .oscillator import Oscillator
 from .parametric_eq import ParametricEQ
 from .phaser import Phaser
@@ -124,15 +127,18 @@ __all__ = [
     "LeftSpeakerOutput",
     "LFO",
     "Limiter",
+    "Logic",
     "Loudness",
     "MicInput",
     "Meter",
+    "MidSide",
     "MIDIInput",
     "Mixer",
     "Modal",
     "MotionEQ",
     "Noise",
     "NoiseGate",
+    "Octaver",
     "Oscillator",
     "ParametricEQ",
     "Phaser",
