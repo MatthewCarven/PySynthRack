@@ -17,6 +17,7 @@ import traceback
 from typing import Optional
 
 import dearpygui.dearpygui as dpg
+import numpy as np
 
 # Ensure all module types are registered before we build any UI.
 import pysynthrack.modules  # noqa: F401
@@ -52,8 +53,10 @@ from ..modules.quantizer import (
     QUANTIZER_ROOTS,
     QUANTIZER_SCALES,
 )
+from ..modules.scope import SCOPE_MODES, SCOPE_TRIGGER_MODES
 from ..modules.slew import SLEW_SHAPES
 from ..modules.sweep_eq import SWEEP_EQ_MODES
+from . import scope_math
 from ..modules.transient_shaper import TRANSIENT_SHAPER_SPEEDS
 from .dsp_load import (
     IDLE_COLOR,
@@ -254,6 +257,10 @@ class App:
         # is currently visible; it exists from creation but stays hidden
         # until the snapshot reports a patched ``in_r``).
         self._audio_meter_bars: dict[int, dict] = {}
+        # Scope displays: module id -> {"dl", "p1", "p2"} drawlist tags,
+        # repainted each frame from the backend's scope_window hook via
+        # ui/scope_math (meter-display lifecycle: pruned on delete/load).
+        self._scope_displays: dict[int, dict] = {}
         self._meter_bounds: dict[tuple[int, str], list[float]] = {}
         # FilePlayer playhead readouts. Maps module_id -> the dpg text
         # tag showing 'elapsed / total'; refreshed each frame in
@@ -330,6 +337,7 @@ class App:
             while dpg.is_dearpygui_running():
                 self._update_cv_meters()
                 self._update_audio_meters()
+                self._update_scopes()
                 self._update_dsp_load()
                 self._update_sink_buffers()
                 self._update_file_positions()
@@ -757,6 +765,40 @@ class App:
                             tag=f"keytrigger_keylabel_{module.id}",
                             color=(170, 170, 170),
                         )
+
+            # Scope: the waveform face — a drawlist with a background,
+            # centre gridlines, and two polylines (main + second trace)
+            # repainted each frame by _update_scopes from the backend's
+            # capture rings. Both polylines exist up front; trace 2 shows
+            # only in dual/xy with in_r patched.
+            if module.TYPE == "scope":
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                    w, h = self._SCOPE_W, self._SCOPE_H
+                    with dpg.drawlist(width=w, height=h) as dl:
+                        dpg.draw_rectangle(
+                            (0, 0), (w - 1, h - 1),
+                            fill=(16, 20, 16, 255), color=(70, 78, 70, 255),
+                        )
+                        dpg.draw_line(
+                            (0, h / 2), (w - 1, h / 2),
+                            color=(50, 60, 50, 255),
+                        )
+                        dpg.draw_line(
+                            (w / 2, 0), (w / 2, h - 1),
+                            color=(50, 60, 50, 255),
+                        )
+                        p1 = dpg.draw_polyline(
+                            [(0, h / 2), (w - 1, h / 2)],
+                            color=(120, 230, 130, 255), thickness=1,
+                        )
+                        p2 = dpg.draw_polyline(
+                            [(0, h / 2), (w - 1, h / 2)],
+                            color=(230, 190, 90, 255), thickness=1,
+                            show=False,
+                        )
+                    self._scope_displays[module.id] = {
+                        "dl": dl, "p1": p1, "p2": p2, "p2_shown": False,
+                    }
 
             # Meter: one dBFS level display (-90..0) per channel, driven
             # each frame from the backend's indicator triples. Each is a
@@ -2235,6 +2277,41 @@ class App:
                 )
                 return
 
+        if module.TYPE == "scope":
+            # Scope face controls. ``time_div`` is ms per division (×10
+            # divisions across the face); ``gain`` scales vertically
+            # (±1 fills at 1.0); ``trigger``/``level`` align the sweep;
+            # ``mode`` (mono/dual/xy) hits the shared mode-combo branch
+            # below; ``freeze`` rides the generic checkbox.
+            if param_name == "time_div":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.5,
+                    min_value=1.0, max_value=500.0, format="%.0f ms/div",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "gain":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.1, max_value=10.0, format="%.2f x",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "trigger":
+                dpg.add_combo(
+                    label=param_name, items=list(SCOPE_TRIGGER_MODES),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "level":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-1.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "slew":
             # CV slew limiter: ``shape`` picks the glide curve (linear
             # constant-rate reach vs exponential one-pole ease); the times
@@ -2302,6 +2379,8 @@ class App:
                 items = list(WAVESHAPER_MODES)
             elif module.TYPE == "key_trigger":
                 items = list(KEY_TRIGGER_MODES)
+            elif module.TYPE == "scope":
+                items = list(SCOPE_MODES)
             else:
                 items = list(FILTER_MODES)
             dpg.add_combo(
@@ -3494,6 +3573,7 @@ class App:
             # "Item not found" GUI crash. (_audio_meter_bars is keyed by id;
             # the CV bar + auto-range maps are keyed by (id, port).)
             self._audio_meter_bars.pop(module_id, None)
+            self._scope_displays.pop(module_id, None)
             for _mk in [k for k in self._cv_meter_bars if k[0] == module_id]:
                 self._cv_meter_bars.pop(_mk, None)
             for _mk in [k for k in self._meter_bounds if k[0] == module_id]:
@@ -3996,6 +4076,7 @@ class App:
         self._cv_meter_bars.clear()
         self._meter_bounds.clear()
         self._audio_meter_bars.clear()
+        self._scope_displays.clear()
         self._file_pos_labels.clear()
         self._file_seek_sliders.clear()
         self._file_seek_active.clear()
@@ -4214,6 +4295,12 @@ class App:
     # Meter floor in dB; the bar spans [_METER_FLOOR_DB, 0] dBFS.
     _METER_FLOOR_DB = -90.0
 
+    # Scope face geometry (pixels) and column count (one min/max pair
+    # per column; ~1 px columns at zoom 1).
+    _SCOPE_W = 220
+    _SCOPE_H = 110
+    _SCOPE_COLS = 200
+
     # Meter display geometry (pixels inside each channel drawlist).
     _AMETER_BAR_W = 146.0
     _AMETER_H = 16.0
@@ -4332,6 +4419,71 @@ class App:
             )
         except Exception:
             pass
+
+    def _update_scopes(self) -> None:
+        """Repaint each Scope node's waveform from the capture rings.
+
+        Per frame and per scope: ask the backend for the recent window
+        (scope_window hook, numpy backend only), run the display maths in
+        ui/scope_math (trigger alignment + min/max columns, or xy
+        decimation), and reconfigure the node's polylines. A frozen scope
+        skips the repaint entirely — the picture simply stops. Wrapped
+        per-scope in try/except so a torn frame or a mid-delete widget
+        self-heals next frame (CV-meter precedent).
+        """
+        if not self._scope_displays:
+            return
+        win_hook = getattr(self.backend, "scope_window", None)
+        if win_hook is None:
+            return
+        w, h = float(self._SCOPE_W), float(self._SCOPE_H)
+        for module_id, bundle in list(self._scope_displays.items()):
+            module = self.patch.modules.get(module_id)
+            if module is None:
+                continue
+            if bool(module.params.get("freeze", False)):
+                continue
+            try:
+                need = scope_math.request_samples(
+                    float(module.params.get("time_div", 10.0)),
+                    self.backend.sample_rate,
+                )
+                snap = scope_math.build_snapshot(
+                    win_hook(module_id, need),
+                    module.params,
+                    self.backend.sample_rate,
+                    self._SCOPE_COLS,
+                )
+                if snap is None:
+                    continue
+                gain = float(module.params.get("gain", 1.0))
+                if snap["mode"] == "xy":
+                    xy2 = snap["xy2"]
+                    if xy2 is None:
+                        xy2 = np.zeros_like(snap["xy1"])
+                    pts1 = scope_math.xy_polyline(snap["xy1"], xy2, w, h, gain)
+                    pts2 = None
+                else:
+                    pts1 = (
+                        scope_math.envelope_polyline(snap["cols1"], w, h, gain)
+                        if snap["cols1"] is not None
+                        else None
+                    )
+                    pts2 = (
+                        scope_math.envelope_polyline(snap["cols2"], w, h, gain)
+                        if snap["cols2"] is not None
+                        else None
+                    )
+                if pts1 and len(pts1) >= 2:
+                    dpg.configure_item(bundle["p1"], points=pts1)
+                want2 = bool(pts2 and len(pts2) >= 2)
+                if want2:
+                    dpg.configure_item(bundle["p2"], points=pts2)
+                if want2 != bundle.get("p2_shown", False):
+                    dpg.configure_item(bundle["p2"], show=want2)
+                    bundle["p2_shown"] = want2
+            except Exception:
+                continue  # self-heal next frame
 
     def _update_audio_meters(self) -> None:
         """Push Meter-module indicator triples into their displays.

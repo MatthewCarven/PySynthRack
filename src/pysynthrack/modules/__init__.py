@@ -65,6 +65,7 @@ from .output import (
 )
 from .samplehold import SampleHold
 from .schmitt import Schmitt
+from .scope import Scope
 from .shift_random import ShiftRandom
 from .slew import Slew
 from .sequencer import Sequencer
@@ -129,6 +130,7 @@ __all__ = [
     "RightSpeakerOutput",
     "SampleHold",
     "Schmitt",
+    "Scope",
     "ShiftRandom",
     "Slew",
     "Sequencer",

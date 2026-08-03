@@ -2222,6 +2222,8 @@ class NumpyBackend(AudioBackend):
             return self._render_slew(module, frames, buffers, patch)
         if module.TYPE == "quantizer":
             return self._render_quantizer(module, frames, buffers, patch)
+        if module.TYPE == "scope":
+            return self._render_scope(module, frames, buffers, patch)
         if module.TYPE == "sample_hold":
             return self._render_sample_hold(module, frames, buffers, patch)
         if module.TYPE == "noise":
@@ -10658,6 +10660,115 @@ class NumpyBackend(AudioBackend):
         )
 
         return {"out": out, "out_r": out_r}
+
+    # ----- Scope rendering -------------------------------------------------
+
+    # Capture-ring length: the longest window (500 ms/div × 10 div = 5 s)
+    # plus a second of history for the trigger search.
+    _SCOPE_RING_SECONDS = 6.0
+
+    def _render_scope(self, module, frames: int, buffers, patch):
+        """Oscilloscope tap: bit-exact pass-through + capture rings.
+
+        ``in`` -> ``out`` and ``in_r`` -> ``out_r`` are forwarded
+        untouched (same array, same shape — the Meter precedent), so a
+        Scope is transparent inline. Alongside, the module keeps rolling
+        capture rings the GUI reads via :meth:`scope_window`:
+
+          * ``t1`` — the main trace: ``in`` summed across voices, or the
+            ``cv`` input when ``in`` is unpatched (the fallback trace).
+          * ``t2`` — ``in_r`` summed across voices (dual / xy modes).
+          * ``tg`` — the external ``trig`` gate, captured so the GUI's
+            trigger search aligns with the trace rings sample-for-sample.
+
+        Rings are lazily created per patched jack and share one write
+        position, so they stay aligned; all display maths (window,
+        trigger, min/max columns) happens GUI-side in ui/scope_math.py —
+        the audio thread only memcpys. The GUI may read a ring mid-write
+        and catch a torn frame; that's one glitchy visual frame, not
+        audio (meter precedent).
+        """
+        src = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
+        out = src if src is not None else np.zeros(frames, dtype=np.float32)
+
+        if any(c.dst_port == "in_r" for c in patch.cables_into(module.id)):
+            src_r = self._input_buffer(
+                patch, buffers, module.id, "in_r", collapse=False
+            )
+        else:
+            src_r = None
+        out_r = src_r if src_r is not None else np.zeros(frames, dtype=np.float32)
+
+        trig = self._input_buffer(patch, buffers, module.id, "trig")
+
+        # Main trace: `in` wins; `cv` is the fallback (collapse sums a
+        # voice-aware source either way — what a mono consumer hears).
+        if src is not None:
+            t1 = src.sum(axis=0) if src.ndim == 2 else src
+        else:
+            t1 = self._input_buffer(patch, buffers, module.id, "cv")
+        t2 = (src_r.sum(axis=0) if src_r.ndim == 2 else src_r) if src_r is not None else None
+
+        st = self._state.setdefault(module.id, {})
+        ringlen = int(self.sample_rate * self._SCOPE_RING_SECONDS)
+        if st.get("ringlen") != ringlen:
+            st.clear()
+            st.update({"ringlen": ringlen, "pos": 0, "filled": 0})
+        pos = int(st["pos"])
+
+        for key, sig in (("t1", t1), ("t2", t2), ("tg", trig)):
+            if sig is None:
+                continue
+            ring = st.get("ring_" + key)
+            if ring is None:
+                ring = st["ring_" + key] = np.zeros(ringlen, dtype=np.float32)
+            n = min(int(sig.shape[-1]), ringlen)
+            chunk = sig[-n:].astype(np.float32, copy=False)
+            first = min(n, ringlen - pos)
+            ring[pos : pos + first] = chunk[:first]
+            if n > first:
+                ring[: n - first] = chunk[first:]
+
+        st["pos"] = (pos + frames) % ringlen
+        st["filled"] = min(ringlen, int(st["filled"]) + frames)
+
+        return {"out": out, "out_r": out_r}
+
+    def scope_window(self, module_id: int, n: int) -> dict | None:
+        """(GUI hook) The last ``n`` captured samples per scope trace.
+
+        Returns ``{"t1": arr|None, "t2": arr|None, "tg": arr|None}`` with
+        each array oldest→newest and identically aligned (the rings share
+        one write position), clipped to what has been captured so far —
+        or None while the scope has no state / nothing captured. Called
+        from the GUI thread each frame; the copy is a couple of slices.
+        """
+        st = self._state.get(module_id)
+        if not st or "pos" not in st:
+            return None
+        ringlen = int(st["ringlen"])
+        n = min(int(n), int(st["filled"]))
+        if n <= 0:
+            return None
+        pos = int(st["pos"])
+        start = (pos - n) % ringlen
+        out: dict = {}
+        for key in ("t1", "t2", "tg"):
+            ring = st.get("ring_" + key)
+            if ring is None:
+                out[key] = None
+                continue
+            if start + n <= ringlen:
+                out[key] = ring[start : start + n].copy()
+            else:
+                k = ringlen - start
+                buf = np.empty(n, dtype=np.float32)
+                buf[:k] = ring[start:]
+                buf[k:] = ring[: n - k]
+                out[key] = buf
+        return out
 
     def _decode_audio(self, path, target_sr):
         """Decode any supported media file to ``(2, N)`` float32 or None.

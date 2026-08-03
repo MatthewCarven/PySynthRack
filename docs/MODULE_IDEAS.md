@@ -445,7 +445,7 @@ a groovebox.
 
 ## Seeing the signal — "CV & Utilities"
 
-### `scope` (M)
+### `scope` (M) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
 Oscilloscope pass-through tap — the learn-by-building module par excellence,
 and it makes every later module easier to debug and demo.

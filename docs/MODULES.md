@@ -247,6 +247,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`sample_hold`](#sample_hold) | CV & Utilities | `in` (cv), `trig` (gate) → `out` (cv) |
 | [`slew`](#slew) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`quantizer`](#quantizer) | CV & Utilities | `in` (cv), `gate` (gate) → `out` (cv), `changed` (gate) |
+| [`scope`](#scope) | CV & Utilities | `in`,`in_r` (audio), `cv` (cv), `trig` (gate) → `out`,`out_r` (audio) |
 | [`meter`](#meter) | CV & Utilities | `in`, `in_r` (audio) → `out`, `out_r` (audio) |
 | [`speaker_output`](#speaker_output) | Outputs | `in` (audio) → — |
 | [`left_speaker_output`](#left_speaker_output) | Outputs | `in` (audio) → — |
@@ -2413,6 +2414,51 @@ a passthrough. See `examples/shift_random_melody.json`.
 | `hysteresis` | `10` | 0 … 50 ct | Boundary stickiness in continuous mode. |
 | `transpose` | `0` | −24 … +24 st | Added to the output post-quantize (may leave the scale — it's a transposition, not a rotation). |
 | `custom_c` … `custom_b` | all on | bools | Pitch classes for `custom`, drawn as two rows of tickboxes. |
+
+#### `scope`
+
+An **oscilloscope tap** you patch inline anywhere: `in` passes to `out`
+**bit-exact** (the [`meter`](#meter) precedent), and the node draws the
+waveform live — a classic 10-division face where the window is
+`time_div` ms/div × 10 and every pixel column shows its slice's min/max,
+so a one-sample click can never hide between pixels. `gain` scales
+vertically; `freeze` holds the picture while the audio runs on.
+
+The main trace is `in`; patch only the `cv` jack instead and the scope
+draws *that* — LFOs, envelopes, quantizer steps, no `cv_to_audio` bridge
+needed (`in` wins when both are patched; `cv` has no pass-through).
+`in_r` is the second trace: `mode` `dual` stacks both in one face, `xy`
+plots `in` against `in_r` — the goniometer (mono = diagonal line, stereo
+width opens a cloud, quadrature LFOs draw circles). `trigger`
+`rising`/`falling` align the sweep to the last `level` crossing that
+fits a full window so periodic signals hold still; `free` shows the
+newest window (envelopes, one-shots); a patched `trig` gate overrides
+the level trigger and aligns to its last rising edge (clock-locked
+sweeps). Voice-aware sources pass through shape-intact; the display sums
+voices (what a mono consumer hears). Display maths lives in
+`ui/scope_math.py` (dpg-free, tested headless); the audio thread only
+copies into a capture ring. Numpy backend only; silent stub under pyo.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | Main trace; forwarded to `out` untouched. |
+| `in_r` | in | audio | Second trace (dual/xy); forwarded to `out_r`. |
+| `cv` | in | cv | Fallback main trace when `in` is unpatched. |
+| `trig` | in | gate | External trigger; overrides the level trigger. |
+| `out` / `out_r` | out | audio | The untouched inputs. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `time_div` | `10` | 1 … 500 ms/div | Horizontal scale (10 divisions across). |
+| `gain` | `1.0` | 0.1 … 10 | Vertical scale; ±1 fills the face at 1.0. |
+| `trigger` | `rising` | free · rising · falling | Sweep alignment. |
+| `level` | `0.0` | −1 … 1 | Trigger level. |
+| `freeze` | `False` | bool | Hold the current picture. |
+| `mode` | `mono` | mono · dual · xy | One trace, two stacked, or goniometer. |
 
 #### `meter`
 
