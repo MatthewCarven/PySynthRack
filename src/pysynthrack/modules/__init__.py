@@ -49,6 +49,7 @@ from .noise_gate import NoiseGate
 from .oscillator import Oscillator
 from .parametric_eq import ParametricEQ
 from .phaser import Phaser
+from .quantizer import Quantizer
 from .resampler import Resampler
 from .reverb import Reverb
 from .ring_mod import RingMod
@@ -64,6 +65,7 @@ from .output import (
 )
 from .samplehold import SampleHold
 from .schmitt import Schmitt
+from .shift_random import ShiftRandom
 from .slew import Slew
 from .sequencer import Sequencer
 from .fader_seq import FaderSeq
@@ -119,6 +121,7 @@ __all__ = [
     "Oscillator",
     "ParametricEQ",
     "Phaser",
+    "Quantizer",
     "Resampler",
     "Reverb",
     "RingMod",
@@ -126,6 +129,7 @@ __all__ = [
     "RightSpeakerOutput",
     "SampleHold",
     "Schmitt",
+    "ShiftRandom",
     "Slew",
     "Sequencer",
     "SweepEQ",

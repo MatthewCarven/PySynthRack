@@ -198,7 +198,7 @@ IR loader + partitioned FFT convolution: real rooms, springs, plates, cabs.
 
 ## CV tools & bridges
 
-### `quantizer` (M) — "CV & Utilities"
+### `quantizer` (M) — "CV & Utilities" — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
 CV in → nearest allowed pitch out. The missing link between
 random/LFO/sequencer and *melody*.
@@ -218,7 +218,7 @@ random/LFO/sequencer and *melody*.
   boundary stays put; `changed` fires once per note; gated mode holds between
   edges.
 
-### `slew` (S) — "CV & Utilities"
+### `slew` (S) — "CV & Utilities" — **SHIPPED 2026-07-18** (as built: shape linear|exponential, rise/fall in seconds; the `eoc` out and `link` didn't ship — see TODO for the v3 idea)
 
 Slew limiter / portamento.
 
@@ -257,7 +257,7 @@ All clocked modules share `clock`-edge semantics with the existing clock/
 sequencer pair, and all randomness takes a `seed` param (deterministic when
 seeded — testable, and patches recall their character).
 
-### `shift_random` (S–M)
+### `shift_random` (S–M) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
 Looping shift-register random CV — the generative classic.
 

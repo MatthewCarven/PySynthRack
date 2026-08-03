@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "next_id": 8,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "tempo — try division for faster steps",
+      "params": {
+        "bpm": 110.0,
+        "division": 2.0,
+        "pulse_width": 0.4
+      }
+    },
+    {
+      "id": 2,
+      "type": "shift_random",
+      "name": "MELODY BOX — probability 0 locks the loop, ~0.1 mutates",
+      "params": {
+        "probability": 0.1,
+        "length": 8,
+        "range": 2.0,
+        "bipolar": false,
+        "seed": 42
+      }
+    },
+    {
+      "id": 3,
+      "type": "quantizer",
+      "name": "in-tune — pick a scale / root",
+      "params": {
+        "root": "C",
+        "scale": "pentatonic minor",
+        "hysteresis": 10.0,
+        "transpose": -12.0
+      }
+    },
+    {
+      "id": 4,
+      "type": "oscillator",
+      "name": "voice",
+      "params": {
+        "waveform": "saw_blep",
+        "freq": 261.6256,
+        "amp": 0.5
+      }
+    },
+    {
+      "id": 5,
+      "type": "adsr",
+      "name": "amp env (gated by the register's rhythm)",
+      "params": {
+        "attack": 0.005,
+        "decay": 0.18,
+        "sustain": 0.25,
+        "release": 0.2
+      }
+    },
+    {
+      "id": 6,
+      "type": "vca",
+      "name": "amp VCA",
+      "params": {
+        "gain": 1.0
+      }
+    },
+    {
+      "id": 7,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "cv",   "dst_module_id": 3, "dst_port": "in" },
+    { "src_module_id": 3, "src_port": "out",  "dst_module_id": 4, "dst_port": "freq_cv" },
+    { "src_module_id": 4, "src_port": "out",  "dst_module_id": 6, "dst_port": "audio" },
+    { "src_module_id": 2, "src_port": "gate", "dst_module_id": 5, "dst_port": "gate" },
+    { "src_module_id": 5, "src_port": "cv",   "dst_module_id": 6, "dst_port": "cv" },
+    { "src_module_id": 6, "src_port": "out",  "dst_module_id": 7, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 200],
+      "2": [280, 200],
+      "3": [540, 200],
+      "4": [800, 200],
+      "5": [540, 470],
+      "6": [1060, 200],
+      "7": [1300, 200]
+    }
+  }
+}

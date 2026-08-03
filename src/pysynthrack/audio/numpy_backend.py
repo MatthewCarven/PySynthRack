@@ -53,6 +53,11 @@ from ..modules.keyboard import midi_to_freq
 from ..modules.cv_keyboard import CV_REFERENCE_NOTE, KEY_GATE_NAMES
 from ..modules.cv_gates import KEY_CV_NAMES
 from ..modules.fm_op import snap_ratio as _fm_snap_ratio
+from ..modules.quantizer import (
+    CUSTOM_KEYS as _Q_CUSTOM_KEYS,
+    QUANTIZER_ROOTS as _Q_ROOTS,
+    SCALE_INTERVALS as _Q_SCALES,
+)
 from .backend import AudioBackend
 
 # Imported lazily so a missing PortAudio install doesn't crash module import.
@@ -2177,6 +2182,8 @@ class NumpyBackend(AudioBackend):
             # fader_seq is the Sequencer with a different front panel —
             # identical param contract, one engine (see modules/fader_seq.py).
             return self._render_sequencer(module, frames, buffers, patch)
+        if module.TYPE == "shift_random":
+            return self._render_shift_random(module, frames, buffers, patch)
         if module.TYPE == "midi_input":
             return self._render_midi_input(module, frames)
         if module.TYPE == "filter":
@@ -2213,6 +2220,8 @@ class NumpyBackend(AudioBackend):
             return self._render_cv_offset(module, frames, buffers, patch)
         if module.TYPE == "slew":
             return self._render_slew(module, frames, buffers, patch)
+        if module.TYPE == "quantizer":
+            return self._render_quantizer(module, frames, buffers, patch)
         if module.TYPE == "sample_hold":
             return self._render_sample_hold(module, frames, buffers, patch)
         if module.TYPE == "noise":
@@ -3119,6 +3128,101 @@ class NumpyBackend(AudioBackend):
         st["cv"] = cur_cv
         st["prev_clock"] = prev_clock
         st["prev_reset"] = prev_reset
+        return {"cv": cv_out, "gate": gate_out}
+
+    def _render_shift_random(self, module, frames: int, buffers, patch) -> dict:
+        """Looping shift-register random CV (see modules/shift_random.py).
+
+        A 16-bit register rotates one place per rising ``clock`` edge; the
+        bit recirculating from position ``length - 1`` flips with
+        ``probability`` (a ``write`` gate held high forces it to 1). The
+        CV out is the first eight bits read as a byte — newest bit as MSB
+        — scaled to ``range``; the gate out mirrors bit 0.
+
+        Determinism: the register's initial fill and every flip decision
+        come from a Generator seeded with the ``seed`` param, consumed
+        once per clock edge — so the sequence is a pure function of the
+        seed and the clock, block-size independent by construction.
+        Changing ``seed`` live re-rolls the register on the spot (the
+        state rebuild below). Outputs hold between edges; mono, like the
+        clock that drives it.
+        """
+        clock = self._input_buffer(patch, buffers, module.id, "clock")
+        write = self._input_buffer(patch, buffers, module.id, "write")
+
+        try:
+            p = float(module.params.get("probability", 0.1))
+        except (TypeError, ValueError):
+            p = 0.1
+        p = min(1.0, max(0.0, p))
+        try:
+            length = int(module.params.get("length", 8))
+        except (TypeError, ValueError):
+            length = 8
+        length = min(16, max(2, length))
+        try:
+            span = float(module.params.get("range", 2.0))
+        except (TypeError, ValueError):
+            span = 2.0
+        bipolar = bool(module.params.get("bipolar", False))
+        try:
+            seed = int(module.params.get("seed", 1))
+        except (TypeError, ValueError):
+            seed = 1
+        seed = max(0, seed)
+
+        st = self._state.setdefault(module.id, {})
+        if st.get("seed") != seed:
+            rng = np.random.default_rng(seed)
+            st["seed"] = seed
+            st["rng"] = rng
+            st["bits"] = [int(b) for b in rng.integers(0, 2, size=16)]
+            st["prev_clock"] = False
+        bits: list[int] = st["bits"]
+        rng = st["rng"]
+        prev_clock = bool(st["prev_clock"])
+
+        def scaled(byte_bits: list[int]) -> float:
+            # First 8 bits as a byte, newest (bits[0]) as MSB.
+            value = 0
+            for i in range(8):
+                value = (value << 1) | byte_bits[i]
+            v = value / 255.0
+            return (v * 2.0 - 1.0) * span if bipolar else v * span
+
+        cv_out = np.empty(frames, dtype=np.float32)
+        gate_out = np.empty(frames, dtype=np.float32)
+        cur_cv = scaled(bits)
+        cur_gate = 1.0 if bits[0] else 0.0
+
+        if clock is None:
+            cv_out[:] = cur_cv
+            gate_out[:] = cur_gate
+            return {"cv": cv_out, "gate": gate_out}
+
+        g = clock > self._GATE_HIGH
+        prev_arr = np.empty_like(g)
+        prev_arr[0] = prev_clock
+        prev_arr[1:] = g[:-1]
+        edges = np.flatnonzero(g & ~prev_arr)
+
+        pos = 0
+        for e in edges:
+            cv_out[pos:e] = cur_cv
+            gate_out[pos:e] = cur_gate
+            incoming = bits[length - 1]
+            if rng.random() < p:
+                incoming ^= 1
+            if write is not None and float(write[e]) > self._GATE_HIGH:
+                incoming = 1
+            bits[:] = [incoming] + bits[:15]
+            cur_cv = scaled(bits)
+            cur_gate = 1.0 if bits[0] else 0.0
+            pos = int(e)
+        cv_out[pos:] = cur_cv
+        gate_out[pos:] = cur_gate
+
+        st["prev_clock"] = bool(g[-1])
         return {"cv": cv_out, "gate": gate_out}
 
     # ----- MIDI input rendering ------------------------------------------
@@ -5191,6 +5295,180 @@ class NumpyBackend(AudioBackend):
         state["cur"] = cur.copy()
         out = y if voiced else y[0]
         return out.astype(np.float32)
+
+    # ----- Quantizer rendering --------------------------------------------
+
+    # ``changed`` trigger length — mirrors the key_trigger pulse feel.
+    _QUANTIZER_PULSE_SECONDS = 0.005
+
+    def _render_quantizer(self, module, frames: int, buffers, patch) -> dict:
+        """Snap a pitch CV to the nearest allowed note (see modules/quantizer.py).
+
+        The CV is 1 V/oct semitone space (× 12), quantized against a table
+        of allowed notes across ±5 octaves built from ``root`` + ``scale``
+        (or the custom tickboxes; an empty custom set falls back to
+        chromatic). ``transpose`` is added AFTER quantization.
+
+        Modes:
+          * continuous (``gate`` unpatched) — every sample quantizes.
+            ``hysteresis`` (cents) makes the held note sticky: a new note
+            wins only once the input is more than the margin closer to it
+            than to the held one. Fast paths keep the common cases
+            vectorized (hysteresis 0 → pure searchsorted; a block whose
+            stateless nearest never leaves the held note → constant); only
+            a block that actually crosses a boundary with hysteresis on
+            pays the pure-Python scalar scan (the slew lesson: scalars,
+            not per-sample numpy).
+          * gated (``gate`` patched) — sample-and-quantize on rising edges
+            only (no hysteresis; edges are discrete events), holding in
+            between. The gate is read mono and applies to every voice.
+
+        ``changed`` emits a ~5 ms trigger per held-note change, per voice,
+        carried across blocks (block-size independent). The held note is
+        primed to the first input sample so a fresh patch doesn't fire a
+        spurious trigger. Shape-polymorphic: mono in → mono outs, (V, F)
+        in → (V, F) outs with per-voice held/pulse state.
+        """
+        cv_in = self._input_buffer(
+            patch, buffers, module.id, "in", collapse=False
+        )
+        if cv_in is None:
+            self._state.pop(module.id, None)
+            zeros = np.zeros(frames, dtype=np.float32)
+            return {"out": zeros, "changed": zeros}
+        gate_in = self._input_buffer(patch, buffers, module.id, "gate")
+
+        voiced = cv_in.ndim == 2
+        x = (cv_in if voiced else cv_in[None, :]).astype(np.float64) * 12.0
+        V = x.shape[0]
+
+        # --- allowed-note table (rebuilt per block; 121 entries max) ---
+        scale = str(module.params.get("scale", "major"))
+        if scale == "custom":
+            pcs = [
+                i for i, key in enumerate(_Q_CUSTOM_KEYS)
+                if bool(module.params.get(key, True))
+            ]
+            if not pcs:  # all unticked: chromatic fallback, never wedged
+                pcs = list(range(12))
+        else:
+            pcs = list(_Q_SCALES.get(scale, _Q_SCALES["chromatic"]))
+        root_name = str(module.params.get("root", "C"))
+        root = _Q_ROOTS.index(root_name) if root_name in _Q_ROOTS else 0
+        allowed = sorted({(pc + root) % 12 for pc in pcs})
+        table = np.array(
+            [n for n in range(-60, 61) if n % 12 in allowed], dtype=np.float64
+        )
+
+        try:
+            hyst = float(module.params.get("hysteresis", 10.0))
+        except (TypeError, ValueError):
+            hyst = 10.0
+        hyst_st = min(50.0, max(0.0, hyst)) / 100.0  # cents → semitones
+        try:
+            transpose = float(module.params.get("transpose", 0.0))
+        except (TypeError, ValueError):
+            transpose = 0.0
+
+        def nearest(vals: np.ndarray) -> np.ndarray:
+            """Nearest allowed note per element (ties round down)."""
+            idx = np.clip(np.searchsorted(table, vals), 1, len(table) - 1)
+            left = table[idx - 1]
+            right = table[idx]
+            return np.where(vals - left <= right - vals, left, right)
+
+        # --- per-voice state: held note (st), pulse samples remaining ---
+        st = self._state.setdefault(module.id, {})
+        held = st.get("held")
+        pulse = st.get("pulse")
+        if held is None or held.shape[0] != V:
+            held = nearest(x[:, 0]).astype(np.float64)  # primed: no trigger
+            pulse = np.zeros(V, dtype=np.int64)
+        else:
+            held = held.astype(np.float64, copy=True)
+            pulse = pulse.copy()
+        plen = max(1, int(round(self.sample_rate * self._QUANTIZER_PULSE_SECONDS)))
+
+        held_series = np.empty((V, frames), dtype=np.float64)
+        changed = np.zeros((V, frames), dtype=np.float32)
+        # events[v] = sample indices where the held note switched this block
+        events: list[list[int]] = [[] for _ in range(V)]
+
+        if gate_in is not None:
+            # Gated: quantize only on rising edges, mono gate for all voices.
+            g = gate_in > self._GATE_HIGH
+            prev_arr = np.empty_like(g)
+            prev_arr[0] = bool(st.get("prev_gate", False))
+            prev_arr[1:] = g[:-1]
+            edge_idx = np.flatnonzero(g & ~prev_arr)
+            st["prev_gate"] = bool(g[-1])
+            for v in range(V):
+                pos = 0
+                h = held[v]
+                for e in edge_idx:
+                    held_series[v, pos:e] = h
+                    cand = float(nearest(x[v, e : e + 1])[0])
+                    if cand != h:
+                        h = cand
+                        events[v].append(int(e))
+                    pos = int(e)
+                held_series[v, pos:] = h
+                held[v] = h
+        elif hyst_st <= 0.0:
+            # Continuous, no hysteresis: pure vectorized nearest.
+            cand = nearest(x)
+            held_series[:] = cand
+            for v in range(V):
+                row = cand[v]
+                if row[0] != held[v]:
+                    events[v].append(0)
+                steps = np.flatnonzero(row[1:] != row[:-1])
+                events[v].extend((steps + 1).tolist())
+                held[v] = row[-1]
+        else:
+            # Continuous with hysteresis. Fast path: a block whose
+            # stateless nearest never leaves the held note can't switch.
+            cand = nearest(x)
+            for v in range(V):
+                if np.all(cand[v] == held[v]):
+                    held_series[v] = held[v]
+                    continue
+                # Pure-Python scalars on tolist()'d rows (the slew lesson:
+                # per-sample numpy indexing is dispatch overhead, not math).
+                xv = x[v].tolist()
+                cv_row = cand[v].tolist()
+                h = float(held[v])
+                row = [0.0] * frames
+                for n in range(frames):
+                    c = cv_row[n]
+                    if c != h and (abs(xv[n] - h) - abs(xv[n] - c)) > hyst_st:
+                        h = c
+                        events[v].append(n)
+                    row[n] = h
+                held_series[v] = row
+                held[v] = h
+
+        # --- paint the ~5 ms `changed` pulses (carried across blocks) ---
+        for v in range(V):
+            n = min(int(pulse[v]), frames)  # tail of a previous block's pulse
+            if n > 0:
+                changed[v, :n] = 1.0
+                pulse[v] -= n
+            for e in events[v]:
+                n = min(plen, frames - e)
+                changed[v, e : e + n] = 1.0
+                pulse[v] = plen - n  # a later event re-arms the carry
+
+        st["held"] = held.copy()
+        st["pulse"] = pulse
+
+        out = (held_series + transpose) / 12.0
+        if not voiced:
+            return {
+                "out": out[0].astype(np.float32),
+                "changed": changed[0],
+            }
+        return {"out": out.astype(np.float32), "changed": changed}
 
     # ----- Noise rendering ------------------------------------------------
 

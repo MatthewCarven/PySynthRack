@@ -234,6 +234,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`clock`](#clock) | Modulation | — → `out` (gate) |
 | [`sequencer`](#sequencer) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
 | [`fader_seq`](#fader_seq) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
+| [`shift_random`](#shift_random) | Modulation | `clock`,`write` (gate) → `cv` (cv), `gate` (gate) |
 | [`audio_to_cv`](#audio_to_cv) | CV & Utilities | `in` (audio) → `cv` (cv) |
 | [`cv_to_audio`](#cv_to_audio) | CV & Utilities | `cv` (cv) → `out` (audio) |
 | [`schmitt`](#schmitt) | CV & Utilities | `in` (cv) → `gate` (gate) |
@@ -245,6 +246,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`cv_offset`](#cv_offset) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`sample_hold`](#sample_hold) | CV & Utilities | `in` (cv), `trig` (gate) → `out` (cv) |
 | [`slew`](#slew) | CV & Utilities | `in` (cv) → `out` (cv) |
+| [`quantizer`](#quantizer) | CV & Utilities | `in` (cv), `gate` (gate) → `out` (cv), `changed` (gate) |
 | [`meter`](#meter) | CV & Utilities | `in`, `in_r` (audio) → `out`, `out_r` (audio) |
 | [`speaker_output`](#speaker_output) | Outputs | `in` (audio) → — |
 | [`left_speaker_output`](#left_speaker_output) | Outputs | `in` (audio) → — |
@@ -2158,6 +2160,48 @@ Everything else — stepping, rests, reset, sample-and-hold `cv`, wrap at
 is pinned by a bit-identical A/B test. Pick whichever panel suits the
 patch; saved patches remember which one they used.
 
+#### `shift_random`
+
+A **looping shift-register random CV** — the generative classic. A 16-bit
+register rotates one place per rising `clock` edge; the bit falling off
+the loop end (position `length`) recirculates to the front, and with
+`probability` it flips on the way. The first eight bits — newest as MSB —
+read as a byte give `cv` (`byte/255 × range`, or centred ±`range` with
+`bipolar`); `gate` mirrors bit 0, held between clocks — a free rhythm
+line that mutates in lockstep with the melody.
+
+`probability` is the money knob: **0 is a locked loop** (the same
+`length`-step pattern forever — a found melody), **1 is a coin flip per
+step** (pure random), and ≈0.1 keeps a motif recognisable while it slowly
+walks somewhere new. A `write` gate held high forces the incoming bit to
+1 — a performance "seed it now" handle. All randomness draws from `seed`:
+the register's initial fill and every flip are deterministic per seed
+(patches recall their character; renders are testable), and changing
+`seed` re-rolls the register live. Shortening `length` and lengthening it
+again recovers the old tail — the register always keeps 16 bits of
+history, the hardware behaviour. Mono, stepped outputs (follow with
+[`slew`](#slew) for glide, [`quantizer`](#quantizer) for melody). See
+`examples/shift_random_melody.json` — the endless melody box.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `clock` | in | gate | Rotate one step per rising edge. Unpatched → holds. |
+| `write` | in | gate | While high, the incoming bit is forced to 1. Optional. |
+| `cv` | out | cv | Register byte scaled to `range`, held between clocks. |
+| `gate` | out | gate | Register bit 0, held between clocks. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `probability` | `0.1` | 0 … 1 | Chance the recirculating bit flips per clock. 0 = locked loop, 1 = coin flips. |
+| `length` | `8` | 2 … 16 | Loop length in clocks. |
+| `range` | `2.0` | 0 … 5 | CV span: 0..range unipolar, ±range bipolar. |
+| `bipolar` | `False` | bool | Centre the CV on 0. |
+| `seed` | `1` | ≥ 0 | Deterministic character; change to re-roll live. |
+
 #### `lfo`
 
 _To document._ Low-frequency oscillator as a `cv` source (sine/tri/square/
@@ -2323,6 +2367,52 @@ first input sample**, so the output starts at the signal rather than
 swooping up from zero; unpatched `in` emits 0. Params: `shape` (default
 `linear`), `rise_time` / `fall_time` (default 0.1 s). See
 `examples/slew_portamento.json`.
+
+#### `quantizer`
+
+Snaps a wandering pitch CV to the **nearest note of a scale** — the
+missing link between random/LFO/sequencer voltages and *melody*. 1 V/oct,
+C4 = 0 V (the house pitch convention), so `out` lands in tune at any
+`freq_cv` / `pitch_cv` destination. The scale is `root` + `scale` (ten
+built-ins from chromatic to blues and whole-tone); pick `custom` and the
+node's twelve pitch-class tickboxes take over (an empty custom set falls
+back to chromatic — the module never wedges silent). `transpose` shifts
+the *output* in semitones after quantization.
+
+Two modes, picked by patching. **Continuous** (`gate` unpatched): every
+sample quantizes, and `hysteresis` (cents) makes the held note sticky —
+a new note wins only once the input is more than the margin closer to it
+than to the held one, so an input hovering exactly on a note boundary
+doesn't flutter. **Gated** (`gate` patched): sample-and-quantize on
+rising edges only, holding in between — clocked melodies from a
+free-running source, drift-proof. Either way `changed` fires a ~5 ms
+trigger per new held note — patch it to an envelope and every fresh note
+articulates itself, no separate clock needed.
+
+Voice-aware: a `(V, F)` input quantizes per voice (held note and
+`changed` per slot, no crosstalk); the held note is primed to the first
+input so loading a patch fires nothing. Neutral note: `chromatic` +
+`hysteresis 0` + `transpose 0` is **semitone rounding**, deliberately not
+a passthrough. See `examples/shift_random_melody.json`.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | cv | Pitch CV to quantize (1 V/oct). Unpatched → 0. |
+| `gate` | in | gate | Optional: quantize on rising edges only. Mono, applies to all voices. |
+| `out` | out | cv | Quantized (then transposed) pitch CV. |
+| `changed` | out | gate | ~5 ms trigger per new held note, per voice. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `root` | `C` | C … B | Scale root. |
+| `scale` | `major` | combo | chromatic · major · minor · harmonic minor · pentatonic maj/min · dorian · mixolydian · blues · whole tone · custom. |
+| `hysteresis` | `10` | 0 … 50 ct | Boundary stickiness in continuous mode. |
+| `transpose` | `0` | −24 … +24 st | Added to the output post-quantize (may leave the scale — it's a transposition, not a rotation). |
+| `custom_c` … `custom_b` | all on | bools | Pitch classes for `custom`, drawn as two rows of tickboxes. |
 
 #### `meter`
 

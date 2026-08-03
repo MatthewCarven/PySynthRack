@@ -47,6 +47,11 @@ from ..modules.meter import METER_MODES
 from ..modules.waveshaper import WAVESHAPER_MODES
 from ..modules.noise import NOISE_COLORS
 from ..modules.oscillator import WAVEFORMS
+from ..modules.quantizer import (
+    CUSTOM_KEYS as QUANTIZER_CUSTOM_KEYS,
+    QUANTIZER_ROOTS,
+    QUANTIZER_SCALES,
+)
 from ..modules.slew import SLEW_SHAPES
 from ..modules.sweep_eq import SWEEP_EQ_MODES
 from ..modules.transient_shaper import TRANSIENT_SHAPER_SPEEDS
@@ -2137,6 +2142,95 @@ class App:
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=1.0,
                     min_value=20.0, max_value=20000.0, format="%.0f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "quantizer":
+            # ``root``/``scale`` are combos; ``hysteresis`` is cents of
+            # note-boundary stickiness; ``transpose`` shifts the OUTPUT in
+            # semitones (post-quantize). The twelve custom-scale tickboxes
+            # render as two compact horizontal rows when the FIRST of them
+            # comes up; the rest then draw nothing (already on screen).
+            if param_name == "root":
+                dpg.add_combo(
+                    label=param_name, items=list(QUANTIZER_ROOTS),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "scale":
+                dpg.add_combo(
+                    label=param_name, items=list(QUANTIZER_SCALES),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "hysteresis":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=50.0, format="%.0f ct",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "transpose":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=-24.0, max_value=24.0, format="%.0f st",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == QUANTIZER_CUSTOM_KEYS[0]:
+                # Draw the whole 12-tickbox bank (used when scale=custom)
+                # as two rows of six, labelled by pitch class.
+                note_names = (
+                    "C", "C#", "D", "D#", "E", "F",
+                    "F#", "G", "G#", "A", "A#", "B",
+                )
+                for row in (range(0, 6), range(6, 12)):
+                    with dpg.group(horizontal=True):
+                        for i in row:
+                            key = QUANTIZER_CUSTOM_KEYS[i]
+                            dpg.add_checkbox(
+                                label=note_names[i],
+                                default_value=bool(module.params.get(key, True)),
+                                callback=self._on_param_changed,
+                                user_data=(module.id, key),
+                            )
+                return
+            if param_name in QUANTIZER_CUSTOM_KEYS:
+                return  # drawn with the bank above
+
+        if module.TYPE == "shift_random":
+            # Turing-machine-style looping random. ``probability`` is the
+            # money knob (0 locked loop .. 1 coin flips); ``length`` is the
+            # loop in clocks; ``range`` scales the CV (bipolar checkbox
+            # centres it); ``seed`` re-rolls the register live.
+            if param_name == "probability":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "length":
+                dpg.add_slider_int(
+                    label=param_name, default_value=int(current),
+                    min_value=2, max_value=16,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "range":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.01,
+                    min_value=0.0, max_value=5.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "seed":
+                dpg.add_drag_int(
+                    label=param_name, default_value=int(current), speed=1,
+                    min_value=0, max_value=999999,
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
