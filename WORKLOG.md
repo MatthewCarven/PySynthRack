@@ -10,6 +10,80 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-03 — arpeggiator + chord: the voice architecture in both directions (part seven)
+
+Matthew called the pair off the wishlist: `arpeggiator` (poly→mono
+collapser) and `chord` (mono→poly explorer) — "both fun exercises of
+the voice architecture in opposite directions". Both to the
+MODULE_IDEAS spec, one commit.
+
+**arpeggiator** (Modulation). First module to *consume* `(V, F)` voice
+buffers and emit mono: poly `pitch_cv` + `gate` in (cv_keyboard /
+midi_input), `clock` + `reset` in, mono line out. The design center is
+the held-set bookkeeping: keyed by **voice slot** with an **arrival
+stamp**, so `order` mode is true as-played order even across slot reuse
+(a slot-index sort would lie after the allocator recycles). Voice-gate
+edges are vectorized into a sparse per-sample event map — a rise
+carries the pitch read *at that sample* — so the frames loop stays
+scalar-only (euclidean precedent) with no 16×F per-sample scan; pitch
+is therefore **sampled at the rise** and later source wobble doesn't
+retune a held note (pinned). Modes: up / down / updown (palindrome,
+endpoints unrepeated — pinned) / order / random (seeded, one draw per
+step, block-independent). `octaves` stacks passes (descending stacks
+descend from the top — pinned). Sequence rebuilt from the held set at
+each clock edge; position kept by wrapped index (the join/leave
+semantics are pinned, including the wrapped-index double-note on a
+leave). Chord empties → silence, rewind, and **pitch holds** so
+downstream release tails stay in tune (cv_keyboard convention).
+`hold` latches with falls-before-rises event ordering, so a press from
+silence clears the latch *and rewinds* — the classic performance
+latch; a live hold→off toggle prunes to the physically held. Gate runs
+`gate_len` of the measured clock period, mirroring before two edges
+(euclidean idiom verbatim). Mono 1D inputs work as V = 1 — one finger
++ octaves 2 is an octave arp.
+
+**chord** (CV & Utilities). Mono `pitch_cv` + `gate` → `(4, F)` voice
+rows, each `in + interval`. Deliberate shape call: **4 rows, always**
+— not 16 (4× cheaper for every downstream per-voice consumer) and not
+enabled-count (disabled slots stay gate-low so downstream per-voice
+state never re-shapes on a live toggle). Presets fill the four slots
+(`major`…`aug`, `5` = power chord with slot 4 off); `custom` reads
+`interval_n`/`enable_n` (quantizer-tickbox-bank UI precedent, drawn as
+checkbox+drag rows). Pitch is a pure stateless broadcast every sample
+— glides chord along, release tails stay in tune. Gates are stateful
+only for `strum`: onsets staggered `k × strum` ms over *enabled* rows
+in absolute sample time (burst precedent, block joins pinned), falls
+together, fall cancels unfired onsets (pinned). Fast paths: strum-0
+mirrors the input verbatim; steady blocks fill by active flags; only
+note-event blocks pay the 4×F scalar walk. `spread` opens the voicing
+(0, +12, −12, 0 — major → the open −5/0/12/16, documented exactly).
+
+**Perf** (block 256 @ 44.1 kHz, measured): arp worst-case (16 voices
+all gating, 8 clock edges per block, octaves 4) **5.1 %** of budget;
+chord note-event blocks **4.1 %**, steady vector path **0.7 %**.
+
+**Tests / example / docs.** 48 tests (`test_arpeggiator.py` 25,
+`test_chord.py` 23): every mode's exact walk, octave stacks, joins/
+leaves mid-arp, hold latch + press-from-silence + live-toggle prune,
+rise-sampled pitch, measured gate_len + pre-interval mirror, preset
+rows exact, custom enables, spread, strum stagger/cancel/enabled-only,
+strum across block joins, both block-size independent, and a full-graph
+render each (arp: cv_keyboard chord → osc/adsr/vca; chord: (4, F) rows
+driving a real voice-aware chain). Suite **2515** (2466 + 48 + the new
+example). Example `chord_arp_factory.json` — the full circle:
+sequencer root walk → quantizer (A minor) → **chord** (m7, spread,
+25 ms strum) → **arpeggiator** (updown, 10 steps per chord) → saw →
+ADSR → VCA. The two new modules exercising *each other*: mono → poly →
+mono, self-playing. MODULES.md index rows + full entries; MODULE_IDEAS
+marked shipped; pyo silent-stub tuple; UI: shared mode-combo arm +
+octaves/gate_len/seed, chord preset combo + slot bank + strum ms.
+
+**Pending (meatthread0):** ears on `chord_arp_factory.json` — and the
+GUI feel of the chord slot bank. **Later:** arp `rate`-less clockless
+mode (internal clock)? `swing` on the arp clock is really a
+`clock_divider`/shuffle job (wishlist); chord `inversion` knob;
+chord root-row `changed` trigger out for re-strums.
+
 ## 2026-08-03 — the clockwork trio: the drums play themselves (part six, day's end)
 
 Matthew ("love this project!") called the clockwork trio as the day's

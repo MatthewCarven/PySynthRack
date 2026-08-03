@@ -9,6 +9,25 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **`arpeggiator` + `chord` — the voice pair, both directions** —
+      BOTH SHIPPED 2026-08-03 (day part seven; Matthew: "fun exercises
+      of the voice architecture in opposite directions"). Arpeggiator:
+      first poly→mono collapser — slot-keyed arrival-stamped held set
+      (order = true as-played), sparse voice-edge event map (no 16×F
+      scan), pitch sampled at the rise (pinned), up/down/updown-
+      palindrome/order/random(seeded), octave stacks, hold latch with
+      press-from-silence restart, measured gate_len (euclidean idiom),
+      pitch holds through silence. Chord: mono→poly explorer — fixed
+      (4, F) rows (shape-stable live toggles, 4× cheaper than 16),
+      preset table + custom slot bank, continuous pitch broadcast,
+      strum staggers enabled-row onsets in absolute samples (fall
+      cancels unfired), spread = open voicing (0,+12,−12,0). Perf: arp
+      worst-case 5.1% budget, chord 4.1% event / 0.7% steady. 48 tests;
+      suite **2515**. Example `chord_arp_factory.json` — mono → poly →
+      mono full circle, self-playing. **Pending (meatthread0):** ears
+      on the factory + GUI feel of the chord slot bank. Later: chord
+      `inversion` knob; chord `changed` re-strum trigger; arp internal
+      clock; swing lives in the future `clock_divider`.
 - [x] **Clockwork trio `euclidean` / `burst` / `bernoulli_gate`** — ALL
       SHIPPED 2026-08-03 (8aa49fb, the day's finale). Euclidean:
       arithmetic Bjorklund (tresillo verbatim, pinned), measured-step
