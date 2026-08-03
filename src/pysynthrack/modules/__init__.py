@@ -13,6 +13,7 @@ from .audiotocv import AudioToCV
 from .bitcrusher import Bitcrusher
 from .chorus import Chorus
 from .clock import Clock
+from .clockwork import BernoulliGate, Burst, Euclidean
 from .combiner import Combiner
 from .compressor import Compressor
 from .constant import Constant
@@ -84,8 +85,10 @@ __all__ = [
     "ADEnvelope",
     "ADSR",
     "AudioToCV",
+    "BernoulliGate",
     "Bitcrusher",
     "BufferedSpecificSpeakerOutput",
+    "Burst",
     "Chorus",
     "Clock",
     "Combiner",
@@ -102,6 +105,7 @@ __all__ = [
     "CVToFrequency",
     "Delay",
     "DiskWriter",
+    "Euclidean",
     "Distortion",
     "FaderSeq",
     "FilePlayer",

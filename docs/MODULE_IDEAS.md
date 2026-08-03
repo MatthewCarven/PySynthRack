@@ -274,7 +274,7 @@ Looping shift-register random CV — the generative classic.
 - Ships with an example: clock → shift_random → quantizer → osc = endless
   melody box.
 
-### `euclidean` (S)
+### `euclidean` (S) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
 - Ports: `clock` in; `reset` in; `gate` out; `accent` out (second layer).
 - Params: `steps` 1..32 (16) · `fills` 0..steps (4) · `rotate` 0..steps−1 (0)
@@ -294,7 +294,7 @@ Looping shift-register random CV — the generative classic.
 - Tests: division counts exact over 1000 edges; swing timing; mult tracks a
   tempo ramp within one period; reset realigns all counters.
 
-### `bernoulli_gate` (S)
+### `bernoulli_gate` (S) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
 - Ports: `in` (gate); `p_cv`; `out_a`; `out_b`.
 - Params: `probability` 0..1 (0.5, chance of A) · `mode` independent|toggle ·
@@ -304,7 +304,7 @@ Looping shift-register random CV — the generative classic.
 - Tests: p=0 / p=1 degenerate exactness; seeded sequence reproducible;
   count(A) + count(B) = count(in) — nothing lost or doubled.
 
-### `burst` (S)
+### `burst` (S) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
 Ratchet generator: one trigger → N gates.
 

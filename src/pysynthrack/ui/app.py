@@ -53,6 +53,7 @@ from ..modules.quantizer import (
     QUANTIZER_ROOTS,
     QUANTIZER_SCALES,
 )
+from ..modules.clockwork import BERNOULLI_MODES
 from ..modules.modal import MODAL_MATERIALS
 from ..modules.scope import SCOPE_MODES, SCOPE_TRIGGER_MODES
 from ..modules.slew import SLEW_SHAPES
@@ -2278,6 +2279,99 @@ class App:
                 )
                 return
 
+        if module.TYPE == "euclidean":
+            # Euclidean rhythm: fills hits over steps ticks; rotate walks
+            # the pattern; accent_fills is the sparser accent layer;
+            # gate_len is the hit length as a fraction of one step.
+            if param_name == "steps":
+                dpg.add_slider_int(
+                    label=param_name, default_value=int(current),
+                    min_value=1, max_value=32,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("fills", "accent_fills"):
+                dpg.add_slider_int(
+                    label=param_name, default_value=int(current),
+                    min_value=0, max_value=32,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "rotate":
+                dpg.add_slider_int(
+                    label=param_name, default_value=int(current),
+                    min_value=0, max_value=31,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "gate_len":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.05, max_value=1.0, format="%.2f step",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "burst":
+            # Ratchet generator: count gates per trigger; rate spans the
+            # free-running burst (ignored when clocked); division picks
+            # every Nth clock edge; decay tapers env; spread warps the
+            # grid (accel ↔ ritard).
+            if param_name == "count":
+                dpg.add_slider_int(
+                    label=param_name, default_value=int(current),
+                    min_value=1, max_value=16,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "rate":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.1,
+                    min_value=0.5, max_value=50.0, format="%.1f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "division":
+                dpg.add_slider_int(
+                    label=param_name, default_value=int(current),
+                    min_value=1, max_value=8,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "decay":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "spread":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-1.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "bernoulli_gate":
+            # Probability router: probability = chance of out_a (plus
+            # p_cv at the edge); mode hits the shared combo (independent
+            # coin vs toggle-on-heads); seed re-rolls the coin stream.
+            if param_name == "probability":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "seed":
+                dpg.add_drag_int(
+                    label=param_name, default_value=int(current), speed=1,
+                    min_value=0, max_value=999999,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE in ("kick_drum", "snare_drum", "hat_drum"):
             # Percussion voices. All ms params carry their unit; ``tune``
             # is a shared ±12 st shift; click/drive/snappy/level are 0..1.
@@ -2496,6 +2590,8 @@ class App:
                 items = list(KEY_TRIGGER_MODES)
             elif module.TYPE == "scope":
                 items = list(SCOPE_MODES)
+            elif module.TYPE == "bernoulli_gate":
+                items = list(BERNOULLI_MODES)
             else:
                 items = list(FILTER_MODES)
             dpg.add_combo(

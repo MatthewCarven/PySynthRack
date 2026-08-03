@@ -240,6 +240,9 @@ signal-flow role (sources → processors → … → sinks).
 | [`sequencer`](#sequencer) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
 | [`fader_seq`](#fader_seq) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
 | [`shift_random`](#shift_random) | Modulation | `clock`,`write` (gate) → `cv` (cv), `gate` (gate) |
+| [`euclidean`](#euclidean) | Modulation | `clock`,`reset` (gate) → `gate`,`accent` (gate) |
+| [`burst`](#burst) | Modulation | `trigger`,`clock` (gate) → `gate` (gate), `env` (cv) |
+| [`bernoulli_gate`](#bernoulli_gate) | Modulation | `in` (gate), `p_cv` (cv) → `out_a`,`out_b` (gate) |
 | [`audio_to_cv`](#audio_to_cv) | CV & Utilities | `in` (audio) → `cv` (cv) |
 | [`cv_to_audio`](#cv_to_audio) | CV & Utilities | `cv` (cv) → `out` (audio) |
 | [`schmitt`](#schmitt) | CV & Utilities | `in` (cv) → `gate` (gate) |
@@ -2342,6 +2345,53 @@ history, the hardware behaviour. Mono, stepped outputs (follow with
 | `range` | `2.0` | 0 … 5 | CV span: 0..range unipolar, ±range bipolar. |
 | `bipolar` | `False` | bool | Centre the CV on 0. |
 | `seed` | `1` | ≥ 0 | Deterministic character; change to re-roll live. |
+
+#### `euclidean`
+
+The **Euclidean rhythm generator**: `fills` hits distributed as evenly
+as possible across `steps` clock ticks — the arithmetic Bjorklund
+pattern `hit[i] = ((i+rotate)·fills) mod steps < fills` (no recursion;
+E(3,8) is the tresillo `10010010` verbatim). `rotate` walks the pattern;
+`reset` realigns so the next clock plays step 1. The gate holds each hit
+for `gate_len` of a step (step length measured from the incoming clock;
+until two edges have been seen it mirrors the clock's high time).
+`accent` is a second, sparser Euclidean layer (`accent_fills`)
+**intersected with the main pattern** — accents always land on hits;
+patch it to a VCA boost or a second envelope. Feed the drum voices:
+E(3,8) into a kick over a 16-step grid is instant Afro-Cuban. **Ports**:
+`clock`, `reset` (gate) → `gate`, `accent` (gate). **Params**: `steps`
+1..32 (16) · `fills` 0..steps (4) · `rotate` (0) · `accent_fills` (0) ·
+`gate_len` 0.05..1 step (0.5). See `examples/clockwork_groove.json`.
+
+#### `burst`
+
+The **ratchet generator**: one `trigger` edge fires `count` gates.
+Free-running they span `count/rate` seconds, `spread` warping the grid
+(−1 accelerando … +1 ritardando, 0 even); with `clock` patched the
+gates land on every `division`-th clock edge instead (mirroring the
+clock's high time). `env` rides `(1−decay)^k` while gate k is high —
+patch it straight into a VCA for decaying drum ratchets, no envelope
+needed. A retrigger mid-burst restarts the burst. Bursts are scheduled
+whole at the trigger edge: deterministic, block-size independent.
+**Ports**: `trigger`, `clock` (gate) → `gate` (gate), `env` (cv).
+**Params**: `count` 1..16 (3) · `rate` 0.5..50 Hz (8) · `division` 1..8
+(1) · `decay` 0..1 (0.3) · `spread` ±1 (0). See
+`examples/clockwork_groove.json`.
+
+#### `bernoulli_gate`
+
+The **probability switch**: each incoming gate is routed *whole*
+(decision latched on the rising edge, length preserved) to `out_a` with
+probability `p`, else `out_b` — `p` being `probability` plus the `p_cv`
+value at the edge, clamped 0..1. `mode` `independent` flips a fresh coin
+per gate; `toggle` makes the coin decide whether to *switch* outputs
+(p = 1 alternates A/B/A/B strictly). One seeded rng draw per gate —
+deterministic per `seed`, block-size independent, and `count(A) +
+count(B) = count(in)` exactly. The classic patch: eighth-note hats in,
+closed hat on A, open hat on B, probability low — a hi-hat line that
+breathes. **Ports**: `in` (gate), `p_cv` (cv) → `out_a`, `out_b`
+(gate). **Params**: `probability` 0..1 (0.5) · `mode` (independent) ·
+`seed` (1). See `examples/clockwork_groove.json`.
 
 #### `lfo`
 

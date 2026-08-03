@@ -2289,6 +2289,12 @@ class NumpyBackend(AudioBackend):
             return self._render_sequencer(module, frames, buffers, patch)
         if module.TYPE == "shift_random":
             return self._render_shift_random(module, frames, buffers, patch)
+        if module.TYPE == "euclidean":
+            return self._render_euclidean(module, frames, buffers, patch)
+        if module.TYPE == "burst":
+            return self._render_burst(module, frames, buffers, patch)
+        if module.TYPE == "bernoulli_gate":
+            return self._render_bernoulli(module, frames, buffers, patch)
         if module.TYPE == "midi_input":
             return self._render_midi_input(module, frames)
         if module.TYPE == "filter":
@@ -10988,6 +10994,283 @@ class NumpyBackend(AudioBackend):
             pos += chunk
         st["widx"][v] = w
         st["ap_z"][v] = z
+
+    # ----- Clockwork trio (euclidean / burst / bernoulli) ------------------
+
+    def _render_euclidean(self, module, frames: int, buffers, patch) -> dict:
+        """Euclidean rhythm gate (see modules/clockwork.py).
+
+        Per-sample edge loop on tolist()'d rows (sequencer precedent,
+        slew scalar lesson). The step length is measured from the last
+        two clock edges (carried across blocks); an active step's gate
+        then runs ``gate_len`` of that measurement, also carried across
+        blocks — until an interval exists the gate simply mirrors the
+        clock's own high time. ``accent`` is the ``accent_fills`` layer
+        intersected with the main pattern (accents always land on hits).
+        A reset rising edge realigns so the next clock plays step 1.
+        """
+        from ..modules.clockwork import euclidean_pattern
+
+        clock = self._input_buffer(patch, buffers, module.id, "clock")
+        reset = self._input_buffer(patch, buffers, module.id, "reset")
+
+        steps = int(module.params.get("steps", 16))
+        fills = int(module.params.get("fills", 4))
+        rotate = int(module.params.get("rotate", 0))
+        accent_fills = int(module.params.get("accent_fills", 0))
+        try:
+            gate_len = float(module.params.get("gate_len", 0.5))
+        except (TypeError, ValueError):
+            gate_len = 0.5
+        gate_len = min(1.0, max(0.05, gate_len))
+
+        pattern = euclidean_pattern(steps, fills, rotate)
+        acc_layer = euclidean_pattern(steps, accent_fills, rotate)
+        n_steps = len(pattern)
+
+        st = self._state.setdefault(
+            module.id,
+            {
+                "idx": -1, "prev_clock": False, "prev_reset": False,
+                "last_edge": -1, "interval": 0, "samples": 0,
+                "gate_rem": 0, "acc_rem": 0,
+                "gate_mirror": False, "acc_mirror": False,
+            },
+        )
+        idx = int(st["idx"])
+        prev_c = bool(st["prev_clock"])
+        prev_r = bool(st["prev_reset"])
+        last_edge = int(st["last_edge"])
+        interval = int(st["interval"])
+        base = int(st["samples"])
+        gate_rem = int(st["gate_rem"])
+        acc_rem = int(st["acc_rem"])
+        gate_mirror = bool(st["gate_mirror"])
+        acc_mirror = bool(st["acc_mirror"])
+
+        thresh = self._GATE_HIGH
+        c_row = (clock > thresh).tolist() if clock is not None else [False] * frames
+        r_row = (reset > thresh).tolist() if reset is not None else [False] * frames
+
+        gate_out = np.zeros(frames, dtype=np.float32)
+        acc_out = np.zeros(frames, dtype=np.float32)
+        g_list = [0.0] * frames
+        a_list = [0.0] * frames
+
+        for n in range(frames):
+            c = c_row[n]
+            r = r_row[n]
+            if r and not prev_r:
+                idx = -1  # next clock edge plays step 1
+            prev_r = r
+            if c and not prev_c:
+                now = base + n
+                if last_edge >= 0:
+                    interval = now - last_edge
+                last_edge = now
+                idx = (idx + 1) % n_steps
+                if pattern[idx]:
+                    if interval > 0:
+                        gate_rem = max(1, int(round(gate_len * interval)))
+                        gate_mirror = False
+                    else:
+                        gate_mirror = True
+                    if acc_layer[idx]:
+                        if interval > 0:
+                            acc_rem = gate_rem
+                            acc_mirror = False
+                        else:
+                            acc_mirror = True
+            prev_c = c
+            if gate_mirror and not c:
+                gate_mirror = False
+            if acc_mirror and not c:
+                acc_mirror = False
+            if gate_rem > 0:
+                g_list[n] = 1.0
+                gate_rem -= 1
+            elif gate_mirror:
+                g_list[n] = 1.0
+            if acc_rem > 0:
+                a_list[n] = 1.0
+                acc_rem -= 1
+            elif acc_mirror:
+                a_list[n] = 1.0
+
+        gate_out[:] = g_list
+        acc_out[:] = a_list
+        st.update(
+            idx=idx, prev_clock=prev_c, prev_reset=prev_r,
+            last_edge=last_edge, interval=interval, samples=base + frames,
+            gate_rem=gate_rem, acc_rem=acc_rem,
+            gate_mirror=gate_mirror, acc_mirror=acc_mirror,
+        )
+        return {"gate": gate_out, "accent": acc_out}
+
+    def _render_burst(self, module, frames: int, buffers, patch) -> dict:
+        """Ratchet generator (see modules/clockwork.py).
+
+        Free-running bursts are SCHEDULED whole at the trigger edge
+        (absolute sample times — deterministic, block-size independent):
+        gate k starts at ``(count/rate)·(k/count)^e`` with
+        ``e = 2^spread`` warping the grid, runs 40% of its local
+        interval, and carries ``env = (1−decay)^k``. With ``clock``
+        patched the pending gates instead land on every ``division``-th
+        clock edge, mirroring the clock's high time. A retrigger
+        restarts the burst (pending events dropped).
+        """
+        trig = self._input_buffer(patch, buffers, module.id, "trigger")
+        clock = self._input_buffer(patch, buffers, module.id, "clock")
+
+        count = max(1, min(16, int(module.params.get("count", 3))))
+        try:
+            rate = float(module.params.get("rate", 8.0))
+        except (TypeError, ValueError):
+            rate = 8.0
+        rate = min(50.0, max(0.5, rate))
+        division = max(1, min(8, int(module.params.get("division", 1))))
+        decay = min(1.0, max(0.0, float(module.params.get("decay", 0.3))))
+        spread = min(1.0, max(-1.0, float(module.params.get("spread", 0.0))))
+        sr = float(self.sample_rate)
+
+        st = self._state.setdefault(
+            module.id,
+            {
+                "samples": 0, "prev_trig": False, "prev_clock": False,
+                "events": [],  # [start_abs, len, env] pending/active
+                "pending_clock": 0,  # gates still to fire on clock edges
+                "edges_seen": 0, "env_val": 0.0, "gate_until": -1,
+                "mirror": False, "k": 0,
+            },
+        )
+        base = int(st["samples"])
+        thresh = self._GATE_HIGH
+        t_row = (trig > thresh).tolist() if trig is not None else [False] * frames
+        c_row = (clock > thresh).tolist() if clock is not None else [False] * frames
+        prev_t = bool(st["prev_trig"])
+        prev_c = bool(st["prev_clock"])
+        clocked = clock is not None
+
+        gate = [0.0] * frames
+        env = [0.0] * frames
+        events = st["events"]
+
+        for n in range(frames):
+            t = t_row[n]
+            c = c_row[n]
+            now = base + n
+            if t and not prev_t:
+                events.clear()
+                if clocked:
+                    st["pending_clock"] = count
+                    st["edges_seen"] = 0
+                    st["k"] = 0
+                else:
+                    e = 2.0 ** spread
+                    dur = count / rate
+                    times = [dur * ((k / count) ** e) for k in range(count)]
+                    times.append(dur)
+                    for k in range(count):
+                        start = now + int(round(times[k] * sr))
+                        length = max(
+                            1, int(round(0.4 * (times[k + 1] - times[k]) * sr))
+                        )
+                        events.append([start, length, (1.0 - decay) ** k])
+            prev_t = t
+            if clocked and c and not prev_c and st["pending_clock"] > 0:
+                if st["edges_seen"] % division == 0:
+                    k = st["k"]
+                    st["k"] = k + 1
+                    st["pending_clock"] -= 1
+                    # Mirror the clock high; env holds while it does.
+                    st["mirror"] = True
+                    st["env_val"] = (1.0 - decay) ** k
+                st["edges_seen"] += 1
+            prev_c = c
+            if st["mirror"]:
+                if c:
+                    gate[n] = 1.0
+                    env[n] = st["env_val"]
+                else:
+                    st["mirror"] = False
+            for ev in events:
+                if ev[0] <= now < ev[0] + ev[1]:
+                    gate[n] = 1.0
+                    env[n] = ev[2]
+                    break
+
+        st["events"] = [ev for ev in events if ev[0] + ev[1] > base + frames]
+        st["samples"] = base + frames
+        st["prev_trig"] = prev_t
+        st["prev_clock"] = prev_c
+        return {
+            "gate": np.array(gate, dtype=np.float32),
+            "env": np.array(env, dtype=np.float32),
+        }
+
+    def _render_bernoulli(self, module, frames: int, buffers, patch) -> dict:
+        """Probability gate router (see modules/clockwork.py).
+
+        The routing decision latches on each rising edge (one seeded rng
+        draw per gate — deterministic, block-size independent) and the
+        whole gate mirrors ``in`` on the chosen output until it falls.
+        ``toggle`` mode flips outputs with probability p instead of
+        picking independently.
+        """
+        gate_in = self._input_buffer(patch, buffers, module.id, "in")
+        p_cv = self._input_buffer(patch, buffers, module.id, "p_cv")
+
+        try:
+            prob = float(module.params.get("probability", 0.5))
+        except (TypeError, ValueError):
+            prob = 0.5
+        mode = str(module.params.get("mode", "independent"))
+        try:
+            seed = int(module.params.get("seed", 1))
+        except (TypeError, ValueError):
+            seed = 1
+        seed = max(0, seed)
+
+        st = self._state.setdefault(module.id, {})
+        if st.get("seed") != seed:
+            st["seed"] = seed
+            st["rng"] = np.random.default_rng(seed)
+            st["prev"] = False
+            st["choice_a"] = True
+        rng = st["rng"]
+
+        out_a = np.zeros(frames, dtype=np.float32)
+        out_b = np.zeros(frames, dtype=np.float32)
+        if gate_in is None:
+            return {"out_a": out_a, "out_b": out_b}
+
+        high = gate_in > self._GATE_HIGH
+        prev_arr = np.empty_like(high)
+        prev_arr[0] = bool(st["prev"])
+        prev_arr[1:] = high[:-1]
+        edges = np.flatnonzero(high & ~prev_arr).tolist()
+        st["prev"] = bool(high[-1])
+
+        choice_a = bool(st["choice_a"])
+        bounds = edges + [frames]
+        pos = 0
+        for i, seg_end in enumerate(bounds):
+            seg = slice(pos, seg_end)
+            masked = np.where(high[seg], gate_in[seg], 0.0)
+            (out_a if choice_a else out_b)[seg] = masked
+            if i < len(edges):
+                e = edges[i]
+                p = prob + (float(p_cv[e]) if p_cv is not None else 0.0)
+                p = min(1.0, max(0.0, p))
+                draw = float(rng.random())
+                if mode == "toggle":
+                    if draw < p:
+                        choice_a = not choice_a
+                else:
+                    choice_a = draw < p
+                pos = e
+        st["choice_a"] = choice_a
+        return {"out_a": out_a, "out_b": out_b}
 
     # ----- Drum voices (kick / snare / hat) --------------------------------
 
