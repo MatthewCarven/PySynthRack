@@ -10,6 +10,58 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-03 — the clockwork trio: the drums play themselves (part six, day's end)
+
+Matthew ("love this project!") called the clockwork trio as the day's
+last build: `euclidean` + `burst` + `bernoulli_gate`, one commit
+(8aa49fb), one family file (`modules/clockwork.py`, the drums.py
+precedent).
+
+**euclidean.** The arithmetic Bjorklund: `hit[i] = ((i+rotate)·fills)
+mod steps < fills` — no recursion, and E(3,8) is the tresillo verbatim
+(pinned; E(5,8) pinned as a rotation of the canonical Bjorklund set,
+which is the accepted equivalence). The engineering wrinkle was
+`gate_len`: a fraction of a *step*, but the step length is the clock's
+business — so the renderer measures the interval between the last two
+edges (carried across blocks) and holds each hit that fraction of it,
+mirroring the clock's high time until a measurement exists. `accent` =
+the sparser `accent_fills` layer INTERSECTED with the main pattern
+(an accent on a rest is useless — design call, documented). Per-sample
+loop on tolist()'d rows (sequencer precedent + slew scalar lesson).
+
+**burst.** Ratchets: free-running bursts are scheduled WHOLE at the
+trigger edge in absolute sample time — deterministic and block-size
+independent by construction (the drum-buffer idea applied to gates).
+`spread` warps the grid with a `2^spread` exponent on normalized
+positions (accelerando ↔ ritardando, pinned by interval monotonicity);
+`env` rides `(1−decay)^k` while gate k is high — a VCA patched from it
+gets decaying ratchets with no envelope module. Clocked mode fires on
+every `division`-th edge, mirroring the clock's high period. Retrigger
+restarts (documented hardware behaviour, pinned).
+
+**bernoulli_gate.** Whole-gate routing with the decision latched at the
+rising edge — the segment-fill approach means `out_a + out_b`
+reconstructs the input EXACTLY (pinned), gate lengths preserved across
+block joins. One seeded rng draw per gate (reproducible; `p_cv` shifts
+the coin at the edge; `toggle` mode flips-on-heads — p=1 alternates
+strictly, pinned).
+
+25 tests; suite **2466** pass / 1 skip. Example
+`examples/clockwork_groove.json` — the self-playing groove: E(3,16)
+kick, eighth-note hats coin-split closed/open (open choked by the next
+closed), and the backbeat sequencer triggering 3-hit decaying snare
+ratchets. 0.72 peak over four rendered seconds, and it actually grooves.
+
+**Day ledger (2026-08-03):** housekeeping + polish audit slices 1–2,
+quantizer + shift_random, scope, pluck, modal, the drum trio, the
+clockwork trio — **13 modules shipped in one day**, suite 2306 → 2466,
+every one documented, tested, exampled, and tripwire-protected.
+
+**Pending (meatthread0):** push; then the fun part — load
+`clockwork_groove.json` and listen to it play itself (nudge
+`probability`, `fills`, `rotate` live). All the day's real-GUI/ears
+eyeballs queued in their TODO entries.
+
 ## 2026-08-03 — modal + the drum trio: strike section (same day, part five)
 
 Matthew: continue with pluck's siblings. Two commits — `modal` (13ef181)

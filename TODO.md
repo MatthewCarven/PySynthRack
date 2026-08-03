@@ -9,6 +9,18 @@ Living list of what's next. Edit freely.
 
 ## Later / wishlist
 
+- [x] **Clockwork trio `euclidean` / `burst` / `bernoulli_gate`** — ALL
+      SHIPPED 2026-08-03 (8aa49fb, the day's finale). Euclidean:
+      arithmetic Bjorklund (tresillo verbatim, pinned), measured-step
+      gate_len, accent layer intersected with hits. Burst: whole-burst
+      scheduling at the edge (deterministic), 2^spread grid warp,
+      (1−decay)^k env, clocked division mode. Bernoulli: whole-gate
+      routing (A+B ≡ in exactly, pinned), p_cv at the edge, toggle mode,
+      seeded. 25 tests; suite **2466**. Example `clockwork_groove.json`
+      (the self-playing groove). **Pending (meatthread0):** ears — and
+      it's the fun one. Later: euclidean `fills_cv`; burst `count_cv`;
+      bernoulli 3+-way sibling (`sequential_switch` is on the quick-hit
+      list); a `clock_divider` to round out the clockwork family.
 - [x] **`modal` — struck resonator bank** — SHIPPED 2026-08-03 (13ef181,
       same day part five). bar/bell/membrane(Bessel-zeros)/string tables,
       modes 4..24, t60 decay + tilt, brightness, inharm stretch;
