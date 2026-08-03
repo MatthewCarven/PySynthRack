@@ -276,6 +276,9 @@ class PyoBackend(AudioBackend):
             "scope",
             "pluck",
             "modal",
+            "kick_drum",
+            "snare_drum",
+            "hat_drum",
         ):
             # v0.3+ routing / bridge / CV-oscillator modules. The numpy
             # backend is the real implementation; pyo support arrives

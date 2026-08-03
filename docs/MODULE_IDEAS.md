@@ -425,7 +425,7 @@ Grain-cloud texture engine over a live-captured buffer.
   bit-identical); scheduler block-size independent (grain onsets carried
   across joins); mix=0 bit-exact dry.
 
-### Drum voices: `kick_drum`, `snare_drum`, `hat_drum` (S–M each; submit separately)
+### Drum voices: `kick_drum`, `snare_drum`, `hat_drum` — **ALL SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
 Trigger-driven percussion sources; with clock/euclidean/burst the rack becomes
 a groovebox.

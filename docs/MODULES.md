@@ -203,6 +203,9 @@ signal-flow role (sources → processors → … → sinks).
 | [`fm_op`](#fm_op) | Sources | `pitch_cv`,`amp_cv`,`index_cv` (cv), `pm` (audio) → `out` (audio) |
 | [`pluck`](#pluck) | Sources | `pitch_cv` (cv), `trigger` (gate) → `out` (audio) |
 | [`modal`](#modal) | Sources | `excite` (audio), `pitch_cv` (cv) → `out` (audio) |
+| [`kick_drum`](#kick_drum) | Sources | `trigger` (gate) → `out` (audio) |
+| [`snare_drum`](#snare_drum) | Sources | `trigger` (gate) → `out` (audio) |
+| [`hat_drum`](#hat_drum) | Sources | `closed_trigger`,`open_trigger` (gate) → `out` (audio) |
 | [`filter`](#filter) | Filters & EQ | `in` (audio), `cutoff_cv` (cv) → `out` (audio) |
 | [`crossover`](#crossover) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
 | [`parametric_eq`](#parametric_eq) | Filters & EQ | `in` (audio) → `out` (audio) |
@@ -712,6 +715,50 @@ stub under pyo. See `examples/modal_bells.json`.
 | `brightness` | `0.5` | 0 … 1 | Mode-gain tilt, dark → bright. |
 | `inharm` | `0.0` | 0 … 1 | Ratio stretch. |
 | `level` | `0.5` | 0 … 1 | Output level. |
+
+#### `kick_drum`
+
+The pitch-envelope kick: a sine that **dives** from `freq_start` to
+`freq_end` over `bend` ms (exponential — the constant analog circuits
+give), amplitude decaying over `decay` ms (a t60). `click` mixes a 2 ms
+noise transient into the attack; `drive` pushes the body into a
+normalized tanh for saturation grit (plain tanh, no oversampling — the
+kick is LF-dominant so foldover is negligible). `tune` shifts everything
+±12 st. Every hit is synthesized whole at the trigger edge, seeded per
+hit — deterministic, block-size independent, DC-free by construction —
+and a retrigger fades the old tail over ~2 ms (no machine-gun clicks).
+Mono; fan the trigger out for layers. Numpy only; silent stub under pyo.
+
+**Ports**: `trigger` (gate) → `out` (audio). **Params**: `freq_start`
+100..400 Hz (180) · `freq_end` 30..80 Hz (50) · `bend` 5..200 ms (40) ·
+`decay` 50..1500 ms (350) · `click` 0..1 (0.3) · `drive` 0..1 (0) ·
+`tune` ±12 st · `level` (0.7). See `examples/drum_machine.json`.
+
+#### `snare_drum`
+
+Two detuned **head modes** (~185/330 Hz sines, `tone_decay` ms) under a
+band-passed **wire-noise** layer (800 Hz–8 kHz, `noise_decay` ms,
+seeded per hit). `snappy` balances shell against wires (0 = all tone,
+1 = all noise). Same engine as the kick: whole-hit synthesis at the
+edge, deterministic, retrigger declick. `tune` ±12 st shifts the modes.
+
+**Ports**: `trigger` (gate) → `out` (audio). **Params**: `tone_decay`
+20..500 ms (120) · `noise_decay` 20..1000 ms (200) · `snappy` 0..1
+(0.5) · `tune` ±12 st · `level` (0.7). See `examples/drum_machine.json`.
+
+#### `hat_drum`
+
+Six detuned **square waves** (the classic metallic ratio stack around
+400 Hz) high-passed near 7 kHz — deterministic, no noise source needed;
+the stack *is* the noise (the squares alias mildly; hats are noise-like
+and it reads as character). One module, two jacks: `closed_trigger`
+(tight, `decay_closed`) and `open_trigger` (ringing, `decay_open`)
+share the voice, and a closed hit **chokes** a ringing open hit with
+the 2 ms fade — the pedal coming down, exactly like hardware.
+
+**Ports**: `closed_trigger`, `open_trigger` (gate) → `out` (audio).
+**Params**: `decay_closed` 10..300 ms (60) · `decay_open` 50..1500 ms
+(400) · `tune` ±12 st · `level` (0.6). See `examples/drum_machine.json`.
 
 ---
 

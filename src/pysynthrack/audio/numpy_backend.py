@@ -392,6 +392,79 @@ def _pluck_exciter(n: int, color: float, position: float, rng) -> np.ndarray:
     return e
 
 
+def _kick_hit(sr, freq_start, freq_end, bend_s, decay_s, click, drive, tune, rng):
+    """One complete kick hit, synthesized closed-form (deterministic).
+
+    Phase is the exact integral of the exponential pitch dive
+    ``f(t) = fe + (fs − fe)·e^(−t/τ)``, so the trajectory is analytic
+    (testable) and DC-free by construction (a sine of a smooth phase).
+    ``click`` adds a 2 ms zero-meaned noise transient; ``drive`` is a
+    normalized tanh (no oversampling — the kick is LF-dominant).
+    """
+    k = 2.0 ** (tune / 12.0)
+    fs, fe = freq_start * k, freq_end * k
+    tau = max(1e-4, bend_s)
+    length = max(16, int(sr * (decay_s * 80.0 / 60.0 + 4.0 * tau)))
+    t = np.arange(length) / sr
+    phase = 2.0 * np.pi * (fe * t + (fs - fe) * tau * (1.0 - np.exp(-t / tau)))
+    env = np.exp(-t * (3.0 * np.log(10.0)) / max(1e-3, decay_s))
+    body = np.sin(phase) * env
+    if click > 0.0:
+        n = max(2, int(0.002 * sr))
+        burst = rng.uniform(-1.0, 1.0, n)
+        burst -= burst.mean()
+        body[:n] += click * 0.8 * burst
+    if drive > 0.0:
+        g = 1.0 + 6.0 * drive
+        body = np.tanh(g * body) / np.tanh(g)
+    return body
+
+
+def _snare_hit(sr, tone_decay_s, noise_decay_s, snappy, tune, rng):
+    """One complete snare hit: two head modes + band-passed wire noise."""
+    k = 2.0 ** (tune / 12.0)
+    length = max(16, int(sr * max(tone_decay_s, noise_decay_s) * 80.0 / 60.0))
+    t = np.arange(length) / sr
+    ln1000 = 3.0 * np.log(10.0)
+    tone = (
+        0.6 * np.sin(2.0 * np.pi * 185.0 * k * t)
+        + 0.4 * np.sin(2.0 * np.pi * 330.0 * k * t)
+    ) * np.exp(-t * ln1000 / max(1e-3, tone_decay_s))
+    noise = rng.uniform(-1.0, 1.0, length)
+    hi = min(8000.0, 0.45 * sr)
+    lo = min(800.0, 0.5 * hi)
+    sos = butter(2, [lo / (sr / 2.0), hi / (sr / 2.0)], btype="band", output="sos")
+    noise = sosfilt(sos, noise)
+    peak = float(np.max(np.abs(noise)))
+    if peak > 0.0:
+        noise = noise / peak
+    noise = noise * np.exp(-t * ln1000 / max(1e-3, noise_decay_s))
+    return (1.0 - snappy) * tone + snappy * noise
+
+
+def _hat_hit(sr, decay_s, tune):
+    """One complete hat hit: six detuned squares, high-passed, enveloped.
+
+    Deterministic with no rng — the metallic stack IS the noise. The
+    squares alias mildly; hats are noise-like, so it reads as character.
+    """
+    k = 2.0 ** (tune / 12.0)
+    base = 400.0 * k
+    ratios = (1.0, 1.342, 1.523, 1.782, 2.011, 2.312)
+    length = max(16, int(sr * decay_s * 80.0 / 60.0))
+    t = np.arange(length) / sr
+    sq = np.zeros(length)
+    for r_ in ratios:
+        sq += np.sign(np.sin(2.0 * np.pi * base * r_ * t))
+    cutoff = min(7000.0, 0.4 * sr)
+    sos = butter(4, cutoff / (sr / 2.0), btype="high", output="sos")
+    sq = sosfilt(sos, sq)
+    peak = float(np.max(np.abs(sq)))
+    if peak > 0.0:
+        sq = sq / peak
+    return sq * np.exp(-t * (3.0 * np.log(10.0)) / max(1e-3, decay_s))
+
+
 def _brake_ramp(pos, gate, down, up):
     """Integrate the resampler's tape-stop brake position over one block.
 
@@ -2240,6 +2313,12 @@ class NumpyBackend(AudioBackend):
             return self._render_pluck(module, frames, buffers, patch)
         if module.TYPE == "modal":
             return self._render_modal(module, frames, buffers, patch)
+        if module.TYPE == "kick_drum":
+            return self._render_kick(module, frames, buffers, patch)
+        if module.TYPE == "snare_drum":
+            return self._render_snare(module, frames, buffers, patch)
+        if module.TYPE == "hat_drum":
+            return self._render_hat(module, frames, buffers, patch)
         if module.TYPE == "lfo":
             return self._render_lfo(module, frames, buffers, patch)
         if module.TYPE == "mixer":
@@ -10909,6 +10988,178 @@ class NumpyBackend(AudioBackend):
             pos += chunk
         st["widx"][v] = w
         st["ap_z"][v] = z
+
+    # ----- Drum voices (kick / snare / hat) --------------------------------
+
+    _DRUM_FADE_SECONDS = 0.002  # retrigger/choke declick ramp
+    _DRUM_SEED = 0x44524D53  # "DRMS"
+
+    def _drum_edges(self, st, key: str, gate) -> list[int]:
+        """Rising-edge sample indices for one trigger jack, prev carried."""
+        if gate is None:
+            return []
+        g = gate > self._GATE_HIGH
+        prev = np.empty_like(g)
+        prev[0] = bool(st.get("prev_" + key, False))
+        prev[1:] = g[:-1]
+        st["prev_" + key] = bool(g[-1])
+        return np.flatnonzero(g & ~prev).tolist()
+
+    def _drum_fade_slot(self, st, slot: str) -> None:
+        """Start the 2 ms fade-out on every active play in ``slot``."""
+        fade_total = max(1, int(self.sample_rate * self._DRUM_FADE_SECONDS))
+        for play in st["plays"]:
+            if play["slot"] == slot and play["fade"] is None:
+                play["fade"] = [fade_total, fade_total]
+
+    def _drum_advance(self, st, out: np.ndarray, start: int, end: int) -> None:
+        """Mix every active play into ``out[start:end]``; prune finished."""
+        span = end - start
+        if span <= 0:
+            return
+        alive = []
+        for play in st["plays"]:
+            buf, pos = play["buf"], play["pos"]
+            n = min(span, len(buf) - pos)
+            if n > 0:
+                seg = buf[pos : pos + n]
+                if play["fade"] is not None:
+                    rem, total = play["fade"]
+                    gains = np.clip(
+                        (rem - np.arange(n, dtype=np.float64)) / total, 0.0, 1.0
+                    )
+                    seg = seg * gains
+                    play["fade"][0] = rem - n
+                out[start : start + n] += seg
+                play["pos"] = pos + n
+            done = play["pos"] >= len(play["buf"]) or (
+                play["fade"] is not None and play["fade"][0] <= 0
+            )
+            if not done:
+                alive.append(play)
+        st["plays"] = alive
+
+    def _render_drum(self, module, frames: int, buffers, patch, make_hits):
+        """Shared engine: precomputed hit buffers + declick crossfades.
+
+        ``make_hits(edge_lists)`` receives the per-jack edge index lists
+        and yields ``(edge_sample, slot, buffer)`` hits in time order.
+        On each hit any play in the same slot fades over ~2 ms while the
+        new buffer starts — the retrigger declick (and the hat's choke).
+        Buffers are synthesized whole at the edge (seeded per hit), so
+        output is deterministic and block-size independent by
+        construction.
+        """
+        st = self._state.setdefault(
+            module.id, {"plays": [], "hits": 0}
+        )
+        out = np.zeros(frames, dtype=np.float64)
+        hits = sorted(make_hits(st), key=lambda h: h[0])
+        pos = 0
+        for e, slot, buf in hits:
+            self._drum_advance(st, out, pos, e)
+            self._drum_fade_slot(st, slot)
+            st["plays"].append(
+                {"buf": buf, "pos": 0, "fade": None, "slot": slot}
+            )
+            pos = e
+        self._drum_advance(st, out, pos, frames)
+        level = float(module.params.get("level", 0.7))
+        return (out * level).astype(np.float32)
+
+    def _render_kick(self, module, frames: int, buffers, patch) -> np.ndarray:
+        trig = self._input_buffer(patch, buffers, module.id, "trigger")
+        p = module.params
+
+        def make_hits(st):
+            hits = []
+            for e in self._drum_edges(st, "t", trig):
+                rng = np.random.default_rng(
+                    (self._DRUM_SEED, module.id, int(st["hits"]))
+                )
+                st["hits"] += 1
+                buf = _kick_hit(
+                    self.sample_rate,
+                    min(400.0, max(100.0, float(p.get("freq_start", 180.0)))),
+                    min(80.0, max(30.0, float(p.get("freq_end", 50.0)))),
+                    min(0.2, max(0.005, float(p.get("bend", 40.0)) * 1e-3)),
+                    min(1.5, max(0.05, float(p.get("decay", 350.0)) * 1e-3)),
+                    min(1.0, max(0.0, float(p.get("click", 0.3)))),
+                    min(1.0, max(0.0, float(p.get("drive", 0.0)))),
+                    min(12.0, max(-12.0, float(p.get("tune", 0.0)))),
+                    rng,
+                )
+                hits.append((int(e), "main", buf))
+            return hits
+
+        return self._render_drum(module, frames, buffers, patch, make_hits)
+
+    def _render_snare(self, module, frames: int, buffers, patch) -> np.ndarray:
+        trig = self._input_buffer(patch, buffers, module.id, "trigger")
+        p = module.params
+
+        def make_hits(st):
+            hits = []
+            for e in self._drum_edges(st, "t", trig):
+                rng = np.random.default_rng(
+                    (self._DRUM_SEED, module.id, int(st["hits"]))
+                )
+                st["hits"] += 1
+                buf = _snare_hit(
+                    self.sample_rate,
+                    min(0.5, max(0.02, float(p.get("tone_decay", 120.0)) * 1e-3)),
+                    min(1.0, max(0.02, float(p.get("noise_decay", 200.0)) * 1e-3)),
+                    min(1.0, max(0.0, float(p.get("snappy", 0.5)))),
+                    min(12.0, max(-12.0, float(p.get("tune", 0.0)))),
+                    rng,
+                )
+                hits.append((int(e), "main", buf))
+            return hits
+
+        return self._render_drum(module, frames, buffers, patch, make_hits)
+
+    def _render_hat(self, module, frames: int, buffers, patch) -> np.ndarray:
+        closed = self._input_buffer(patch, buffers, module.id, "closed_trigger")
+        opened = self._input_buffer(patch, buffers, module.id, "open_trigger")
+        p = module.params
+        tune = min(12.0, max(-12.0, float(p.get("tune", 0.0))))
+
+        def make_hits(st):
+            hits = []
+            for e in self._drum_edges(st, "c", closed):
+                buf = _hat_hit(
+                    self.sample_rate,
+                    min(0.3, max(0.01, float(p.get("decay_closed", 60.0)) * 1e-3)),
+                    tune,
+                )
+                # A closed hit chokes BOTH slots (its own retrigger and
+                # any ringing open hit) — the pedal coming down.
+                hits.append((int(e), "closed", buf))
+            for e in self._drum_edges(st, "o", opened):
+                buf = _hat_hit(
+                    self.sample_rate,
+                    min(1.5, max(0.05, float(p.get("decay_open", 400.0)) * 1e-3)),
+                    tune,
+                )
+                hits.append((int(e), "open", buf))
+            return hits
+
+        # Custom choke: run the shared engine but fade the open slot on
+        # every closed hit too.
+        st = self._state.setdefault(module.id, {"plays": [], "hits": 0})
+        out = np.zeros(frames, dtype=np.float64)
+        hits = sorted(make_hits(st), key=lambda h: h[0])
+        pos = 0
+        for e, slot, buf in hits:
+            self._drum_advance(st, out, pos, e)
+            self._drum_fade_slot(st, slot)
+            if slot == "closed":
+                self._drum_fade_slot(st, "open")
+            st["plays"].append({"buf": buf, "pos": 0, "fade": None, "slot": slot})
+            pos = e
+        self._drum_advance(st, out, pos, frames)
+        level = float(p.get("level", 0.6))
+        return (out * level).astype(np.float32)
 
     # ----- Modal rendering -------------------------------------------------
 

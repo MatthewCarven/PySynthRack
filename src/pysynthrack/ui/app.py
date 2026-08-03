@@ -2278,6 +2278,66 @@ class App:
                 )
                 return
 
+        if module.TYPE in ("kick_drum", "snare_drum", "hat_drum"):
+            # Percussion voices. All ms params carry their unit; ``tune``
+            # is a shared ±12 st shift; click/drive/snappy/level are 0..1.
+            if param_name == "freq_start":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=100.0, max_value=400.0, format="%.0f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "freq_end":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.5,
+                    min_value=30.0, max_value=80.0, format="%.0f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "bend":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.5,
+                    min_value=5.0, max_value=200.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "decay":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=2.0,
+                    min_value=50.0, max_value=1500.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("tone_decay", "decay_closed"):
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=10.0, max_value=500.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("noise_decay", "decay_open"):
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=2.0,
+                    min_value=20.0, max_value=1500.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "tune":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.1,
+                    min_value=-12.0, max_value=12.0, format="%.1f st",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("click", "drive", "snappy", "level"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "modal":
             # Resonator bank. ``material`` picks the physics table;
             # ``modes`` is the resonator count; ``decay`` is the lowest

@@ -29,6 +29,7 @@ from .delay import Delay
 from .distortion import Distortion
 from .waveshaper import Waveshaper
 from .diskwriter import DiskWriter
+from .drums import HatDrum, KickDrum, SnareDrum
 from .fileplayer import FilePlayer
 from .filter import Filter
 from .flanger import Flanger
@@ -108,8 +109,10 @@ __all__ = [
     "Flanger",
     "FMOperator",
     "FreqShifter",
+    "HatDrum",
     "Keyboard",
     "KeyTrigger",
+    "KickDrum",
     "LeftSpeakerOutput",
     "LFO",
     "Limiter",
@@ -137,6 +140,7 @@ __all__ = [
     "Scope",
     "ShiftRandom",
     "Slew",
+    "SnareDrum",
     "Sequencer",
     "SweepEQ",
     "Tape",
