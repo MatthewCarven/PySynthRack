@@ -14,13 +14,20 @@ quick-hit run" section — ports/params/DSP/tests each). Proposed as
 three sessions per the working agreement; each module gets the full
 polish standard (tests, example, MODULES.md entry, tripwires green).
 
-- [ ] **Session A — utility sweep (S×3)**: `logic` (gate algebra, all
-      five jacks live, zero params — comparator mode dropped: strict
-      port kinds mean cv can't cable into gate, that's `schmitt`'s
-      job) + `mid_side` (M/S encode/decode + width 0..2, width_cv,
-      all outs live) + `octaver` (zero-crossing flip-flop −1/−2 oct
-      subs, envelope-gated, `tone` LP). The clockwork-trio session
-      shape: three small modules, no new infra.
+- [x] **Session A — utility sweep (S×3)** — ALL SHIPPED 2026-08-03
+      (same day as the plan). `logic`: gate algebra, five jacks live,
+      zero params (comparator dropped — strict port kinds, schmitt's
+      lane); unpatched-b + normalled-NAND contracts pinned. `mid_side`:
+      sum/difference exact, width 0..2 + clamped width_cv, one-input =
+      level-preserving mono passthrough (NOT half-level L+0 — design
+      call). `octaver`: cumsum-parity flip-flops (÷2/÷4, no per-sample
+      loop), audio_to_cv follower core (5/50 ms) gates the subs, tone
+      one-pole, dry-only returns the input buffer itself. 33 tests;
+      suite **2551**; examples `logic_offbeat_drums` (and=tresillo
+      kick, xor=complementary hat), `mid_side_breathe` (LFO width),
+      `octaver_bass_lead` (keys → bass under the lead). **Pending
+      (meatthread0):** ears on all three. Later: logic 3-in variant?
+      mid_side `side` HP trim; octaver glide/portamento tracking aid.
 - [ ] **Session B — patch bay & dust (M+S)**: `matrix_mixer` — the one
       real architecture question: feedback through the topo-sorted
       DAG. Plan: compile-time SCC detection marks cycle-closing cables

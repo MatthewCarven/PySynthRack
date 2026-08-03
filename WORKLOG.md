@@ -10,6 +10,61 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-03 — Session A: logic + mid_side + octaver (part nine)
+
+Matthew: "Lets go with Session A please" — the utility sweep from the
+quick-hit plan, built to the specs written in part eight. Three small
+modules, one commit, zero new infra, all vectorized (no per-sample
+loops anywhere in the three).
+
+**logic** (Modulation). Pure boolean elementwise on thresholded
+inputs; five outs (`and`/`or`/`xor`/`nand`/`not_a`) live at once, zero
+params (the comparator-mode drop from the plan held up). The contracts
+worth pinning turned out to be the *unpatched* ones: b-low → `or`/
+`xor` pass `a` and `nand` idles high (the normalled-NAND trick), and a
+(V, F) gate source collapsing to any-voice-high. The example turned
+into a genuinely groovy trick: clock pulse_width 0.9 with euclidean
+gate_len 0.45 makes `and` = the tresillo (kick) and `xor` = rest-step
+beats PLUS a mid-step edge after each hit (hat shuffle) — asymmetric
+widths chosen deliberately so every xor edge is well-separated (no
+1-sample ghost-trigger risk from equal-width rounding).
+
+**mid_side** (Routing & VCA). Sum/difference exact; `width_cv` adds
+per sample clamped 0..2. One design call: a single patched input IS
+the mid (level preserved, width inert) — not a half-level (L+0)/2
+pair; the mono-passthrough contract is friendlier than the literal
+math and is pinned. Decode-at-width-1 ≡ input is pinned bit-close.
+
+**octaver** (Effects). The fun implementation: both flip-flops are
+**cumsum parity** — ÷2 is the running parity of rising-zero-crossing
+counts, ÷4 is the parity of the first flip-flop's rises — so the whole
+tracker vectorizes with no scalar loop, state carried as two parity
+bits + prev-sign. Envelope = the shared `_audio_to_cv_block`
+asymmetric one-pole with fixed 5 ms/50 ms constants (silence stays
+silent, tails release — both pinned). Subs sum → one one-pole LP
+(`tone`), mixed under dry; dry-only returns the input buffer itself
+(bit-exact, fan-out precedent) while the flip-flops keep advancing so
+re-enabling a sub doesn't restart them. Test lesson: a one-pole is
+6 dB/oct — the tone test's first threshold (0.25×) demanded more
+attenuation at 3× cutoff than |H| = 1/√(1+9) ≈ 0.32 can give;
+threshold corrected to 0.4× with the analytic note inline.
+
+**Tests / examples / docs.** 33 tests (logic 8, mid_side 13, octaver
+12): truth tables, unpatched contracts, M/S identities + clamps, FFT
+f/2+f/4, tone slope, envelope gating + release tail, bit-exact
+passthroughs, block-size independence, and a full-graph render each
+(logic → kick/hat drums; mid_side → stereo sink with LFO width;
+octaver under a played cv_keyboard voice). Suite **2551** (2515 + 33
++ 3 examples). Examples: `logic_offbeat_drums.json`,
+`mid_side_breathe.json` (0.15 Hz bipolar LFO sweeps width 0..2),
+`octaver_bass_lead.json`. MODULES.md entries + index rows; ideas doc
+marked shipped; pyo stubs; UI arms (mid_side width, octaver mix/tone;
+logic draws nothing — no params).
+
+**Pending (meatthread0):** ears on all three examples. **Next:**
+Session B (matrix_mixer + vinyl — the feedback architecture) on
+Matthew's word, or granular/clock_divider.
+
 ## 2026-08-03 — planning: the quick-hit run specced and sliced (part eight)
 
 Matthew asked for a todo/plan covering seven wishlist modules:
