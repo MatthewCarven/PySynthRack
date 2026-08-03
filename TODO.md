@@ -7,6 +7,37 @@ Living list of what's next. Edit freely.
 > [TODO-ARCHIVE.md](TODO-ARCHIVE.md). Archived entries keep their follow-up
 > notes; grep the archive before assuming an idea is new.
 
+## Planned — the quick-hit run (Matthew's pick, 2026-08-03)
+
+Seven modules, full specs promoted into docs/MODULE_IDEAS.md ("The
+quick-hit run" section — ports/params/DSP/tests each). Proposed as
+three sessions per the working agreement; each module gets the full
+polish standard (tests, example, MODULES.md entry, tripwires green).
+
+- [ ] **Session A — utility sweep (S×3)**: `logic` (gate algebra, all
+      five jacks live, zero params — comparator mode dropped: strict
+      port kinds mean cv can't cable into gate, that's `schmitt`'s
+      job) + `mid_side` (M/S encode/decode + width 0..2, width_cv,
+      all outs live) + `octaver` (zero-crossing flip-flop −1/−2 oct
+      subs, envelope-gated, `tone` LP). The clockwork-trio session
+      shape: three small modules, no new infra.
+- [ ] **Session B — patch bay & dust (M+S)**: `matrix_mixer` — the one
+      real architecture question: feedback through the topo-sorted
+      DAG. Plan: compile-time SCC detection marks cycle-closing cables
+      into the matrix as late-reads (previous-block buffer, one-block
+      feedback latency, documented + pinned); feed-forward paths stay
+      zero-latency; tanh `soft_clip` guardrail default ON; per-column
+      CV (4 jacks), not per-node (16 = jack soup — noted deviation).
+      Then `vinyl` for dessert (seeded Poisson crackle + 40 Hz rumble
+      + 0.55 Hz/33⅓ rpm wobble; zero-knobs = bit-exact passthrough).
+- [ ] **Session C — oscillator double (S–M + M)**: `supersaw` (7 blep
+      saws/voice folded into the voice axis for one vectorized
+      waveshape call; asymmetric detune table, `blend`, alternate-pan
+      `spread`, seeded free phases; RECORD 16-voice perf) +
+      `wavetable_morph` (scanning wavetable on the existing `*_wt`
+      mipmap infra; built-in stacks + single-cycle WAV import via
+      media.py Browse). Demo patch writes itself: `chord` → both.
+
 ## Later / wishlist
 
 - [x] **`arpeggiator` + `chord` — the voice pair, both directions** —

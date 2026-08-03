@@ -10,6 +10,45 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-03 — planning: the quick-hit run specced and sliced (part eight)
+
+Matthew asked for a todo/plan covering seven wishlist modules:
+supersaw, mid_side, logic, vinyl, octaver, matrix_mixer,
+wavetable_morph. Planning pass only — full specs promoted from the
+quick-hit bullets into a new **"The quick-hit run"** section of
+docs/MODULE_IDEAS.md (ports/params/DSP/tests each), and TODO.md got a
+**Planned** block slicing them into three sessions per the working
+agreement:
+
+* **A — utility sweep** (S×3): `logic` + `mid_side` + `octaver`. Zero
+  new infra; the clockwork-trio session shape.
+* **B — patch bay & dust**: `matrix_mixer` (M) + `vinyl` (S).
+* **C — oscillator double**: `supersaw` (S–M) + `wavetable_morph` (M),
+  sharing the anti-aliasing/mipmap infra; demo = `chord` → both.
+
+Design calls made while speccing (the ones worth arguing with):
+
+* **`logic` drops the "comparator mode"** from the old bullet: port
+  kinds are strict (`is_compatible_with` requires kind equality), so a
+  cv out *cannot* cable into a gate in — the threshold knob would be
+  unreachable dead weight, and cv→gate is exactly what `schmitt`
+  ships for. Result: a zero-param module, all five jacks live.
+* **`matrix_mixer` is the only real architecture work in the run**:
+  feedback patching vs the topo-sorted DAG. Chosen plan: compile-time
+  SCC detection marks only the cycle-closing cables into a matrix as
+  late-reads (previous-block buffer → one-block feedback latency,
+  documented); feed-forward stays zero-latency; tanh soft_clip
+  default-on as the stability guardrail. Also deviated from "every
+  node CV-able" (16 jacks of soup) to per-output-column CV (4 jacks).
+* **`supersaw` folds its 7 saws into the voice axis** so the existing
+  `_osc_waveshape("saw_blep")` vectorizes over (V·7, F) in one call;
+  free phases are seeded-random per allocation (phase-locked saws
+  buzz — the supersaw signature is the drift).
+
+No code touched; suite untouched at 2515. **Next:** Session A on
+Matthew's word — or granular/clock_divider first if he'd rather (both
+still queued from the sign-off list).
+
 ## 2026-08-03 — arpeggiator + chord: the voice architecture in both directions (part seven)
 
 Matthew called the pair off the wishlist: `arpeggiator` (poly→mono

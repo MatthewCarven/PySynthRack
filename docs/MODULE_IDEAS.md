@@ -35,7 +35,9 @@ Character/space: `tape` `convolver` ·
 CV tools: `quantizer` `slew` `pitch_detector` ·
 Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate` `burst` `arpeggiator` `chord` ·
 Voices: `fm_op` `pluck` `modal` `granular` `kick_drum`/`snare_drum`/`hat_drum` ·
-Visual: `scope` `spectrum` · plus quick hits at the end.
+Visual: `scope` `spectrum` ·
+Planned run (2026-08-03): `logic` `mid_side` `octaver` · `matrix_mixer`
+`vinyl` · `supersaw` `wavetable_morph` · plus quick hits at the end.
 
 ---
 
@@ -476,32 +478,175 @@ FFT analyzer tap.
   compensated); two-tone resolution at 4096; averaging time constant; rebin
   map monotone and gap-free.
 
+## The quick-hit run (planned 2026-08-03 — Matthew's pick, seven modules)
+
+Promoted from the quick-hit bullets to full specs at Matthew's request.
+Proposed as **three sessions** (working-agreement slicing; each module
+still gets the full polish standard — tests, example, MODULES.md entry,
+tripwires green):
+
+> **Session A — utility sweep**: `logic` + `mid_side` + `octaver` (S×3,
+> zero new infra — the clockwork-trio session shape).
+> **Session B — patch bay & dust**: `matrix_mixer` (M — carries the one
+> real architecture question: feedback through a topo-sorted DAG) +
+> `vinyl` (S, dessert).
+> **Session C — oscillator double**: `supersaw` (S–M) +
+> `wavetable_morph` (M) — shared anti-aliasing/mipmap infra, and the
+> obvious demo patch is `chord` → both.
+
+### `logic` (S) — "Modulation" (Session A)
+
+2-in gate algebra; every jack live at once, no mode combo — swap cables,
+not settings.
+
+- Ports: `a`, `b` (gate in) → `and`, `or`, `xor`, `nand`, `not_a`
+  (gate out).
+- Params: none. **Deviation from the old bullet**: the "comparator mode
+  with threshold for CVs" is dropped — port kinds are strict (a cv out
+  cannot cable into a gate in), and cv→gate conversion is exactly
+  `schmitt`'s job. Cleaner module, zero params.
+- DSP: elementwise on thresholded bools (house `> 0.5`); unpatched `b`
+  reads as low (so `or`/`xor` pass `a`, `and` is 0, `nand` is 1 —
+  document; `nand` high-when-idle is the classic normalled trick).
+- Tests: full truth table per jack; unpatched-`b` contract; xor of a
+  clock against its own division = ratchet pattern (integration).
+
+### `mid_side` (S) — "Routing & VCA" (Session A)
+
+M/S encode/decode + width — completes the stereo utility story beside
+`stereo_speaker_output`. All four outs always computed, no mode combo.
+
+- Ports: `in_l`, `in_r` (audio) → `mid`, `side`, `out_l`, `out_r`
+  (audio); `width_cv` (cv) in.
+- Params: `width` 0..2 (1).
+- DSP: M = (L+R)/2, S = (L−R)/2; `out_l/r` = M ± width·S. Unpatched
+  `in_r` → mono (M = in_l, S = 0, width inert). Stateless.
+- Tests: round trip at width 1 bit-close to input; width 0 → out_l ≡
+  out_r ≡ M; width response linear in S; mono-in edge; encode outs of a
+  hard-panned input land ±.
+
+### `octaver` (S) — "Effects" (Session A)
+
+Zero-crossing flip-flop sub-octave — −1/−2 oct squares under the dry;
+dirty analog charm for bass.
+
+- Ports: `in` (audio) → `out` (audio).
+- Params: `dry` 0..1 (1) · `sub1` 0..1 (0.5) · `sub2` 0..1 (0) ·
+  `tone` LP cutoff on the subs (~200..2000 Hz, 800).
+- DSP: rising zero-crossings toggle a flip-flop (÷2), a second one
+  toggles on the first (÷4); each square rides the input's envelope
+  (audio_to_cv follower core) so silence stays silent and dynamics
+  track; one-pole LP (`tone`) rounds the squares; sum under the dry.
+  State: flip-flop phases + follower + LP zi, carried across blocks.
+- Tests: sine at f → FFT peaks at f/2 (sub1) and f/4 (sub2); envelope
+  gating (silence in → silence out with subs up); dry-only bit-exact
+  passthrough; block-size independence (flip-flop carried).
+
+### `matrix_mixer` (M) — "Routing & VCA" (Session B)
+
+4×4 bipolar gain matrix — and the door to **feedback patching**, which
+is the actual work: the backend topo-sorts a DAG, so a cycle through
+the matrix cannot compile today.
+
+- Ports: `in_1..in_4` (audio) → `out_1..out_4` (audio); `cv_1..cv_4`
+  (cv) in, one per *output column* (scales that column's mix).
+  **Deviation from the old bullet**: "every node CV-able" would be 16
+  jacks of soup on a DPG node — per-column CV covers the musical uses
+  (duck a whole bus) at 4 jacks. Revisit only if a real patch demands
+  per-node.
+- Params: 16 gains `g_rc` −1..+1 (identity diagonal default) drawn as a
+  4×4 drag grid (chord slot-bank precedent) · `soft_clip` tickbox
+  (default ON) — tanh on each out, the stability guardrail.
+- **Architecture (the M of the M)**: compile-time cycle handling. Keep
+  the graph a DAG for topo purposes by detecting cables that would
+  close a cycle *into a matrix_mixer* and marking them **late-reads**:
+  the matrix reads that input's previous-block buffer (one-block
+  feedback latency — the standard software-modular answer; document
+  it). Feed-forward cables through the matrix stay zero-latency. SCC
+  detection at compile; late-read buffers owned by backend state.
+- Tests: identity → bit-exact pass; gain exactness incl. negative
+  (phase flip); column CV scales its column only; a matrix→delay→matrix
+  loop compiles, stays finite with soft_clip on, and grows without it
+  at loop gain > 1 (pinned); one-block latency of the late path pinned;
+  block-size independence.
+
+### `vinyl` (S) — "Effects" (Session B)
+
+`tape`'s scrappy sibling: surface noise + warp, all seeded.
+
+- Ports: `in` (audio) → `out` (audio).
+- Params: `crackle` 0..1 (0.3) · `rumble` 0..1 (0.2) · `wobble` 0..1
+  (0.2) · `seed` (1).
+- DSP: crackle = seeded Poisson impulses (rate and amplitude scale with
+  the knob), LP-shaped ticks; rumble = pink-ish noise through a ~40 Hz
+  resonant LP (turntable bearing); wobble = 0.55 Hz (33⅓ rpm)
+  fractional-delay pitch wobble (chorus/tape vibrato core), depth from
+  the knob. All-zero knobs → bit-exact passthrough (tape precedent).
+- Tests: passthrough at zero; impulse count scales with `crackle`
+  (seeded, exact); rumble spectrum LF-dominant; wobble → measurable
+  0.55 Hz pitch deviation (resampler pitch-test machinery); seeded
+  determinism; block-size independence.
+
+### `supersaw` (S–M) — "Sources" (Session C)
+
+The trance chord machine: 7 detuned blep saws per voice.
+
+- Ports: `freq_cv` (cv, voice-aware), `amp_cv` (cv) in → `out_l`,
+  `out_r` (audio; identical when `spread` 0 — patch either for mono).
+- Params: `freq` (261.6256) · `detune` 0..1 (0.35, → max ±~50 ct via
+  the classic asymmetric offset table) · `blend` 0..1 (0.75, center saw
+  vs the six side saws — the JP-8000 control) · `spread` 0..1 (0.5,
+  side saws alternate-panned) · `amp` (0.5).
+- DSP: per voice, 7 phase accumulators at freq × 2^(offset·detune);
+  fold the 7 saws into the voice axis so `_osc_waveshape("saw_blep")`
+  vectorizes over (V·7, F); initial phases seeded-random per voice
+  allocation (the supersaw signature — phase-locked saws buzz;
+  deterministic per seed param? no: per-slot fixed seeds, patches
+  recall). Amp-normalize so detune/blend moves don't pump level.
+- Tests: detune 0 + blend 1 ≈ one saw (spectrum match); sideband
+  cluster width grows monotone with `detune` (FFT); blend 0 → center
+  only; spread 0 → L ≡ R, spread 1 → decorrelated (side-saw pan
+  pinned); per-voice independence; 16-voice perf measured vs budget
+  (7× oscillator — RECORD the number, modal precedent).
+
+### `wavetable_morph` (M) — "Sources" (Session C)
+
+Scanning wavetable oscillator: the `*_wt` mipmap infra grown into an
+instrument.
+
+- Ports: `freq_cv` (cv, voice-aware), `amp_cv`, `position_cv` (cv) in →
+  `out` (audio).
+- Params: `freq` · `amp` · `position` 0..1 (scan point; `position_cv`
+  adds) · `table` combo (built-in stacks: analog basics → formant/vocal
+  → bells/metallic) · `file` (single-cycle WAV import via Browse —
+  media.py precedent; loads as the top stack).
+- DSP: stack of N single-cycle tables, `position` crossfades adjacent
+  pairs; each table mip-mapped exactly like the oscillator's `*_wt`
+  shapes (WT_LEN/NUM_WT_TABLES infra reused, band from block-max dt);
+  per-voice phase accumulators. Import path: resample the cycle to
+  WT_LEN, build mip bands offline at load (compile hook, FilePlayer
+  decode precedent for the file handling).
+- Tests: position 0/1 land the endpoint tables (spectrum match to the
+  equivalent `*_wt` render); mid-position is the crossfade (linearity
+  pinned at a probe harmonic); scan sweep click-free (no discontinuity
+  spikes); alias suppression at high freq (antialiasing-test
+  machinery); WAV import round trip (write cycle → load → spectrum);
+  per-voice independence; block-size independence.
+
 ## Quick hits (S unless noted)
 
-- `octaver` — zero-crossing flip-flop sub-octave (−1/−2 oct squares, filtered,
-  mixed under the dry); dirty analog charm for bass.
 - `exciter` — HP → soft nonlinearity (oversampling infra) → blend; adds air.
-- `vinyl` — Poisson crackle + rumble + 33 rpm wobble; `tape`'s scrappy sibling.
-- `logic` — 2-in gate AND/OR/XOR/NAND + NOT out; comparator mode with
-  threshold for CVs.
 - `gate_delay` — delay/stretch a gate by ms or clock division.
 - `sequential_switch` — clocked 1→4 router / 4→1 selector, reset in.
-- `matrix_mixer` (M) — 4×4 gain matrix, every node CV-able; enables feedback
-  patching (document stability guardrails + soft-clip option).
 - `macro` — one big knob → 4 scaled/offset cv outs; performance macro
   (cv_scale ×4 in one panel).
-- `mid_side` — M/S encode/decode + width; completes the stereo utility story
-  beside stereo_speaker_output.
-- `supersaw` (S–M) — 7 detuned blep saws per voice, `detune` + `blend` +
-  stereo spread; the trance chord machine.
-- `wavetable_morph` (M) — scanning wavetable osc: built-in table stack +
-  single-cycle WAV import (Browse/media.py), `position` + `position_cv`,
-  mip-mapped like the `*_wt` shapes.
 - `tuner` — pitch_detector core + a cents needle panel.
 - `looper` (L) — clock-synced record/overdub/undo layer on the transport
   pattern (FilePlayer Play/Stop + resampler seam crossfades); slice it.
 - Vocoder follow-ups (from TODO): stereo decorrelated bands, `formant` shift
   knob, carrier normal to noise, per-band trims.
+- (octaver / vinyl / logic / matrix_mixer / mid_side / supersaw /
+  wavetable_morph promoted to the planned run above, 2026-08-03.)
 
 ## If I had to pick five first
 
