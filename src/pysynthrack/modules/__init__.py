@@ -9,8 +9,10 @@ exist should:
 """
 from .ad_envelope import ADEnvelope
 from .adsr import ADSR
+from .arpeggiator import Arpeggiator
 from .audiotocv import AudioToCV
 from .bitcrusher import Bitcrusher
+from .chord import Chord
 from .chorus import Chorus
 from .clock import Clock
 from .clockwork import BernoulliGate, Burst, Euclidean
@@ -84,11 +86,13 @@ from .vocoder import Vocoder
 __all__ = [
     "ADEnvelope",
     "ADSR",
+    "Arpeggiator",
     "AudioToCV",
     "BernoulliGate",
     "Bitcrusher",
     "BufferedSpecificSpeakerOutput",
     "Burst",
+    "Chord",
     "Chorus",
     "Clock",
     "Combiner",

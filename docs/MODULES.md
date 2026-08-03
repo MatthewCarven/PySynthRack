@@ -243,6 +243,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`euclidean`](#euclidean) | Modulation | `clock`,`reset` (gate) → `gate`,`accent` (gate) |
 | [`burst`](#burst) | Modulation | `trigger`,`clock` (gate) → `gate` (gate), `env` (cv) |
 | [`bernoulli_gate`](#bernoulli_gate) | Modulation | `in` (gate), `p_cv` (cv) → `out_a`,`out_b` (gate) |
+| [`arpeggiator`](#arpeggiator) | Modulation | `pitch_cv` (cv), `gate`,`clock`,`reset` (gate) → `pitch_cv` (cv), `gate` (gate) |
 | [`audio_to_cv`](#audio_to_cv) | CV & Utilities | `in` (audio) → `cv` (cv) |
 | [`cv_to_audio`](#cv_to_audio) | CV & Utilities | `cv` (cv) → `out` (audio) |
 | [`schmitt`](#schmitt) | CV & Utilities | `in` (cv) → `gate` (gate) |
@@ -255,6 +256,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`sample_hold`](#sample_hold) | CV & Utilities | `in` (cv), `trig` (gate) → `out` (cv) |
 | [`slew`](#slew) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`quantizer`](#quantizer) | CV & Utilities | `in` (cv), `gate` (gate) → `out` (cv), `changed` (gate) |
+| [`chord`](#chord) | CV & Utilities | `pitch_cv` (cv), `gate` (gate) → `pitch_cv` (cv), `gate` (gate, both (4, F)) |
 | [`scope`](#scope) | CV & Utilities | `in`,`in_r` (audio), `cv` (cv), `trig` (gate) → `out`,`out_r` (audio) |
 | [`meter`](#meter) | CV & Utilities | `in`, `in_r` (audio) → `out`, `out_r` (audio) |
 | [`speaker_output`](#speaker_output) | Outputs | `in` (audio) → — |
@@ -2393,6 +2395,30 @@ breathes. **Ports**: `in` (gate), `p_cv` (cv) → `out_a`, `out_b`
 (gate). **Params**: `probability` 0..1 (0.5) · `mode` (independent) ·
 `seed` (1). See `examples/clockwork_groove.json`.
 
+#### `arpeggiator`
+
+The **poly→mono collapser** — the first module to run the voice
+architecture in reverse. Feed it a polyphonic `pitch_cv` + `gate` pair
+([`cv_keyboard`](#cv_keyboard) or [`midi_input`](#midi_input)), hold a
+chord, and each `clock` rising edge plays the next note as a mono
+1 V/oct line: the classic hardware arp, patched not preset. `mode`
+walks the held set `up`, `down`, `updown` (endpoints unrepeated),
+`order` (true as-played order — arrival-stamped, not slot order) or
+`random` (one seeded draw per step); `octaves` stacks 1..4 passes.
+Notes joining or leaving mid-arp take effect on the next step; when the
+last note is released the arp falls silent, rewinds, and the **pitch
+holds** so downstream release tails stay in tune ([`cv_keyboard`](#cv_keyboard)
+convention). `reset` rewinds so the next clock plays note 1. `hold`
+latches — releases keep notes, and a press from silence clears the
+latch and starts a new chord (the performance latch). The gate runs
+`gate_len` of the measured clock period (mirroring the clock's high
+time until two edges have been seen — the [`euclidean`](#euclidean)
+convention). Mono inputs work too: one finger + `octaves` 2 is an
+instant octave arp. **Ports**: `pitch_cv` (cv), `gate`, `clock`,
+`reset` (gate) → `pitch_cv` (cv), `gate` (gate). **Params**: `mode`
+(up) · `octaves` 1..4 (1) · `gate_len` 0.05..0.95 step (0.5) · `hold`
+(off) · `seed` (1). See `examples/chord_arp_factory.json`.
+
 #### `lfo`
 
 _To document._ Low-frequency oscillator as a `cv` source (sine/tri/square/
@@ -2604,6 +2630,33 @@ a passthrough. See `examples/shift_random_melody.json`.
 | `hysteresis` | `10` | 0 … 50 ct | Boundary stickiness in continuous mode. |
 | `transpose` | `0` | −24 … +24 st | Added to the output post-quantize (may leave the scale — it's a transposition, not a rotation). |
 | `custom_c` … `custom_b` | all on | bools | Pitch classes for `custom`, drawn as two rows of tickboxes. |
+
+#### `chord`
+
+The **mono→poly explorer**, the [`arpeggiator`](#arpeggiator)'s mirror
+twin: one pitch CV in, four voice rows out. Feed any mono melody source
+([`sequencer`](#sequencer), [`quantizer`](#quantizer),
+[`shift_random`](#shift_random)…) into `pitch_cv` + `gate` and the
+outputs are `(4, F)` voice buffers — each row the input plus one
+interval — ready for any voice-aware chain (oscillator `freq_cv`,
+per-voice [`adsr`](#adsr), [`vca`](#vca)), exactly as if four keys were
+held on a [`cv_keyboard`](#cv_keyboard). A named `preset` fills the
+four interval slots (`major` = 0/4/7/12 and friends; `5` is the power
+chord with slot 4 off); `custom` reads the `interval_n`/`enable_n` slot
+rows instead. A disabled slot's row stays gate-low but the output is
+always 4 rows, so downstream per-voice state never re-shapes on a live
+toggle. `strum` staggers the gate *onsets* — row k rises `k × strum` ms
+after the input edge (enabled rows only, sample-accurate across
+blocks), every row falls together, and a fall cancels unfired onsets.
+Pitch is continuous (`in + interval` every sample): glides chord along
+and release tails stay in tune. `spread` opens the voicing one octave,
+alternating (slot 2 +12, slot 3 −12) — `major` becomes the open
+(−5, 0, 12, 16). **Mind the sum**: four rows into a mono sink collapse
+to a 4× signal — trim the downstream VCA (0.25 each is unity).
+**Ports**: `pitch_cv` (cv), `gate` (gate) → `pitch_cv`, `gate`
+(both `(4, F)`). **Params**: `preset` (major) · `interval_1..4` −24..24
+st (0/4/7/12) + `enable_1..4` (on), read when custom · `strum` 0..200 ms
+(0) · `spread` (off). See `examples/chord_arp_factory.json`.
 
 #### `scope`
 

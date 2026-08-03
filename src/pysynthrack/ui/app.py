@@ -53,6 +53,12 @@ from ..modules.quantizer import (
     QUANTIZER_ROOTS,
     QUANTIZER_SCALES,
 )
+from ..modules.arpeggiator import ARP_MODES
+from ..modules.chord import (
+    CHORD_ENABLE_KEYS,
+    CHORD_INTERVAL_KEYS,
+    CHORD_PRESETS,
+)
 from ..modules.clockwork import BERNOULLI_MODES
 from ..modules.modal import MODAL_MATERIALS
 from ..modules.scope import SCOPE_MODES, SCOPE_TRIGGER_MODES
@@ -2372,6 +2378,78 @@ class App:
                 )
                 return
 
+        if module.TYPE == "arpeggiator":
+            # Poly→mono note collapser: ``mode`` hits the shared combo
+            # (up/down/updown/order/random); ``octaves`` stacks passes;
+            # ``gate_len`` is the note length as a fraction of the clock
+            # period; ``hold`` (generic checkbox) latches; ``seed``
+            # drives random mode.
+            if param_name == "octaves":
+                dpg.add_slider_int(
+                    label=param_name, default_value=int(current),
+                    min_value=1, max_value=4,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "gate_len":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.05, max_value=0.95, format="%.2f step",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "seed":
+                dpg.add_drag_int(
+                    label=param_name, default_value=int(current), speed=1,
+                    min_value=0, max_value=999999,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "chord":
+            # Mono→poly chord: ``preset`` picks the interval table
+            # (``custom`` reads the four slot rows below); ``strum``
+            # staggers row onsets; ``spread`` (generic checkbox) opens
+            # the voicing ±1 octave.
+            if param_name == "preset":
+                dpg.add_combo(
+                    label=param_name, items=list(CHORD_PRESETS),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == CHORD_INTERVAL_KEYS[0]:
+                # Draw the whole 4-slot bank (tickbox + semitone drag per
+                # row, read when preset=custom) in one go.
+                for i, (ikey, ekey) in enumerate(
+                    zip(CHORD_INTERVAL_KEYS, CHORD_ENABLE_KEYS)
+                ):
+                    with dpg.group(horizontal=True):
+                        dpg.add_checkbox(
+                            default_value=bool(module.params.get(ekey, True)),
+                            callback=self._on_param_changed,
+                            user_data=(module.id, ekey),
+                        )
+                        dpg.add_drag_float(
+                            label=ikey, default_value=float(
+                                module.params.get(ikey, 0.0)
+                            ),
+                            speed=1.0, min_value=-24.0, max_value=24.0,
+                            format="%.0f st", width=110,
+                            callback=self._on_param_changed,
+                            user_data=(module.id, ikey),
+                        )
+                return
+            if param_name in CHORD_INTERVAL_KEYS or param_name in CHORD_ENABLE_KEYS:
+                return  # drawn with the bank above
+            if param_name == "strum":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=200.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE in ("kick_drum", "snare_drum", "hat_drum"):
             # Percussion voices. All ms params carry their unit; ``tune``
             # is a shared ±12 st shift; click/drive/snappy/level are 0..1.
@@ -2592,6 +2670,8 @@ class App:
                 items = list(SCOPE_MODES)
             elif module.TYPE == "bernoulli_gate":
                 items = list(BERNOULLI_MODES)
+            elif module.TYPE == "arpeggiator":
+                items = list(ARP_MODES)
             else:
                 items = list(FILTER_MODES)
             dpg.add_combo(

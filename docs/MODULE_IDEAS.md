@@ -317,7 +317,7 @@ Ratchet generator: one trigger → N gates.
 - Tests: exact gate count; timing grid; retrigger mid-burst restarts
   (document); clocked division correct.
 
-### `arpeggiator` (M)
+### `arpeggiator` (M) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
 Sits between a poly note source and a mono voice: collapses held notes into a
 clocked line. First "poly→mono collapser" — a nice exercise of the voice
@@ -332,7 +332,7 @@ architecture in reverse.
 - Tests: chord {C,E,G}, mode up → exact CV sequence; add/remove notes mid-arp;
   hold latch; octave spans; works from both cv_keyboard and midi_input.
 
-### `chord` (M)
+### `chord` (M) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
 Mono pitch in → poly voices out; the 16-slot voice architecture as an
 instrument.

@@ -2295,6 +2295,10 @@ class NumpyBackend(AudioBackend):
             return self._render_burst(module, frames, buffers, patch)
         if module.TYPE == "bernoulli_gate":
             return self._render_bernoulli(module, frames, buffers, patch)
+        if module.TYPE == "arpeggiator":
+            return self._render_arpeggiator(module, frames, buffers, patch)
+        if module.TYPE == "chord":
+            return self._render_chord(module, frames, buffers, patch)
         if module.TYPE == "midi_input":
             return self._render_midi_input(module, frames)
         if module.TYPE == "filter":
@@ -11271,6 +11275,336 @@ class NumpyBackend(AudioBackend):
                 pos = e
         st["choice_a"] = choice_a
         return {"out_a": out_a, "out_b": out_b}
+
+    # ----- Arpeggiator / Chord (the voice-architecture pair) ---------------
+
+    def _render_arpeggiator(self, module, frames: int, buffers, patch) -> dict:
+        """Poly→mono clocked note collapser (see modules/arpeggiator.py).
+
+        Voice-gate edges are vectorized into a sparse per-sample event
+        map (a rise carries the pitch read at that sample), so the
+        frames loop below walks scalars only (euclidean precedent) —
+        no 16×F per-sample voice scan. The held set is keyed by voice
+        slot with an arrival stamp, making ``order`` true as-played
+        order even when the allocator reuses slots; falls at a sample
+        are applied before rises so a press from silence under ``hold``
+        clears the latch first (the classic performance latch). The
+        sequence is rebuilt from the held set at each clock edge
+        (mid-arp joins/leaves take effect on the next step, position
+        kept by wrapped index); ``updown`` plays the palindrome with
+        endpoints unrepeated. The output gate runs ``gate_len`` of the
+        measured clock period (last two edges, carried across blocks;
+        until an interval exists it mirrors the clock high — the
+        euclidean convention). Pitch holds between steps and after the
+        last release so downstream release tails stay in tune.
+        ``random`` draws one seeded rng value per step (block-size
+        independent; changing ``seed`` re-rolls live).
+        """
+        pitch = self._input_buffer(
+            patch, buffers, module.id, "pitch_cv", collapse=False
+        )
+        gates = self._input_buffer(
+            patch, buffers, module.id, "gate", collapse=False
+        )
+        clock = self._input_buffer(patch, buffers, module.id, "clock")
+        reset = self._input_buffer(patch, buffers, module.id, "reset")
+
+        mode = str(module.params.get("mode", "up"))
+        octaves = max(1, min(4, int(module.params.get("octaves", 1))))
+        try:
+            gate_len = float(module.params.get("gate_len", 0.5))
+        except (TypeError, ValueError):
+            gate_len = 0.5
+        gate_len = min(0.95, max(0.05, gate_len))
+        hold = bool(module.params.get("hold", False))
+        try:
+            seed = int(module.params.get("seed", 1))
+        except (TypeError, ValueError):
+            seed = 1
+        seed = max(0, seed)
+
+        st = self._state.setdefault(
+            module.id,
+            {
+                "held": {},  # voice slot -> (pitch cv, arrival stamp)
+                "stamp": 0, "pos": -1, "cur_cv": 0.0,
+                "prev_gates": None, "prev_clock": False, "prev_reset": False,
+                "last_edge": -1, "interval": 0, "samples": 0,
+                "gate_rem": 0, "gate_mirror": False,
+            },
+        )
+        if st.get("seed") != seed:
+            st["seed"] = seed
+            st["rng"] = np.random.default_rng(seed)
+        rng = st["rng"]
+        held: dict[int, tuple[float, int]] = st["held"]
+        stamp = int(st["stamp"])
+        pos = int(st["pos"])
+        cur_cv = float(st["cur_cv"])
+        prev_c = bool(st["prev_clock"])
+        prev_r = bool(st["prev_reset"])
+        last_edge = int(st["last_edge"])
+        interval = int(st["interval"])
+        base = int(st["samples"])
+        gate_rem = int(st["gate_rem"])
+        gate_mirror = bool(st["gate_mirror"])
+
+        # --- voice gate edges → sparse event map (falls, rises) -----------
+        events: dict[int, tuple[list[int], list[tuple[int, float]]]] = {}
+        if gates is None:
+            # Unpatched gate: nothing is ever held (and a live unpatch
+            # drops the latch — there is no source to hold from).
+            held.clear()
+            pos = -1
+            st["prev_gates"] = None
+            phys_n = 0
+        else:
+            g2 = (gates if gates.ndim == 2 else gates[None, :]) > self._GATE_HIGH
+            V = g2.shape[0]
+            prev_g = st["prev_gates"]
+            if prev_g is None or prev_g.shape[0] != V:
+                prev_g = np.zeros(V, dtype=bool)
+            if not hold:
+                # A live hold→off toggle drops latched-but-released notes.
+                for v in [v for v in held if v >= V or not prev_g[v]]:
+                    del held[v]
+                if not held:
+                    pos = -1
+            phys_n = int(prev_g.sum())
+            shifted = np.empty_like(g2)
+            shifted[:, 0] = prev_g
+            shifted[:, 1:] = g2[:, :-1]
+            if pitch is None:
+                pitch_at = lambda v, n: 0.0  # noqa: E731 — tiny closure
+            elif pitch.ndim == 2:
+                p_rows = pitch.shape[0]
+                pitch_at = lambda v, n: float(  # noqa: E731
+                    pitch[v if v < p_rows else 0, n]
+                )
+            else:
+                pitch_at = lambda v, n: float(pitch[n])  # noqa: E731
+            for v, n in zip(*np.nonzero(~g2 & shifted)):
+                events.setdefault(int(n), ([], []))[0].append(int(v))
+            for v, n in zip(*np.nonzero(g2 & ~shifted)):
+                events.setdefault(int(n), ([], []))[1].append(
+                    (int(v), pitch_at(int(v), int(n)))
+                )
+            st["prev_gates"] = g2[:, -1].copy()
+
+        def build_seq() -> list[float]:
+            """Held set → the expanded note sequence for this mode."""
+            items = list(held.values())
+            if not items:
+                return []
+            if mode == "order":
+                bank = [cv for cv, s in sorted(items, key=lambda t: t[1])]
+            elif mode == "down":
+                bank = sorted((cv for cv, _ in items), reverse=True)
+            else:  # up / updown / random share the ascending bank
+                bank = sorted(cv for cv, _ in items)
+            octs = reversed(range(octaves)) if mode == "down" else range(octaves)
+            seq = [cv + k for k in octs for cv in bank]
+            if mode == "updown" and len(seq) > 2:
+                seq = seq + seq[-2:0:-1]
+            return seq
+
+        thresh = self._GATE_HIGH
+        c_row = (clock > thresh).tolist() if clock is not None else [False] * frames
+        r_row = (reset > thresh).tolist() if reset is not None else [False] * frames
+        p_list = [0.0] * frames
+        g_list = [0.0] * frames
+
+        for n in range(frames):
+            ev = events.get(n)
+            if ev is not None:
+                falls, rises = ev
+                for v in falls:
+                    phys_n -= 1
+                    if not hold:
+                        held.pop(v, None)
+                if rises:
+                    if hold and phys_n == 0 and held:
+                        held.clear()  # press from silence: new chord
+                        pos = -1
+                    for v, cv in rises:
+                        phys_n += 1
+                        held[v] = (cv, stamp)
+                        stamp += 1
+                if not held:
+                    pos = -1  # next chord restarts from note 1
+            r = r_row[n]
+            if r and not prev_r:
+                pos = -1
+            prev_r = r
+            c = c_row[n]
+            if c and not prev_c:
+                now = base + n
+                if last_edge >= 0:
+                    interval = now - last_edge
+                last_edge = now
+                seq = build_seq()
+                if seq:
+                    if mode == "random":
+                        cur_cv = seq[int(rng.integers(len(seq)))]
+                    else:
+                        pos = (pos + 1) % len(seq)
+                        cur_cv = seq[pos]
+                    if interval > 0:
+                        gate_rem = max(1, int(round(gate_len * interval)))
+                        gate_mirror = False
+                    else:
+                        gate_mirror = True
+            prev_c = c
+            if gate_mirror and not c:
+                gate_mirror = False
+            if gate_rem > 0:
+                g_list[n] = 1.0
+                gate_rem -= 1
+            elif gate_mirror:
+                g_list[n] = 1.0
+            p_list[n] = cur_cv
+
+        st.update(
+            stamp=stamp, pos=pos, cur_cv=cur_cv,
+            prev_clock=prev_c, prev_reset=prev_r,
+            last_edge=last_edge, interval=interval, samples=base + frames,
+            gate_rem=gate_rem, gate_mirror=gate_mirror,
+        )
+        return {
+            "pitch_cv": np.asarray(p_list, dtype=np.float32),
+            "gate": np.asarray(g_list, dtype=np.float32),
+        }
+
+    # Chord's fixed voice count: four interval slots → four rows, always
+    # (disabled slots stay gate-low) so downstream per-voice state never
+    # re-shapes when a slot is toggled live.
+    _CHORD_ROWS = 4
+
+    def _render_chord(self, module, frames: int, buffers, patch) -> dict:
+        """Mono→poly chord explorer (see modules/chord.py).
+
+        Pitch rows are pure broadcast: ``in + interval`` per slot,
+        every sample (glides chord along; release tails stay in tune).
+        Gates are stateful only for ``strum``: an input rise schedules
+        row k's onset ``k×strum`` ms out (k counting enabled rows),
+        absolute-sample times carried across blocks (burst precedent);
+        a fall drops every row together and cancels unfired onsets.
+        Blocks with no edges and no pending onsets take the vectorized
+        path — the per-sample scalar walk only runs around note events.
+        """
+        from ..modules.chord import (
+            CHORD_ENABLE_KEYS,
+            CHORD_INTERVAL_KEYS,
+            CHORD_PRESETS,
+            CHORD_SPREAD_OFFSETS,
+        )
+
+        pitch = self._input_buffer(patch, buffers, module.id, "pitch_cv")
+        gate = self._input_buffer(patch, buffers, module.id, "gate")
+        R = self._CHORD_ROWS
+
+        preset = str(module.params.get("preset", "major"))
+        row = CHORD_PRESETS.get(preset)
+        if row is None or preset == "custom":
+            semis = []
+            enabled = []
+            for ik, ek in zip(CHORD_INTERVAL_KEYS, CHORD_ENABLE_KEYS):
+                try:
+                    iv = float(module.params.get(ik, 0.0))
+                except (TypeError, ValueError):
+                    iv = 0.0
+                semis.append(min(24.0, max(-24.0, iv)))
+                enabled.append(bool(module.params.get(ek, True)))
+        else:
+            semis = [float(iv) if iv is not None else 0.0 for iv in row]
+            enabled = [iv is not None for iv in row]
+        if bool(module.params.get("spread", False)):
+            semis = [s + o for s, o in zip(semis, CHORD_SPREAD_OFFSETS)]
+        try:
+            strum = float(module.params.get("strum", 0.0))
+        except (TypeError, ValueError):
+            strum = 0.0
+        strum_samps = int(round(min(200.0, max(0.0, strum)) * 1e-3 * self.sample_rate))
+
+        # --- pitch rows: pure broadcast, stateless ------------------------
+        offsets = np.asarray(semis, dtype=np.float64)[:, None] / 12.0
+        if pitch is None:
+            out_pitch = np.tile(offsets, (1, frames)).astype(np.float32)
+        else:
+            out_pitch = (
+                pitch.astype(np.float64)[None, :] + offsets
+            ).astype(np.float32)
+
+        # --- gate rows: stateful only for strum ---------------------------
+        st = self._state.setdefault(
+            module.id,
+            {"prev_gate": False, "active": [False] * R, "pending": [],
+             "samples": 0},
+        )
+        base = int(st["samples"])
+        st["samples"] = base + frames
+        out_gate = np.zeros((R, frames), dtype=np.float32)
+        if gate is None:
+            st["prev_gate"] = False
+            st["active"] = [False] * R
+            st["pending"] = []
+            return {"pitch_cv": out_pitch, "gate": out_gate}
+
+        g = gate > self._GATE_HIGH
+        prev = bool(st["prev_gate"])
+        active: list[bool] = [a and e for a, e in zip(st["active"], enabled)]
+        pending: list[list[int]] = st["pending"]  # [row, start_abs]
+        rows_on = [k for k in range(R) if enabled[k]]
+
+        changed = bool(g[0]) != prev or bool(np.any(g[1:] != g[:-1]))
+        if strum_samps == 0 and not pending:
+            # No stagger: enabled rows mirror the input gate verbatim.
+            g_f32 = g.astype(np.float32)
+            for k in rows_on:
+                out_gate[k] = g_f32
+            st["prev_gate"] = bool(g[-1])
+            st["active"] = [k in rows_on and bool(g[-1]) for k in range(R)]
+            return {"pitch_cv": out_pitch, "gate": out_gate}
+        if not changed and not pending:
+            # Steady block: rows hold their level.
+            for k in range(R):
+                if active[k]:
+                    out_gate[k, :] = 1.0
+            st["prev_gate"] = bool(g[-1])
+            st["active"] = active
+            return {"pitch_cv": out_pitch, "gate": out_gate}
+
+        # Note-event block: scalar walk (rare — once per press/release).
+        g_row = g.tolist()
+        gl = [[0.0] * frames for _ in range(R)]
+        for n in range(frames):
+            gn = g_row[n]
+            now = base + n
+            if gn and not prev:
+                pending = [
+                    [k, now + i * strum_samps] for i, k in enumerate(rows_on)
+                ]
+            elif prev and not gn:
+                active = [False] * R
+                pending = []
+            prev = gn
+            if pending:
+                still = []
+                for entry in pending:
+                    if entry[1] <= now:
+                        active[entry[0]] = True
+                    else:
+                        still.append(entry)
+                pending = still
+            for k in range(R):
+                if active[k]:
+                    gl[k][n] = 1.0
+        for k in range(R):
+            out_gate[k] = gl[k]
+        st["prev_gate"] = prev
+        st["active"] = active
+        st["pending"] = pending
+        return {"pitch_cv": out_pitch, "gate": out_gate}
 
     # ----- Drum voices (kick / snare / hat) --------------------------------
 
