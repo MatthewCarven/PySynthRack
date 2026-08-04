@@ -10,7 +10,23 @@ Running log of decisions and progress. Newest first.
 
 ---
 
-## 2026-08-04 — organ + chaos spec'd (brainstorm picks two and three)
+## 2026-08-04 — organ + chaos build PLANNED (build next session)
+
+Matthew: "lets knock something off the build queue or 2 maybe?" — I
+picked the fun pair (both S–M, one session, the Session A shape) and
+started the research sweep (module/export/renderer conventions
+re-read; octaver + __init__ confirmed as the shape to copy). Mid-read
+Matthew called for a plan instead ("actually knock together a plan" +
+"i have to suspend soon to change rooms") — so the full build plan is
+written into the TODO entry (§ Later / wishlist, the organ+chaos
+bullet): organ first then chaos, phase-by-phase file list, the two
+verify-before-claiming checkpoints (the oscillator phase convention
+before the lone-8′ pin; fader_seq's panel cost before promising the
+fader bank), the chaos numeric constants (dt rails, T_orbit
+calibrations, bound tables), and the close-out standard (suite +
+tripwires + ONE commit for the pair). Nothing was built — no source
+files touched; the tree is docs-only ahead of origin. Next session:
+open the TODO entry and execute top to bottom.
 
 Matthew pushed everything through 94cea1b (origin current), then picked
 two more off the brainstorm: "organ & chaos please". Both spec'd into

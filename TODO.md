@@ -64,6 +64,53 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       exact block-size independence; the demo is x/y → scope xy =
       the butterfly. Examples queued: organ→chorus→reverb with chord
       stabs; chaos→quantizer wandering melody.
+      **BUILD PLAN (2026-08-04, Matthew: "knock something off the
+      build queue or 2" → plan first, build next session).** Order:
+      organ first (smaller payoff loop), chaos second, close-out last.
+      *Organ phase*: (1) `modules/organ.py` — Sources; `pitch_cv`/
+      `gate` (voice) → `out`; params `bar1..bar9` int 0..8 default
+      888000000, `click`, `perc`/`perc_decay`/`perc_level`, `level`.
+      (2) `_render_organ` in numpy_backend — per-voice block-mean
+      pitch (pluck idiom); partials folded (V·9, F) into ONE sine
+      eval; 3 dB/step gain law; constant-RMS norm g_i/√max(1, Σg²)
+      (document); Nyquist mask; gate envelope = one-pole ~0.4 ms via
+      lfilter (vectorized, click-free); click ticks = seeded per-hit
+      bursts with a carry-tail buffer (drums whole-hit engine);
+      percussion = module-wide from-silence single-trigger latch +
+      per-voice decaying sine at 4′/2⅔′. (3) pyo punt. (4) tests: the
+      lone-8′-≡-oscillator-sine pin (VERIFY the oscillator's phase
+      convention in `_render_oscillator`/`_osc_waveshape` FIRST, then
+      pick bit-exact vs <1e-6), 3 dB law exact, registration FFT,
+      Nyquist mask alias-free, click seeded + click=0 declick bound,
+      perc single-trigger (legato must NOT re-fire — THE test),
+      voice ≡ mono, block independence, 16v×9 perf RECORDED.
+      (5) app.py widgets — CHECK fader_seq's panel cost first: reuse
+      the fader bank if cheap, else bounded int sliders now + panel
+      as follow-up. (6) example `organ_jazz.json` (keys → organ →
+      chorus → reverb), MODULES.md entry + index row, `__init__`
+      export. *Chaos phase*: (1) `modules/chaos.py` — Modulation;
+      `reset` in → `x`/`y`/`z` cv outs + `gate`; params `system`
+      lorenz|rossler, `rate` 0.01..50 log, `range`, `bipolar`,
+      `seed`. (2) renderer — RK4 at rail-limited substep (lorenz
+      dt≤0.01, rossler ≤0.05), control grid every 16 samples keyed to
+      ABSOLUTE sample count (any block split exact), np.interp to
+      audio rate, carry state + prev/next control points; per-system
+      bound normalization (lorenz x±20/y±27/z 0..50; rossler x±12/
+      y±11/z 0..23), clip rails; seeded IC jitter + deterministic
+      warmup (~1000 substeps); rate calibration T_orbit ≈ 0.76
+      (lorenz) / 6.1 (rossler) so `rate` ≈ orbits/sec (pin loosely);
+      gate: lorenz sign(x), rossler z > 3 raw (document both);
+      non-finite → re-seed + tripwire counter. (3) tests: seed
+      determinism bit-exact, reset ≡ fresh, block independence EXACT,
+      long-run bounds + zero NaNs, ε-IC divergence horizon (the
+      chaos test), rate↔zero-crossing loose pin, gate semantics both
+      systems. (4) example `chaos_melody.json` — x → quantizer → osc,
+      gate → adsr → vca, z → filter cutoff (self-playing); check
+      port names against MODULES.md while wiring. (5) widgets +
+      MODULES.md + export + punt. *Close-out*: full suite green,
+      tripwires (docs coverage) green, WORKLOG + this entry updated,
+      ONE commit for the pair (Session A precedent). Perf numbers in
+      the worklog. Ears go to the meatthread0 queue as usual.
 - [ ] **`sampler` — keyboard-tracked pitched sample voice** — spec'd
       2026-08-04 at Matthew's pick (":-{D") from the "what's left"
       brainstorm; full spec in docs/MODULE_IDEAS.md § New voices. The
