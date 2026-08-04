@@ -47,6 +47,19 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
 
 ## Later / wishlist
 
+- [ ] **`sampler` — keyboard-tracked pitched sample voice** — spec'd
+      2026-08-04 at Matthew's pick (":-{D") from the "what's left"
+      brainstorm; full spec in docs/MODULE_IDEAS.md § New voices. The
+      gap FilePlayer doesn't fill: per-voice playheads at
+      pitch_cv-tracked rates over one whole-loaded recording (media.py
+      decode, convolver off-thread load pattern, resampler `_hermite4`
+      read, pluck voice contract — zero new infra). one_shot / gated /
+      loop modes, root+tune+fine, start/end region, seam-crossfaded
+      loop, declick ramps; neutral = root-pitch playback returns the
+      decoded buffer **bit-exact**. M–L → three slices (core →
+      loop+region UI → stretch: stereo/mip-antialias/start_cv/reverse).
+      Examples queued: euclidean breaks machine; keys → loop mode →
+      reverb mellotron (+ `chord` in front = 4-deep stack).
 - [x] **`arpeggiator` + `chord` — the voice pair, both directions** —
       BOTH SHIPPED 2026-08-03 (day part seven; Matthew: "fun exercises
       of the voice architecture in opposite directions"). Arpeggiator:

@@ -10,7 +10,41 @@ Running log of decisions and progress. Newest first.
 
 ---
 
-## 2026-08-03 — Session A: logic + mid_side + octaver (part nine)
+## 2026-08-04 — sampler spec'd (the "what's left" brainstorm)
+
+Matthew asked what modules were even left ("i think we are running out
+of options here which is a good thing :-{D"). Answer: not close — the
+obvious holes are filled, but whole veins remain. Surveyed the roster
+first (waveshaper already IS a wavefolder, noise already does pink —
+the two classic suggestions that would have been duplicates), then
+pitched genuinely new territory: sources (`sampler`, `organ` drawbars,
+`bowed`/`wind` waveguide, `chaos`), modulation (`function_generator`
+with EOR/EOC — the Maths move, `drift` smooth random, `cv_math`,
+`cv_recorder`), effects (`rotary`, `vowel`, spectral `freeze`,
+`autopan` — there is no dedicated panner in the rack), `midi_output`,
+and the endgame pair (subpatch containers, snapshot morph). Also noted:
+Session B's matrix_mixer feedback quietly turns shimmer reverb into a
+*patch*.
+
+Matthew picked **`sampler`** (":-{D"). Spec written into
+docs/MODULE_IDEAS.md § New voices at the house standard — the framing
+that makes it tractable is that every hard part already shipped:
+media.py any-format decode, the convolver's off-thread whole-file load
+(silent until ready, patches always load), the resampler's `_hermite4`
+cubic read (bit-exact at integer positions — which is exactly what
+makes the neutral pinnable), and pluck's per-voice contract
+(1 V/oct, per-block pitch, silent-voice early-out). Design calls worth
+recording: it's a *voice*, not a transport (the FilePlayer distinction);
+mono-sum on load, stereo is stretch; `attack` defaults 0 so the neutral
+stays bit-exact (declick ramps, not an envelope — adsr→vca is the
+shaping lane); pitch-up aliasing kept as the sampler sound (bitcrusher
+"deliberately aliased" precedent), mip-chain cleanliness is stretch;
+the strong test is +12 st ≡ buffer[::2] bit-exact (integer stride
+dodges the interpolator entirely). M–L, three slices. Queued in
+TODO.md § Later / wishlist; Index line updated.
+
+Not started — spec only, per the backlog's own workflow. Next natural
+step when picked: slice 1 (core one_shot/gated + unity neutral).
 
 Matthew: "Lets go with Session A please" — the utility sweep from the
 quick-hit plan, built to the specs written in part eight. Three small

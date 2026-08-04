@@ -34,7 +34,7 @@ Pitch/frequency: `ring_mod` `freq_shifter` `bitcrusher` ·
 Character/space: `tape` `convolver` ·
 CV tools: `quantizer` `slew` `pitch_detector` ·
 Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate` `burst` `arpeggiator` `chord` ·
-Voices: `fm_op` `pluck` `modal` `granular` `kick_drum`/`snare_drum`/`hat_drum` ·
+Voices: `fm_op` `pluck` `modal` `granular` `kick_drum`/`snare_drum`/`hat_drum` `sampler` ·
 Visual: `scope` `spectrum` ·
 Planned run (2026-08-03): `logic` `mid_side` `octaver` · `matrix_mixer`
 `vinyl` · `supersaw` `wavetable_morph` · plus quick hits at the end.
@@ -444,6 +444,83 @@ a groovebox.
 - `hat_drum`: 6 detuned squares (metallic ratio stack) → HP ~7 kHz;
   `closed_trigger` + `open_trigger` ports in one module, open choked by
   closed (document choke semantics); `decay_closed` / `decay_open`.
+
+### `sampler` (M–L — slice it) — "Sources" (added 2026-08-04)
+
+Keyboard-tracked pitched sample playback — the gap `file_player` doesn't
+fill: FilePlayer is a *transport* (one playhead, no pitch), this is a
+*voice* (per-voice playheads, pitch_cv-tracked rate). Load one recording,
+tell it what note the recording is, and the 16-slot architecture makes it
+a mellotron/romplers/breaks-machine for the price of a cubic read. Every
+hard part is already shipped somewhere in the rack.
+
+- Ports: `pitch_cv` in (cv, voice-aware; 1 V/oct, C4 = 0 V, the
+  `pluck`/`fm_op` convention; unpatched → C4); `gate` in (gate,
+  voice-aware; rising edge starts playback from `start`, fall behavior
+  per `mode`); `out` (audio).
+- Params:
+  - `path` — Browse (FilePlayer picker reuse). Decode via `media.py`
+    (scipy WAV fast path, ffmpeg for mp3/flac/ogg/m4a/video audio),
+    **whole-load off the audio thread** (convolver `_IRLoader`
+    precedent: silent until ready, keeps the previous sample on a
+    reload); missing/unreadable → silence, never raises (FilePlayer
+    contract, saved patches always load). Multi-channel mono-sums on
+    load (documented; stereo is a stretch). Length cap ~120 s
+    (RAM-bound, not DSP-bound: 60 s mono @ 48 k float32 ≈ 11.5 MB —
+    document the cap, truncate with a status).
+  - `root` — the note the recording *is*: note-name combo C0..C8
+    stored numeric (fm_op ratio-combo precedent), default C4. Playing
+    the root note = playback rate exactly 1.0.
+  - `tune` ±12 st (0) · `fine` ±50 ct (0) — the drums' `tune` idiom.
+  - `mode` combo: `one_shot` (edge fires the whole region, gate length
+    ignored — the drums idiom) | `gated` (sustains while high, release
+    fade on fall) | `loop` (gated + loops the loop region while held —
+    the mellotron mode).
+  - `start` / `end` 0..1 of the file (playback region, sample-exact).
+  - `loop_start` / `loop_end` 0..1 within the region (loop mode) ·
+    `loop_xfade` 1..100 ms (10) — linear crossfade across the seam
+    (resampler seam-declick lesson).
+  - `attack` 0..500 ms (**0**) / `release` 1..2000 ms (10) — declick
+    ramps, NOT an envelope (document: patch `adsr` → `vca` for real
+    shaping; raise `attack` only if your `start` point clicks).
+  - `level` 0..1 (0.8).
+- DSP: per-voice float64 playhead; rate = 2^(pitch − root_offset +
+  tune/12 + fine/1200), read per block (mean — vibrato tracks at block
+  rate, the pluck precedent, documented). Block render: positions =
+  pos0 + rate·arange(F) (affine → wrap/end segment logic vectorizes),
+  gathered through the **4-tap cubic Hermite** read — `_hermite4` from
+  the resampler verbatim, whose pinned bit-exact-at-integer-positions
+  property is what makes the neutral testable. Loop wrap = modulo into
+  the loop region + seam crossfade; one_shot/gated ends → zeros, voice
+  early-outs (pluck precedent: finished voices cost nothing).
+  Retrigger of a sounding voice: ~2 ms crossfade old-position →
+  new-start (drums declick idiom). Gate-fall release = multiplied ramp
+  then inactive. Pitch-up aliases by design — the classic sampler
+  crunch (bitcrusher "deliberately aliased" precedent, documented);
+  clean pitch-up is the mip-chain stretch below.
+- Neutral: root pitch ∧ start=0 ∧ end=1 ∧ attack=0 ∧ level=1 →
+  rate exactly 1.0 → integer read positions → **the decoded buffer
+  verbatim, bit-exact** (a source's passthrough contract).
+- Tests: unity bit-exact (above); +12 st ≡ buffer[::2] exactly (integer
+  stride → still bit-exact — the strong version); sine sample +7 st →
+  FFT ratio 2^(7/12) within cents (resampler pitch-test machinery);
+  one_shot exact length then zeros + early-out; gated release ramp
+  exact length, max sample-delta bounded (no click); loop steady-state
+  period exact + seam spike-free vs xfade=off + loop across block
+  joins; retrigger declick bound; root/tune/fine math (root C3, play
+  C4 → rate 2); per-voice independence + single row ≡ mono; block-size
+  independence bit-exact at constant pitch; missing path → silence, no
+  raise; start/end region sample-exact; multi-channel mono-sum.
+- Slices: (1) load path + one_shot/gated + root/tune/fine + cubic read
+  + declick ramps + unity neutral pinned, voice-aware; example:
+  euclidean → sampler one-shot (breaks machine). (2) loop mode + seam
+  crossfade + start/end/loop UI (bounded drags per the polish
+  standard); example: keys → loop-mode sampler → reverb (mellotron
+  pad — and `chord` in front = 4-deep sample stack for free).
+  (3) stretch menu: stereo `out_l`/`out_r`; on-load halfband mip chain
+  (`*_wt` infra) for alias-free pitch-up; `start_cv` (+ depth per
+  conventions); velocity in scaling level; `reverse` tickbox; a
+  waveform face with region markers (scope-face precedent).
 
 ## Seeing the signal — "CV & Utilities"
 
