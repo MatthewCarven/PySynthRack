@@ -33,8 +33,8 @@ Dynamics: `compressor` `limiter` `noise_gate` `transient_shaper` ·
 Pitch/frequency: `ring_mod` `freq_shifter` `bitcrusher` ·
 Character/space: `tape` `convolver` ·
 CV tools: `quantizer` `slew` `pitch_detector` ·
-Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate` `burst` `arpeggiator` `chord` ·
-Voices: `fm_op` `pluck` `modal` `granular` `kick_drum`/`snare_drum`/`hat_drum` `sampler` ·
+Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate` `burst` `arpeggiator` `chord` `chaos` ·
+Voices: `fm_op` `pluck` `modal` `granular` `kick_drum`/`snare_drum`/`hat_drum` `sampler` `organ` ·
 Visual: `scope` `spectrum` ·
 Planned run (2026-08-03): `logic` `mid_side` `octaver` · `matrix_mixer`
 `vinyl` · `supersaw` `wavetable_morph` · plus quick hits at the end.
@@ -349,6 +349,59 @@ instrument.
   sample-accurate; the 4 rows ≡ 4 independent mono renders; example patch
   minds headroom at the mono sink (4-voice sum!).
 
+### `chaos` (S–M) — "Modulation" (added 2026-08-04)
+
+Strange-attractor CV source — deterministic wandering with *structure*,
+the corner none of the existing random sources cover: `shift_random`
+loops, `lfo` random steps, the future `drift` smooths noise — chaos
+*orbits*. Same shape never repeats, yet it's fully seeded-deterministic
+(the house randomness rule for free: it isn't random at all).
+
+- Ports: `reset` in (gate — re-seed to the initial conditions,
+  performance rewind); outs `x`, `y`, `z` (cv — three views of one
+  orbit, so one module modulates three destinations *coherently*) +
+  `gate` (gate — see per-system semantics below).
+- Params: `system` combo `lorenz` (σ=10, ρ=28, β=8/3 — the butterfly)
+  | `rossler` (a=b=0.2, c=5.7 — spiral-and-kick) · `rate` 0.01..50
+  (1, log drag) — scales integration dt; calibrate so `rate` ≈ the
+  dominant orbital frequency in Hz (document the calibration per
+  system, pin it loosely) · `range` 0..5 V (2) · `bipolar` tickbox
+  (the shift_random idiom) · `seed` (1).
+- Gate semantics (the free lunch): `lorenz` → sign of x (lobe
+  switching — quasi-random square that hangs unpredictably on each
+  wing); `rossler` → z above threshold (sparse unpredictable spike
+  bursts — z sits near zero then kicks). Two very different rhythm
+  characters from one combo. Documented per system.
+- DSP: RK4 at a fixed internal substep (stability — the classic dt
+  rails per system, `rate` scales substeps-per-sample not dt beyond
+  the rail), evaluated on a decimated control grid (~every 16 samples)
+  and linearly interpolated to audio rate — the per-sample-Python trap
+  (slew lesson) never opens. Substep phase + last control point carried
+  across blocks → block-size independence *exact*. Seeded ICs drawn
+  near the attractor + a warmup run at seed/reset (transient skip,
+  deterministic). Output normalized by per-system attractor bounds
+  (Lorenz x ≈ ±20, z ≈ 5..45 — constants documented), clipped at the
+  rails, then range/bipolar mapping. Non-finite guard: re-seed +
+  counter (should never fire; tripwire test).
+- Neutral: none (a source with no passthrough) — the pinned contract is
+  seeded determinism: same seed → bit-identical render, forever.
+- Tests: seeded determinism bit-exact; `reset` ≡ fresh module;
+  block-size independence exact (substep + interp carry); long-run
+  bounds within `range`, zero NaNs; **the chaos test**: two ICs ε
+  apart decorrelate within a documented horizon while identical seeds
+  stay identical (positive-Lyapunov behavior, not a numerics
+  accident); rate calibration (zero-crossing rate of x scales with
+  `rate`, pinned loosely); lorenz gate ≡ sign(x); rossler gate sparse
+  (duty cycle bounds pinned).
+- Killer patches: `x` → quantizer → osc (wandering melody that never
+  loops, recalled exactly by seed); `z` → filter cutoff + `gate` →
+  envelope = self-playing patch with one module; `x`/`y` → scope xy
+  mode = **the butterfly on screen** (the demo that sells it).
+- Stretch: a `chaos` knob morphing ρ/c through the period-doubling
+  route (risk: parameter zones that collapse to a fixed point = frozen
+  CV — needs a guard); audio-rate mode (growly Lorenz drones);
+  `rate_cv` (+ depth per conventions).
+
 ## New voices — "Sources"
 
 ### `fm_op` (M) — **SHIPPED 2026-07-11** (see TODO.md / WORKLOG.md)
@@ -521,6 +574,69 @@ hard part is already shipped somewhere in the rack.
   (`*_wt` infra) for alias-free pitch-up; `start_cv` (+ depth per
   conventions); velocity in scaling level; `reverse` tickbox; a
   waveform face with region markers (scope-face precedent).
+
+### `organ` (S–M) — "Sources" (added 2026-08-04)
+
+Additive drawbar organ — nine harmonic faders, per-voice sines, key
+click. The cheapest joy on the ideas list: the DSP is nine sines, the
+panel is the `fader_seq` fader-bank idiom, and the sound is immediate.
+
+- Ports: `pitch_cv` in (cv, voice-aware; 1 V/oct, C4 = 0 V); `gate` in
+  (gate, voice-aware; organs are gate-on/gate-off — no envelope, that's
+  the instrument); `out` (audio).
+- Params:
+  - `bar1`..`bar9` — the nine drawbars, integer 0..8 (drawbar
+    convention), at the classic footages 16′ 5⅓′ 8′ 4′ 2⅔′ 2′ 1⅗′ 1⅓′
+    1′ = harmonic ratios ½, 1½, 1, 2, 3, 4, 5, 6, 8 of the played
+    pitch (UI labels show footages). Level law: ~3 dB per step, 0 =
+    silent (document the exact law, pin it). Default **888000000**
+    (the jazz registration — sounds right out of the box). Panel:
+    vertical fader bank (`fader_seq` precedent); faders-up = louder —
+    a documented deviation from pulled-out-is-louder hardware
+    drawbars, screens read up-is-more.
+  - `click` 0..1 (0.3) — key-click transient: short seeded HP-shaped
+    noise tick at each gate rise (softer at fall), the contact-bounce
+    sound (drums/pluck seeded-hit precedent). At 0, a ~1 ms declick
+    ramp keeps onsets clean instead.
+  - `perc` combo off|2nd|3rd (off) · `perc_decay` fast|slow ·
+    `perc_level` 0..1 (0.7) — the percussion register: a fast-decaying
+    extra partial (4′ or 2⅔′) that fires **only on a note played from
+    silence** (single-trigger: legato/held-note additions don't
+    re-fire — the classic behavior, and the musically load-bearing
+    part). The 1′-drawbar-stealing hardware quirk is deliberately
+    skipped (authenticity trivia, not music).
+  - `level` 0..1 (0.5).
+- DSP: per voice, 9 phase accumulators at pitch × ratio — folded into
+  the voice axis so one vectorized sine call covers (V·9, F) (the
+  supersaw-spec idiom; `_osc_waveshape` centralization). Weight by the
+  drawbar law, sum, sum-normalize so full-registration chords keep
+  headroom (document the norm). Partials above Nyquist masked per
+  block (a C8 fundamental puts 1′ at ~33 kHz — mute, don't alias;
+  tonewheel top-octave *foldback* is the authenticity stretch).
+  Percussion = one extra decaying sine per voice with the
+  from-silence trigger latch; click = seeded per-hit burst (exact-
+  waveform testable). Phases carried across blocks.
+- Neutral (a source's pin): `bar3` (8′) at 8, everything else 0,
+  click 0 → **a pure per-voice sine** — pinned against the
+  oscillator's sine render at the same pitch (bit-exact if the shared
+  phase+sin path allows, else < 1e-6 with the tolerance documented).
+- Tests: the single-drawbar sine pin (above); registration FFT —
+  888000000 → partials at ratios ½/1½/1 with 3 dB-law amplitudes
+  exact; per-step level law −3 dB pinned; Nyquist mask (high-note
+  render alias-free — antialiasing-test machinery); click energy
+  scales with `click`, seeded reproducible, click=0 onset passes the
+  max-delta declick bound; **percussion single-trigger** — a legato
+  second note while one is held does NOT re-fire, release-all then
+  press does; perc decay times; voice ≡ mono; per-voice independence;
+  block-size independence (phase carry); perf at 16 voices × 9
+  partials = 144 sines — measure and RECORD (modal/supersaw
+  precedent).
+- Killer patches: keys → organ → `rotary` when that ships (the pairing
+  both specs deserve); until then keys → organ → chorus → reverb;
+  `chord` in front for one-finger full-organ stabs.
+- Stretch: tonewheel foldback (top-octave repeat instead of mute);
+  `leakage` (quiet all-wheels hum bed); vibrato/chorus scanner —
+  deliberately NOT built in, the rack's chorus module is the patch.
 
 ## Seeing the signal — "CV & Utilities"
 

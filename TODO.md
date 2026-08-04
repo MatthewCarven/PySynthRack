@@ -47,6 +47,23 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
 
 ## Later / wishlist
 
+- [ ] **`organ` + `chaos` — the fun pair** — spec'd 2026-08-04 at
+      Matthew's pick ("organ & chaos please"), second and third off the
+      what's-left brainstorm; full specs in docs/MODULE_IDEAS.md.
+      `organ` (Sources, S–M): nine-drawbar additive — bars fold into
+      the voice axis for one vectorized sine call over (V·9, F)
+      (supersaw idiom), 3 dB/step drawbar law, seeded key click,
+      single-trigger percussion register (legato doesn't re-fire — THE
+      test), Nyquist-masked partials, fader_seq fader-bank panel,
+      default 888000000; neutral pin = lone 8′ drawbar ≡ oscillator
+      sine. `chaos` (Modulation, S–M): Lorenz/Rössler attractor CV —
+      RK4 on a rail-limited substep, decimated control grid + linear
+      interp (the slew per-sample-Python lesson), x/y/z coherent CV
+      outs + per-system gate (lorenz lobe-sign square, rossler z-spike
+      bursts), seeded-deterministic (it isn't random at all),
+      exact block-size independence; the demo is x/y → scope xy =
+      the butterfly. Examples queued: organ→chorus→reverb with chord
+      stabs; chaos→quantizer wandering melody.
 - [ ] **`sampler` — keyboard-tracked pitched sample voice** — spec'd
       2026-08-04 at Matthew's pick (":-{D") from the "what's left"
       brainstorm; full spec in docs/MODULE_IDEAS.md § New voices. The

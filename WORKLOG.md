@@ -10,7 +10,49 @@ Running log of decisions and progress. Newest first.
 
 ---
 
-## 2026-08-04 — sampler spec'd (the "what's left" brainstorm)
+## 2026-08-04 — organ + chaos spec'd (brainstorm picks two and three)
+
+Matthew pushed everything through 94cea1b (origin current), then picked
+two more off the brainstorm: "organ & chaos please". Both spec'd into
+docs/MODULE_IDEAS.md at the house standard, same treatment as the
+sampler — spec only, build when picked.
+
+**organ** (Sources, S–M). Nine drawbars at the classic footages
+(ratios ½ 1½ 1 2 3 4 5 6 8), integer 0..8 levels on a ~3 dB/step law,
+default 888000000. The implementation hook: fold the nine partials
+into the voice axis — one vectorized sine call over (V·9, F), the
+supersaw-spec idiom — so the whole instrument is one `_osc_waveshape`-
+class evaluation plus weights. Design calls: gate-on/gate-off with NO
+envelope (that IS an organ; `click` covers the onset — seeded
+contact-bounce tick, or a 1 ms declick ramp at click=0); percussion
+register is single-trigger from silence (legato doesn't re-fire — the
+musically load-bearing classic, and the test that matters); partials
+above Nyquist masked (foldback = authenticity stretch); panel is the
+fader_seq fader-bank with faders-up-is-louder (documented deviation
+from hardware drawbar direction); vibrato scanner deliberately
+excluded — the chorus module is the patch. Neutral pin: lone 8′
+drawbar = a pure sine, pinned against the oscillator's own sine
+render. Perf to RECORD at 16 voices × 9 partials.
+
+**chaos** (Modulation, S–M). Lorenz/Rössler strange-attractor CV — the
+corner no random source covers: shift_random loops, lfo-random steps,
+drift (unbuilt) smooths noise; chaos *orbits*, never repeating yet
+fully seed-deterministic (the house randomness rule satisfied by
+having no randomness at all). Design calls: RK4 at a rail-limited
+internal substep, evaluated on a ~16-sample control grid + linear
+interp to audio rate — the slew per-sample-Python trap never opens;
+substep + control-point carry makes block-size independence EXACT.
+Three coherent outs (x/y/z of one orbit) + a per-system gate with two
+genuinely different rhythm characters: lorenz = lobe-sign square that
+hangs unpredictably, rossler = sparse z-spike bursts. Per-system
+bound normalization, warmup transient skip, non-finite tripwire. The
+sell-it demo: x/y into scope xy mode — the butterfly on the node.
+Stretch explicitly gated: a ρ/c morph knob risks fixed-point collapse
+(frozen CV) and needs a guard before it's offered.
+
+Queued in TODO § Later / wishlist as one combined entry ("the fun
+pair"). Index line updated. Spec-only session; next natural step when
+picked: organ first (smaller, instant payoff), chaos after.
 
 Matthew asked what modules were even left ("i think we are running out
 of options here which is a good thing :-{D"). Answer: not close — the
