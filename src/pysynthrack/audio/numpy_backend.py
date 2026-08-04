@@ -2407,6 +2407,10 @@ class NumpyBackend(AudioBackend):
             return self._render_matrix_mixer(module, frames, buffers, patch)
         if module.TYPE == "vinyl":
             return self._render_vinyl(module, frames, buffers, patch)
+        if module.TYPE == "supersaw":
+            return self._render_supersaw(module, frames, buffers, patch)
+        if module.TYPE == "wavetable_morph":
+            return self._render_wavetable_morph(module, frames, buffers, patch)
         if module.TYPE == "euclidean":
             return self._render_euclidean(module, frames, buffers, patch)
         if module.TYPE == "burst":
@@ -2816,6 +2820,345 @@ class NumpyBackend(AudioBackend):
         i1 = (i0 + 1) % L
         frac = pos - floor_pos
         return tbl[i0] * (1.0 - frac) + tbl[i1] * frac
+
+    # ----- Supersaw rendering ----------------------------------------------
+
+    def _render_supersaw(self, module, frames: int, buffers, patch) -> dict:
+        """Seven detuned PolyBLEP saws per voice (see modules/supersaw.py).
+
+        The whole stack is ONE `_waveshape_blep` call: phases fold into
+        a (V, 7, F) block (per-sample dt rides along for the BLEP
+        window), then two einsums over the saw axis produce the L/R
+        buses through per-saw equal-power pan gains. Free-running
+        initial phases are seeded per (voice slot, saw index) — the
+        supersaw signature, deterministic per slot so patches recall.
+        Gains are RMS-normalised so blend/detune moves don't pump; at
+        ``spread`` 0 the L and R gain vectors are identical, so the two
+        outs are bit-identical.
+        """
+        from ..modules.supersaw import (
+            SUPERSAW_MAX_CENTS,
+            SUPERSAW_N,
+            SUPERSAW_OFFSETS,
+            SUPERSAW_PAN,
+        )
+
+        freq = float(module.params.get("freq", 261.6256))
+        detune = min(1.0, max(0.0, float(module.params.get("detune", 0.35))))
+        blend = min(1.0, max(0.0, float(module.params.get("blend", 0.75))))
+        spread = min(1.0, max(0.0, float(module.params.get("spread", 0.5))))
+        amp = float(module.params.get("amp", 0.5))
+
+        freq_cv = self._input_buffer(
+            patch, buffers, module.id, "freq_cv", collapse=False
+        )
+        amp_cv = self._input_buffer(
+            patch, buffers, module.id, "amp_cv", collapse=False
+        )
+
+        voiced = freq_cv is not None and freq_cv.ndim == 2
+        V = freq_cv.shape[0] if voiced else 1
+
+        sr = float(self.sample_rate)
+        offsets = np.asarray(SUPERSAW_OFFSETS, dtype=np.float64)
+        mult = 2.0 ** (offsets * SUPERSAW_MAX_CENTS * detune / 1200.0)  # (7,)
+
+        st = self._state.setdefault(module.id, {})
+        if st.get("V") != V:
+            st.clear()
+            phases0 = np.empty((V, SUPERSAW_N), dtype=np.float64)
+            for v in range(V):
+                for i in range(SUPERSAW_N):
+                    # Fixed per-(slot, saw) seeds: free phases, recalled.
+                    phases0[v, i] = float(
+                        np.random.default_rng([93, v, i]).random()
+                    )
+            st.update({"V": V, "phases": phases0})
+        phases0 = st["phases"]  # (V, 7)
+
+        if freq_cv is None:
+            inc = np.broadcast_to(
+                (freq * mult / sr)[None, :, None], (V, SUPERSAW_N, 1)
+            )
+            ramp = np.arange(frames, dtype=np.float64)
+            phases = (phases0[:, :, None] + inc * (ramp + 1.0)) % 1.0
+            st["phases"] = phases[:, :, -1].copy()
+            dt = inc
+        else:
+            cv = freq_cv.astype(np.float64)
+            if cv.ndim == 1:
+                cv = cv[None, :]
+            inst = freq * np.power(2.0, cv)  # (V, F)
+            inc = inst[:, None, :] * mult[None, :, None] / sr  # (V, 7, F)
+            phases = (
+                phases0[:, :, None] + np.cumsum(inc, axis=2)
+            ) % 1.0
+            st["phases"] = phases[:, :, -1].copy()
+            dt = inc
+
+        wave = self._waveshape_blep("saw", phases, dt)  # (V, 7, F)
+
+        gains = np.full(SUPERSAW_N, blend, dtype=np.float64)
+        gains[3] = 1.0 - 0.5 * blend  # the center saw
+        norm = 1.0 / np.sqrt(float(np.sum(gains * gains)))
+        theta = (np.pi / 4.0) * (
+            1.0 + spread * np.asarray(SUPERSAW_PAN, dtype=np.float64)
+        )
+        gl = gains * norm * np.cos(theta)
+        gr = gains * norm * np.sin(theta)
+
+        out_l = np.einsum("vsf,s->vf", wave, gl) * amp
+        out_r = np.einsum("vsf,s->vf", wave, gr) * amp
+        if amp_cv is not None:
+            out_l = out_l * amp_cv.astype(np.float64)
+            out_r = out_r * amp_cv.astype(np.float64)
+
+        out_l = out_l.astype(np.float32)
+        out_r = out_r.astype(np.float32)
+        if not voiced and out_l.ndim == 2 and out_l.shape[0] == 1:
+            out_l, out_r = out_l[0], out_r[0]
+        return {"out_l": out_l, "out_r": out_r}
+
+    # ----- WavetableMorph rendering ----------------------------------------
+
+    def _morph_stack(self, name: str) -> np.ndarray:
+        """Build (cached) a morph stack: (n_frames, NUM_WT_TABLES, WT_LEN).
+
+        Frames are defined in the harmonic domain (amplitude + phase per
+        harmonic) and each frame is mip-banded exactly like
+        :meth:`_get_wavetable` — band ``j`` keeps only the harmonics
+        below Nyquist for the top of octave ``j``. Each frame is
+        normalised by ONE scalar (its fullest band's peak) so the
+        position crossfade never pumps between bands.
+        """
+        stacks = getattr(self, "_morph_stacks", None)
+        if stacks is None:
+            stacks = self._morph_stacks = {}
+        cached = stacks.get(name)
+        if cached is not None:
+            return cached
+
+        H = 128  # harmonics carried per frame
+        k = np.arange(1, H + 1, dtype=np.float64)
+
+        def frame(amps, phs=None):
+            a = np.zeros(H, dtype=np.float64)
+            a[: len(amps)] = amps
+            p = np.zeros(H, dtype=np.float64)
+            if phs is not None:
+                p[: len(phs)] = phs
+            return a, p
+
+        frames_spec: list[tuple[np.ndarray, np.ndarray]] = []
+        if name == "vowel":
+            # Generic vowel formant bumps at harmonic positions
+            # (physics-textbook shapes; center ≈ formant / f0 at ~130 Hz).
+            vowels = ((6.0, 11.0), (4.0, 18.0), (2.5, 21.0), (4.0, 7.0), (2.5, 5.0))
+            for f1, f2 in vowels:
+                amps = (
+                    np.exp(-0.5 * ((k - f1) / 1.8) ** 2)
+                    + 0.6 * np.exp(-0.5 * ((k - f2) / 2.5) ** 2)
+                ) / k ** 0.3
+                frames_spec.append(frame(amps))
+        elif name == "metallic":
+            rng = np.random.default_rng(417)  # fixed: part of the sound
+            sets = (
+                (1, 6, 13),
+                (1, 5, 11, 19),
+                (1, 7, 15, 26, 38),
+                (1, 9, 17, 29, 44, 61),
+            )
+            for harmonics in sets:
+                amps = np.zeros(H)
+                phs = np.zeros(H)
+                for h in harmonics:
+                    amps[h - 1] = 1.0 / np.sqrt(h)
+                    phs[h - 1] = float(rng.uniform(0, 2 * np.pi))
+                frames_spec.append(frame(amps, phs))
+        else:  # "analog": sine → triangle → saw → square
+            sine = np.zeros(H)
+            sine[0] = 1.0
+            tri = np.zeros(H)
+            sign = 1.0
+            for kk in range(1, H + 1, 2):
+                tri[kk - 1] = sign / (kk * kk)
+                sign = -sign
+            saw = 1.0 / k
+            sq = np.zeros(H)
+            sq[0::2] = 1.0 / k[0::2]
+            for amps in (sine, tri, saw, sq):
+                frames_spec.append(frame(amps))
+
+        stack = self._bandlimit_frames(frames_spec)
+        stacks[name] = stack
+        return stack
+
+    def _bandlimit_frames(self, frames_spec) -> np.ndarray:
+        """Additively render harmonic-domain frames into per-octave
+        mip bands: (n_frames, NUM_WT_TABLES, WT_LEN)."""
+        L = self.WT_LEN
+        ph = np.arange(L, dtype=np.float64) / L
+        nyq = self.sample_rate / 2.0
+        n_frames = len(frames_spec)
+        stack = np.zeros((n_frames, self.NUM_WT_TABLES, L), dtype=np.float64)
+        for fi, (amps, phs) in enumerate(frames_spec):
+            H = len(amps)
+            for j in range(self.NUM_WT_TABLES):
+                f_high = self.WT_BASE_FREQ * (2.0 ** (j + 1))
+                max_h = max(1, int(nyq / f_high))
+                acc = np.zeros(L, dtype=np.float64)
+                for kk in range(1, min(H, max_h) + 1):
+                    a = amps[kk - 1]
+                    if a == 0.0:
+                        continue
+                    acc += a * np.sin(
+                        2.0 * np.pi * kk * ph + phs[kk - 1]
+                    )
+                stack[fi, j] = acc
+            # One normaliser per FRAME (its fullest band) so the
+            # position crossfade never pumps between mip bands.
+            peak = float(np.max(np.abs(stack[fi, 0]))) or 1.0
+            stack[fi] /= peak
+        return stack
+
+    def _morph_file_stack(self, path: str) -> np.ndarray | None:
+        """Load (cached) a single-cycle WAV as a 1-frame morph stack, or
+        None if unreadable — the caller falls back to the built-in."""
+        stacks = getattr(self, "_morph_file_stacks", None)
+        if stacks is None:
+            stacks = self._morph_file_stacks = {}
+        if path in stacks:
+            return stacks[path]
+        stack = None
+        try:
+            _sr, data = wavfile.read(path)
+            cycle = np.asarray(data, dtype=np.float64)
+            if cycle.ndim == 2:
+                cycle = cycle.mean(axis=1)
+            if cycle.size >= 8:
+                peak = float(np.max(np.abs(cycle))) or 1.0
+                cycle = cycle / peak
+                # Spectral resample of the cycle: its rfft bins ARE the
+                # harmonic series of the table.
+                spec = np.fft.rfft(cycle)
+                H = min(len(spec) - 1, 128)
+                amps = np.abs(spec[1 : H + 1]) * (2.0 / cycle.size)
+                phs = np.angle(spec[1 : H + 1]) + np.pi / 2.0
+                stack = self._bandlimit_frames([(amps, phs)])
+        except Exception:
+            stack = None
+        stacks[path] = stack
+        return stack
+
+    @staticmethod
+    def _wt_lookup(tbl, phases):
+        """Linear-interp table read (the `_waveshape_wt` core)."""
+        L = len(tbl)
+        pos = np.asarray(phases, dtype=np.float64) * L
+        floor_pos = np.floor(pos)
+        i0 = floor_pos.astype(np.int64) % L
+        i1 = (i0 + 1) % L
+        frac = pos - floor_pos
+        return tbl[i0] * (1.0 - frac) + tbl[i1] * frac
+
+    def _render_wavetable_morph(
+        self, module, frames: int, buffers, patch
+    ) -> np.ndarray:
+        """Scanning wavetable oscillator (see modules/wavetable_morph.py).
+
+        Per voice: phase accumulates exactly like the oscillator
+        (arange fast path / cumsum under CV); the mip band comes from
+        the block's largest dt (the `_waveshape_wt` rule); the scan
+        position (param + depth·CV, block-mean per voice) crossfades
+        the two adjacent frames of the stack. File stacks override the
+        built-in ``table`` when they load; a bad path falls back
+        silently so patches always load.
+        """
+        from ..modules.wavetable_morph import WT_STACKS
+
+        p = module.params
+        freq = float(p.get("freq", 261.6256))
+        position = min(1.0, max(0.0, float(p.get("position", 0.0))))
+        depth = float(p.get("position_cv_depth", 1.0))
+        amp = float(p.get("amp", 0.5))
+        table = str(p.get("table", "analog"))
+        if table not in WT_STACKS:
+            table = "analog"
+        path = str(p.get("file", "") or "")
+
+        stack = self._morph_file_stack(path) if path else None
+        if stack is None:
+            stack = self._morph_stack(table)
+        n_frames = stack.shape[0]
+
+        freq_cv = self._input_buffer(
+            patch, buffers, module.id, "freq_cv", collapse=False
+        )
+        pos_cv = self._input_buffer(
+            patch, buffers, module.id, "position_cv", collapse=False
+        )
+        amp_cv = self._input_buffer(
+            patch, buffers, module.id, "amp_cv", collapse=False
+        )
+
+        voiced = freq_cv is not None and freq_cv.ndim == 2
+        V = freq_cv.shape[0] if voiced else 1
+
+        st = self._state.setdefault(module.id, {})
+        if st.get("V") != V:
+            st.clear()
+            st.update({"V": V, "phases": np.zeros(V, dtype=np.float64)})
+        phases0 = st["phases"]
+
+        sr = float(self.sample_rate)
+        if freq_cv is None:
+            inc0 = freq / sr
+            ramp = np.arange(frames, dtype=np.float64)
+            phases = (phases0[:, None] + inc0 * (ramp[None, :] + 1.0)) % 1.0
+            dt_max = np.full(V, inc0)
+        else:
+            cv = freq_cv.astype(np.float64)
+            if cv.ndim == 1:
+                cv = cv[None, :]
+            inc = freq * np.power(2.0, cv) / sr  # (V, F)
+            phases = (phases0[:, None] + np.cumsum(inc, axis=1)) % 1.0
+            dt_max = inc.max(axis=1)
+        st["phases"] = phases[:, -1].copy()
+
+        def pos_row(v):
+            if pos_cv is None:
+                return position
+            row = pos_cv[v] if pos_cv.ndim == 2 and v < pos_cv.shape[0] else (
+                pos_cv[0] if pos_cv.ndim == 2 else pos_cv
+            )
+            return min(1.0, max(0.0, position + depth * float(np.mean(row))))
+
+        out = np.empty((V, frames), dtype=np.float64)
+        for v in range(V):
+            f_rep = max(float(dt_max[v]) * sr, self.WT_BASE_FREQ)
+            j = int(
+                np.clip(
+                    np.floor(np.log2(f_rep / self.WT_BASE_FREQ)),
+                    0,
+                    self.NUM_WT_TABLES - 1,
+                )
+            )
+            scaled = pos_row(v) * (n_frames - 1)
+            i0 = min(int(np.floor(scaled)), n_frames - 1)
+            i1 = min(i0 + 1, n_frames - 1)
+            fr = scaled - i0
+            wave = self._wt_lookup(stack[i0, j], phases[v])
+            if fr > 0.0 and i1 != i0:
+                wave = wave * (1.0 - fr) + fr * self._wt_lookup(
+                    stack[i1, j], phases[v]
+                )
+            out[v] = wave
+
+        out = out * amp
+        if amp_cv is not None:
+            out = out * amp_cv.astype(np.float64)
+        out32 = out.astype(np.float32)
+        return out32 if voiced else out32[0]
 
     def _render_oscillator_mono(
         self, module, frames, freq, amp, waveform, freq_cv, amp_cv

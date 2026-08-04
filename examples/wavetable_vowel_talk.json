@@ -1,0 +1,152 @@
+{
+  "version": 1,
+  "next_id": 10,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "tempo",
+      "params": {
+        "bpm": 80.0,
+        "division": 2.0,
+        "pulse_width": 0.5
+      }
+    },
+    {
+      "id": 2,
+      "type": "shift_random",
+      "name": "melody box",
+      "params": {
+        "probability": 0.1,
+        "length": 8,
+        "range": 1.0,
+        "seed": 33
+      }
+    },
+    {
+      "id": 3,
+      "type": "quantizer",
+      "name": "in key",
+      "params": {
+        "root": "C",
+        "scale": "dorian",
+        "transpose": -12.0
+      }
+    },
+    {
+      "id": 4,
+      "type": "lfo",
+      "name": "the mouth — sweeps A→E→I→O→U",
+      "params": {
+        "rate": 0.11,
+        "waveform": "triangle"
+      }
+    },
+    {
+      "id": 5,
+      "type": "wavetable_morph",
+      "name": "VOWEL TALKER — position is the vowel",
+      "params": {
+        "table": "vowel",
+        "position": 0.0,
+        "position_cv_depth": 1.0,
+        "amp": 0.6
+      }
+    },
+    {
+      "id": 6,
+      "type": "adsr",
+      "name": "note shape",
+      "params": {
+        "attack": 0.03,
+        "decay": 0.2,
+        "sustain": 0.5,
+        "release": 0.3
+      }
+    },
+    {
+      "id": 7,
+      "type": "vca",
+      "name": "vca",
+      "params": {}
+    },
+    {
+      "id": 8,
+      "type": "reverb",
+      "name": "a room to talk in",
+      "params": {
+        "decay": 0.5,
+        "mix": 0.3
+      }
+    },
+    {
+      "id": 9,
+      "type": "stereo_speaker_output",
+      "name": "out",
+      "params": {}
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "cv",
+      "dst_module_id": 3,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "freq_cv"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "cv",
+      "dst_module_id": 5,
+      "dst_port": "position_cv"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 6,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out",
+      "dst_module_id": 7,
+      "dst_port": "audio"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "cv",
+      "dst_module_id": 7,
+      "dst_port": "cv"
+    },
+    {
+      "src_module_id": 7,
+      "src_port": "out",
+      "dst_module_id": 8,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 8,
+      "src_port": "out_l",
+      "dst_module_id": 9,
+      "dst_port": "in_l"
+    },
+    {
+      "src_module_id": 8,
+      "src_port": "out_r",
+      "dst_module_id": 9,
+      "dst_port": "in_r"
+    }
+  ],
+  "ui": {}
+}

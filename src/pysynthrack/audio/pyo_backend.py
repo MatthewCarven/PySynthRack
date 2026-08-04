@@ -291,6 +291,8 @@ class PyoBackend(AudioBackend):
             "chaos",
             "matrix_mixer",
             "vinyl",
+            "supersaw",
+            "wavetable_morph",
         ):
             # v0.3+ routing / bridge / CV-oscillator modules. The numpy
             # backend is the real implementation; pyo support arrives

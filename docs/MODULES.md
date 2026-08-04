@@ -207,6 +207,8 @@ signal-flow role (sources → processors → … → sinks).
 | [`snare_drum`](#snare_drum) | Sources | `trigger` (gate) → `out` (audio) |
 | [`hat_drum`](#hat_drum) | Sources | `closed_trigger`,`open_trigger` (gate) → `out` (audio) |
 | [`organ`](#organ) | Sources | `pitch_cv` (cv), `gate` (gate) → `out` (audio) |
+| [`supersaw`](#supersaw) | Sources | `freq_cv`,`amp_cv` (cv) → `out_l`,`out_r` (audio) |
+| [`wavetable_morph`](#wavetable_morph) | Sources | `freq_cv`,`position_cv`,`amp_cv` (cv) → `out` (audio) |
 | [`filter`](#filter) | Filters & EQ | `in` (audio), `cutoff_cv` (cv) → `out` (audio) |
 | [`crossover`](#crossover) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
 | [`parametric_eq`](#parametric_eq) | Filters & EQ | `in` (audio) → `out` (audio) |
@@ -808,6 +810,49 @@ blocks — bit-exact at any block size.
 (faders-up = louder — a deliberate deviation from pulled-out-is-louder
 hardware). Pair it with [`chorus`](#chorus) for the scanner shimmer —
 see `examples/organ_jazz.json`.
+
+#### `supersaw`
+
+**Seven detuned band-limited saws per voice** — the trance chord
+machine (JP-8000 lineage). One center saw, six spread on the classic
+**asymmetric** detune table (the sides don't mirror — half the
+shimmer), outermost pair ±50 cents at `detune` = 1. Free-running
+initial phases seeded per (voice slot, saw) are the other half of the
+signature — and being seeded they're deterministic: patches recall.
+`blend` is the JP control (0 = center saw alone — and therefore
+detune-inert, pinned); the seven gains are RMS-normalised so
+blend/detune don't pump level. `spread` pans the stack across the
+field equal-power (flat-side saws left, sharp right); at 0 the outs
+are **bit-identical** (patch either for mono). Voice-aware via
+`freq_cv` (1 V/oct around `freq`, per-sample): [`chord`](#chord) →
+supersaw is the obvious wall of sound. Heavy by design — 16 voices =
+112 PolyBLEP saws (~46 % of the 48 k/512 budget; recorded) — spend it
+on the pad, not the whole rack. **Ports**: `freq_cv`, `amp_cv` (cv) →
+`out_l`, `out_r` (audio). **Params**: `freq` (261.6256) · `detune`
+0..1 (0.35) · `blend` 0..1 (0.75) · `spread` 0..1 (0.5) · `amp`
+(0.5). See `examples/supersaw_chord_wall.json`.
+
+#### `wavetable_morph`
+
+A **scanning wavetable oscillator** — the `*_wt` mipmap infrastructure
+grown into an instrument. A stack of single-cycle frames;
+`position` scans it, crossfading adjacent frames, and every frame is
+band-limited per octave exactly like the oscillator's `*_wt` shapes,
+so the morph stays alias-free up the keyboard (> 40 dB suppression,
+pinned). Built-in stacks: `analog` (sine → triangle → saw → square —
+position 0/1 land the pure endpoint shapes, the thirds land triangle
+and saw exactly, all pinned), `vowel` (five generic formant frames,
+A→E→I→O→U — sweep `position_cv` from an LFO and it talks), `metallic`
+(sparse seeded-phase harmonic sets, glassy → gnarly). `file` imports a
+**single-cycle WAV** via Browse (spectrally resampled, mip-banded like
+the built-ins; loads as a single frame, so `position` is inert until a
+multi-frame import exists; a bad path falls back to `table` silently).
+Voice-aware via `freq_cv`; `position_cv` adds to the knob ×
+`position_cv_depth` at block rate per voice. **Ports**: `freq_cv`,
+`position_cv`, `amp_cv` (cv) → `out` (audio). **Params**: `freq`
+(261.6256) · `position` 0..1 (0) · `position_cv_depth` (1) · `table`
+analog/vowel/metallic · `file` ('' = built-in) · `amp` (0.5). See
+`examples/wavetable_vowel_talk.json`.
 
 ---
 

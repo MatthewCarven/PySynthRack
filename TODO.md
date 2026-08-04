@@ -50,13 +50,28 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       `matrix_feedback_echo.json` + `vinyl_dust.json`. **Pending
       (meatthread0):** ears + gain-grid GUI eyeball. Later: shimmer
       example through the matrix; wobble/crackle cv ins.
-- [ ] **Session C — oscillator double (S–M + M)**: `supersaw` (7 blep
-      saws/voice folded into the voice axis for one vectorized
-      waveshape call; asymmetric detune table, `blend`, alternate-pan
-      `spread`, seeded free phases; RECORD 16-voice perf) +
-      `wavetable_morph` (scanning wavetable on the existing `*_wt`
-      mipmap infra; built-in stacks + single-cycle WAV import via
-      media.py Browse). Demo patch writes itself: `chord` → both.
+- [x] **Session C — oscillator double (S–M + M)** — BOTH SHIPPED
+      2026-08-04 (day part three; the QUICK-HIT RUN IS COMPLETE:
+      A+B+C, seven modules in two days). `supersaw`: one blep call on
+      (V,7,F), asymmetric table ±50 ct, per-(slot,saw) seeded free
+      phases, RMS-normed blend, equal-power spread (0 → outs
+      bit-identical, pinned); blend 0 = detune-inert center saw
+      (pinned); 16-voice worst case RECORDED 4.87 ms = **45.6%**
+      budget (112 blep saws — documented "spend it on the pad";
+      fast-path idea queued below). `wavetable_morph`:
+      `_bandlimit_frames` renders harmonic frames into per-octave mip
+      stacks (one normaliser per frame — crossfade never pumps);
+      analog stack endpoints + thirds land pure shapes (pinned);
+      vowel + metallic stacks; single-cycle WAV import via the shared
+      Browse dialog (rfft bins = harmonic series; bad path falls back
+      bit-equal); +3 oct alias floor > 40 dB down (pinned);
+      `position_cv_depth` added per conventions (spec omitted it —
+      noted). 27 tests; suite **2645**; examples
+      `supersaw_chord_wall.json` (0.66 peak) +
+      `wavetable_vowel_talk.json` (0.48 peak). **Pending
+      (meatthread0):** ears on both + Browse eyeball. Later: supersaw
+      fast path (arange constant-pitch / (V·7,F) reshape) if 45.6%
+      bites; multi-frame WAV import (file → sliced frames).
 
 ## Later / wishlist
 

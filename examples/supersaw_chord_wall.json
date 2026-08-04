@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "next_id": 10,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "tempo",
+      "params": {
+        "bpm": 60.0,
+        "division": 1.0,
+        "pulse_width": 0.7
+      }
+    },
+    {
+      "id": 2,
+      "type": "shift_random",
+      "name": "root motion",
+      "params": {
+        "probability": 0.12,
+        "length": 4,
+        "range": 1.0,
+        "seed": 9
+      }
+    },
+    {
+      "id": 3,
+      "type": "quantizer",
+      "name": "in key",
+      "params": {
+        "root": "A",
+        "scale": "natural minor",
+        "transpose": -12.0
+      }
+    },
+    {
+      "id": 4,
+      "type": "chord",
+      "name": "four voices",
+      "params": {
+        "preset": "m7",
+        "strum": 0.0
+      }
+    },
+    {
+      "id": 5,
+      "type": "supersaw",
+      "name": "THE WALL — detune/blend/spread are the sound",
+      "params": {
+        "detune": 0.4,
+        "blend": 0.8,
+        "spread": 0.8,
+        "amp": 0.2
+      }
+    },
+    {
+      "id": 6,
+      "type": "adsr",
+      "name": "swell",
+      "params": {
+        "attack": 0.15,
+        "decay": 0.3,
+        "sustain": 0.7,
+        "release": 0.6
+      }
+    },
+    {
+      "id": 7,
+      "type": "vca",
+      "name": "vca L",
+      "params": {}
+    },
+    {
+      "id": 8,
+      "type": "vca",
+      "name": "vca R",
+      "params": {}
+    },
+    {
+      "id": 9,
+      "type": "stereo_speaker_output",
+      "name": "out",
+      "params": {}
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "cv",
+      "dst_module_id": 3,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "pitch_cv"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "pitch_cv",
+      "dst_module_id": 5,
+      "dst_port": "freq_cv"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "gate",
+      "dst_module_id": 6,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out_l",
+      "dst_module_id": 7,
+      "dst_port": "audio"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "cv",
+      "dst_module_id": 7,
+      "dst_port": "cv"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out_r",
+      "dst_module_id": 8,
+      "dst_port": "audio"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "cv",
+      "dst_module_id": 8,
+      "dst_port": "cv"
+    },
+    {
+      "src_module_id": 7,
+      "src_port": "out",
+      "dst_module_id": 9,
+      "dst_port": "in_l"
+    },
+    {
+      "src_module_id": 8,
+      "src_port": "out",
+      "dst_module_id": 9,
+      "dst_port": "in_r"
+    }
+  ],
+  "ui": {}
+}

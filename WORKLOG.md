@@ -10,7 +10,65 @@ Running log of decisions and progress. Newest first.
 
 ---
 
-## 2026-08-04 — Session B SHIPPED: matrix_mixer + vinyl (feedback lands)
+## 2026-08-04 — Session C SHIPPED: supersaw + wavetable_morph — the
+## quick-hit run is COMPLETE (A+B+C, seven modules)
+
+Matthew: "Lets continue with session C please … loving this project
+and your work" (and a reminder to keep the co-author tag on commits —
+it's on every one). The oscillator double, and with it the 2026-08-03
+seven-module plan closes: Session A (logic/mid_side/octaver), B
+(matrix_mixer/vinyl), C (supersaw/wavetable_morph) all shipped. Suite
+**2616 → 2645** (27 new tests).
+
+**supersaw** (Sources). Seven PolyBLEP saws per voice through ONE
+`_waveshape_blep` call on a folded (V, 7, F) phase block — the
+spec's einsum idea worked exactly as written, per-saw equal-power pan
+gains collapsing the saw axis into L/R buses. The classic asymmetric
+detune table (unit-normalised, center at index 3) scaled to ±50 ct;
+free phases seeded per (slot, saw) → deterministic renders, and slot
+0 of a (1, F) render ≡ mono (pinned). Design pins that came out
+clean: blend 0 = the center saw alone, so detune CHANGES NOTHING
+(bit-equal renders across detune — a lovely negative-space test);
+spread 0 → L/R gain vectors identical → outs bit-identical. Test
+lesson (the third of its kind this week): detuned saws don't put
+energy BETWEEN harmonics — each harmonic becomes a CLUSTER whose
+skirt widens with detune; measure around harmonic 8, not at 1.5·f0
+(first probe read dead flat and the DSP was fine). Perf RECORDED:
+16 voices = 112 blep saws = **4.87 ms = 45.6 % of the 48 k/512
+budget** — heavy by design, documented as "spend it on the pad".
+
+**wavetable_morph** (Sources). The `*_wt` mipmap infra grown into an
+instrument: `_bandlimit_frames` renders harmonic-domain frames into
+(n_frames, 11 bands, 2048) stacks — the same additive per-octave
+construction as `_get_wavetable`, one normaliser per FRAME (its
+fullest band) so the position crossfade never pumps between bands.
+Three built-ins: analog (sine→tri→saw→square — endpoints AND the
+interior thirds land the pure shapes, all pinned spectrally), vowel
+(five generic formant-bump frames), metallic (sparse seeded-phase
+sets). Single-cycle WAV import = the cycle's own rfft bins ARE the
+harmonic series (spectral resample for free), mip-banded like the
+built-ins; bad path falls back to `table` silently (pinned
+bit-equal). Browse shares the FilePlayer dialog — one TYPE-aware line
+at the write-back site (`file` vs `path`). `position_cv_depth` added
+per the house depth convention (the spec omitted it; conventions
+rule wins — noted). Alias pin: +3 oct on the square end keeps
+non-harmonic bins > 40 dB down. Click-free-sweep test lesson: the
+band-limited square's own edge IS 1.225/sample — compare the sweep's
+max delta against the stack's edgiest static frame, not a guessed
+constant. Perf: 16 voices mid-crossfade 1.02 ms = 9.6 %.
+
+Examples: `supersaw_chord_wall.json` (shift_random → quantizer →
+chord → supersaw → per-voice adsr/VCA pair, stereo; first draft
+railed at 1.0, amp 0.35 → 0.2, now 0.66 peak) and
+`wavetable_vowel_talk.json` (LFO sweeps the vowel stack's position —
+it talks; 0.48 peak). Docs/index/punts/exports/widgets in the same
+commit; tripwires green. **Pending (meatthread0):** ears on both
+(the chord wall is the payoff of the whole voice architecture; the
+vowel talker demos position_cv), GUI eyeball of the Browse button on
+wavetable_morph. Later ideas: supersaw fast path if the 45.6 %
+worst case ever bites a real patch (constant-pitch arange or a
+(V·7, F) reshape); multi-frame WAV import (slice a long file into
+frames — the granular-adjacent idea); wavetable stack editor.
 
 Matthew: "And another two please" (after pushing through 2fddab8) —
 the plan of record said Session B, and Session B it was. Suite

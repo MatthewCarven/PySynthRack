@@ -82,8 +82,10 @@ from .shift_random import ShiftRandom
 from .slew import Slew
 from .sequencer import Sequencer
 from .fader_seq import FaderSeq
+from .supersaw import Supersaw
 from .sweep_eq import SweepEQ
 from .tape import Tape
+from .wavetable_morph import WavetableMorph
 from .tilt_eq import TiltEQ
 from .transient_shaper import TransientShaper
 from .vca import VCA
@@ -163,6 +165,7 @@ __all__ = [
     "Slew",
     "SnareDrum",
     "Sequencer",
+    "Supersaw",
     "SweepEQ",
     "Tape",
     "TiltEQ",
@@ -175,4 +178,5 @@ __all__ = [
     "Vocoder",
     "WarpingBufferedSpeakerOutput",
     "Waveshaper",
+    "WavetableMorph",
 ]

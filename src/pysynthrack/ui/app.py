@@ -49,6 +49,7 @@ from ..modules.organ import (
     PERC_MODES,
 )
 from ..modules.sequencer import MAX_STEPS as SEQ_MAX_STEPS
+from ..modules.wavetable_morph import WT_STACKS
 from ..modules.compressor import DETECTOR_MODES
 from ..modules.distortion import DISTORTION_MODES
 from ..modules.meter import METER_MODES
@@ -881,7 +882,10 @@ class App:
         current = module.params[param_name]
         user_data = (module.id, param_name)
 
-        if module.TYPE in ("file_player", "convolver") and param_name == "path":
+        if (
+            module.TYPE in ("file_player", "convolver")
+            and param_name == "path"
+        ) or (module.TYPE == "wavetable_morph" and param_name == "file"):
             # Path field + a Browse button that opens the shared WAV
             # dialog. The field keeps an explicit tag so the dialog's
             # callback can write the chosen path back into it; typing a
@@ -2375,6 +2379,56 @@ class App:
                 )
                 return
 
+        if module.TYPE == "supersaw":
+            # detune/blend/spread are the three character knobs, all
+            # 0..1; ``freq`` is the usual Hz drag.
+            if param_name in ("detune", "blend", "spread", "amp"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "freq":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=20.0, max_value=4000.0, format="%.1f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "wavetable_morph":
+            # ``table`` picks the built-in stack (``file`` overrides it
+            # via Browse above); ``position`` is THE knob.
+            if param_name == "table":
+                dpg.add_combo(
+                    label=param_name, items=list(WT_STACKS),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("position", "amp"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "position_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.01,
+                    min_value=0.0, max_value=4.0, format="%.2f pos/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "freq":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=20.0, max_value=4000.0, format="%.1f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "vinyl":
             # One knob per vice, all 0..1; ``seed`` picks the pressing.
             if param_name in ("crackle", "rumble", "wobble"):
@@ -3306,9 +3360,17 @@ class App:
 
         # "path" mode: same mutation path as typing into the field; the
         # renderer re-decodes on the next block because the path changed.
+        # wavetable_morph names its path param ``file`` (its Browse
+        # shares this dialog); everyone else says ``path``.
         path = paths[0]
+        target = self.patch.modules.get(module_id)
+        param = (
+            "file"
+            if target is not None and target.TYPE == "wavetable_morph"
+            else "path"
+        )
         try:
-            self.backend.set_param(module_id, "path", path)
+            self.backend.set_param(module_id, param, path)
         except Exception as exc:
             self._set_status(f"Param error: {exc}")
             return
