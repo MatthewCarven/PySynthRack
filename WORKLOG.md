@@ -10,7 +10,18 @@ Running log of decisions and progress. Newest first.
 
 ---
 
-## 2026-08-04 — Session C SHIPPED: supersaw + wavetable_morph — the
+## 2026-08-04 — the brainstorm keep-list lands on the roadmap
+
+Matthew pasted the "what's left" brainstorm back and asked for all of
+it on the todo: bowed/wind, function_generator, drift, cv_math,
+cv_recorder, rotary, vowel, freeze, autopan, midi_output, subpatch
+containers, snapshot morph — twelve items. Filed the house way:
+one-liners into docs/MODULE_IDEAS.md § "The 2026-08-04 brainstorm"
+(the canonical menu, where specs grow when picked) + a single
+keep-list entry in TODO § Later / wishlist pointing at it. Added
+cross-references the original writeup predated: drift vs chaos
+(stumbles vs orbits), vowel vs wavetable_morph's vowel stack (filter
+vs source), rotary as the organ's destined partner.
 ## quick-hit run is COMPLETE (A+B+C, seven modules)
 
 Matthew: "Lets continue with session C please … loving this project

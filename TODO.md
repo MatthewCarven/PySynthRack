@@ -75,6 +75,29 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
 
 ## Later / wishlist
 
+- [ ] **The 2026-08-04 brainstorm keep-list** — Matthew: "Can you add
+      to the todo" (2026-08-04, with the full writeup pasted back).
+      Twelve items, one-liners now living in docs/MODULE_IDEAS.md
+      § "The 2026-08-04 brainstorm" — promote to a full spec when
+      picked, the usual workflow. The menu:
+      * Sources: `bowed`/`wind` (M–L, sustained-excitation waveguide
+        — completes pluck/modal's physical family).
+      * Modulation: `function_generator` (M — Maths-style rise/fall +
+        loop + EOR/EOC; the highest patch-value-per-line item),
+        `drift` (S — smooth wandering random; chaos orbits, drift
+        stumbles), `cv_math` (S — logic-for-CVs, zero params),
+        `cv_recorder` (M — the modulation looper; nothing else
+        captures performance).
+      * Effects: `rotary` (M — Leslie, the organ's destined partner),
+        `vowel` (S–M — formant filter bank, A–E–I–O–U morph),
+        `freeze` (M — spectral freeze pad), `autopan` (S — the rack
+        still has no dedicated panner).
+      * I/O: `midi_output` (M — gates/CV → notes/CCs; the rack as
+        the brain of a hardware rig).
+      * Endgame (architecture): **subpatch containers** (L — patches
+        become modules; makes "running out" structurally impossible)
+        and **snapshot morph** (M–L — knob scenes interpolated by
+        one CV).
 - [x] **`organ` + `chaos` — the fun pair** — BOTH SHIPPED 2026-08-04,
       built to the plan below in one session. organ: lone-8′ pin landed
       BIT-EXACT vs the sine oscillator (integer-counted gate ramp was

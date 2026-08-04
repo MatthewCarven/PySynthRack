@@ -826,6 +826,68 @@ instrument.
   machinery); WAV import round trip (write cycle → load → spectrum);
   per-voice independence; block-size independence.
 
+## The 2026-08-04 brainstorm (Matthew's keep-list — unspecced menu)
+
+From the "what's left" brainstorm (WORKLOG 2026-08-04); Matthew asked
+for all of these on the roadmap. One-liners only — promote to a full
+spec (ports/params/DSP/neutral/tests) when picked, same as ever.
+`sampler`, `organ` and `chaos` were picked first and already have
+full specs above.
+
+**Sources**
+- `bowed` or `wind` (M–L) — sustained-excitation waveguide (bowed
+  string / blown pipe): completes the physical-modeling family beside
+  `pluck` (struck string) and `modal` (struck resonator), and sounds
+  like nothing else in the rack.
+
+**Modulation — the west-coast hole**
+- `function_generator` (M) — the Maths move: rise/fall envelope with
+  loop mode and **EOR/EOC gate outs** (the `slew` spec's unshipped
+  `eoc` grown into a module). EOC-into-trigger self-patching = krell
+  patches; one module is an LFO, envelope, slew and clock depending
+  on cabling. Probably the highest patch-value-per-line-of-code item
+  on this list.
+- `drift` (S) — smooth random CV (interpolated sample-and-hold /
+  random walk). The LFO's `random` is stepped; there's no wandering,
+  Wogglebug-style source yet. (`chaos` orbits deterministically;
+  drift *stumbles* stochastically — siblings, not rivals.)
+- `cv_math` (S) — `logic` for CVs: min, max, average, difference,
+  rectify, invert of two CV ins, every jack live at once. Same
+  zero-param shape as `logic`.
+- `cv_recorder` (M) — record a knob gesture or incoming CV for N
+  clocked bars, loop, overdub. A modulation looper — nothing else in
+  the rack captures *performance*.
+
+**Effects**
+- `rotary` (M) — Leslie: crossover + Doppler fractional delay (the
+  chorus core) + slow/fast ramp between chorale and tremolo. Distinct
+  from chorus/phaser/flanger in a way people can hear instantly. The
+  `organ` module's destined partner.
+- `vowel` (S–M) — formant filter bank with an A–E–I–O–U morph knob.
+  The vocoder's expressive little cousin; pairs beautifully with
+  `supersaw`. (Cousin of `wavetable_morph`'s vowel *stack* — that one
+  IS the source, this one filters any source.)
+- `freeze` (M) — spectral freeze: FFT a moment, hold it forever as a
+  pad. A different animal from `granular`'s time-domain freeze.
+- `autopan` (S) — there's no dedicated panner anywhere in the rack.
+  Equal-power pan with CV in; fold tremolo into it and it's the
+  missing stereo motion utility.
+
+**I/O**
+- `midi_output` (M) — the rack has `midi_input` but can't drive
+  external hardware. Gates + pitch CV → MIDI notes, CVs → CCs. A
+  whole new dimension: PySynthRack as the *brain* of a hardware
+  setup.
+
+**The endgame (architecture, not modules)**
+- **Subpatch containers** (L) — group a set of modules into a
+  reusable macro-module with exposed ports. At that point the rack
+  stops *adding* modules and starts *multiplying* them — every patch
+  ever built becomes a module. The feature that makes "running out of
+  options" structurally impossible.
+- **Snapshot morph** (M–L) — save knob scenes, interpolate between
+  them with one CV. A performance feature more than a module.
+
 ## Quick hits (S unless noted)
 
 - `exciter` — HP → soft nonlinearity (oversampling infra) → blend; adds air.
