@@ -10,7 +10,73 @@ Running log of decisions and progress. Newest first.
 
 ---
 
-## 2026-08-04 — organ + chaos SHIPPED (the fun pair, built to plan)
+## 2026-08-04 — Session B SHIPPED: matrix_mixer + vinyl (feedback lands)
+
+Matthew: "And another two please" (after pushing through 2fddab8) —
+the plan of record said Session B, and Session B it was. Suite
+**2587 → 2616** (27 new tests + the 4 governor topo tests refactored).
+
+**matrix_mixer** (Routing & VCA) — the architecture question answered
+better than feared: the backend ALREADY had the mechanism. The ring
+governor's `fill` out established "delayed edges" (real signal, not a
+within-block dependency; seeded from previous-block state before the
+walk; ignored by Kahn). The matrix late-read is that pattern
+generalized: `_compute_late_edges` at compile BFSes each cable into a
+matrix_mixer (audio rows AND column cvs) asking "can the matrix reach
+this cable's source?" — yes → the cable is marked late;
+`_is_delayed_edge` (now an instance method consulting the compiled
+set — the 4 governor tests' static call sites updated) makes the sort
+skip it; `render_block_multi` seeds each late source's previous-block
+buffer before the walk and stashes the fresh one after. One block of
+loop latency, feed-forward stays zero-latency, first block reads
+silence, `_late_prev` survives live recompiles. Demonstrated end to
+end: a matrix→delay→matrix loop compiles, sorts (src < matrix <
+delay), regenerates echoes, and the one-block latency is pinned by a
+geometric-staircase test on a direct self-loop.
+
+Two design calls to note. (1) **The soft ceiling is NOT a plain
+tanh** (spec deviation, standing-principle): tanh(0.5) = 0.462 — a
+default-ON guardrail that shaves 8 % off a normal signal is wrong for
+a mixer stage. Shipped instead: identity below 0.95, then a
+C1-continuous tanh section saturating at exactly 1.0 — so "identity =
+bit-exact" AND "soft_clip default on" are BOTH true, runaway loops
+land on the ceiling (pinned at 1.0), and off = unbounded growth
+(pinned at >100 after 100 blocks; observed 6e7). (2) The ±1 gain
+clamp (spec's own range) means a SINGLE gain can't push loop gain
+past unity — discovered via a probe that refused to explode (g=1.3
+silently clamped; every number checked out at 1.0). Loop gain > 1
+needs parallel return paths (one return into two rows) — documented
+in MODULES.md, and the growth tests build it that way.
+
+**vinyl** (Effects) — dessert as planned. Determinism design: both
+noise streams draw from `default_rng([seed, window_index, stream])`
+per absolute-sample 4096-window, so ANY block split re-derives
+identical dust — block independence bit-exact with all vices on (the
+only carried DSP state is the wobble history and the rumble filter
+zi, itself fed by the split-invariant stream). Crackle = seeded
+Poisson ticks (rate AND size scale with the knob); rumble = white →
+RBJ resonant LP 40 Hz (LF/HF ratio ~700 measured); wobble = 0.55 Hz
+fractional-delay wobble, ±24 ct at full — pinned the spec's way:
+Hilbert instantaneous-frequency of a tone shows the deviation cycling
+at **0.559 Hz measured** (33⅓ rpm = 0.555…; well inside the pin).
+All-zero knobs return the input buffer ITSELF. Unpatched input still
+emits the noise bed (deviation: more useful than silence — a free
+surface-noise generator). Test-calibration lesson repeated from the
+organ: wobble depth at full is FM index ~11, so the spectrum is a
+blob, not discrete sidebands — measure instantaneous pitch, not
+spectral peaks.
+
+Perf: matrix full-16-gain 0.108 ms = 1.0 % budget; vinyl all-vices
+0.142 ms = 1.3 %. Examples: `matrix_feedback_echo.json` (kick through
+a regenerating echo network, 0.60 peak, the loop's cable
+late-marked) + `vinyl_dust.json` (lo-fi melody box, 0.70 peak). UI:
+4×4 drag grid with row/col headers + vinyl sliders. Docs/punts/
+exports/tripwires all in the same commit. **Pending (meatthread0):**
+ears on both examples (crank `g21` toward 0.9 and listen to the
+ceiling catch it); GUI eyeball of the gain grid. Later: shimmer
+example (reverb + pitch_shifter through the matrix — the patch class
+Session B unlocked); per-node cv if a real patch demands it;
+`wobble`/`crackle` cv ins (+ depths per conventions).
 
 Matthew: "ok back, execute the plan please" — the TODO build plan run
 top to bottom, one session, one commit. Suite **2551 → 2587** (34 new

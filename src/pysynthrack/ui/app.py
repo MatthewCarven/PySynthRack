@@ -649,6 +649,13 @@ class App:
                         attribute_type=dpg.mvNode_Attr_Static
                     ):
                         self._build_organ_drawbars(module)
+                # matrix_mixer's sixteen gains render as a 4×4 drag grid
+                # (soft_clip falls through to the normal loop).
+                if module.TYPE == "matrix_mixer":
+                    with dpg.node_attribute(
+                        attribute_type=dpg.mvNode_Attr_Static
+                    ):
+                        self._build_matrix_grid(module)
                 for param_name, default in module.DEFAULT_PARAMS.items():
                     # file_player's queue is not a scalar widget — it gets a
                     # dedicated listbox + Add/Clear panel in the block below.
@@ -660,6 +667,13 @@ class App:
                         continue
                     # organ's bar1..bar9 are drawn by the drawbar bank.
                     if module.TYPE == "organ" and param_name.startswith("bar"):
+                        continue
+                    # matrix_mixer's g11..g44 are drawn by the drag grid.
+                    if (
+                        module.TYPE == "matrix_mixer"
+                        and len(param_name) == 3
+                        and param_name.startswith("g")
+                    ):
                         continue
                     with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                         self._add_param_widget(module, param_name, default)
@@ -2361,6 +2375,23 @@ class App:
                 )
                 return
 
+        if module.TYPE == "vinyl":
+            # One knob per vice, all 0..1; ``seed`` picks the pressing.
+            if param_name in ("crackle", "rumble", "wobble"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "seed":
+                dpg.add_drag_int(
+                    label=param_name, default_value=int(current), speed=1,
+                    min_value=0, max_value=999999,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "euclidean":
             # Euclidean rhythm: fills hits over steps ticks; rotate walks
             # the pattern; accent_fills is the sparser accent layer;
@@ -3573,6 +3604,39 @@ class App:
                     with dpg.tooltip(fader):
                         dpg.add_text(f"{footage} (drawbar {i})")
                     dpg.add_text(footage.replace(" ", "\n"))
+
+    # ----- matrix_mixer gain grid -------------------------------------------
+
+    def _build_matrix_grid(self, module) -> None:
+        """The 4×4 gain grid: rows are inputs, columns are outputs, each
+        node a compact ±1 drag (0 = off, negative = phase flip). Row and
+        column headers keep the routing readable.
+        """
+        from ..modules.matrix_mixer import MATRIX_SIZE
+
+        with dpg.group(horizontal=True, horizontal_spacing=4):
+            dpg.add_text("    ")
+            for c in range(1, MATRIX_SIZE + 1):
+                dpg.add_text(f"out{c}".center(7))
+        for r in range(1, MATRIX_SIZE + 1):
+            with dpg.group(horizontal=True, horizontal_spacing=4):
+                dpg.add_text(f"in{r}")
+                for c in range(1, MATRIX_SIZE + 1):
+                    key = f"g{r}{c}"
+                    try:
+                        val = float(module.params.get(key, 0.0))
+                    except (TypeError, ValueError):
+                        val = 0.0
+                    dpg.add_drag_float(
+                        default_value=val,
+                        speed=0.01,
+                        min_value=-1.0,
+                        max_value=1.0,
+                        format="%.2f",
+                        width=52,
+                        callback=self._on_param_changed,
+                        user_data=(module.id, key),
+                    )
 
     # ----- per-key velocity calibration dialog ------------------------------
 

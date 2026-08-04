@@ -52,21 +52,30 @@ class TestDelayedEdgeTopoSort:
         patch.connect(lfo_b.id, "cv", sink.id, "ratio_cv")
         return patch, sink, lfo_a, lfo_b
 
+    @staticmethod
+    def _sort(patch):
+        # _topological_sort became an instance method when matrix_mixer
+        # late-reads joined the fill out as delayed edges (the sort now
+        # consults compile-computed per-instance state).
+        return NumpyBackend(sample_rate=44100, block_size=256)._topological_sort(
+            patch
+        )
+
     def test_controller_chain_orders_upstream_first(self):
         patch, _sink, lfo_a, lfo_b = self._loop_patch()
-        order = NumpyBackend._topological_sort(patch)
+        order = self._sort(patch)
         assert order.index(lfo_a.id) < order.index(lfo_b.id)
 
     def test_every_module_ordered_exactly_once(self):
         patch, *_ = self._loop_patch()
-        order = NumpyBackend._topological_sort(patch)
+        order = self._sort(patch)
         assert sorted(order) == sorted(patch.modules)
 
     def test_sink_orders_after_its_governor(self):
         # ratio_cv is a REAL within-block dependency (only fill is
         # delayed), so the sink sorts after the controller that feeds it.
         patch, sink, _lfo_a, lfo_b = self._loop_patch()
-        order = NumpyBackend._topological_sort(patch)
+        order = self._sort(patch)
         assert order.index(lfo_b.id) < order.index(sink.id)
 
     def test_acyclic_patches_unaffected(self):
@@ -75,7 +84,7 @@ class TestDelayedEdgeTopoSort:
         sink = patch.add_module(SINK)
         osc = patch.add_module("oscillator")
         patch.connect(osc.id, "out", sink.id, "in_l")
-        order = NumpyBackend._topological_sort(patch)
+        order = self._sort(patch)
         assert order.index(osc.id) < order.index(sink.id)
 
 

@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "next_id": 6,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "pulse",
+      "params": {
+        "bpm": 100.0,
+        "division": 1.0,
+        "pulse_width": 0.2
+      }
+    },
+    {
+      "id": 2,
+      "type": "kick_drum",
+      "name": "the dry hit",
+      "params": {
+        "level": 0.5
+      }
+    },
+    {
+      "id": 3,
+      "type": "matrix_mixer",
+      "name": "FEEDBACK DOOR — g21 is the echo regen; try 0.9",
+      "params": {
+        "g11": 1.0,
+        "g21": 0.6,
+        "soft_clip": true
+      }
+    },
+    {
+      "id": 4,
+      "type": "delay",
+      "name": "the loop's flight time",
+      "params": {
+        "time": 320.0,
+        "feedback": 0.0,
+        "mix": 1.0,
+        "tone": 0.6
+      }
+    },
+    {
+      "id": 5,
+      "type": "stereo_speaker_output",
+      "name": "out",
+      "params": {}
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "trigger"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "in_1"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out_1",
+      "dst_module_id": 4,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "in_2"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out_1",
+      "dst_module_id": 5,
+      "dst_port": "in_l"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out_1",
+      "dst_module_id": 5,
+      "dst_port": "in_r"
+    }
+  ],
+  "ui": {}
+}

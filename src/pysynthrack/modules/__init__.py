@@ -45,6 +45,7 @@ from .lfo import LFO
 from .limiter import Limiter
 from .logic import Logic
 from .loudness import Loudness
+from .matrix_mixer import MatrixMixer
 from .micinput import MicInput
 from .meter import Meter
 from .mid_side import MidSide
@@ -86,6 +87,7 @@ from .tape import Tape
 from .tilt_eq import TiltEQ
 from .transient_shaper import TransientShaper
 from .vca import VCA
+from .vinyl import Vinyl
 from .vocoder import Vocoder
 
 __all__ = [
@@ -132,6 +134,7 @@ __all__ = [
     "Limiter",
     "Logic",
     "Loudness",
+    "MatrixMixer",
     "MicInput",
     "Meter",
     "MidSide",
@@ -168,6 +171,7 @@ __all__ = [
     "SpecificStereoSpeakerOutput",
     "StereoSpeakerOutput",
     "VCA",
+    "Vinyl",
     "Vocoder",
     "WarpingBufferedSpeakerOutput",
     "Waveshaper",

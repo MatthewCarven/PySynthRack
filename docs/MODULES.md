@@ -214,6 +214,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`motion_eq`](#motion_eq) | Filters & EQ | `in` (audio), `band{i}_freq_cv`, `band{i}_gain_cv`, `band{i}_q_cv` ×4 (cv) → `out` (audio) |
 | [`tilt_eq`](#tilt_eq) | Filters & EQ | `in` (audio), `tilt_cv` (cv) → `out` (audio) |
 | [`vca`](#vca) | Routing & VCA | `audio` (audio), `cv` (cv) → `out` (audio) |
+| [`matrix_mixer`](#matrix_mixer) | Routing & VCA | `in_1`…`in_4` (audio), `cv_1`…`cv_4` (cv) → `out_1`…`out_4` (audio) |
 | [`resampler`](#resampler) | Effects | `in` (audio), `pitch_cv` (cv), `brake` (gate) → `out`, `out_l`, `out_r` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
 | [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv) → `out` (audio) |
@@ -230,6 +231,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`freq_shifter`](#freq_shifter) | Effects | `in` (audio), `shift_cv` (cv) → `out_up`,`out_down` (audio) |
 | [`bitcrusher`](#bitcrusher) | Effects | `in` (audio), `bits_cv`,`rate_cv` (cv) → `out` (audio) |
 | [`tape`](#tape) | Effects | `in` (audio) → `out` (audio) |
+| [`vinyl`](#vinyl) | Effects | `in` (audio) → `out` (audio) |
 | [`convolver`](#convolver) | Effects | `in` (audio) → `out_l`,`out_r` (audio) |
 | [`chorus`](#chorus) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`flanger`](#flanger) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
@@ -1951,6 +1953,27 @@ saturated old cassette).
 
 ---
 
+#### `vinyl`
+
+**Surface noise and warp** — [`tape`](#tape)'s scrappy sibling: the
+record, not the machine. One knob per vice, all seeded: `crackle` is
+dust — seeded Poisson ticks whose rate *and* size scale with the knob;
+`rumble` is the turntable bearing — seeded noise through a ~40 Hz
+resonant low-pass (felt more than heard; mind the subs); `wobble` is
+the once-per-revolution pitch wobble at **0.55 Hz** (33⅓ rpm) via a
+modulated fractional delay, up to ~±24 cents at full. All three at
+zero is a **bit-exact passthrough**. Engaging `wobble` puts the signal
+on the turntable (a ~5 ms nominal delay under the modulation), so the
+knob's 0↔on edge is a patch-edit moment. Everything is deterministic
+per `seed` (which pressing of the record) and **exactly block-size
+independent** — the noise streams are drawn per absolute-sample
+window, so any block split sees the identical dust. One turntable:
+polyphonic input sums to mono at the door; with nothing patched the
+module still emits its crackle + rumble — a free surface-noise bed.
+**Ports**: `in` (audio) → `out` (audio, mono). **Params**: `crackle`
+0..1 (0.3) · `rumble` 0..1 (0.2) · `wobble` 0..1 (0.2) · `seed` (1).
+See `examples/vinyl_dust.json` — a lo-fi melody box.
+
 #### `convolver`
 
 A **convolution reverb / cabinet loader**. Convolution stamps a scaled,
@@ -2625,6 +2648,41 @@ Use to recombine crossover bands or sum voices.
 _To document._ Four `cv` inputs summed or averaged (param `mode`: `sum` /
 `average`) — lets an LFO and an ADSR modulate the same destination. See
 `examples/mod_matrix.json`.
+
+#### `matrix_mixer`
+
+A **4×4 bipolar gain matrix** — and the rack's sanctioned **feedback
+door**. ``out_c = Σ_r g_rc · in_r``, sixteen gains −1..+1 on a drag
+grid (negative = phase flip; identity diagonal default = a bit-exact
+4-channel pass). Each `cv_c` input scales its whole output *column*
+(one jack per column — per-node CV would be sixteen jacks of soup).
+
+**Feedback.** The backend renders a topo-sorted DAG, so a loop
+(matrix → delay → back into the matrix) has no valid order — unless it
+passes through this module: at compile time, any cable INTO a
+matrix_mixer that would close a cycle is marked a **late-read** — the
+matrix reads that source's *previous block*, giving the loop exactly
+**one block of feedback latency** (~10.7 ms at 48 kHz/512; the
+standard software-modular answer). Feed-forward paths through the
+matrix stay zero-latency, the rest of the graph sorts exactly as
+before, and a fresh loop's first block reads silence. Suddenly whole
+patch classes exist: regenerating echo networks, shimmer
+(reverb + pitch_shifter in a loop), drone feedback, cross-coupled
+delay lines.
+
+``soft_clip`` (default **on**) is the stability guardrail, shaped to
+never color a sane mix: **transparent below 0.95** (bit-exact — a
+plain tanh would shave 8 % off a 0.5 signal), then a C1-continuous
+tanh section saturating at exactly **1.0**. A runaway loop (summed
+loop gain > 1) lands on the ceiling; switch it off and the same loop
+grows without bound. Note the ±1 gain clamp means loop gain > 1 needs
+*parallel* return paths (e.g. one return into two rows) — a single
+gain can't exceed unity.
+
+**Ports**: `in_1`…`in_4` (audio), `cv_1`…`cv_4` (cv, per-column) →
+`out_1`…`out_4` (audio). **Params**: `g11`…`g44` −1..+1 (identity) ·
+`soft_clip` (on). See `examples/matrix_feedback_echo.json` — a kick
+through a regenerating echo network; `g21` is the regen knob.
 
 #### `mid_side`
 

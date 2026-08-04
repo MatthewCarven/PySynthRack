@@ -28,15 +28,28 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       `octaver_bass_lead` (keys → bass under the lead). **Pending
       (meatthread0):** ears on all three. Later: logic 3-in variant?
       mid_side `side` HP trim; octaver glide/portamento tracking aid.
-- [ ] **Session B — patch bay & dust (M+S)**: `matrix_mixer` — the one
-      real architecture question: feedback through the topo-sorted
-      DAG. Plan: compile-time SCC detection marks cycle-closing cables
-      into the matrix as late-reads (previous-block buffer, one-block
-      feedback latency, documented + pinned); feed-forward paths stay
-      zero-latency; tanh `soft_clip` guardrail default ON; per-column
-      CV (4 jacks), not per-node (16 = jack soup — noted deviation).
-      Then `vinyl` for dessert (seeded Poisson crackle + 40 Hz rumble
-      + 0.55 Hz/33⅓ rpm wobble; zero-knobs = bit-exact passthrough).
+- [x] **Session B — patch bay & dust (M+S)** — BOTH SHIPPED 2026-08-04
+      (same day as organ+chaos; Matthew: "And another two please").
+      `matrix_mixer`: feedback landed on the EXISTING delayed-edge
+      mechanism (the governor `fill` pattern generalized) —
+      `_compute_late_edges` BFS at compile, `_is_delayed_edge` now
+      instance-method, previous-block seed before the walk, fresh
+      stash after; one-block loop latency pinned via geometric
+      staircase; soft ceiling = transparent-below-0.95 + C1 tanh to
+      1.0 (NOT plain tanh — 8% off a 0.5 signal was wrong for a
+      default-ON mixer; noted deviation), so identity-bit-exact AND
+      guardrail-on are both true; runaway pinned at ceiling / >100
+      unbounded with it off; NOTE the ±1 gain clamp means loop gain
+      >1 needs parallel return rows (documented). `vinyl`:
+      absolute-window seeded noise (any block split = identical
+      dust, bit-exact all-vices-on), Poisson crackle, 40 Hz RBJ
+      rumble (LF/HF ~700), 0.55 Hz wobble measured at 0.559 Hz via
+      Hilbert inst-freq (±24 ct full); all-zero = the input buffer
+      itself; unpatched in = free noise bed (deviation). Perf: 1.0% /
+      1.3% budget. 27 tests; suite **2616**; examples
+      `matrix_feedback_echo.json` + `vinyl_dust.json`. **Pending
+      (meatthread0):** ears + gain-grid GUI eyeball. Later: shimmer
+      example through the matrix; wobble/crackle cv ins.
 - [ ] **Session C — oscillator double (S–M + M)**: `supersaw` (7 blep
       saws/voice folded into the voice axis for one vectorized
       waveshape call; asymmetric detune table, `blend`, alternate-pan

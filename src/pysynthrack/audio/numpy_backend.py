@@ -971,6 +971,12 @@ class NumpyBackend(AudioBackend):
         super().__init__(sample_rate=sample_rate, block_size=block_size)
         self._patch: Patch | None = None
         self._topo_order: list[int] = []
+        # Matrix feedback: cables marked late-read at compile, and the
+        # previous block's buffers for their source ports (seeded into
+        # the store before each render walk). _late_prev survives live
+        # recompiles so an edit near a running loop doesn't drop a block.
+        self._late_edges: set[tuple[int, str, int, str]] = set()
+        self._late_prev: dict[tuple[int, str], np.ndarray] = {}
         self._state: dict[int, dict[str, Any]] = {}
         # Parallel map from module_id → module TYPE that owned the state.
         # Used in compile() to discard state when a patch swap reuses the
@@ -1080,6 +1086,11 @@ class NumpyBackend(AudioBackend):
     def compile(self, patch: Patch) -> None:
         with self._lock:
             self._patch = patch
+            # Feedback door: cables into a matrix_mixer that would close
+            # a cycle become LATE-READS (previous-block buffer, one block
+            # of loop latency) — computed BEFORE the sort so the sort can
+            # ignore them and the rest of the graph orders as ever.
+            self._late_edges = self._compute_late_edges(patch)
             self._topo_order = self._topological_sort(patch)
             # Precompute which output ports carry CV, for the UI meters.
             cv_ports: list[tuple[int, str]] = []
@@ -1239,21 +1250,20 @@ class NumpyBackend(AudioBackend):
         if self._running:
             self._sync_device_outputs()
 
-    @staticmethod
-    def _topological_sort(patch: Patch) -> list[int]:
+    def _topological_sort(self, patch: Patch) -> list[int]:
         """Kahn's algorithm — sources first, sinks last.
 
-        Cables leaving a DELAYED port (see :meth:`_is_delayed_edge`) are
-        ignored for ordering: their value is seeded from the previous
-        block's state before anything renders, so they impose no
-        within-block ordering — and counting them would poison every
+        Cables carrying a DELAYED signal (see :meth:`_is_delayed_edge`)
+        are ignored for ordering: their value is seeded from the
+        previous block's state before anything renders, so they impose
+        no within-block ordering — and counting them would poison every
         module downstream of a governor feedback patch into the
         unordered leftover tail below (Kahn never emits a cycle member,
         so its whole chain would fall through in creation order).
         """
         in_degree: dict[int, int] = {mid: 0 for mid in patch.modules}
         for cable in patch.cables:
-            if NumpyBackend._is_delayed_edge(patch, cable):
+            if self._is_delayed_edge(patch, cable):
                 continue
             in_degree[cable.dst_module_id] = in_degree.get(cable.dst_module_id, 0) + 1
         ready = [mid for mid, deg in in_degree.items() if deg == 0]
@@ -1262,7 +1272,7 @@ class NumpyBackend(AudioBackend):
             mid = ready.pop(0)
             order.append(mid)
             for cable in patch.cables_out_of(mid):
-                if NumpyBackend._is_delayed_edge(patch, cable):
+                if self._is_delayed_edge(patch, cable):
                     continue
                 in_degree[cable.dst_module_id] -= 1
                 if in_degree[cable.dst_module_id] == 0:
@@ -1272,22 +1282,99 @@ class NumpyBackend(AudioBackend):
                 order.append(mid)
         return order
 
-    @staticmethod
-    def _is_delayed_edge(patch: Patch, cable) -> bool:
-        """True for cables carrying a one-block-DELAYED signal — today,
-        the buffered sink's ``fill`` cv out, seeded into the buffer
-        store from the previous block's ring state before the render
-        loop runs. Such a cable is a real signal path but not a
-        within-block dependency, which is exactly what lets a governor
-        patch (fill -> controller chain -> ratio_cv) close its feedback
-        loop while the rest of the graph still sorts deterministically.
+    def _is_delayed_edge(self, patch: Patch, cable) -> bool:
+        """True for cables carrying a one-block-DELAYED signal.
+
+        Two kinds today: the buffered sink's ``fill`` cv out (the
+        governor loop), and any cable compile marked a matrix_mixer
+        LATE-READ (a cable into the matrix that would close a cycle —
+        see :meth:`_compute_late_edges`). Both are real signal paths
+        but not within-block dependencies: their values are seeded from
+        the previous block before the render walk, which is exactly
+        what lets a feedback loop close while the rest of the graph
+        still sorts deterministically.
         """
         src = patch.modules.get(cable.src_module_id)
-        return (
+        if (
             src is not None
             and src.TYPE in NumpyBackend._BUFFERED_SPEAKERS
             and cable.src_port == "fill"
-        )
+        ):
+            return True
+        return (
+            cable.src_module_id,
+            cable.src_port,
+            cable.dst_module_id,
+            cable.dst_port,
+        ) in self._late_edges
+
+    def _compute_late_edges(
+        self, patch: Patch
+    ) -> set[tuple[int, str, int, str]]:
+        """Find the cables into a matrix_mixer that would close a cycle.
+
+        For each cable into a matrix (audio rows AND column CVs — a
+        cycle through ``audio_to_cv`` into a cv jack would poison the
+        sort just the same), ask whether the matrix can already reach
+        the cable's source through the live graph (delayed edges — fill
+        outs and late-reads marked earlier in this very scan —
+        excluded). If it can, the cable would close a cycle: mark it
+        late. Scanning in ``patch.cables`` order makes the marking
+        deterministic — with two cables closing the same loop, the
+        first stays... no: the first FOUND closing a cycle goes late,
+        which may already break the loop for the second (it then stays
+        zero-latency). Cycles that avoid every matrix_mixer are
+        untouched (Kahn's leftover tail, as ever — the matrix is the
+        sanctioned door).
+        """
+        late: set[tuple[int, str, int, str]] = set()
+        matrix_ids = {
+            mid for mid, m in patch.modules.items() if m.TYPE == "matrix_mixer"
+        }
+        if not matrix_ids:
+            return late
+        for cable in patch.cables:
+            if cable.dst_module_id not in matrix_ids:
+                continue
+            key = (
+                cable.src_module_id,
+                cable.src_port,
+                cable.dst_module_id,
+                cable.dst_port,
+            )
+            # BFS: can the matrix reach this cable's source?
+            target = cable.src_module_id
+            seen = {cable.dst_module_id}
+            frontier = [cable.dst_module_id]
+            found = False
+            while frontier and not found:
+                mid = frontier.pop()
+                for out_cable in patch.cables_out_of(mid):
+                    out_key = (
+                        out_cable.src_module_id,
+                        out_cable.src_port,
+                        out_cable.dst_module_id,
+                        out_cable.dst_port,
+                    )
+                    if out_key in late:
+                        continue
+                    src_mod = patch.modules.get(out_cable.src_module_id)
+                    if (
+                        src_mod is not None
+                        and src_mod.TYPE in NumpyBackend._BUFFERED_SPEAKERS
+                        and out_cable.src_port == "fill"
+                    ):
+                        continue
+                    nxt = out_cable.dst_module_id
+                    if nxt == target:
+                        found = True
+                        break
+                    if nxt not in seen:
+                        seen.add(nxt)
+                        frontier.append(nxt)
+            if found:
+                late.add(key)
+        return late
 
     # ----- start / stop ----------------------------------------------------
 
@@ -1776,6 +1863,10 @@ class NumpyBackend(AudioBackend):
             patch = self._patch
             order = list(self._topo_order)
             cv_ports = list(self._cv_output_ports)
+            late_srcs = {
+                (src_id, src_port)
+                for (src_id, src_port, _, _) in self._late_edges
+            }
             # Snapshot the module map too. The GUI thread mutates
             # ``patch.modules`` in place (add/remove a node), and the second
             # render loop below iterates it — without an atomic snapshot a
@@ -1805,6 +1896,17 @@ class NumpyBackend(AudioBackend):
             buffers[(module.id, "fill")] = np.full(
                 frames, self._sink_fill(module), dtype=np.float32
             )
+        # Matrix feedback seed: every late-read source port publishes the
+        # PREVIOUS block's buffer before anything renders — the matrix
+        # (sorted early, its cycle edge ignored) consumes the stale value;
+        # the source renders later and overwrites the key, so every
+        # feed-forward consumer still reads fresh. A fresh loop's first
+        # block (or a block-size change) reads silence.
+        for key in late_srcs:
+            prev = self._late_prev.get(key)
+            if prev is None or prev.shape[-1] != frames:
+                prev = np.zeros(frames, dtype=np.float32)
+            buffers[key] = prev
         for module_id in order:
             module = modules.get(module_id)
             if module is None:
@@ -1821,6 +1923,14 @@ class NumpyBackend(AudioBackend):
                 # module declares exactly one).
                 if module.OUTPUT_PORTS:
                     buffers[(module_id, module.OUTPUT_PORTS[0].name)] = result
+
+        # Stash the fresh late-read source buffers for the next block's
+        # seed (the source rendered after the matrix and overwrote its
+        # key above, so this is this block's real output).
+        for key in late_srcs:
+            buf = buffers.get(key)
+            if buf is not None:
+                self._late_prev[key] = buf
 
         # CV meters: one block-mean scalar per cv output port. Cheap
         # (a handful of ports), and only touches buffers already built.
@@ -2293,6 +2403,10 @@ class NumpyBackend(AudioBackend):
             return self._render_chaos(module, frames, buffers, patch)
         if module.TYPE == "organ":
             return self._render_organ(module, frames, buffers, patch)
+        if module.TYPE == "matrix_mixer":
+            return self._render_matrix_mixer(module, frames, buffers, patch)
+        if module.TYPE == "vinyl":
+            return self._render_vinyl(module, frames, buffers, patch)
         if module.TYPE == "euclidean":
             return self._render_euclidean(module, frames, buffers, patch)
         if module.TYPE == "burst":
@@ -3572,6 +3686,202 @@ class NumpyBackend(AudioBackend):
         gate_out = gate.astype(np.float32)
 
         return {"x": outs[0], "y": outs[1], "z": outs[2], "gate": gate_out}
+
+    # ----- Vinyl rendering -------------------------------------------------
+
+    _VINYL_WINDOW = 4096          # absolute-sample noise window (seeding)
+    _VINYL_TICK_RATE = 30.0       # dust ticks/second at crackle = 1
+    _VINYL_TICK_KERNEL = (0.5, 1.0, -0.4, 0.15)  # LP-shaped click
+    _VINYL_CRACKLE_AMP = 0.35
+    _VINYL_RUMBLE_AMP = 0.15
+    _VINYL_RUMBLE_F = 40.0
+    _VINYL_RUMBLE_Q = 1.8
+    _VINYL_WOBBLE_F = 0.55        # Hz — once per 33 1/3 rpm revolution
+    _VINYL_WOBBLE_D = 0.005       # nominal delay (s) under the wobble
+    _VINYL_WOBBLE_A = 0.004       # max modulation depth (s) at wobble 1
+
+    def _render_vinyl(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Surface noise + warp (see modules/vinyl.py).
+
+        Determinism/block-independence design: both noise streams are
+        drawn per absolute-sample WINDOW — a ``default_rng([seed,
+        window_index, stream])`` re-derives the same dust for any block
+        split — and the wobble LFO phase comes from the absolute sample
+        counter. The only carried DSP state is the wobble's input
+        history and the rumble filter's ``zi`` (fed by the windowed
+        white stream, so it too is split-invariant). All-zero knobs
+        return the input buffer itself, bit-exact.
+        """
+        x = self._input_buffer(patch, buffers, module.id, "in")
+
+        p = module.params
+        crackle = min(1.0, max(0.0, float(p.get("crackle", 0.3))))
+        rumble = min(1.0, max(0.0, float(p.get("rumble", 0.2))))
+        wobble = min(1.0, max(0.0, float(p.get("wobble", 0.2))))
+        try:
+            seed = max(0, int(p.get("seed", 1)))
+        except (TypeError, ValueError):
+            seed = 1
+
+        sr = float(self.sample_rate)
+        hist_len = int(
+            np.ceil((self._VINYL_WOBBLE_D + self._VINYL_WOBBLE_A) * sr)
+        ) + 8
+
+        st = self._state.setdefault(module.id, {})
+        if st.get("hist_len") != hist_len:
+            st.clear()
+            st.update(
+                {
+                    "hist_len": hist_len,
+                    "pos": 0,
+                    "hist": np.zeros(hist_len, dtype=np.float64),
+                    "rumble_zi": None,
+                }
+            )
+        pos = int(st["pos"])
+
+        x_arr = (
+            np.zeros(frames, dtype=np.float64)
+            if x is None
+            else x.astype(np.float64)
+        )
+        # History always advances (engaging wobble mid-run has context).
+        joined = np.concatenate((st["hist"], x_arr))
+        st["hist"] = joined[-hist_len:].copy()
+        st["pos"] = pos + frames
+
+        if crackle == 0.0 and rumble == 0.0 and wobble == 0.0:
+            # Bit-exact passthrough (the input buffer itself).
+            return x if x is not None else np.zeros(frames, dtype=np.float32)
+
+        if wobble > 0.0:
+            n = np.arange(frames, dtype=np.float64)
+            t = (pos + n) / sr
+            delay = self._VINYL_WOBBLE_D + (
+                self._VINYL_WOBBLE_A * wobble
+            ) * np.sin(2.0 * np.pi * self._VINYL_WOBBLE_F * t)
+            read = hist_len + n - delay * sr
+            y = np.interp(read, np.arange(len(joined), dtype=np.float64), joined)
+        else:
+            y = x_arr.copy()
+
+        W = self._VINYL_WINDOW
+        kernel = np.asarray(self._VINYL_TICK_KERNEL, dtype=np.float64)
+        K = len(kernel)
+
+        if crackle > 0.0:
+            lam = self._VINYL_TICK_RATE * crackle * W / sr
+            for w in range(pos // W, (pos + frames - 1) // W + 1):
+                rng = np.random.default_rng([seed, w, 1])
+                count = int(rng.poisson(lam))
+                if count == 0:
+                    continue
+                offs = rng.integers(0, W - K, size=count)
+                amps = rng.uniform(0.25, 1.0, size=count) * np.where(
+                    rng.random(count) < 0.5, -1.0, 1.0
+                )
+                for o, a in zip(offs, amps):
+                    g = w * W + int(o) - pos  # tick start within block
+                    s, e = max(g, 0), min(g + K, frames)
+                    if s >= e:
+                        continue
+                    y[s:e] += kernel[s - g : e - g] * (
+                        a * self._VINYL_CRACKLE_AMP * crackle
+                    )
+
+        if rumble > 0.0:
+            white = np.empty(frames, dtype=np.float64)
+            for w in range(pos // W, (pos + frames - 1) // W + 1):
+                w_noise = np.random.default_rng([seed, w, 2]).standard_normal(W)
+                s = max(w * W, pos)
+                e = min((w + 1) * W, pos + frames)
+                white[s - pos : e - pos] = w_noise[s - w * W : e - w * W]
+            # RBJ resonant low-pass at ~40 Hz (the bearing).
+            w0 = 2.0 * np.pi * self._VINYL_RUMBLE_F / sr
+            alpha = np.sin(w0) / (2.0 * self._VINYL_RUMBLE_Q)
+            cw = np.cos(w0)
+            a0 = 1.0 + alpha
+            b = np.array([(1 - cw) / 2, 1 - cw, (1 - cw) / 2]) / a0
+            a = np.array([1.0, -2.0 * cw / a0, (1.0 - alpha) / a0])
+            zi = st.get("rumble_zi")
+            if zi is None:
+                zi = np.zeros(2, dtype=np.float64)
+            low, zf = lfilter(b, a, white, zi=zi)
+            st["rumble_zi"] = zf
+            y += low * (self._VINYL_RUMBLE_AMP * rumble)
+        else:
+            st["rumble_zi"] = None
+
+        return y.astype(np.float32)
+
+    # ----- MatrixMixer rendering -------------------------------------------
+
+    def _render_matrix_mixer(self, module, frames: int, buffers, patch) -> dict:
+        """4×4 bipolar gain matrix (see modules/matrix_mixer.py).
+
+        ``out_c = clip(cv_c · Σ_r g_rc · in_r)``. Unpatched rows
+        contribute nothing; an all-unpatched column is exact zeros. The
+        identity default with nothing else patched is a bit-exact
+        4-channel pass (1.0·x + nothing = x, and the soft ceiling is
+        transparent below the knee). Mixed mono/(V, F) rows broadcast;
+        the feedback plumbing (late-read seeding) lives in
+        ``render_block_multi``/``_compute_late_edges``, not here — by
+        the time this runs, every input buffer is defined.
+
+        The ``soft_clip`` ceiling: identity below MATRIX_CLIP_KNEE,
+        then ``knee + (1−knee)·tanh((|x|−knee)/(1−knee))`` — C1 at the
+        knee (unit slope), saturating at exactly 1.0. A plain tanh
+        would take 8 % off a 0.5 signal, unacceptable for a default-on
+        mixer stage (deviation from the spec's literal "tanh on each
+        out", noted in the worklog).
+        """
+        from ..modules.matrix_mixer import MATRIX_CLIP_KNEE, MATRIX_SIZE
+
+        p = module.params
+        soft = bool(p.get("soft_clip", True))
+
+        ins = []
+        for r in range(1, MATRIX_SIZE + 1):
+            buf = self._input_buffer(
+                patch, buffers, module.id, f"in_{r}", collapse=False
+            )
+            ins.append(None if buf is None else buf.astype(np.float64))
+        out: dict[str, np.ndarray] = {}
+        for c in range(1, MATRIX_SIZE + 1):
+            acc = None
+            for r in range(1, MATRIX_SIZE + 1):
+                x = ins[r - 1]
+                if x is None:
+                    continue
+                try:
+                    g = float(p.get(f"g{r}{c}", 0.0))
+                except (TypeError, ValueError):
+                    g = 0.0
+                g = min(1.0, max(-1.0, g))
+                if g == 0.0:
+                    continue
+                term = x * g
+                acc = term if acc is None else acc + term
+            if acc is None:
+                out[f"out_{c}"] = np.zeros(frames, dtype=np.float32)
+                continue
+            cv = self._input_buffer(
+                patch, buffers, module.id, f"cv_{c}", collapse=False
+            )
+            if cv is not None:
+                acc = acc * cv.astype(np.float64)
+            if soft:
+                knee = MATRIX_CLIP_KNEE
+                over = np.abs(acc) > knee
+                if over.any():
+                    mag = np.abs(acc)
+                    limited = knee + (1.0 - knee) * np.tanh(
+                        (mag - knee) / (1.0 - knee)
+                    )
+                    acc = np.where(over, np.sign(acc) * limited, acc)
+            out[f"out_{c}"] = acc.astype(np.float32)
+        return out
 
     # ----- MIDI input rendering ------------------------------------------
 

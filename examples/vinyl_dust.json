@@ -1,0 +1,138 @@
+{
+  "version": 1,
+  "next_id": 9,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "tempo",
+      "params": {
+        "bpm": 70.0,
+        "division": 2.0,
+        "pulse_width": 0.5
+      }
+    },
+    {
+      "id": 2,
+      "type": "shift_random",
+      "name": "melody box",
+      "params": {
+        "probability": 0.08,
+        "length": 8,
+        "range": 1.5,
+        "seed": 21
+      }
+    },
+    {
+      "id": 3,
+      "type": "quantizer",
+      "name": "in-tune",
+      "params": {
+        "root": "D",
+        "scale": "pentatonic minor",
+        "transpose": -12.0
+      }
+    },
+    {
+      "id": 4,
+      "type": "oscillator",
+      "name": "voice",
+      "params": {
+        "waveform": "triangle",
+        "freq": 261.6256,
+        "amp": 0.7
+      }
+    },
+    {
+      "id": 5,
+      "type": "adsr",
+      "name": "note shape",
+      "params": {
+        "attack": 0.01,
+        "decay": 0.25,
+        "sustain": 0.3,
+        "release": 0.4
+      }
+    },
+    {
+      "id": 6,
+      "type": "vca",
+      "name": "vca",
+      "params": {}
+    },
+    {
+      "id": 7,
+      "type": "vinyl",
+      "name": "THE RECORD — dust, bearing, 33 1/3 wow",
+      "params": {
+        "crackle": 0.5,
+        "rumble": 0.25,
+        "wobble": 0.35,
+        "seed": 3
+      }
+    },
+    {
+      "id": 8,
+      "type": "stereo_speaker_output",
+      "name": "out",
+      "params": {}
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "cv",
+      "dst_module_id": 3,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "freq_cv"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 6,
+      "dst_port": "audio"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "cv",
+      "dst_module_id": 6,
+      "dst_port": "cv"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "out",
+      "dst_module_id": 7,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 7,
+      "src_port": "out",
+      "dst_module_id": 8,
+      "dst_port": "in_l"
+    },
+    {
+      "src_module_id": 7,
+      "src_port": "out",
+      "dst_module_id": 8,
+      "dst_port": "in_r"
+    }
+  ],
+  "ui": {}
+}
