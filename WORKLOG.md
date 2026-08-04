@@ -10,7 +10,68 @@ Running log of decisions and progress. Newest first.
 
 ---
 
-## 2026-08-04 — organ + chaos build PLANNED (build next session)
+## 2026-08-04 — organ + chaos SHIPPED (the fun pair, built to plan)
+
+Matthew: "ok back, execute the plan please" — the TODO build plan run
+top to bottom, one session, one commit. Suite **2551 → 2587** (34 new
+tests), all green including the docs tripwires.
+
+**organ** (Sources). The checkpoint paid off big: the oscillator's
+constant-frequency mono path uses an `arange` phase ramp with
+`phases[0] = start`, so the organ's per-block-constant pitch could
+mirror it exactly — and the lone-8′-drawbar pin landed **BIT-EXACT**
+against the sine oscillator (max diff 0.0), the strong version of the
+spec's "else < 1e-6" fallback. The enabling design call: the gate
+envelope is an **integer-counted linear ramp** (`env = clamp(count ±
+n)/R` with the count carried as an int) — it reaches exactly 0/1 so
+held notes are bit-transparent, AND it's bit-exact across any block
+split, where a float-accumulated level would drift in the ramp region.
+Partials fold into one (9, F) sine eval per voice (per-block pitch,
+pluck idiom); phases advance every block regardless of audibility (the
+oscillator's rule) so activity gating never moves phase. Clicks are
+seeded per (module, voice, hit) with drums-style carry tails; the
+percussion register is ONE module-wide generator with a from-silence
+qualification (any-voice-high on the previous sample, carried across
+blocks) — legato provably doesn't re-fire (pinned), and a mid-block
+re-fire replaces the ringing strike via a pour-cursor (a first-draft
+bug: the second pour restarted at 0; caught before tests). Nyquist
+mask pinned the sharp way: a pitch that puts a lone 1′ bar past sr/2
+renders EXACT silence. Perf RECORDED: 16 unison voices, full
+registration + click + perc = **2.82 ms/block = 26.5 % of the 48k/512
+budget** (modal's neighborhood — 144 sines is real work; fine).
+Fader-bank drawbar panel shipped (fader_seq lineage, checkpoint said
+cheap and it was); example `organ_jazz.json` (keys → organ → chorus →
+reverb), chord-held headroom re-checked after a 1.0-peak first draft
+(level 0.5 → 0.3 in the example; 0.78 peak now).
+
+**chaos** (Modulation). The absolute-sample control grid did what it
+promised: **all four outs bit-exact across block splits** (64 vs 1024
+vs single-frame blocks), including through a mid-block reset — and the
+reset lands ON the seeded warmed-up start, sample-accurate (pinned to
+`fresh[0]` equality). RK4 in pure-Python floats on 3-tuples (the slew
+lesson: no numpy scalar dispatch in the hot loop) at rail dt
+(lorenz ≤ 0.01, rossler ≤ 0.05), substep count derived from params
+only; control points interpolated with np.interp at
+`u = (frac + k)/DIV` so identical integers → identical floats → exact
+splits by construction. Soak: 100k samples both systems, zero
+non-finite, zero blowups, bounds honored. The chaos test itself: seeds
+1 vs 2 decorrelate (|corr| < 0.9) while same-seed renders are
+bit-identical. Rate calibration loose-pinned via z-peak counts (~20
+orbits at rate 10 over 2 s, accepted 8..45). Gates: lorenz ≡ sign(x)
+elementwise (pinned), rossler duty 0.5–40 % sparse bursts (pinned).
+Perf: rate 50 = **0.24 ms/block = 2.2 %** — negligible. Example
+`chaos_melody.json` self-plays at 0.63 peak (x→quantizer→osc,
+gate→adsr→vca, z→cutoff — one orbit runs the whole patch).
+
+Both: pyo punts, `__init__` exports, MODULES.md index rows + full
+entries, bounded widgets (organ combos/sliders + the drawbar bank;
+chaos combo/drags, seed drag) — the polish standard in the same
+commit. **Pending (meatthread0):** ears on both examples (the organ
+wants real keys — headless verified via injected note_on chord), and a
+GUI eyeball of the drawbar bank + the butterfly in scope xy mode.
+Later ideas: organ foldback + leakage hum + vibrato scanner (chorus
+covers for now); chaos audio-rate mode, `rate_cv`, the guarded ρ/c
+morph knob.
 
 Matthew: "lets knock something off the build queue or 2 maybe?" — I
 picked the fun pair (both S–M, one session, the Session A shape) and

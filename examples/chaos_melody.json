@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "next_id": 8,
+  "modules": [
+    {
+      "id": 1,
+      "type": "chaos",
+      "name": "THE BUTTERFLY — one orbit runs the whole patch",
+      "params": {
+        "system": "lorenz",
+        "rate": 0.4,
+        "range": 2.0,
+        "bipolar": false,
+        "seed": 11
+      }
+    },
+    {
+      "id": 2,
+      "type": "quantizer",
+      "name": "in-tune — the orbit becomes a melody",
+      "params": {
+        "root": "C",
+        "scale": "pentatonic minor",
+        "hysteresis": 10.0,
+        "transpose": -12.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "oscillator",
+      "name": "voice",
+      "params": {
+        "waveform": "saw_blep",
+        "freq": 261.6256,
+        "amp": 0.5
+      }
+    },
+    {
+      "id": 4,
+      "type": "adsr",
+      "name": "lobe switches strike the note",
+      "params": {
+        "attack": 0.02,
+        "decay": 0.3,
+        "sustain": 0.5,
+        "release": 0.8
+      }
+    },
+    {
+      "id": 5,
+      "type": "vca",
+      "name": "vca",
+      "params": {}
+    },
+    {
+      "id": 6,
+      "type": "filter",
+      "name": "z swells the cutoff — same orbit, same breath",
+      "params": {
+        "mode": "lowpass",
+        "cutoff": 600.0,
+        "resonance": 1.2,
+        "cv_depth": 1.0
+      }
+    },
+    {
+      "id": 7,
+      "type": "stereo_speaker_output",
+      "name": "out",
+      "params": {}
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "x",
+      "dst_module_id": 2,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "freq_cv"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "gate",
+      "dst_module_id": 4,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "audio"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "cv",
+      "dst_module_id": 5,
+      "dst_port": "cv"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out",
+      "dst_module_id": 6,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "z",
+      "dst_module_id": 6,
+      "dst_port": "cutoff_cv"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "out",
+      "dst_module_id": 7,
+      "dst_port": "in_l"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "out",
+      "dst_module_id": 7,
+      "dst_port": "in_r"
+    }
+  ],
+  "ui": {}
+}

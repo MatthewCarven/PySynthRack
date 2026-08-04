@@ -41,6 +41,13 @@ from ..modules.midiinput import (
 from ..modules.micinput import available_input_devices as mic_available_devices
 from ..modules.output import available_output_devices as spk_available_devices
 from ..modules.fader_seq import FADER_RANGE_ST
+from ..modules.chaos import CHAOS_SYSTEMS
+from ..modules.organ import (
+    ORGAN_BARS,
+    ORGAN_FOOTAGES,
+    PERC_DECAYS,
+    PERC_MODES,
+)
 from ..modules.sequencer import MAX_STEPS as SEQ_MAX_STEPS
 from ..modules.compressor import DETECTOR_MODES
 from ..modules.distortion import DISTORTION_MODES
@@ -634,6 +641,14 @@ class App:
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                     self._build_fader_seq_panel(module)
             else:
+                # organ's nine drawbars render as a compact fader bank
+                # (fader_seq lineage); its remaining params fall through
+                # to the normal loop below.
+                if module.TYPE == "organ":
+                    with dpg.node_attribute(
+                        attribute_type=dpg.mvNode_Attr_Static
+                    ):
+                        self._build_organ_drawbars(module)
                 for param_name, default in module.DEFAULT_PARAMS.items():
                     # file_player's queue is not a scalar widget — it gets a
                     # dedicated listbox + Add/Clear panel in the block below.
@@ -642,6 +657,9 @@ class App:
                     # key_trigger's bound key gets a Learn button + label
                     # panel below instead of a raw text box.
                     if module.TYPE == "key_trigger" and param_name == "key":
+                        continue
+                    # organ's bar1..bar9 are drawn by the drawbar bank.
+                    if module.TYPE == "organ" and param_name.startswith("bar"):
                         continue
                     with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                         self._add_param_widget(module, param_name, default)
@@ -2285,6 +2303,64 @@ class App:
                 )
                 return
 
+        if module.TYPE == "organ":
+            # bar1..bar9 are drawn by the drawbar bank panel; these are
+            # the rest. ``perc``/``perc_decay`` are combos; the levels
+            # are plain 0..1 sliders.
+            if param_name == "perc":
+                dpg.add_combo(
+                    label=param_name, items=list(PERC_MODES),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "perc_decay":
+                dpg.add_combo(
+                    label=param_name, items=list(PERC_DECAYS),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("click", "perc_level", "level"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "chaos":
+            # ``system`` picks the attractor; ``rate`` ≈ orbits/second;
+            # ``range``/``seed`` follow the shift_random idiom.
+            if param_name == "system":
+                dpg.add_combo(
+                    label=param_name, items=list(CHAOS_SYSTEMS),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "rate":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.05,
+                    min_value=0.01, max_value=50.0, format="%.2f orbit/s",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "range":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.01,
+                    min_value=0.0, max_value=5.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "seed":
+                dpg.add_drag_int(
+                    label=param_name, default_value=int(current), speed=1,
+                    min_value=0, max_value=999999,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "euclidean":
             # Euclidean rhythm: fills hits over steps ticks; rotate walks
             # the pattern; accent_fills is the sparser accent layer;
@@ -3465,6 +3541,38 @@ class App:
         tip_tag = f"fader_tip_{module_id}_{i}"
         if dpg.does_item_exist(tip_tag):
             dpg.set_value(tip_tag, self._fader_tip(int(app_data)))
+
+    # ----- organ drawbar bank ------------------------------------------------
+
+    def _build_organ_drawbars(self, module) -> None:
+        """The nine-drawbar front panel: vertical 0..8 faders labelled by
+        footage (hover a fader for its footage + harmonic). Faders-up =
+        louder — a deliberate deviation from pulled-out-is-louder
+        hardware drawbars; screens read up as more.
+        """
+        with dpg.group(horizontal=True, horizontal_spacing=6):
+            for i in range(1, ORGAN_BARS + 1):
+                footage = ORGAN_FOOTAGES[i - 1]
+                with dpg.group():
+                    try:
+                        lvl = int(module.params[f"bar{i}"])
+                    except (TypeError, ValueError):
+                        lvl = 0
+                    lvl = max(0, min(8, lvl))
+                    fader = dpg.add_slider_int(
+                        vertical=True,
+                        default_value=lvl,
+                        min_value=0,
+                        max_value=8,
+                        width=18,
+                        height=80,
+                        format="",
+                        callback=self._on_param_changed,
+                        user_data=(module.id, f"bar{i}"),
+                    )
+                    with dpg.tooltip(fader):
+                        dpg.add_text(f"{footage} (drawbar {i})")
+                    dpg.add_text(footage.replace(" ", "\n"))
 
     # ----- per-key velocity calibration dialog ------------------------------
 

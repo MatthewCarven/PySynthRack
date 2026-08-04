@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "next_id": 6,
+  "modules": [
+    {
+      "id": 1,
+      "type": "cv_keyboard",
+      "name": "keys — home row plays (A = C4)",
+      "params": {
+        "octave": 4
+      }
+    },
+    {
+      "id": 2,
+      "type": "organ",
+      "name": "ORGAN — drawbars are the sound; try perc 2nd",
+      "params": {
+        "bar1": 8,
+        "bar2": 8,
+        "bar3": 8,
+        "bar4": 0,
+        "bar5": 0,
+        "bar6": 0,
+        "bar7": 0,
+        "bar8": 0,
+        "bar9": 0,
+        "click": 0.4,
+        "perc": "2nd",
+        "perc_decay": "fast",
+        "perc_level": 0.7,
+        "level": 0.3
+      }
+    },
+    {
+      "id": 3,
+      "type": "chorus",
+      "name": "scanner-ish shimmer",
+      "params": {
+        "rate": 0.8,
+        "depth": 0.35,
+        "mix": 0.4
+      }
+    },
+    {
+      "id": 4,
+      "type": "reverb",
+      "name": "a little room",
+      "params": {
+        "decay": 0.4,
+        "mix": 0.25
+      }
+    },
+    {
+      "id": 5,
+      "type": "stereo_speaker_output",
+      "name": "out",
+      "params": {}
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "pitch_cv",
+      "dst_module_id": 2,
+      "dst_port": "pitch_cv"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "gate",
+      "dst_module_id": 2,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out_l",
+      "dst_module_id": 4,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out_l",
+      "dst_module_id": 5,
+      "dst_port": "in_l"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out_r",
+      "dst_module_id": 5,
+      "dst_port": "in_r"
+    }
+  ],
+  "ui": {}
+}

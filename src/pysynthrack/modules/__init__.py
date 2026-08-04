@@ -12,6 +12,7 @@ from .adsr import ADSR
 from .arpeggiator import Arpeggiator
 from .audiotocv import AudioToCV
 from .bitcrusher import Bitcrusher
+from .chaos import Chaos
 from .chord import Chord
 from .chorus import Chorus
 from .clock import Clock
@@ -54,6 +55,7 @@ from .motion_eq import MotionEQ
 from .noise import Noise
 from .noise_gate import NoiseGate
 from .octaver import Octaver
+from .organ import Organ
 from .oscillator import Oscillator
 from .parametric_eq import ParametricEQ
 from .phaser import Phaser
@@ -95,6 +97,7 @@ __all__ = [
     "Bitcrusher",
     "BufferedSpecificSpeakerOutput",
     "Burst",
+    "Chaos",
     "Chord",
     "Chorus",
     "Clock",
@@ -139,6 +142,7 @@ __all__ = [
     "Noise",
     "NoiseGate",
     "Octaver",
+    "Organ",
     "Oscillator",
     "ParametricEQ",
     "Phaser",

@@ -2289,6 +2289,10 @@ class NumpyBackend(AudioBackend):
             return self._render_sequencer(module, frames, buffers, patch)
         if module.TYPE == "shift_random":
             return self._render_shift_random(module, frames, buffers, patch)
+        if module.TYPE == "chaos":
+            return self._render_chaos(module, frames, buffers, patch)
+        if module.TYPE == "organ":
+            return self._render_organ(module, frames, buffers, patch)
         if module.TYPE == "euclidean":
             return self._render_euclidean(module, frames, buffers, patch)
         if module.TYPE == "burst":
@@ -3357,6 +3361,217 @@ class NumpyBackend(AudioBackend):
 
         st["prev_clock"] = bool(g[-1])
         return {"cv": cv_out, "gate": gate_out}
+
+    # ----- Chaos rendering -------------------------------------------------
+
+    # Control-grid decimation: the ODE is evaluated every DIV samples and
+    # linearly interpolated to audio rate (CV-smooth, and the per-sample-
+    # Python trap — the slew lesson — never opens).
+    _CHAOS_DIV = 16
+    # Attractor time per orbit (approximate), used to calibrate ``rate``
+    # to ~orbits/second; and the RK4 stability rails (max dt per step).
+    _CHAOS_T_ORBIT = {"lorenz": 0.76, "rossler": 6.1}
+    _CHAOS_DT_RAIL = {"lorenz": 0.01, "rossler": 0.05}
+    _CHAOS_IC = {"lorenz": (1.0, 1.0, 20.0), "rossler": (1.0, 1.0, 0.5)}
+    # Normalisation (center, half-span) per axis — the attractors' known
+    # bounds at the classic constants; outputs clip at the rails.
+    _CHAOS_NORM = {
+        "lorenz": ((0.0, 20.0), (0.0, 27.0), (25.0, 25.0)),
+        "rossler": ((0.0, 12.0), (0.0, 12.0), (11.5, 11.5)),
+    }
+    _CHAOS_WARMUP = 1000       # substeps run at init to land on the attractor
+    _CHAOS_ROSSLER_GATE_Z = 3.0
+
+    @staticmethod
+    def _chaos_deriv(system: str):
+        if system == "rossler":
+            def d(s):
+                x, y, z = s
+                return (-y - z, x + 0.2 * y, 0.2 + z * (x - 5.7))
+            return d
+
+        def d(s):  # lorenz: sigma=10, rho=28, beta=8/3
+            x, y, z = s
+            return (
+                10.0 * (y - x),
+                x * (28.0 - z) - y,
+                x * y - (8.0 / 3.0) * z,
+            )
+        return d
+
+    @staticmethod
+    def _chaos_rk4(deriv, s, dt):
+        k1 = deriv(s)
+        s2 = (
+            s[0] + 0.5 * dt * k1[0],
+            s[1] + 0.5 * dt * k1[1],
+            s[2] + 0.5 * dt * k1[2],
+        )
+        k2 = deriv(s2)
+        s3 = (
+            s[0] + 0.5 * dt * k2[0],
+            s[1] + 0.5 * dt * k2[1],
+            s[2] + 0.5 * dt * k2[2],
+        )
+        k3 = deriv(s3)
+        s4 = (
+            s[0] + dt * k3[0],
+            s[1] + dt * k3[1],
+            s[2] + dt * k3[2],
+        )
+        k4 = deriv(s4)
+        c = dt / 6.0
+        return (
+            s[0] + c * (k1[0] + 2.0 * k2[0] + 2.0 * k3[0] + k4[0]),
+            s[1] + c * (k1[1] + 2.0 * k2[1] + 2.0 * k3[1] + k4[1]),
+            s[2] + c * (k1[2] + 2.0 * k2[2] + 2.0 * k3[2] + k4[2]),
+        )
+
+    def _render_chaos(self, module, frames: int, buffers, patch) -> dict:
+        """Strange-attractor CV source (see modules/chaos.py).
+
+        RK4 on a control grid keyed to the ABSOLUTE sample count: state
+        holds the raw attractor values at the two control points
+        bracketing the playhead (``prev``/``next``) plus an integer
+        sample offset ``frac`` into the interval — every rendered
+        sample interpolates at ``u = (frac + k) / DIV`` control units,
+        so any block split lands on identical floats and block-size
+        independence is exact. ``rate`` scales attractor time per
+        control step; the RK4 substep count is derived from params
+        only (never from the block size). A ``reset`` rising edge
+        re-seeds mid-block, sample-accurate; the sample AT the reset
+        is the seeded (warmed-up) starting point exactly.
+        """
+        reset = self._input_buffer(patch, buffers, module.id, "reset")
+
+        system = str(module.params.get("system", "lorenz"))
+        if system not in self._CHAOS_T_ORBIT:
+            system = "lorenz"
+        try:
+            rate = float(module.params.get("rate", 1.0))
+        except (TypeError, ValueError):
+            rate = 1.0
+        rate = min(50.0, max(0.01, rate))
+        try:
+            span = float(module.params.get("range", 2.0))
+        except (TypeError, ValueError):
+            span = 2.0
+        bipolar = bool(module.params.get("bipolar", False))
+        try:
+            seed = int(module.params.get("seed", 1))
+        except (TypeError, ValueError):
+            seed = 1
+        seed = max(0, seed)
+
+        sr = float(self.sample_rate)
+        DIV = self._CHAOS_DIV
+        deriv = self._chaos_deriv(system)
+        rail = self._CHAOS_DT_RAIL[system]
+        # Attractor time advanced per control step.
+        d_tau = DIV * rate * self._CHAOS_T_ORBIT[system] / sr
+        n_sub = max(1, int(np.ceil(d_tau / rail)))
+        dt = d_tau / n_sub
+
+        def seeded_start():
+            rng = np.random.default_rng(seed)
+            base = self._CHAOS_IC[system]
+            jit = rng.standard_normal(3)
+            s = (
+                base[0] + 0.5 * float(jit[0]),
+                base[1] + 0.5 * float(jit[1]),
+                base[2] + 0.5 * float(jit[2]),
+            )
+            for _ in range(self._CHAOS_WARMUP):
+                s = self._chaos_rk4(deriv, s, rail)
+            return s
+
+        def step_ctrl(s):
+            for _ in range(n_sub):
+                s = self._chaos_rk4(deriv, s, dt)
+            if not all(np.isfinite(c) for c in s):
+                # Should never happen inside the rails; recover quietly.
+                st["blowups"] = st.get("blowups", 0) + 1
+                return seeded_start()
+            return s
+
+        st = self._state.setdefault(module.id, {})
+        if st.get("key") != (system, seed):
+            st.clear()
+            s0 = seeded_start()
+            st.update(
+                {
+                    "key": (system, seed),
+                    "prev": s0,
+                    "next": step_ctrl(s0),
+                    "frac": 0,
+                    "prev_reset": False,
+                    "blowups": st.get("blowups", 0),
+                }
+            )
+
+        # Reset edges segment the block.
+        if reset is not None:
+            rg = reset > self._GATE_HIGH
+            prev_arr = np.empty_like(rg)
+            prev_arr[0] = bool(st["prev_reset"])
+            prev_arr[1:] = rg[:-1]
+            edges = np.flatnonzero(rg & ~prev_arr).tolist()
+            st["prev_reset"] = bool(rg[-1])
+        else:
+            edges = []
+
+        rx = np.empty(frames, dtype=np.float64)
+        ry = np.empty(frames, dtype=np.float64)
+        rz = np.empty(frames, dtype=np.float64)
+
+        def render_segment(s0: int, e0: int) -> None:
+            n = e0 - s0
+            if n <= 0:
+                return
+            frac = int(st["frac"])
+            needed = (frac + n) // DIV + 2
+            ctrl = [st["prev"], st["next"]]
+            while len(ctrl) < needed:
+                ctrl.append(step_ctrl(ctrl[-1]))
+            C = np.asarray(ctrl, dtype=np.float64)  # (M, 3)
+            xp = np.arange(len(ctrl), dtype=np.float64)
+            u = (frac + np.arange(n, dtype=np.float64)) / DIV
+            rx[s0:e0] = np.interp(u, xp, C[:, 0])
+            ry[s0:e0] = np.interp(u, xp, C[:, 1])
+            rz[s0:e0] = np.interp(u, xp, C[:, 2])
+            total = frac + n
+            adv = total // DIV
+            st["frac"] = total % DIV
+            st["prev"] = ctrl[adv]
+            st["next"] = ctrl[adv + 1]
+
+        pos = 0
+        for e in edges:
+            render_segment(pos, e)
+            s0 = seeded_start()
+            st["prev"] = s0
+            st["next"] = step_ctrl(s0)
+            st["frac"] = 0
+            pos = int(e)
+        render_segment(pos, frames)
+
+        # Normalise by the attractor's bounds, clip, map to range.
+        norm = self._CHAOS_NORM[system]
+        outs = []
+        for raw, (center, half) in zip((rx, ry, rz), norm):
+            nv = np.clip((raw - center) / half, -1.0, 1.0)
+            if bipolar:
+                outs.append((nv * span).astype(np.float32))
+            else:
+                outs.append(((nv + 1.0) * 0.5 * span).astype(np.float32))
+
+        if system == "rossler":
+            gate = (rz > self._CHAOS_ROSSLER_GATE_Z)
+        else:
+            gate = (rx > 0.0)
+        gate_out = gate.astype(np.float32)
+
+        return {"x": outs[0], "y": outs[1], "z": outs[2], "gate": gate_out}
 
     # ----- MIDI input rendering ------------------------------------------
 
@@ -11961,6 +12176,261 @@ class NumpyBackend(AudioBackend):
         self._drum_advance(st, out, pos, frames)
         level = float(p.get("level", 0.6))
         return (out * level).astype(np.float32)
+
+    # ----- Organ rendering -------------------------------------------------
+
+    _ORGAN_C4 = 261.6255653005986
+    _ORGAN_RAMP_S = 0.001    # gate ramp time (reaches exactly 0/1)
+    _ORGAN_CLICK_S = 0.004   # key-click burst length
+    _ORGAN_CLICK_AMP = 0.15  # click peak scale at click = 1
+    _ORGAN_PERC_T60 = {"fast": 0.3, "slow": 1.0}
+    _ORGAN_PERC_RATIO = {"2nd": 2.0, "3rd": 3.0}
+
+    def _render_organ(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Nine-drawbar additive organ (see modules/organ.py).
+
+        Per voice the nine partials render as ONE vectorized sine call
+        over a (9, F) phase-ramp block — pitch is read per block (mean,
+        the pluck idiom) so within a block every partial's frequency is
+        constant and the phase ramp is a plain ``arange`` (the
+        oscillator's constant-frequency indexing, ``phases[0] = start``
+        — which is what makes the lone-8' drawbar bit-exact against a
+        mono sine oscillator). Phase state advances for every voice
+        every block whether audible or not (the oscillator's rule), so
+        activity gating never moves phases; only the sine evaluation is
+        skipped for silent voices.
+
+        The gate envelope is an integer-counted linear ramp:
+        ``env = clamp(count ± n, 0..R) / R`` with the COUNT carried as
+        an int — exactly reaching 0.0/1.0 and bit-exact across any
+        block split (a float level would drift in the ramp region).
+        Key clicks are seeded per (module, voice, hit) noise bursts
+        poured through a per-voice carry tail (the drums whole-hit
+        idiom). The percussion register is a single module-wide
+        generator: a rising edge fires it only when NO voice's gate was
+        high on the previous sample (from-silence single trigger —
+        legato and chord additions don't re-fire), and the strike is a
+        decaying sine added to voice row 0 (monophonic hardware). A
+        re-qualifying strike replaces a still-ringing one.
+
+        Partials at or above Nyquist get a zero gain for that voice
+        this block (masked, never aliased); the constant-RMS
+        normaliser uses the unmasked gains so masking never makes the
+        remaining partials louder.
+        """
+        from ..modules.organ import ORGAN_BARS, ORGAN_RATIOS
+
+        pitch = self._input_buffer(
+            patch, buffers, module.id, "pitch_cv", collapse=False
+        )
+        gate = self._input_buffer(
+            patch, buffers, module.id, "gate", collapse=False
+        )
+        if gate is None:
+            # No keys patched: silence, and nothing worth remembering.
+            self._state.pop(module.id, None)
+            if pitch is not None and pitch.ndim == 2:
+                return np.zeros((pitch.shape[0], frames), dtype=np.float32)
+            return np.zeros(frames, dtype=np.float32)
+
+        voiced = gate.ndim == 2 or (pitch is not None and pitch.ndim == 2)
+        V = 1
+        for sig in (pitch, gate):
+            if sig is not None and sig.ndim == 2:
+                V = max(V, sig.shape[0])
+
+        def row(sig, v):
+            if sig is None:
+                return None
+            if sig.ndim == 2:
+                return sig[v] if v < sig.shape[0] else sig[0]
+            return sig
+
+        p = module.params
+        gains = np.zeros(ORGAN_BARS, dtype=np.float64)
+        for i in range(ORGAN_BARS):
+            try:
+                bar = int(p.get(f"bar{i + 1}", 0))
+            except (TypeError, ValueError):
+                bar = 0
+            bar = min(8, max(0, bar))
+            if bar > 0:
+                gains[i] = 10.0 ** (-3.0 * (8 - bar) / 20.0)
+        click = min(1.0, max(0.0, float(p.get("click", 0.3))))
+        perc_mode = str(p.get("perc", "off"))
+        perc_ratio = self._ORGAN_PERC_RATIO.get(perc_mode)
+        perc_t60 = self._ORGAN_PERC_T60.get(
+            str(p.get("perc_decay", "fast")), 0.3
+        )
+        perc_level = min(1.0, max(0.0, float(p.get("perc_level", 0.7))))
+        level = float(p.get("level", 0.5))
+
+        # Constant-RMS normaliser over the UNMASKED gains (see docstring).
+        mul = level / np.sqrt(max(1.0, float(np.sum(gains * gains))))
+
+        sr = float(self.sample_rate)
+        ramp = max(1, int(round(sr * self._ORGAN_RAMP_S)))
+        click_len = max(1, int(round(sr * self._ORGAN_CLICK_S)))
+        ratios = np.asarray(ORGAN_RATIOS, dtype=np.float64)
+
+        st = self._state.setdefault(module.id, {})
+        if st.get("V") != V or st.get("click_len") != click_len:
+            st.clear()
+            st.update(
+                {
+                    "V": V,
+                    "click_len": click_len,
+                    "phases": np.zeros((V, ORGAN_BARS), dtype=np.float64),
+                    "count": np.zeros(V, dtype=np.int64),  # ramp position 0..R
+                    "prev_gate": np.zeros(V, dtype=bool),
+                    "hits": np.zeros(V, dtype=np.int64),
+                    "click_tail": np.zeros((V, click_len), dtype=np.float64),
+                    "prev_any": False,
+                    "perc_amp": 0.0,
+                    "perc_phase": 0.0,
+                    "perc_inc": 0.0,
+                }
+            )
+        phases = st["phases"]
+
+        # Per-voice block frequency (block-mean pitch, pluck idiom).
+        freqs = np.empty(V, dtype=np.float64)
+        for v in range(V):
+            p_row = row(pitch, v)
+            cv = float(np.mean(p_row)) if p_row is not None else 0.0
+            freqs[v] = self._ORGAN_C4 * (2.0 ** cv)
+        incs = (freqs[:, None] * ratios[None, :]) / sr  # (V, 9)
+
+        gate_high = self._GATE_HIGH
+        G = np.empty((V, frames), dtype=bool)
+        for v in range(V):
+            G[v] = row(gate, v) > gate_high
+        any_high = G.any(axis=0)
+
+        out = np.zeros((V, frames), dtype=np.float64)
+        arange_f = np.arange(frames, dtype=np.float64)
+
+        # Percussion decay per sample (needed for carried tails even
+        # when the register is off — a live toggle mustn't click).
+        perc_g = 10.0 ** (-3.0 / (sr * perc_t60))
+
+        all_rises: list[tuple[int, int]] = []  # (sample, voice)
+
+        for v in range(V):
+            gt = G[v]
+            prev = np.empty_like(gt)
+            prev[0] = bool(st["prev_gate"][v])
+            prev[1:] = gt[:-1]
+            rises = np.flatnonzero(gt & ~prev)
+            falls = np.flatnonzero(~gt & prev)
+            st["prev_gate"][v] = bool(gt[-1])
+            for e in rises:
+                all_rises.append((int(e), v))
+
+            # --- gate envelope: integer-counted linear ramp ------------
+            count = int(st["count"][v])
+            seg_bounds = np.concatenate(
+                (
+                    [0],
+                    np.flatnonzero(gt[1:] != gt[:-1]) + 1,
+                    [frames],
+                )
+            )
+            env = np.empty(frames, dtype=np.float64)
+            for si in range(len(seg_bounds) - 1):
+                s, e = int(seg_bounds[si]), int(seg_bounds[si + 1])
+                n = np.arange(1, e - s + 1, dtype=np.int64)
+                if gt[s]:
+                    cnt = np.minimum(ramp, count + n)
+                else:
+                    cnt = np.maximum(0, count - n)
+                env[s:e] = cnt / ramp
+                count = int(cnt[-1])
+            st["count"][v] = count
+
+            # --- the partials (skip the sin for silent voices) ---------
+            audible = count > 0 or env.any()
+            if audible:
+                mask = (freqs[v] * ratios) < (sr * 0.5)
+                g_eff = gains * mask
+                ph = (phases[v][:, None] + incs[v][:, None] * arange_f) % 1.0
+                tone = np.einsum(
+                    "pf,p->f", np.sin(2.0 * np.pi * ph), g_eff
+                )
+                out[v] = tone * mul * env
+            # Phases advance every block regardless of audibility.
+            phases[v] = (phases[v] + incs[v] * frames) % 1.0
+
+            # --- key clicks (seeded bursts + carry tail) ---------------
+            tail = st["click_tail"][v]
+            has_events = click > 0.0 and (len(rises) or len(falls))
+            if has_events or tail.any():
+                scratch = np.zeros(frames + click_len, dtype=np.float64)
+                scratch[:click_len] += tail
+                if click > 0.0:
+                    events = [(int(e), 1.0) for e in rises]
+                    events += [(int(e), 0.5) for e in falls]
+                    for e, scale in sorted(events):
+                        rng = np.random.default_rng(
+                            [int(module.id), v, int(st["hits"][v])]
+                        )
+                        st["hits"][v] += 1
+                        burst = np.diff(
+                            rng.standard_normal(click_len + 1)
+                        ) * np.exp(
+                            -np.arange(click_len) / (0.2 * click_len)
+                        )
+                        scratch[e : e + click_len] += (
+                            burst * (click * self._ORGAN_CLICK_AMP * scale)
+                        )
+                out[v] += scratch[:frames]
+                st["click_tail"][v] = scratch[frames:]
+
+        # --- percussion: one module-wide from-silence generator --------
+        if perc_ratio is not None:
+            cursor = 0
+            fired_at = -1
+            for e, v in sorted(all_rises):
+                was_quiet = (
+                    not st["prev_any"] if e == 0 else not any_high[e - 1]
+                )
+                if was_quiet and e != fired_at:
+                    inc = perc_ratio * freqs[v] / sr
+                    if inc < 0.5:
+                        # Render the old strike up to the new one, then
+                        # replace it (single generator).
+                        self._organ_perc_pour(st, out[0], cursor, e, perc_g)
+                        st["perc_amp"] = perc_level * level
+                        st["perc_phase"] = 0.0
+                        st["perc_inc"] = inc
+                        cursor = e
+                        fired_at = e
+            self._organ_perc_pour(st, out[0], cursor, frames, perc_g)
+        elif st["perc_amp"] > 0.0:
+            # Register switched off live: let the ringing strike finish.
+            self._organ_perc_pour(st, out[0], 0, frames, perc_g)
+        st["prev_any"] = bool(any_high[-1])
+
+        out32 = out.astype(np.float32)
+        return out32 if voiced else out32[0]
+
+    def _organ_perc_pour(self, st, row, start, end, perc_g) -> None:
+        """Render the percussion strike into ``row[start:end]``, carrying
+        amplitude/phase state. The envelope's first poured sample is the
+        full carried amplitude (a strike fired at ``start`` sounds AT
+        ``start``)."""
+        amp = float(st["perc_amp"])
+        n = end - start
+        if amp <= 1e-6 or n <= 0:
+            if amp <= 1e-6:
+                st["perc_amp"] = 0.0
+            return
+        k = np.arange(n, dtype=np.float64)
+        env = amp * np.power(perc_g, k)
+        ph = (st["perc_phase"] + st["perc_inc"] * k) % 1.0
+        row[start:end] += np.sin(2.0 * np.pi * ph) * env
+        st["perc_amp"] = amp * (perc_g ** n)
+        st["perc_phase"] = (st["perc_phase"] + st["perc_inc"] * n) % 1.0
 
     # ----- Modal rendering -------------------------------------------------
 

@@ -206,6 +206,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`kick_drum`](#kick_drum) | Sources | `trigger` (gate) → `out` (audio) |
 | [`snare_drum`](#snare_drum) | Sources | `trigger` (gate) → `out` (audio) |
 | [`hat_drum`](#hat_drum) | Sources | `closed_trigger`,`open_trigger` (gate) → `out` (audio) |
+| [`organ`](#organ) | Sources | `pitch_cv` (cv), `gate` (gate) → `out` (audio) |
 | [`filter`](#filter) | Filters & EQ | `in` (audio), `cutoff_cv` (cv) → `out` (audio) |
 | [`crossover`](#crossover) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
 | [`parametric_eq`](#parametric_eq) | Filters & EQ | `in` (audio) → `out` (audio) |
@@ -241,6 +242,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`sequencer`](#sequencer) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
 | [`fader_seq`](#fader_seq) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
 | [`shift_random`](#shift_random) | Modulation | `clock`,`write` (gate) → `cv` (cv), `gate` (gate) |
+| [`chaos`](#chaos) | Modulation | `reset` (gate) → `x`,`y`,`z` (cv), `gate` (gate) |
 | [`euclidean`](#euclidean) | Modulation | `clock`,`reset` (gate) → `gate`,`accent` (gate) |
 | [`burst`](#burst) | Modulation | `trigger`,`clock` (gate) → `gate` (gate), `env` (cv) |
 | [`bernoulli_gate`](#bernoulli_gate) | Modulation | `in` (gate), `p_cv` (cv) → `out_a`,`out_b` (gate) |
@@ -767,6 +769,43 @@ the 2 ms fade — the pedal coming down, exactly like hardware.
 **Ports**: `closed_trigger`, `open_trigger` (gate) → `out` (audio).
 **Params**: `decay_closed` 10..300 ms (60) · `decay_open` 50..1500 ms
 (400) · `tune` ±12 st · `level` (0.6). See `examples/drum_machine.json`.
+
+#### `organ`
+
+A **nine-drawbar additive organ** (tonewheel lineage). Nine sine
+partials per voice at the classic footages — 16′, 5⅓′, 8′, 4′, 2⅔′,
+2′, 1⅗′, 1⅓′, 1′ (harmonic ratios ½, 1½, 1, 2, 3, 4, 5, 6, 8 of the
+played pitch) — each on its own 0..8 fader following the hardware's
+**~3 dB per step** law (8 = unity, 0 = silent). The sum is normalised
+by `1/√max(1, Σgain²)` (constant RMS: pulling bars changes timbre more
+than level, and full registrations keep headroom). The default
+registration is **888000000**, the jazz classic. Play it from any
+voice-routed pitch/gate pair ([`cv_keyboard`](#cv_keyboard),
+[`midi_input`](#midi_input), [`chord`](#chord)) — one organ per voice
+slot, polyphonic for free.
+
+An organ has **no envelope** — the gate *is* the articulation. Each
+edge rides a ~1 ms linear ramp (reaching exactly 1/0, so a held note
+is bit-transparent and a lone full 8′ drawbar is **bit-exact against
+the sine [`oscillator`](#oscillator)** — the pinned neutral), and
+`click` adds the seeded key-click contact tick on press (softer on
+release). The **percussion register** (`perc` 2nd/3rd) is the other
+tonewheel signature: a fast-decaying extra harmonic that fires **only
+on a key struck from silence** — one shared generator, so legato lines
+and chord additions do *not* re-fire it (the strike lands on voice
+row 0; monophonic hardware). Partials at/above Nyquist are masked,
+never aliased. Pitch reads per block (vibrato tracks at block rate);
+phases, ramps, click tails and the percussion strike all carry across
+blocks — bit-exact at any block size.
+
+**Ports**: `pitch_cv` (cv, 1 V/oct, C4 = 0 V; unpatched → C4), `gate`
+(gate; unpatched → silence) → `out` (audio). **Params**: `bar1`..`bar9`
+0..8 (888000000) · `click` 0..1 (0.3) · `perc` off/2nd/3rd (off) ·
+`perc_decay` fast ≈0.3 s / slow ≈1 s · `perc_level` 0..1 (0.7) ·
+`level` 0..1 (0.5). The node draws the bars as a vertical fader bank
+(faders-up = louder — a deliberate deviation from pulled-out-is-louder
+hardware). Pair it with [`chorus`](#chorus) for the scanner shimmer —
+see `examples/organ_jazz.json`.
 
 ---
 
@@ -2368,6 +2407,46 @@ history, the hardware behaviour. Mono, stepped outputs (follow with
 | `range` | `2.0` | 0 … 5 | CV span: 0..range unipolar, ±range bipolar. |
 | `bipolar` | `False` | bool | Centre the CV on 0. |
 | `seed` | `1` | ≥ 0 | Deterministic character; change to re-roll live. |
+
+#### `chaos`
+
+A **strange-attractor CV source** — deterministic wandering with
+*structure*. [`shift_random`](#shift_random) loops, the
+[`lfo`](#lfo)'s `random` steps; chaos **orbits**: the same shape never
+repeats, yet the module is fully deterministic (same `seed`, same
+render, forever — its only randomness is the seeded initial-condition
+jitter). Two systems: `lorenz` (σ=10, ρ=28, β=8/3 — the butterfly) and
+`rossler` (a=b=0.2, c=5.7 — spiral-and-kick).
+
+The three CV outs `x`/`y`/`z` are three views of **one orbit**, so one
+module drives several destinations *coherently* — the cutoff swell
+arrives with the pitch wander that caused it. The `gate` out is the
+attractor's own rhythm, different per system: **lorenz** emits the
+sign of x (a quasi-random square that hangs on each wing for an
+unpredictable while), **rossler** emits z-above-threshold (sparse
+irregular spike bursts). Integration is RK4 at a rail-limited substep
+on a 16-sample control grid keyed to the absolute sample count, then
+linearly interpolated — CV-smooth, cheap, and **bit-exact at any
+block size**. Outputs are normalised by the attractor's known bounds,
+clipped, then mapped by `range`/`bipolar`. A `reset` edge returns the
+orbit to its seeded start, sample-accurate.
+
+The demo: patch `x`/`y` into a [`scope`](#scope) in **xy** mode — the
+butterfly, live on the node. Or `x` → [`quantizer`](#quantizer) →
+[`oscillator`](#oscillator) for a melody that never repeats and
+recalls exactly by seed — see `examples/chaos_melody.json`.
+
+**Ports**: `reset` (gate) → `x`,`y`,`z` (cv), `gate` (gate).
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `system` | `lorenz` | lorenz / rossler | Which attractor. |
+| `rate` | `1.0` | 0.01 … 50 | Speed, calibrated to ≈ orbits per second (approximate by nature). |
+| `range` | `2.0` | 0 … 5 | CV span: 0..range unipolar, ±range bipolar. |
+| `bipolar` | `False` | bool | Centre the CVs on 0. |
+| `seed` | `1` | ≥ 0 | The orbit's identity; change to re-roll live. |
 
 #### `euclidean`
 

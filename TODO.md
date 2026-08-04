@@ -47,7 +47,22 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
 
 ## Later / wishlist
 
-- [ ] **`organ` + `chaos` — the fun pair** — spec'd 2026-08-04 at
+- [x] **`organ` + `chaos` — the fun pair** — BOTH SHIPPED 2026-08-04,
+      built to the plan below in one session. organ: lone-8′ pin landed
+      BIT-EXACT vs the sine oscillator (integer-counted gate ramp was
+      the enabler); perc single-trigger pinned (legato doesn't
+      re-fire); Nyquist mask = exact silence; 16-voice worst case
+      RECORDED 2.82 ms = 26.5% of budget; drawbar fader bank shipped.
+      chaos: all outs bit-exact across block splits incl. mid-block
+      reset (absolute-sample control grid); 100k-sample soak clean;
+      seeds decorrelate, same seed bit-identical; rate 50 = 2.2%
+      budget. 34 tests; suite **2587**; examples `organ_jazz.json`
+      (0.78 peak chord) + `chaos_melody.json` (self-playing, 0.63
+      peak). **Pending (meatthread0):** ears on both; GUI eyeball of
+      the drawbar bank + butterfly-in-scope-xy. Later: organ foldback/
+      leakage/scanner; chaos audio-rate, rate_cv, guarded morph knob.
+      Original spec'd entry follows (plan retained for the record):
+      spec'd 2026-08-04 at
       Matthew's pick ("organ & chaos please"), second and third off the
       what's-left brainstorm; full specs in docs/MODULE_IDEAS.md.
       `organ` (Sources, S–M): nine-drawbar additive — bars fold into
