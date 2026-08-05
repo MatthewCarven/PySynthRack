@@ -10,6 +10,29 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-05 — ears PASSED on all six of the 08-04 modules
+
+Matthew recompiled and played the whole day-of-six: **organ**
+("beautiful!"), **matrix_mixer** ("unique"), **chaos** ("well
+organized chaos — I like it"), **supersaw** ("awesome"),
+**wavetable_morph** ("works well"), **vinyl** ("does exactly what it
+says"). All six examples confirmed by ear; no issues raised. That
+clears every pending-ears item from 2026-08-04.
+
+Surfaced idea (Matthew's): **feedback with the organ** — the organ's
+sustained tones through the matrix's regenerating loop. Queued in
+TODO as an example-patch idea (organ → matrix → delay/reverb → back;
+the soft ceiling makes it safe to let it sing).
+
+Still queued for next PySynthRack session (Matthew: "i'll pick these
+up next time"): the 2026-08-03 listening backlog —
+`clockwork_groove.json`, `chord_arp_factory.json` (+ chord slot-bank
+feel), `drum_machine.json`, `pluck_strings.json`, `modal_bells.json`,
+`shift_random_melody.json`, Session A's three
+(`logic_offbeat_drums`, `mid_side_breathe`, `octaver_bass_lead`) —
+plus the **scope real-GUI face** eyeball (60 fps, trigger, dual/xy,
+freeze).
+
 ## 2026-08-04 — the brainstorm keep-list lands on the roadmap
 
 Matthew pasted the "what's left" brainstorm back and asked for all of

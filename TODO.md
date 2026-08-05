@@ -47,9 +47,10 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       Hilbert inst-freq (±24 ct full); all-zero = the input buffer
       itself; unpatched in = free noise bed (deviation). Perf: 1.0% /
       1.3% budget. 27 tests; suite **2616**; examples
-      `matrix_feedback_echo.json` + `vinyl_dust.json`. **Pending
-      (meatthread0):** ears + gain-grid GUI eyeball. Later: shimmer
-      example through the matrix; wobble/crackle cv ins.
+      `matrix_feedback_echo.json` + `vinyl_dust.json`. **Ears PASSED
+      2026-08-05** (matrix "unique"; vinyl "does exactly what it
+      says"). Later: the organ-feedback example (queued above);
+      shimmer example through the matrix; wobble/crackle cv ins.
 - [x] **Session C — oscillator double (S–M + M)** — BOTH SHIPPED
       2026-08-04 (day part three; the QUICK-HIT RUN IS COMPLETE:
       A+B+C, seven modules in two days). `supersaw`: one blep call on
@@ -68,13 +69,33 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       `position_cv_depth` added per conventions (spec omitted it —
       noted). 27 tests; suite **2645**; examples
       `supersaw_chord_wall.json` (0.66 peak) +
-      `wavetable_vowel_talk.json` (0.48 peak). **Pending
-      (meatthread0):** ears on both + Browse eyeball. Later: supersaw
-      fast path (arange constant-pitch / (V·7,F) reshape) if 45.6%
-      bites; multi-frame WAV import (file → sliced frames).
+      `wavetable_vowel_talk.json` (0.48 peak). **Ears PASSED
+      2026-08-05** (supersaw "awesome"; wavetable_morph "works
+      well"). Later: supersaw fast path (arange constant-pitch /
+      (V·7,F) reshape) if 45.6% bites; multi-frame WAV import (file
+      → sliced frames); Browse-button close-look not separately
+      exercised (shared dialog path).
 
 ## Later / wishlist
 
+- [ ] **The 2026-08-03 listening backlog + scope face** — queued for
+      the next PySynthRack session (Matthew, 2026-08-05: "i'll pick
+      these up next time"). Ears: `clockwork_groove.json` (the fun
+      one), `chord_arp_factory.json` (+ chord slot-bank GUI feel),
+      `drum_machine.json`, `pluck_strings.json`, `modal_bells.json`,
+      `shift_random_melody.json`, `logic_offbeat_drums`,
+      `mid_side_breathe`, `octaver_bass_lead`. GUI: the scope face
+      (60 fps repaint, trigger holds a saw still, dual/xy modes,
+      freeze). NOTE: the 2026-08-04 six ALL PASSED ears 2026-08-05
+      (organ "beautiful", matrix "unique", chaos/supersaw/
+      wavetable_morph/vinyl all confirmed) — those pendings are
+      cleared in their entries below.
+- [ ] **Example idea: organ through the feedback door** (Matthew,
+      2026-08-05: "maybe feedback with the organ?") — the organ's
+      sustained tones into the matrix's regenerating loop (organ →
+      matrix in_1; out_1 → delay and/or reverb → back in; soft
+      ceiling on so it can sing without running away). Drone/ambient
+      machine; pairs the two ear-favorites of the 08-04 batch.
 - [ ] **The 2026-08-04 brainstorm keep-list** — Matthew: "Can you add
       to the todo" (2026-08-04, with the full writeup pasted back).
       Twelve items, one-liners now living in docs/MODULE_IDEAS.md
@@ -109,9 +130,11 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       seeds decorrelate, same seed bit-identical; rate 50 = 2.2%
       budget. 34 tests; suite **2587**; examples `organ_jazz.json`
       (0.78 peak chord) + `chaos_melody.json` (self-playing, 0.63
-      peak). **Pending (meatthread0):** ears on both; GUI eyeball of
-      the drawbar bank + butterfly-in-scope-xy. Later: organ foldback/
-      leakage/scanner; chaos audio-rate, rate_cv, guarded morph knob.
+      peak). **Ears PASSED 2026-08-05** (organ "beautiful!"; chaos
+      "well organized chaos — I like it"); butterfly-in-scope-xy demo
+      still worth a look next session. Later: organ foldback/
+      leakage/scanner + the organ-feedback example (queued above);
+      chaos audio-rate, rate_cv, guarded morph knob.
       Original spec'd entry follows (plan retained for the record):
       spec'd 2026-08-04 at
       Matthew's pick ("organ & chaos please"), second and third off the
