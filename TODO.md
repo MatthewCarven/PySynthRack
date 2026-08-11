@@ -25,9 +25,11 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       one-pole, dry-only returns the input buffer itself. 33 tests;
       suite **2551**; examples `logic_offbeat_drums` (and=tresillo
       kick, xor=complementary hat), `mid_side_breathe` (LFO width),
-      `octaver_bass_lead` (keys → bass under the lead). **Pending
-      (meatthread0):** ears on all three. Later: logic 3-in variant?
-      mid_side `side` HP trim; octaver glide/portamento tracking aid.
+      `octaver_bass_lead` (keys → bass under the lead). **Ears PASSED
+      2026-08-05 on all three** — and `mid_side_breathe` was the
+      sleeper hit: "pretty awesome, ima use this in music for sure."
+      Later: logic 3-in variant? mid_side `side` HP trim; octaver
+      glide/portamento tracking aid.
 - [x] **Session B — patch bay & dust (M+S)** — BOTH SHIPPED 2026-08-04
       (same day as organ+chaos; Matthew: "And another two please").
       `matrix_mixer`: feedback landed on the EXISTING delayed-edge
@@ -78,18 +80,22 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
 
 ## Later / wishlist
 
-- [ ] **The 2026-08-03 listening backlog + scope face** — queued for
-      the next PySynthRack session (Matthew, 2026-08-05: "i'll pick
-      these up next time"). Ears: `clockwork_groove.json` (the fun
-      one), `chord_arp_factory.json` (+ chord slot-bank GUI feel),
-      `drum_machine.json`, `pluck_strings.json`, `modal_bells.json`,
-      `shift_random_melody.json`, `logic_offbeat_drums`,
-      `mid_side_breathe`, `octaver_bass_lead`. GUI: the scope face
+- [ ] **Remaining GUI eyeballs: the scope face (+ butterfly demo)** —
+      the last of the module-eyeball queue: the scope's waveform face
       (60 fps repaint, trigger holds a saw still, dual/xy modes,
-      freeze). NOTE: the 2026-08-04 six ALL PASSED ears 2026-08-05
-      (organ "beautiful", matrix "unique", chaos/supersaw/
-      wavetable_morph/vinyl all confirmed) — those pendings are
-      cleared in their entries below.
+      freeze) and the chaos-x/y-into-scope-xy butterfly. Everything
+      else is CLEARED: the 2026-08-04 six passed ears 2026-08-05, and
+      the whole 2026-08-03 listening backlog passed 2026-08-05 too —
+      `clockwork_groove` "something else… the most unique one i've
+      seen so far, everything short of a drum machine but just as
+      effective"; `chord_arp_factory` "works well, like a unique or
+      random song"; `drum_machine` "is a drum machine";
+      `pluck_strings` "cool" (Matthew's coming back to play more);
+      `modal_bells` (also flagged for a longer revisit);
+      `shift_random_melody` "another cool one"; `logic_offbeat_drums`
+      :-{D; `mid_side_breathe` "pretty awesome, ima USE THIS IN
+      MUSIC for sure"; `octaver_bass_lead` :-{D. Per-entry pendings
+      below updated.
 - [ ] **Example idea: organ through the feedback door** (Matthew,
       2026-08-05: "maybe feedback with the organ?") — the organ's
       sustained tones into the matrix's regenerating loop (organ →
@@ -228,8 +234,9 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       cancels unfired), spread = open voicing (0,+12,−12,0). Perf: arp
       worst-case 5.1% budget, chord 4.1% event / 0.7% steady. 48 tests;
       suite **2515**. Example `chord_arp_factory.json` — mono → poly →
-      mono full circle, self-playing. **Pending (meatthread0):** ears
-      on the factory + GUI feel of the chord slot bank. Later: chord
+      mono full circle, self-playing. **Ears PASSED 2026-08-05**
+      ("works well, like a unique or random song"); chord slot-bank
+      GUI feel not separately exercised. Later: chord
       `inversion` knob; chord `changed` re-strum trigger; arp internal
       clock; swing lives in the future `clock_divider`.
 - [x] **Clockwork trio `euclidean` / `burst` / `bernoulli_gate`** — ALL
@@ -240,8 +247,10 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       (1−decay)^k env, clocked division mode. Bernoulli: whole-gate
       routing (A+B ≡ in exactly, pinned), p_cv at the edge, toggle mode,
       seeded. 25 tests; suite **2466**. Example `clockwork_groove.json`
-      (the self-playing groove). **Pending (meatthread0):** ears — and
-      it's the fun one. Later: euclidean `fills_cv`; burst `count_cv`;
+      (the self-playing groove). **Ears PASSED 2026-08-05 — and how**:
+      "something else… the most unique one i've seen so far,
+      everything short of a drum machine but just as effective."
+      Later: euclidean `fills_cv`; burst `count_cv`;
       bernoulli 3+-way sibling (`sequential_switch` is on the quick-hit
       list); a `clock_divider` to round out the clockwork family.
 - [x] **`modal` — struck resonator bank** — SHIPPED 2026-08-03 (13ef181,
@@ -251,7 +260,8 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       modes = 8.4% of budget, 16 distinct pitches = 29.6% (the spec's
       asked-for measurement). Drive lesson: b₀ = g·sinθ (strike-peak
       norm), NOT g(1−r) (integral norm — starved long decays to −60 dB).
-      17 tests; `modal_bells.json`. **Pending (meatthread0):** ears.
+      17 tests; `modal_bells.json`. **Ears PASSED 2026-08-05**
+      (flagged for a longer revisit — Matthew's coming back to it).
       Later: strike-position macro (per-mode gain comb), stereo mode
       spread, `pitch_cv`-tracking excite filter.
 - [x] **Drum voices `kick_drum` / `snare_drum` / `hat_drum`** — ALL
@@ -261,8 +271,9 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       click + tanh drive (no oversampling — LF-dominant, noted); snare
       185/330 modes + banded wires + snappy; hat 6-square metallic
       stack HP 7 kHz with closed-chokes-open. 19 tests; suite **2440**;
-      `drum_machine.json` (backbeat groove, 0.89 peak). **Pending
-      (meatthread0):** play the groove. Later: velocity inputs, kick
+      `drum_machine.json` (backbeat groove, 0.89 peak). **Ears PASSED
+      2026-08-05** ("drum_machine is a drum machine" — mission
+      statement achieved). Later: velocity inputs, kick
       `pitch_cv`, hat `tone` (stack base), per-drum `out` gain_cv.
 - [x] **`pluck` — Karplus–Strong string voice** — SHIPPED 2026-08-03
       (same day, part four). Extended KS: allpass fractional delay +
@@ -276,7 +287,8 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       pedestal (zero-mean the burst), and a bright pluck's FFT global
       peak is an upper harmonic (measure the fundamental *partial*).
       21 tests; suite **2402**. Example `pluck_strings.json` (keys → 16
-      strings → reverb). **Pending (meatthread0):** play it. Later ideas:
+      strings → reverb). **Ears PASSED 2026-08-05** ("that one is
+      cool" — flagged for a longer play session). Later ideas:
       stereo spread (per-voice pan), `pluck_cv` velocity input scaling
       the burst, a `mute` gate (palm-mute choke), sympathetic-string send.
 - [x] **`scope` — oscilloscope pass-through tap** — SHIPPED 2026-08-03
@@ -306,9 +318,9 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       deterministic (live re-roll), byte CV newest-bit-MSB, gate = bit 0,
       `write` forces ones. 43 tests; suite **2354**. Example
       `shift_random_melody.json` (endless melody box). Docs + tripwires
-      + pyo punts + bounded UI all landed with it. **Pending
-      (meatthread0):** real-GUI eyeball (listen to the loop mutate; check
-      the custom-scale tickbox rows). Later ideas: note-name display on
+      + pyo punts + bounded UI all landed with it. **Ears PASSED
+      2026-08-05** ("another cool one"); the custom-scale tickbox rows
+      not separately exercised. Later ideas: note-name display on
       the quantizer node; a `changed`-driven strum helper; scale presets
       beyond the ten.
 - [x] **Module polish — slice 1 (audit + docs/exports/widget gaps)** — done

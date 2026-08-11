@@ -10,6 +10,28 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-05 — the WHOLE listening backlog clears (nine for nine)
+
+Matthew went straight through the 2026-08-03 backlog in one sitting —
+every example passed: **clockwork_groove** "something else… the most
+unique one i've seen so far, everything short of a drum machine but
+just as effective" (the 'fun one' flag was right);
+**chord_arp_factory** "works well, like a unique or random song";
+**drum_machine** "is a drum machine" (mission statement achieved);
+**pluck_strings** "cool" (longer play session coming);
+**modal_bells** (longer revisit coming); **shift_random_melody**
+"another cool one"; **logic_offbeat_drums** :-{D;
+**mid_side_breathe** — the sleeper hit — "pretty awesome, ima use
+this in music for sure"; **octaver_bass_lead** :-{D.
+
+That closes EVERY pending-ears item in the rack: fifteen examples
+across two days, all passed, zero issues raised. Worth savoring:
+mid_side (a Session A utility, the humblest module of the batch) is
+the one headed for actual music. Remaining eyeball queue is down to
+two GUI items: the scope face (60 fps, trigger, dual/xy, freeze) and
+the chaos-butterfly-in-scope-xy demo. Per-entry pendings in TODO
+updated; the backlog queue entry replaced by a scope-face-only one.
+
 ## 2026-08-05 — ears PASSED on all six of the 08-04 modules
 
 Matthew recompiled and played the whole day-of-six: **organ**
