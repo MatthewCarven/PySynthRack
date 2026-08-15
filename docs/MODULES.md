@@ -246,6 +246,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`sequencer`](#sequencer) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
 | [`fader_seq`](#fader_seq) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
 | [`shift_random`](#shift_random) | Modulation | `clock`,`write` (gate) → `cv` (cv), `gate` (gate) |
+| [`possibility_seq`](#possibility_seq) | Modulation | `clock`,`reset`,`reroll` (gate) → `gate` (gate) |
 | [`chaos`](#chaos) | Modulation | `reset` (gate) → `x`,`y`,`z` (cv), `gate` (gate) |
 | [`euclidean`](#euclidean) | Modulation | `clock`,`reset` (gate) → `gate`,`accent` (gate) |
 | [`burst`](#burst) | Modulation | `trigger`,`clock` (gate) → `gate` (gate), `env` (cv) |
@@ -2475,6 +2476,60 @@ history, the hardware behaviour. Mono, stepped outputs (follow with
 | `range` | `2.0` | 0 … 5 | CV span: 0..range unipolar, ±range bipolar. |
 | `bipolar` | `False` | bool | Centre the CV on 0. |
 | `seed` | `1` | ≥ 0 | Deterministic character; change to re-roll live. |
+
+#### `possibility_seq`
+
+A clock-driven step sequencer **whose steps can be undecided** — the bridge
+module from [PythonBinaryPossibility](https://github.com/MatthewCarven/PythonBinaryPossibility),
+its possibility-rack step semantics ported to this rack. Each of up to 16
+steps is `"0"` (a rest), `"1"` (a hit), or `"?"` — *both, until the music
+needs an answer*. A pattern with k undecided steps holds 2^k distinct bars;
+this module plays one per pass and draws fresh ones on demand. Where
+[`sequencer`](#sequencer) covers decided patterns and
+[`bernoulli_gate`](#bernoulli_gate) covers the all-random single stream,
+this is the pattern with holes in it.
+
+`mode` says **when the `?`s decide**: `loop` (default) redraws every `?`
+each time the pattern wraps — every bar a fresh take from the same
+possibility space; `latch` resolves once and holds the take until a
+`reroll` edge or a `seed` change — a bar you *found* and get to keep;
+`dice` rolls every `?` fresh each time it comes around.
+
+`balanced` is the measured switch: independent coins clump (in the source
+project, one fair 16-step bar in fifteen lands audibly lopsided), so with
+`balanced` on, the *fair* `?`s (odds 0.5) are dealt from a width-1
+shuffle-bag instead — every pair of fair steps gets exactly one hit and
+every bar lands on its share, the same reason Tetris deals pieces from a
+bag. Weighted steps keep their own odds either way (a 0.2 ghost note's
+whole point is its rarity and its clumping). In `dice` mode the bag deals
+through *time* instead — consecutive fair rolls pair up.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `clock` | in | gate | Advance one step on each **rising edge**. First pulse plays step 1. |
+| `reset` | in | gate | A rising edge rewinds so the next clock plays step 1. The current take is kept. |
+| `reroll` | in | gate | A rising edge draws a fresh take — every `?` still to come re-resolves. Patch a slow clock here and the pattern re-decides itself every few bars. |
+| `gate` | out | gate | High while the clock is high **and** the current step fires — the [`sequencer`](#sequencer) contract, so pulse width follows the clock's. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `steps` | `16` | 1…16 | Active loop length; the pattern wraps after this many steps. |
+| `mode` | `loop` | loop / latch / dice | When the `?`s decide (see above). |
+| `balanced` | `false` | bool | Deal fair `?`s from the shuffle-bag — every bar exactly its share. |
+| `seed` | `1` | ≥ 0 | All randomness; the sequence of takes is a pure function of the seed and the clock, so patches reload with the character they were saved with. |
+| `step{i}_state` | `1?101?101?101?10` | "0" / "1" / "?" | The pattern (i = 1…16). The default ships four `?`s — 16 possible bars out of the box. |
+| `step{i}_p` | `0.5` | 0…1 | Odds step *i*'s `?` fires. 0.5 = fair coin (bag-eligible under `balanced`), 0.2 = a ghost note in a fifth of takes. |
+
+**Patching.** `clock.out → possibility_seq.clock`; `possibility_seq.gate →
+kick_drum.trigger` (or any gate consumer). Three of them off one clock into
+[`kick_drum`](#kick_drum) / [`snare_drum`](#snare_drum) /
+[`hat_drum`](#hat_drum) → [`mixer`](#mixer) is a drum machine that is
+genuinely undecided — see `examples/possibility_groove.json`. A slow
+[`clock`](#clock) into `reroll` re-deals a `latch`ed pattern every N bars.
 
 #### `chaos`
 

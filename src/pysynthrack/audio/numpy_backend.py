@@ -2411,6 +2411,8 @@ class NumpyBackend(AudioBackend):
             return self._render_supersaw(module, frames, buffers, patch)
         if module.TYPE == "wavetable_morph":
             return self._render_wavetable_morph(module, frames, buffers, patch)
+        if module.TYPE == "possibility_seq":
+            return self._render_possibility_seq(module, frames, buffers, patch)
         if module.TYPE == "euclidean":
             return self._render_euclidean(module, frames, buffers, patch)
         if module.TYPE == "burst":
@@ -3818,6 +3820,137 @@ class NumpyBackend(AudioBackend):
 
         st["prev_clock"] = bool(g[-1])
         return {"cv": cv_out, "gate": gate_out}
+
+    def _render_possibility_seq(self, module, frames: int, buffers, patch) -> dict:
+        """Clock-driven sequencer with undecided steps (see
+        modules/possibility_seq.py — PythonBinaryPossibility's step
+        semantics, ported).
+
+        Per-sample edge loop, the sequencer precedent: three gate inputs'
+        edges must interleave in sample order (a reroll landing mid-bar
+        redraws the take for the steps still to come). Step advance and the
+        gate contract match the Sequencer exactly: idx starts at -1 so the
+        first clock plays step 1, and ``gate`` is high while the clock is
+        high and the current step fires.
+
+        The take model: decided steps ("0"/"1") are read live from params
+        every step, so panel edits land immediately. Undecided steps are
+        rolled through ``resolve_step`` — in ``latch``/``loop`` the roll is
+        memoized per step (one take), the memo clearing on a loop wrap
+        (``loop``), a ``reroll`` edge, or a ``seed`` change; in ``dice``
+        nothing is memoized. The balanced bag (counts of rests/hits dealt)
+        lives alongside the memo and clears with it, so a ``loop``/``latch``
+        bar is dealt exactly like the reference ``collapse_pattern`` — in
+        ``dice`` the bag persists across ticks instead, dealing fair steps
+        evenly through *time* (consecutive fair rolls pair up).
+
+        Determinism: one ``default_rng(seed)`` consumed only when a real
+        choice exists, so the sequence of takes is a pure function of the
+        seed and the edge history — block-size independent by construction.
+        """
+        from ..modules.possibility_seq import (
+            MAX_STEPS as _PSEQ_MAX,
+            POSSIBILITY_MODES,
+            STEP_STATES,
+            resolve_step,
+        )
+
+        clock = self._input_buffer(patch, buffers, module.id, "clock")
+        reset = self._input_buffer(patch, buffers, module.id, "reset")
+        reroll = self._input_buffer(patch, buffers, module.id, "reroll")
+
+        try:
+            steps = int(module.params.get("steps", 16))
+        except (TypeError, ValueError):
+            steps = 16
+        steps = max(1, min(_PSEQ_MAX, steps))
+        mode = str(module.params.get("mode", "loop"))
+        if mode not in POSSIBILITY_MODES:
+            mode = "loop"
+        balanced = bool(module.params.get("balanced", False))
+        try:
+            seed = int(module.params.get("seed", 1))
+        except (TypeError, ValueError):
+            seed = 1
+        seed = max(0, seed)
+
+        states = []
+        odds = []
+        for i in range(1, _PSEQ_MAX + 1):
+            s = str(module.params.get(f"step{i}_state", "0"))
+            states.append(s if s in STEP_STATES else "0")
+            try:
+                p = float(module.params.get(f"step{i}_p", 0.5))
+            except (TypeError, ValueError):
+                p = 0.5
+            odds.append(min(1.0, max(0.0, p)))
+
+        st = self._state.setdefault(module.id, {})
+        if st.get("seed") != seed:
+            st["seed"] = seed
+            st["rng"] = np.random.default_rng(seed)
+            st["memo"] = {}
+            st["bag"] = [0, 0]
+            st["idx"] = -1
+            st["fires"] = False
+            st["prev_clock"] = False
+            st["prev_reset"] = False
+            st["prev_reroll"] = False
+        rng = st["rng"]
+        memo: dict = st["memo"]
+        bag: list = st["bag"]
+        idx = int(st["idx"])
+        fires = bool(st["fires"])
+        prev_clock = bool(st["prev_clock"])
+        prev_reset = bool(st["prev_reset"])
+        prev_reroll = bool(st["prev_reroll"])
+
+        gate_high = self._GATE_HIGH
+        gate_out = np.zeros(frames, dtype=np.float32)
+
+        for n in range(frames):
+            c = bool(clock[n] > gate_high) if clock is not None else False
+            r = bool(reset[n] > gate_high) if reset is not None else False
+            rr = bool(reroll[n] > gate_high) if reroll is not None else False
+
+            if r and not prev_reset:
+                idx = -1  # rewind; the take is kept
+            prev_reset = r
+
+            if rr and not prev_reroll:
+                memo.clear()  # a fresh take for every ? still to come
+                bag[0] = bag[1] = 0
+            prev_reroll = rr
+
+            if c and not prev_clock:
+                nxt = (idx + 1) % steps
+                if mode == "loop" and nxt == 0 and idx != -1:
+                    memo.clear()  # the pattern wrapped: a fresh take
+                    bag[0] = bag[1] = 0
+                idx = nxt
+                state = states[idx]
+                if state != "?":
+                    fires = state == "1"  # decided steps read live
+                elif mode == "dice":
+                    fires = resolve_step(state, odds[idx], balanced, bag,
+                                         rng.random)
+                elif idx in memo:
+                    fires = bool(memo[idx])
+                else:
+                    fires = resolve_step(state, odds[idx], balanced, bag,
+                                         rng.random)
+                    memo[idx] = fires
+            prev_clock = c
+
+            if c and idx >= 0 and fires:
+                gate_out[n] = 1.0
+
+        st["idx"] = idx
+        st["fires"] = fires
+        st["prev_clock"] = prev_clock
+        st["prev_reset"] = prev_reset
+        st["prev_reroll"] = prev_reroll
+        return {"gate": gate_out}
 
     # ----- Chaos rendering -------------------------------------------------
 

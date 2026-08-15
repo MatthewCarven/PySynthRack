@@ -7,6 +7,28 @@ Living list of what's next. Edit freely.
 > [TODO-ARCHIVE.md](TODO-ARCHIVE.md). Archived entries keep their follow-up
 > notes; grep the archive before assuming an idea is new.
 
+## The possibility bridge (opened 2026-08-15)
+
+PythonBinaryPossibility's rack semantics as a module family. First brick
+shipped; the rest queue behind Matthew's ears.
+
+- [x] **`possibility_seq`** — shipped 2026-08-15: steps 0/1/?, modes
+      loop/latch/dice, `balanced` shuffle-bag deal (the measured fix for
+      coin-clump: one fair bar in fifteen audibly lopsided without it),
+      seeded takes, `reroll` gate. Renderer pinned against the pure
+      `collapse_pattern` reference; 20 tests; possibility_groove example.
+      NEEDS: full pytest on the real checkout + a listen.
+- [ ] **Panel gesture** — the node currently renders 36 generic param
+      rows. The source project's one-gesture rule (click a step to cycle
+      0 → 1 → ? → 0, right-click for odds) wants a custom panel, the
+      `fader_seq` precedent exactly. Possibility count on the panel
+      ("this pattern holds 16 bars") comes free with it.
+- [ ] **The selector, meta-possibility version** — a register over WHICH
+      module fires: collapse the router itself. Sketch only; earns a spec
+      in MODULE_IDEAS.md when the first module has been played.
+- [ ] **Example: reroll divider** — slow clock into `reroll` so a latched
+      pattern re-decides every four bars; pairs with `clockwork_groove`.
+
 ## Planned — the quick-hit run (Matthew's pick, 2026-08-03)
 
 Seven modules, full specs promoted into docs/MODULE_IDEAS.md ("The

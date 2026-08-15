@@ -10,6 +10,49 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-15 — possibility_seq: the rack learns to be undecided
+
+The bridge module from PythonBinaryPossibility landed: a step sequencer
+whose steps are "0", "1" or "?" — undecided, resolved only when the music
+needs an answer. Full polish standard: module + numpy renderer + pyo
+silent stub + MODULES.md entry and index row + `examples/
+possibility_groove.json` + 20 tests, tripwires (docs coverage, categories,
+examples sweep) green.
+
+The semantics came over from the other project, not the code — **ported,
+not imported**, so core/ and modules/ stay dependency-free (PBP is flat
+and unpackaged by its own deliberate convention). The pure reference
+`collapse_pattern` lives in the module file (euclidean_pattern precedent)
+and the renderer is pinned against it for exact take equivalence, so the
+two projects can never quietly drift apart on what a "?" means.
+
+Design notes worth keeping. `mode` is when the ?s decide: `loop` = a
+fresh take every wrap; `latch` = one take held until a `reroll` edge (a
+gate input — patch a slow clock in and the pattern re-decides itself
+every N bars); `dice` = no memory. `balanced` deals fair ?s from a
+width-1 shuffle-bag instead of coins — the measured switch: in the source
+project an independent coin leaves one fair 16-step bar in fifteen
+audibly lopsided (sd 1.95), the bag pins every bar to its share (sd
+0.00), and that mechanism passed a formal admission test (E4, 2026-08-14)
+the same week. Positioning is clean: `sequencer` owns decided patterns,
+`bernoulli_gate` the all-random stream, `shift_random` the mutating loop
+— this is the pattern with holes in it. All randomness from `seed`,
+consumed only when a real choice exists; takes are a pure function of
+seed + edge history, block-size independent (test-pinned).
+
+The demo patch is three of them off one clock: a kick decided on the
+floor with ?s on the and, a latched snare backbeat with 0.2 ghost notes,
+and a fully-undecided balanced hat — into the drum voices and the mixer.
+An 8-second offline render sounded like a groovebox making its mind up,
+which is the point.
+
+Honest scope note: built and tested in the cloud sandbox against a
+partial checkout — 114 tests across the module's neighborhood (sequencer,
+clockwork, shift_random, drums, examples, tripwires) all green, but the
+FULL suite has not run here. **Matthew: one `pytest` on the real checkout
+before trusting it**, per the working agreement. Follow-ups (panel
+gesture, possibility-count display) are on TODO.
+
 ## 2026-08-05 — the WHOLE listening backlog clears (nine for nine)
 
 Matthew went straight through the 2026-08-03 backlog in one sitting —

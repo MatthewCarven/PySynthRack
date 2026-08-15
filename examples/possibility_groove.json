@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "next_id": 10,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "sixteenth clock — one transport for all three",
+      "params": { "bpm": 120.0, "division": 4.0, "pulse_width": 0.2 }
+    },
+    {
+      "id": 2,
+      "type": "possibility_seq",
+      "name": "KICK pattern — decided four-floor, ?s on the and",
+      "params": {
+        "mode": "loop", "balanced": false, "seed": 3,
+        "step1_state": "1", "step2_state": "0", "step3_state": "0", "step4_state": "?",
+        "step5_state": "1", "step6_state": "0", "step7_state": "0", "step8_state": "0",
+        "step9_state": "1", "step10_state": "0", "step11_state": "0", "step12_state": "?",
+        "step13_state": "1", "step14_state": "0", "step15_state": "0", "step16_state": "0",
+        "step4_p": 0.3, "step12_p": 0.3
+      }
+    },
+    {
+      "id": 3,
+      "type": "possibility_seq",
+      "name": "SNARE pattern — backbeat held, ghost ?s latched per take",
+      "params": {
+        "mode": "latch", "balanced": false, "seed": 7,
+        "step1_state": "0", "step2_state": "0", "step3_state": "?", "step4_state": "0",
+        "step5_state": "1", "step6_state": "0", "step7_state": "0", "step8_state": "?",
+        "step9_state": "0", "step10_state": "0", "step11_state": "?", "step12_state": "0",
+        "step13_state": "1", "step14_state": "0", "step15_state": "0", "step16_state": "?",
+        "step3_p": 0.2, "step8_p": 0.2, "step11_p": 0.2, "step16_p": 0.2
+      }
+    },
+    {
+      "id": 4,
+      "type": "possibility_seq",
+      "name": "HAT pattern — all ?, balanced: every bar its share",
+      "params": {
+        "mode": "loop", "balanced": true, "seed": 1,
+        "step1_state": "?", "step2_state": "?", "step3_state": "?", "step4_state": "?",
+        "step5_state": "?", "step6_state": "?", "step7_state": "?", "step8_state": "?",
+        "step9_state": "?", "step10_state": "?", "step11_state": "?", "step12_state": "?",
+        "step13_state": "?", "step14_state": "?", "step15_state": "?", "step16_state": "?"
+      }
+    },
+    {
+      "id": 5,
+      "type": "kick_drum",
+      "name": "KICK",
+      "params": { "freq_start": 180.0, "freq_end": 48.0, "bend": 45.0,
+                  "decay": 380.0, "click": 0.35, "drive": 0.2, "level": 0.65 }
+    },
+    {
+      "id": 6,
+      "type": "snare_drum",
+      "name": "SNARE",
+      "params": { "tone_decay": 110.0, "noise_decay": 190.0, "snappy": 0.6, "level": 0.55 }
+    },
+    {
+      "id": 7,
+      "type": "hat_drum",
+      "name": "HATS",
+      "params": { "decay_closed": 55.0, "decay_open": 400.0, "level": 0.3 }
+    },
+    {
+      "id": 8,
+      "type": "mixer",
+      "name": "drum bus",
+      "params": { "gain1": 1.0, "gain2": 1.0, "gain3": 1.0, "master": 0.9 }
+    },
+    {
+      "id": 9,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": { "gain": 0.9 }
+    }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 3, "dst_port": "clock" },
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 4, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "gate", "dst_module_id": 5, "dst_port": "trigger" },
+    { "src_module_id": 3, "src_port": "gate", "dst_module_id": 6, "dst_port": "trigger" },
+    { "src_module_id": 4, "src_port": "gate", "dst_module_id": 7, "dst_port": "closed_trigger" },
+    { "src_module_id": 5, "src_port": "out",  "dst_module_id": 8, "dst_port": "in1" },
+    { "src_module_id": 6, "src_port": "out",  "dst_module_id": 8, "dst_port": "in2" },
+    { "src_module_id": 7, "src_port": "out",  "dst_module_id": 8, "dst_port": "in3" },
+    { "src_module_id": 8, "src_port": "out",  "dst_module_id": 9, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 320],
+      "2": [290, 110],
+      "3": [290, 330],
+      "4": [290, 550],
+      "5": [600, 110],
+      "6": [600, 330],
+      "7": [600, 550],
+      "8": [880, 320],
+      "9": [1130, 320]
+    }
+  }
+}
