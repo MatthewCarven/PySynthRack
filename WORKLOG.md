@@ -10,6 +10,51 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-20 — orientation pass: suite verified green, README + architecture de-drifted
+
+A familiarisation session, no new DSP. Three things came out of it worth
+recording.
+
+**The outstanding possibility_seq caveat is closed.** The 2026-08-15 entry
+shipped from a cloud sandbox against a partial checkout and asked for one
+`pytest` on the real tree before trusting it. Run here on the project venv:
+**2666 passed, 1 skipped in 148 s** (the skip is the `<3.11` graceful-skip
+branch in `test_error_handler.py`, expected). No sandbox/real divergence.
+TODO entry updated; only the listen is still outstanding.
+
+**README was two months stale on its headline numbers.** It claimed *61
+modules* and *~2,050 tests*; the registry actually holds **87** types
+(Sources 19, Filters & EQ 7, Effects 21, Modulation 14, Routing & VCA 6,
+CV & Utilities 12, Outputs 8 — counted off `all_module_types()`), and the
+suite is 2,666. `docs/MODULES.md` was NOT stale — its index has all 87 rows,
+which is the reassuring direction for the drift to run in: the reference doc
+kept pace and only the shop window fell behind. Rewrote the seven category
+bullets so everything shipped since June is actually visible to a reader
+(supersaw, wavetable_morph, fm_op, organ, pluck, modal, the drum voices,
+vinyl, octaver, matrix_mixer, mid_side, possibility_seq, the clockwork trio,
+logic, chaos, shift_random, quantizer, chord, slew, scope, the buffered/
+warping sinks) and put per-category counts in so the next drift is visible at
+a glance.
+
+**`docs/architecture.md` had three claims that time had falsified**: the
+cabling rules promised a `Combiner` "coming in v0.3" and a `Splitter` "also
+v0.3" (combiner/cv_combiner shipped long ago; fan-out needs no splitter at
+all — cables live on the Patch, so one output feeds many inputs directly),
+and said "v0.1 uses only `audio`" when all three kinds plus four bridge
+modules are load-bearing. The anti-aliasing section still read as if
+band-limiting were a future v0.2 item; rewrote it to describe the three
+oscillator families that actually exist (naive / `*_blep` PolyBLEP+PolyBLAMP
+/ `*_wt` mipmap) and noted that the derived sources inherit band-limiting by
+construction. The layering diagram and the compile-vs-set_param split were
+both still accurate and left alone.
+
+**For Matthew:** `_to_delete/git-locks/` (20 stale `.lock`/`tmp_obj_*` files
+from an interrupted git operation) is sitting untracked in the project root.
+It's yours to bin — I've left it alone rather than delete a folder you
+staged. Two commits are also still unpushed as of this session's start.
+
+---
+
 ## 2026-08-15 — possibility_seq: the rack learns to be undecided
 
 The bridge module from PythonBinaryPossibility landed: a step sequencer

@@ -17,7 +17,9 @@ shipped; the rest queue behind Matthew's ears.
       coin-clump: one fair bar in fifteen audibly lopsided without it),
       seeded takes, `reroll` gate. Renderer pinned against the pure
       `collapse_pattern` reference; 20 tests; possibility_groove example.
-      NEEDS: full pytest on the real checkout + a listen.
+      Full pytest RUN on the real checkout 2026-08-20: **2666 passed,
+      1 skipped** — green, so the sandbox-partial-checkout caveat is
+      cleared. NEEDS: a listen (`possibility_groove.json`).
 - [ ] **Panel gesture** — the node currently renders 36 generic param
       rows. The source project's one-gesture rule (click a step to cycle
       0 → 1 → ? → 0, right-click for odds) wants a custom panel, the

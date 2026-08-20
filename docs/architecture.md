@@ -58,9 +58,9 @@ Trade-off:
 ## Connection rules
 
 - Cables go from an output port on one module to an input port on another.
-- One input port can have at most one incoming cable. To sum many signals into one, use a `Combiner` module (coming in v0.3). This rule keeps the topology unambiguous.
-- Output ports may fan out to many inputs via a `Splitter` (also v0.3).
-- Signal kinds (`audio`, `cv`, `gate`) must match at both ends of a cable. v0.1 uses only `audio`, but the type system is in place for envelopes and MIDI later.
+- One input port can have at most one incoming cable. To sum many signals into one, use a `Combiner` (audio) or `CVCombiner` (CV) module, or a `Mixer`/`MatrixMixer`. This rule keeps the topology unambiguous.
+- Output ports may fan out to many inputs directly — no splitter module is needed; a cable list, not a port field, records the connections.
+- Signal kinds (`audio`, `cv`, `gate`) must match at both ends of a cable, and all three are in active use. Bridge modules (`audio_to_cv`, `cv_to_audio`, `cv_to_frequency`, `schmitt`) convert between them.
 
 ## Compile vs. set_param
 
@@ -85,6 +85,13 @@ The model objects (`Module`, `Patch`) are *not* themselves thread-safe — they'
 
 ## Anti-aliasing
 
-The numpy backend's saw / square / triangle are naive (no band-limiting). They'll alias above ~5 kHz fundamental. PolyBLEP or BLIT-based oscillators will land alongside the filter module in v0.2.
+The numpy backend ships three oscillator families. The plain `saw` / `square` /
+`triangle` waveforms are naive (no band-limiting) and alias above roughly a
+5 kHz fundamental — kept because their harshness is sometimes what you want.
+The `*_blep` waveforms apply PolyBLEP/PolyBLAMP correction at each
+discontinuity, and the `*_wt` waveforms read per-octave band-limited mipmapped
+wavetables. Derived sources built on that infrastructure (`supersaw`,
+`wavetable_morph`) are band-limited by construction.
 
-pyo's `LFO` produces band-limited waves; the pyo backend doesn't share the aliasing problem.
+The pyo backend is parked/stubbed for most module types; the numpy backend is
+the reference implementation.

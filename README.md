@@ -5,31 +5,40 @@ A modular software synthesizer in Python with a drag-cable node-graph UI. Think 
 ## Status: active development (pre-1.0)
 
 PySynthRack has grown well past its first prototype into a working instrument:
-**61 modules** across seven categories, a full CV/modulation system, MIDI,
+**87 modules** across seven categories, a full CV/modulation system, MIDI,
 recording, and a node editor with zoom, live meters, and per-patch layout
 persistence. It's still pre-1.0 — the patch format and APIs can shift — but you
 can build real patches in it today.
 
 ### What works
 
-- **61 modules** in seven Add-menu categories:
-  - **Sources** — oscillator (sine / saw / square / triangle, each in naive,
-    PolyBLEP/PolyBLAMP `*_blep`, and wavetable `*_wt` flavours), noise,
-    computer-keyboard and CV keyboards, single-key triggers, MIDI input, a
-    WAV/audio **file player with a queue**, and microphone input.
-  - **Filters & EQ** — multimode resonant filter, Linkwitz-Riley crossover, and
-    parametric / sweep / motion / tilt EQ plus a loudness contour.
-  - **Effects** — delay, reverb, chorus, flanger, phaser, distortion,
-    waveshaper, bitcrusher, tape, convolution reverb (IR), ring modulator,
-    frequency shifter, pitch shifter, resampler (with tape-stop/spin), vocoder,
-    and a full dynamics set (compressor, limiter, noise gate, transient shaper).
-  - **Modulation** — LFO, ADSR, AD envelope, clock, step sequencer, fader
-    sequencer.
-  - **Routing & VCA** — VCA, 4-in mixer, audio/CV combiners.
-  - **CV & Utilities** — audio↔CV bridges, Schmitt trigger, constant, CV
-    scale/offset, sample & hold, level meter.
-  - **Outputs** — mono / left / right / stereo speaker outs, per-device output
-    routing (with an optional per-sink buffer size), and a disk recorder.
+- **87 modules** in seven Add-menu categories:
+  - **Sources (19)** — oscillator (sine / saw / square / triangle, each in
+    naive, PolyBLEP/PolyBLAMP `*_blep`, and wavetable `*_wt` flavours),
+    supersaw, wavetable morph (with single-cycle WAV import), FM operator,
+    drawbar organ, Karplus–Strong pluck, modal resonator bank, kick / snare /
+    hat drum voices, noise, computer-keyboard and CV keyboards, a CV-gate key
+    bank, single-key triggers, MIDI input, a WAV/audio **file player with a
+    queue**, and microphone input.
+  - **Filters & EQ (7)** — multimode resonant filter, Linkwitz-Riley crossover,
+    and parametric / sweep / motion / tilt EQ plus a loudness contour.
+  - **Effects (21)** — delay, reverb, chorus, flanger, phaser, distortion,
+    waveshaper, bitcrusher, tape, vinyl (dust / crackle / rumble / wobble),
+    convolution reverb (IR), ring modulator, frequency shifter, pitch shifter,
+    resampler (with tape-stop/spin), octaver, vocoder, and a full dynamics set
+    (compressor, limiter, noise gate, transient shaper).
+  - **Modulation (14)** — LFO, ADSR, AD envelope, clock, step sequencer, fader
+    sequencer, possibility sequencer (0 / 1 / **?** steps), arpeggiator,
+    euclidean / burst / bernoulli clockwork, gate logic, chaos, and a
+    shift-register random source.
+  - **Routing & VCA (6)** — VCA, 4-in mixer, an 8×8 matrix mixer with
+    feedback, mid/side, audio/CV combiners.
+  - **CV & Utilities (12)** — audio↔CV bridges, Schmitt trigger, constant, CV
+    scale/offset, slew limiter, sample & hold, scale quantizer, chord builder,
+    oscilloscope tap, level meter.
+  - **Outputs (8)** — mono / left / right / stereo speaker outs, per-device
+    output routing (with an optional per-sink buffer size), a ring-governed
+    buffered sink and its tape-warp sibling, and a disk recorder.
 - **Drag-cable node-graph UI** (DearPyGui): wire jacks together, canvas zoom
   (Ctrl +/‑/wheel), scroll-to-adjust knobs, live CV and audio-level meters, and
   overlap-aware node placement.
@@ -48,7 +57,7 @@ can build real patches in it today.
   reference implementation every module targets, and the default — plus an
   optional, partial **pyo** backend.
 - **CLI mode** for headless rendering, backed by an extensive headless test
-  suite (~2,050 tests — no audio device or display required).
+  suite (~2,650 tests — no audio device or display required).
 
 See **[docs/MODULES.md](docs/MODULES.md)** for the full per-module reference,
 **[TODO.md](TODO.md)** for the roadmap, and **[docs/architecture.md](docs/architecture.md)**
@@ -65,7 +74,7 @@ for the design write-up.
 src/pysynthrack/
 ├── core/            # Pure-Python model: Port, Module, Patch (no audio, no UI)
 ├── audio/           # AudioBackend interface + numpy (reference) / pyo backends
-├── modules/         # The 61 module type definitions — ports & params, no DSP
+├── modules/         # The 87 module type definitions — ports & params, no DSP
 ├── io_patch/        # JSON save / load
 ├── ui/              # DearPyGui app — node editor, palette, transport, meters
 ├── _crash.py        # Crash-log wiring (GUI + audio-thread hooks)
