@@ -10,6 +10,98 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-20 — the possibility panel: sixteen cells, one gesture
+
+Matthew played `possibility_groove.json` — "exactly what I was hoping
+for" — and asked to advance the panel. That's the TODO item the module
+shipped with: the node was rendering **36 generic parameter rows**, which
+is an absurd face for a module whose whole idea is a pattern you can read
+at a glance.
+
+**The face.** Sixteen step cells in a row, each showing `0` / `1` / `?`
+and colour-coded — hit bright green, rest dark grey, undecided amber.
+Amber for the `?`s is deliberate: they're what the module is *for*, so
+they should be the first thing the eye lands on. One gesture, straight
+from the source project's rack: **click a cell to cycle `0 → 1 → ? →
+0`**. **Right-click** opens that step's odds (a `fires` slider, 0..1) in
+a popup; the odds are kept whatever state the cell is in, so a value
+dialled now survives the cycle back round to `?` — no hidden mode where
+the control vanishes. Hover gives the cell in words ("step 3: undecided —
+fires 20% of takes") plus the two gestures, so the panel teaches itself.
+`steps` / `mode` / `balanced` / `seed` sit above the row (balanced gets a
+tooltip explaining the bag), and underneath is the **possibility
+readout** — `4 ? -> 16 possible bars`, or `no ? -> 1 bar, decided`. That
+readout is the number the module is actually about, and it was free once
+the panel existed. Steps past `steps` grey out via a fourth "off" colour:
+parked, not played, and they don't widen the space — the count ignores
+them for the same reason.
+
+**Where the logic lives.** `next_state`, `undecided_count`,
+`possibility_count` and `format_possibilities` went into
+`modules/possibility_seq.py`, dpg-free, alongside `collapse_pattern` —
+the same instinct as the pure reference the renderer is pinned against,
+and the `FADER_RANGE_ST`/`scope_math` precedent. The UI imports them, the
+tests import them, so the on-screen count can't drift from the semantics.
+`next_state` rescues a junk state to `"0"` rather than getting stuck,
+which is what a hand-edited patch file deserves.
+
+The panel repaints on the *model*, not on what it thinks it did:
+`_refresh_possibility_panel` re-reads every cell's state and odds from
+`module.params` after any change and rewrites label, colour and tooltip.
+One path, so the face can never show a pattern the patch doesn't hold.
+Themes are cached per colour and shared by every node — sixteen cells a
+node would otherwise leak a theme apiece on every patch load. (First use
+of dpg themes in the app; they degrade to default button colours if
+`dpg.theme()` ever fails, since the label and tooltip already carry the
+state.)
+
+**A real bug fell out of building it, and it isn't the panel's.**
+`App._on_param_changed` — the callback behind nearly every widget in the
+app — only calls `backend.set_param`, and `NumpyBackend.set_param`
+returns early while `self._patch is None`. The backend only gets a patch
+when **Start audio** compiles one. So on a freshly opened patch, *every*
+knob edit made before pressing Start is silently discarded, and a save at
+that moment writes the old values. Verified directly: set `freq` to 220
+before compile, model still reads 440.
+
+The panel doesn't go through that path — it writes the model first and
+then notifies the backend (`App._set_module_param`), because a cell that
+flipped colour and then reverted on the next repaint would have looked
+like a panel bug rather than the app-wide one it is. A regression test
+pins it (`test_a_click_sticks_before_the_first_start`).
+
+I did **not** fix `_on_param_changed` globally. It's a one-line swap to
+the same helper and the two paths are identical whenever a patch *is*
+compiled — so the change only touches the currently-broken case — but
+it alters behaviour behind every widget in the app, which is Matthew's
+call rather than a docs-drift freebie. Filed in TODO with the fix
+written out, including the other hand-written callbacks
+(`_on_fader_pitch`, `_on_buffer_size_changed`, `_on_fm_ratio_changed`,
+the quantizer/organ ones) that go backend-only the same way.
+
+**Tests / docs.** `tests/test_possibility_panel.py`, 20 tests in two
+halves: the dpg-free helpers (cycle order, junk rescue, parked steps
+excluded from the count, `2**k`, the readout's exact wording including
+the thousands separator on 65,536), then the panel driven with dpg
+mocked out — the `test_key_trigger_ui.py` pattern. Test lesson worth
+keeping: a bare `MagicMock` returns **the same object** from every
+`add_button()` call, so sixteen cells come back indistinguishable and a
+cell-mix-up test passes vacuously; `_mock_dpg()` gives the widget
+factories an `itertools.count` side-effect so ids are distinct, which is
+what real dpg does. Two tests only became meaningful after that. The
+suite also builds the node through the *real* `_create_node_for_module`
+path and asserts zero generic param widgets are registered for the
+module — the "36 rows are gone" claim, pinned. Plus a panel→engine test:
+click cells into a one-hit bar, render, assert only step 1 fires. Suite
+**2666 → 2686**. `docs/MODULES.md` gains a **The panel** section on the
+entry, the `fader_seq` precedent.
+
+**Pending:** a real-GUI eyeball — colours in the actual node, whether the
+right-click popup and the hover tooltip get along on one widget (both are
+standard dpg, but they share a widget here), and cell size at zoom.
+
+---
+
 ## 2026-08-20 — orientation pass: suite verified green, README + architecture de-drifted
 
 A familiarisation session, no new DSP. Three things came out of it worth

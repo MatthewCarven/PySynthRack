@@ -49,6 +49,12 @@ from ..modules.organ import (
     PERC_MODES,
 )
 from ..modules.sequencer import MAX_STEPS as SEQ_MAX_STEPS
+from ..modules.possibility_seq import (
+    MAX_STEPS as PSEQ_MAX_STEPS,
+    POSSIBILITY_MODES,
+    format_possibilities,
+    next_state as pseq_next_state,
+)
 from ..modules.wavetable_morph import WT_STACKS
 from ..modules.compressor import DETECTOR_MODES
 from ..modules.distortion import DISTORTION_MODES
@@ -209,6 +215,16 @@ class App:
         # so a mouse wheel over one can nudge its value. Filled as nodes are
         # built; stale ids (deleted nodes) are pruned lazily on scroll.
         self._param_widgets: dict[int, tuple[int, str]] = {}
+
+        # possibility_seq panel bookkeeping. ``_pseq_cells`` maps module_id ->
+        # its sixteen step-cell button ids (index 0 = step 1) and
+        # ``_pseq_count_labels`` -> the possibility-count text, both so a
+        # click can repaint the whole face from the model. ``_pseq_themes``
+        # caches one button theme per cell colour ("0"/"1"/"?"/"off"),
+        # shared by every node — themes are global dpg items.
+        self._pseq_cells: dict[int, list[int]] = {}
+        self._pseq_count_labels: dict[int, int] = {}
+        self._pseq_themes: dict[str, int] = {}
 
         # The file_player node whose Browse / Add-to-list button was last
         # clicked, so the shared WAV file dialog's callback knows which
@@ -641,6 +657,11 @@ class App:
             if module.TYPE == "fader_seq":
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                     self._build_fader_seq_panel(module)
+            elif module.TYPE == "possibility_seq":
+                # Sixteen click-to-cycle step cells instead of 36 labelled
+                # rows — the whole param set lives on the panel.
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                    self._build_possibility_panel(module)
             else:
                 # organ's nine drawbars render as a compact fader bank
                 # (fader_seq lineage); its remaining params fall through
@@ -3700,6 +3721,241 @@ class App:
                         user_data=(module.id, key),
                     )
 
+    # ----- possibility_seq panel --------------------------------------------
+
+    # Cell colours, keyed by step state (plus "off" for a step parked past
+    # the loop length): (base, hovered, active, text). Undecided is the
+    # loudest on purpose — the ?s are what this module is *for*, so the eye
+    # should land on them first.
+    _PSEQ_COLORS = {
+        "1": ((66, 148, 108), (84, 176, 130), (56, 128, 92), (244, 250, 245)),
+        "0": ((52, 56, 64), (68, 73, 83), (44, 48, 55), (146, 152, 163)),
+        "?": ((176, 130, 46), (200, 152, 62), (154, 112, 38), (24, 21, 14)),
+        "off": ((38, 40, 45), (44, 47, 53), (34, 36, 41), (84, 88, 96)),
+    }
+
+    def _pseq_theme(self, key: str):
+        """A cached button theme per cell colour key (built on first use).
+
+        Themes are global dpg items, so they are built once and shared by
+        every possibility_seq node rather than per cell — sixteen cells a
+        node would otherwise leak a theme apiece on every patch load.
+        Returns None if dpg cannot build one, and the cell simply keeps the
+        default button colours (label and tooltip still carry the state).
+        """
+        cached = self._pseq_themes.get(key)
+        if cached is not None:
+            return cached
+        base, hovered, active, text = self._PSEQ_COLORS[key]
+        try:
+            with dpg.theme() as theme:
+                with dpg.theme_component(dpg.mvButton):
+                    dpg.add_theme_color(dpg.mvThemeCol_Button, base)
+                    dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, hovered)
+                    dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, active)
+                    dpg.add_theme_color(dpg.mvThemeCol_Text, text)
+        except Exception:
+            return None
+        self._pseq_themes[key] = theme
+        return theme
+
+    @staticmethod
+    def _pseq_tip(i: int, state: str, p: float) -> str:
+        """Tooltip for one cell: what it does now, and how to change it."""
+        if state == "1":
+            what = "hit - fires every take"
+        elif state == "0":
+            what = "rest - silent every take"
+        else:
+            what = f"undecided - fires {p * 100:.0f}% of takes"
+        return (
+            f"step {i}: {what}\n"
+            "click to cycle 0 > 1 > ?   |   right-click for odds"
+        )
+
+    def _build_possibility_panel(self, module) -> None:
+        """The possibility panel: the whole module on one face.
+
+        Row one is the settings (loop length, when the ?s decide, the bag,
+        the seed). Then sixteen click-to-cycle cells — one gesture,
+        ``0 -> 1 -> ? -> 0``, the source project's rule — with the step
+        number beneath and a right-click popup carrying that step's odds.
+        The readout underneath counts the possibility space the pattern
+        currently holds, which is the number this module is really about.
+        """
+        mid = module.id
+        with dpg.group(horizontal=True):
+            dpg.add_slider_int(
+                label="steps",
+                default_value=int(module.params["steps"]),
+                min_value=1,
+                max_value=PSEQ_MAX_STEPS,
+                width=120,
+                callback=self._on_possibility_steps,
+                user_data=(mid, "steps"),
+            )
+            dpg.add_combo(
+                label="mode",
+                items=list(POSSIBILITY_MODES),
+                default_value=str(module.params["mode"]),
+                width=80,
+                callback=self._on_possibility_param,
+                user_data=(mid, "mode"),
+            )
+        with dpg.group(horizontal=True):
+            balanced = dpg.add_checkbox(
+                label="balanced",
+                default_value=bool(module.params["balanced"]),
+                callback=self._on_possibility_param,
+                user_data=(mid, "balanced"),
+            )
+            with dpg.tooltip(balanced):
+                dpg.add_text(
+                    "Deal the fair ?s from a shuffle-bag instead of flipping\n"
+                    "coins, so every bar lands on its share. Weighted steps\n"
+                    "keep their own odds either way."
+                )
+            dpg.add_drag_int(
+                label="seed",
+                default_value=int(module.params["seed"]),
+                speed=1,
+                min_value=0,
+                max_value=999999,
+                width=110,
+                callback=self._on_possibility_param,
+                user_data=(mid, "seed"),
+            )
+
+        cells: list[int] = []
+        with dpg.group(horizontal=True, horizontal_spacing=3):
+            for i in range(1, PSEQ_MAX_STEPS + 1):
+                state = str(module.params[f"step{i}_state"])
+                with dpg.group():
+                    cell = dpg.add_button(
+                        label=state,
+                        width=24,
+                        height=28,
+                        callback=self._on_possibility_step,
+                        user_data=(mid, i),
+                    )
+                    cells.append(cell)
+                    with dpg.tooltip(cell):
+                        dpg.add_text(
+                            self._pseq_tip(
+                                i, state, float(module.params[f"step{i}_p"])
+                            ),
+                            tag=f"pseq_tip_{mid}_{i}",
+                        )
+                    # Right-click: that step's odds. Only a ? consults them,
+                    # so the popup says so rather than hiding on a decided
+                    # step — odds set now survive the cycle back round to ?.
+                    with dpg.popup(cell, mousebutton=dpg.mvMouseButton_Right):
+                        dpg.add_text(f"step {i} odds")
+                        dpg.add_slider_float(
+                            label="fires",
+                            default_value=float(module.params[f"step{i}_p"]),
+                            min_value=0.0,
+                            max_value=1.0,
+                            format="%.2f",
+                            width=140,
+                            callback=self._on_possibility_odds,
+                            user_data=(mid, i),
+                        )
+                        dpg.add_text(
+                            "0.5 is a fair coin (and the only\n"
+                            "odds the bag deals); read by ? only."
+                        )
+                    dpg.add_text(f"{i}")
+        self._pseq_cells[mid] = cells
+        self._pseq_count_labels[mid] = dpg.add_text("", tag=f"pseq_count_{mid}")
+        self._refresh_possibility_panel(mid)
+
+    def _refresh_possibility_panel(self, module_id: int) -> None:
+        """Redraw every cell (label, colour, tooltip) and the count readout
+        straight from the model — one path, so the panel can never show a
+        pattern the patch doesn't hold."""
+        module = self.patch.modules.get(module_id)
+        cells = self._pseq_cells.get(module_id)
+        if module is None or not cells:
+            return
+        try:
+            steps = int(module.params.get("steps", PSEQ_MAX_STEPS))
+        except (TypeError, ValueError):
+            steps = PSEQ_MAX_STEPS
+        states = [
+            str(module.params.get(f"step{i}_state", "0"))
+            for i in range(1, PSEQ_MAX_STEPS + 1)
+        ]
+        for idx, cell in enumerate(cells):
+            i = idx + 1
+            state = states[idx]
+            try:
+                p = float(module.params.get(f"step{i}_p", 0.5))
+            except (TypeError, ValueError):
+                p = 0.5
+            dpg.set_item_label(cell, state)
+            theme = self._pseq_theme("off" if i > steps else state)
+            if theme is not None:
+                dpg.bind_item_theme(cell, theme)
+            tip_tag = f"pseq_tip_{module_id}_{i}"
+            if dpg.does_item_exist(tip_tag):
+                dpg.set_value(tip_tag, self._pseq_tip(i, state, p))
+        label = self._pseq_count_labels.get(module_id)
+        if label is not None:
+            dpg.set_value(label, format_possibilities(states, steps))
+
+    def _set_module_param(self, module_id: int, name: str, value) -> bool:
+        """Write a param to the *model* first, then tell the backend.
+
+        The backend's ``set_param`` is a no-op until a patch has been
+        compiled into it (which only happens at Start), so a panel that
+        trusted it alone would flip a cell the patch never records. The
+        model is the source of truth; the backend call is the live-update
+        notification on top of it. See TODO — the generic
+        ``_on_param_changed`` still writes backend-only.
+        """
+        module = self.patch.modules.get(module_id)
+        if module is None:
+            return False
+        try:
+            module.set_param(name, value)
+        except (KeyError, ValueError) as exc:
+            self._set_status(f"Param error: {exc}")
+            return False
+        try:
+            self.backend.set_param(module_id, name, value)
+        except Exception as exc:
+            self._set_status(f"Param error: {exc}")
+        return True
+
+    def _on_possibility_step(self, sender, app_data, user_data) -> None:
+        """A step cell was clicked: cycle its state 0 -> 1 -> ? -> 0."""
+        module_id, i = user_data
+        module = self.patch.modules.get(module_id)
+        if module is None:
+            return
+        nxt = pseq_next_state(str(module.params.get(f"step{i}_state", "0")))
+        if self._set_module_param(module_id, f"step{i}_state", nxt):
+            self._refresh_possibility_panel(module_id)
+
+    def _on_possibility_steps(self, sender, app_data, user_data) -> None:
+        """Loop length moved: parked cells grey out and the count shrinks."""
+        module_id, name = user_data
+        if self._set_module_param(module_id, name, int(app_data)):
+            self._refresh_possibility_panel(module_id)
+
+    def _on_possibility_param(self, sender, app_data, user_data) -> None:
+        """mode / balanced / seed — no repaint needed, just the write."""
+        module_id, name = user_data
+        value = int(app_data) if name == "seed" else app_data
+        self._set_module_param(module_id, name, value)
+
+    def _on_possibility_odds(self, sender, app_data, user_data) -> None:
+        """A step's right-click odds slider moved."""
+        module_id, i = user_data
+        if self._set_module_param(module_id, f"step{i}_p", float(app_data)):
+            self._refresh_possibility_panel(module_id)
+
     # ----- per-key velocity calibration dialog ------------------------------
 
     _NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
@@ -4120,6 +4376,11 @@ class App:
             self._sink_buffer_labels.pop(module_id, None)
             self._sink_buffer_last.pop(module_id, None)
             self._sink_buffer_flash.pop(module_id, None)
+            # possibility_seq panel: the cell buttons and count text are
+            # freed with the node, so a lingering entry would have the next
+            # refresh set_value a dead item. The themes are global and stay.
+            self._pseq_cells.pop(module_id, None)
+            self._pseq_count_labels.pop(module_id, None)
             # Drop meter bookkeeping too: the bar drawlist items are freed
             # with the node below, so a lingering entry would make the next
             # _update_cv_meters frame call set_value on a dead item — the
@@ -4638,6 +4899,8 @@ class App:
         self._sink_buffer_labels.clear()
         self._sink_buffer_last.clear()
         self._sink_buffer_flash.clear()
+        self._pseq_cells.clear()
+        self._pseq_count_labels.clear()
         # KeyTrigger UI state: stale text-input tags and any pending Learn
         # don't carry across a patch load.
         self._text_input_tags.clear()

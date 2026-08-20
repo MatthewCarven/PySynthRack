@@ -2524,6 +2524,20 @@ through *time* instead — consecutive fair rolls pair up.
 | `step{i}_state` | `1?101?101?101?10` | "0" / "1" / "?" | The pattern (i = 1…16). The default ships four `?`s — 16 possible bars out of the box. |
 | `step{i}_p` | `0.5` | 0…1 | Odds step *i*'s `?` fires. 0.5 = fair coin (bag-eligible under `balanced`), 0.2 = a ghost note in a fifth of takes. |
 
+**The panel.** The node draws its own face rather than 36 labelled
+parameter rows: sixteen **step cells** side by side, each showing its state
+as `0`, `1` or `?` and colour-coded (hit bright, rest dark, undecided
+amber — the `?`s are what the module is *for*, so they catch the eye
+first). The gesture is one click: **click a cell to cycle `0 → 1 → ? →
+0`**, the same rule as the source project's rack. **Right-click a cell**
+for that step's odds — a `fires` slider from 0 to 1; the value is kept
+whatever state the cell is in, so odds you dial now survive the cycle back
+round to `?`. Hover a cell for what it does in words (`step 3: undecided —
+fires 20% of takes`). Above the cells sit `steps`, `mode`, `balanced` and
+`seed`; beneath them the **possibility readout** — `4 ? -> 16 possible
+bars` — which is the number the module is really about. Steps past `steps`
+grey out: parked, not played, and they don't widen the space.
+
 **Patching.** `clock.out → possibility_seq.clock`; `possibility_seq.gate →
 kick_drum.trigger` (or any gate consumer). Three of them off one clock into
 [`kick_drum`](#kick_drum) / [`snare_drum`](#snare_drum) /

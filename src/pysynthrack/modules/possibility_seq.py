@@ -120,6 +120,48 @@ def resolve_step(state: str, p: float, balanced: bool, bag: list[int],
     return bool(rand() < p)
 
 
+# ----- panel helpers (dpg-free, so the UI and the tests share one truth) -----
+
+def next_state(state: str) -> str:
+    """The panel's one gesture: click a step to cycle ``0 -> 1 -> ? -> 0``.
+
+    Anything unrecognised lands on ``"0"``, so a hand-edited patch file with
+    a junk state still cycles sensibly instead of getting stuck.
+    """
+    try:
+        return STEP_STATES[(STEP_STATES.index(state) + 1) % len(STEP_STATES)]
+    except ValueError:
+        return STEP_STATES[0]
+
+
+def undecided_count(states, steps: int) -> int:
+    """How many ``?`` steps lie inside the active loop length.
+
+    Steps past ``steps`` are parked, not played, so they do not widen the
+    possibility space — the panel greys them for the same reason.
+    """
+    steps = max(0, min(MAX_STEPS, int(steps)))
+    return sum(1 for s in list(states)[:steps] if s == "?")
+
+
+def possibility_count(states, steps: int) -> int:
+    """How many distinct bars the pattern currently holds: ``2 ** k``.
+
+    The headline number the panel prints. A fully decided pattern holds
+    exactly one bar (itself); sixteen ``?``s hold 65,536.
+    """
+    return 1 << undecided_count(states, steps)
+
+
+def format_possibilities(states, steps: int) -> str:
+    """The panel's possibility readout, e.g. ``"4 ? -> 16 possible bars"``."""
+    k = undecided_count(states, steps)
+    if k == 0:
+        return "no ? -> 1 bar, decided"
+    n = 1 << k
+    return f"{k} ? -> {n:,} possible bars"
+
+
 def collapse_pattern(states, odds, balanced: bool, rand) -> tuple[bool, ...]:
     """Resolve a whole take in step order — the pure reference the renderer
     is tested against. A fresh bag per call, exactly one bar's deal."""

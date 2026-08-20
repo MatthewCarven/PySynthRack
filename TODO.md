@@ -19,12 +19,35 @@ shipped; the rest queue behind Matthew's ears.
       `collapse_pattern` reference; 20 tests; possibility_groove example.
       Full pytest RUN on the real checkout 2026-08-20: **2666 passed,
       1 skipped** — green, so the sandbox-partial-checkout caveat is
-      cleared. NEEDS: a listen (`possibility_groove.json`).
-- [ ] **Panel gesture** — the node currently renders 36 generic param
-      rows. The source project's one-gesture rule (click a step to cycle
-      0 → 1 → ? → 0, right-click for odds) wants a custom panel, the
-      `fader_seq` precedent exactly. Possibility count on the panel
-      ("this pattern holds 16 bars") comes free with it.
+      cleared. **EARS PASSED 2026-08-20** — Matthew: "exactly what I was
+      hoping for".
+- [x] **Panel gesture** — SHIPPED 2026-08-20, after Matthew's ears on
+      `possibility_groove.json` ("exactly what I was hoping for") and his
+      "advance the panel". Sixteen colour-coded step cells replace the 36
+      generic rows; click cycles `0 → 1 → ? → 0`, right-click opens that
+      step's odds slider, hover explains the cell in words, steps past
+      `steps` grey out, and the possibility readout (`4 ? -> 16 possible
+      bars`) sits under the row. Cycle/count logic lives dpg-free in the
+      module (`next_state`, `undecided_count`, `possibility_count`,
+      `format_possibilities`) so panel and tests share one truth;
+      20 tests; suite **2686**. NEEDS: a real-GUI eyeball (colours,
+      right-click popup vs tooltip, cell size at zoom).
+- [ ] **Generic param widgets don't write the model until audio has run
+      once** — found while building the panel above, and NOT fixed there
+      (a whole-app behaviour change wants Matthew's yes). `App._on_param_
+      changed` only calls `backend.set_param`, and `NumpyBackend.set_param`
+      returns early while `self._patch is None` — which it is until the
+      first **Start audio** compiles a patch in. So on a freshly opened
+      patch, every knob/slider/combo edit made before pressing Start is
+      silently dropped, and a save right then writes the OLD values. The
+      fix is the helper the panel already uses: write the model first,
+      then notify the backend — `App._set_module_param`. Swapping
+      `_on_param_changed`'s body for it fixes every widget at once; when
+      a patch IS compiled the two paths are identical, so the change only
+      affects the currently-broken case. Worth a pass over the other
+      hand-written callbacks (`_on_fader_pitch`, `_on_buffer_size_
+      changed`, `_on_fm_ratio_changed`, the quantizer/organ ones) at the
+      same time — they all go backend-only too.
 - [ ] **The selector, meta-possibility version** — a register over WHICH
       module fires: collapse the router itself. Sketch only; earns a spec
       in MODULE_IDEAS.md when the first module has been played.
