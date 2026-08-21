@@ -5,7 +5,7 @@
     {
       "id": 1,
       "type": "mic_input",
-      "name": "Mic (beatbox in — wear headphones!)",
+      "name": "Mic (beatbox in - wear headphones!)",
       "params": {
         "device": "",
         "gain": 1.0
@@ -22,7 +22,7 @@
     {
       "id": 3,
       "type": "audio_to_cv",
-      "name": "Low (kick) → env",
+      "name": "Low (kick) -> env",
       "params": {
         "attack_ms": 3.0,
         "release_ms": 90.0,
@@ -42,7 +42,7 @@
     {
       "id": 5,
       "type": "audio_to_cv",
-      "name": "High (hats/snare) → env",
+      "name": "High (hats/snare) -> env",
       "params": {
         "attack_ms": 1.0,
         "release_ms": 30.0,

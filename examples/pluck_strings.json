@@ -5,7 +5,7 @@
     {
       "id": 1,
       "type": "cv_keyboard",
-      "name": "keys — every voice is its own string",
+      "name": "keys - every voice is its own string",
       "params": {
         "octave": 4
       }
@@ -13,7 +13,7 @@
     {
       "id": 2,
       "type": "pluck",
-      "name": "STRINGS — try damping/color/position",
+      "name": "STRINGS - try damping/color/position",
       "params": {
         "decay": 2.5,
         "damping": 0.4,

@@ -23,7 +23,7 @@
     {
       "id": 3,
       "type": "matrix_mixer",
-      "name": "FEEDBACK DOOR — g21 is the echo regen; try 0.9",
+      "name": "FEEDBACK DOOR - g21 is the echo regen; try 0.9",
       "params": {
         "g11": 1.0,
         "g21": 0.6,

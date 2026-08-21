@@ -1383,7 +1383,7 @@ class NumpyBackend(AudioBackend):
             return
         if not _HAS_SOUNDDEVICE:
             raise RuntimeError(
-                "sounddevice is not installed — cannot start NumpyBackend. "
+                "sounddevice is not installed - cannot start NumpyBackend. "
                 "Install with: pip install sounddevice"
             )
         if self._patch is None:
@@ -1424,7 +1424,7 @@ class NumpyBackend(AudioBackend):
                 import logging
                 logging.getLogger(__name__).warning(
                     "MicInput: duplex stream open failed (%s); falling "
-                    "back to output-only — mic will be silent.", e
+                    "back to output-only - mic will be silent.", e
                 )
                 self._stream = None
                 self._input_block = None

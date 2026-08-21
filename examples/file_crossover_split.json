@@ -5,7 +5,7 @@
     {
       "id": 1,
       "type": "file_player",
-      "name": "Track (set path → .wav)",
+      "name": "Track (set path -> .wav)",
       "params": {
         "path": "",
         "gain": 1.0,
@@ -24,7 +24,7 @@
     {
       "id": 3,
       "type": "audio_to_cv",
-      "name": "Low → env",
+      "name": "Low -> env",
       "params": {
         "attack_ms": 5.0,
         "release_ms": 80.0,
@@ -44,7 +44,7 @@
     {
       "id": 5,
       "type": "audio_to_cv",
-      "name": "High → env",
+      "name": "High -> env",
       "params": {
         "attack_ms": 2.0,
         "release_ms": 40.0,

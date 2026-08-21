@@ -5,13 +5,13 @@
     {
       "id": 1,
       "type": "clock",
-      "name": "sixteenth clock — one transport for all three",
+      "name": "sixteenth clock - one transport for all three",
       "params": { "bpm": 120.0, "division": 4.0, "pulse_width": 0.2 }
     },
     {
       "id": 2,
       "type": "possibility_seq",
-      "name": "KICK pattern — decided four-floor, ?s on the and",
+      "name": "KICK pattern - decided four-floor, ?s on the and",
       "params": {
         "mode": "loop", "balanced": false, "seed": 3,
         "step1_state": "1", "step2_state": "0", "step3_state": "0", "step4_state": "?",
@@ -24,7 +24,7 @@
     {
       "id": 3,
       "type": "possibility_seq",
-      "name": "SNARE pattern — backbeat held, ghost ?s latched per take",
+      "name": "SNARE pattern - backbeat held, ghost ?s latched per take",
       "params": {
         "mode": "latch", "balanced": false, "seed": 7,
         "step1_state": "0", "step2_state": "0", "step3_state": "?", "step4_state": "0",
@@ -37,7 +37,7 @@
     {
       "id": 4,
       "type": "possibility_seq",
-      "name": "HAT pattern — all ?, balanced: every bar its share",
+      "name": "HAT pattern - all ?, balanced: every bar its share",
       "params": {
         "mode": "loop", "balanced": true, "seed": 1,
         "step1_state": "?", "step2_state": "?", "step3_state": "?", "step4_state": "?",

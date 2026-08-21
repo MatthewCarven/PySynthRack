@@ -45,7 +45,7 @@
     {
       "id": 5,
       "type": "supersaw",
-      "name": "THE WALL — detune/blend/spread are the sound",
+      "name": "THE WALL - detune/blend/spread are the sound",
       "params": {
         "detune": 0.4,
         "blend": 0.8,

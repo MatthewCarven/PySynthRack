@@ -15,7 +15,7 @@
     {
       "id": 2,
       "type": "oscillator",
-      "name": "right voice (detuned — the side signal)",
+      "name": "right voice (detuned - the side signal)",
       "params": {
         "waveform": "saw_blep",
         "freq": 223.0,
@@ -25,7 +25,7 @@
     {
       "id": 3,
       "type": "mid_side",
-      "name": "MID/SIDE — width breathes on the LFO",
+      "name": "MID/SIDE - width breathes on the LFO",
       "params": {
         "width": 1.0
       }
@@ -44,7 +44,7 @@
     {
       "id": 5,
       "type": "stereo_speaker_output",
-      "name": "Output — mono-collapses at width 0, huge at 2",
+      "name": "Output - mono-collapses at width 0, huge at 2",
       "params": {
         "gain": 0.8
       }

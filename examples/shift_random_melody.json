@@ -5,7 +5,7 @@
     {
       "id": 1,
       "type": "clock",
-      "name": "tempo — try division for faster steps",
+      "name": "tempo - try division for faster steps",
       "params": {
         "bpm": 110.0,
         "division": 2.0,
@@ -15,7 +15,7 @@
     {
       "id": 2,
       "type": "shift_random",
-      "name": "MELODY BOX — probability 0 locks the loop, ~0.1 mutates",
+      "name": "MELODY BOX - probability 0 locks the loop, ~0.1 mutates",
       "params": {
         "probability": 0.1,
         "length": 8,
@@ -27,7 +27,7 @@
     {
       "id": 3,
       "type": "quantizer",
-      "name": "in-tune — pick a scale / root",
+      "name": "in-tune - pick a scale / root",
       "params": {
         "root": "C",
         "scale": "pentatonic minor",

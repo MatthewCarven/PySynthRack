@@ -13,7 +13,7 @@
     {
       "id": 2,
       "type": "slew",
-      "name": "GLIDE — raise rise/fall for more portamento; try shape=exponential",
+      "name": "GLIDE - raise rise/fall for more portamento; try shape=exponential",
       "params": {
         "shape": "linear",
         "rise_time": 0.08,

@@ -5,7 +5,7 @@
     {
       "id": 1,
       "type": "clock",
-      "name": "chord clock — one chord per pulse, long gates",
+      "name": "chord clock - one chord per pulse, long gates",
       "params": {
         "bpm": 45.0,
         "division": 1.0,
@@ -34,7 +34,7 @@
     {
       "id": 4,
       "type": "chord",
-      "name": "CHORD — mono root in, four voices out (try spread/strum)",
+      "name": "CHORD - mono root in, four voices out (try spread/strum)",
       "params": {
         "preset": "m7",
         "strum": 25.0,
@@ -44,7 +44,7 @@
     {
       "id": 5,
       "type": "clock",
-      "name": "arp clock — 10 steps per chord",
+      "name": "arp clock - 10 steps per chord",
       "params": {
         "bpm": 450.0,
         "division": 1.0,
@@ -54,7 +54,7 @@
     {
       "id": 6,
       "type": "arpeggiator",
-      "name": "ARP — the chord back to a line (try mode/octaves)",
+      "name": "ARP - the chord back to a line (try mode/octaves)",
       "params": {
         "mode": "updown",
         "octaves": 1,

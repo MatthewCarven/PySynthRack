@@ -37,7 +37,7 @@
     {
       "id": 4,
       "type": "speaker_output",
-      "name": "Output (no filter — hear the aliasing)",
+      "name": "Output (no filter - hear the aliasing)",
       "params": {
         "gain": 0.7
       }

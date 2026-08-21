@@ -38,7 +38,7 @@
     {
       "id": 4,
       "type": "warping_buffered_speaker_output",
-      "name": "warping out — SET a 2nd device; small buffer_size = more tape-warp",
+      "name": "warping out - SET a 2nd device; small buffer_size = more tape-warp",
       "params": {
         "gain": 1.0,
         "pan": 0.0,

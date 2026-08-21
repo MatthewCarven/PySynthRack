@@ -15,7 +15,7 @@
     {
       "id": 2,
       "type": "convolver",
-      "name": "Convolver — Browse an IR",
+      "name": "Convolver - Browse an IR",
       "params": {
         "gain": 1.0,
         "mix": 0.5

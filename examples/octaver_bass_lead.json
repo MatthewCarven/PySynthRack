@@ -42,7 +42,7 @@
     {
       "id": 5,
       "type": "octaver",
-      "name": "OCTAVER — instant bass under the lead (single notes track best)",
+      "name": "OCTAVER - instant bass under the lead (single notes track best)",
       "params": {
         "dry": 0.8,
         "sub1": 0.6,

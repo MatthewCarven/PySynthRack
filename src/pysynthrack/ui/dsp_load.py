@@ -94,7 +94,7 @@ def diagnose(load: float | None, xruns: int | None) -> str:
     if load is None or xruns is None:
         return "Audio stopped."
     if xruns < XRUN_WARN:
-        return "No device underflows — output is keeping up."
+        return "No device underflows - output is keeping up."
     if load >= HOT_LOAD:
         return (
             "Underflows with the render near or over budget: the patch is "

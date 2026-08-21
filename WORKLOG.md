@@ -10,6 +10,70 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-21 — the jacks were never labelled `?`: a font, not a bug in the words
+
+Matthew sent a screenshot of `chaos_melody` running so I could check the
+scope. The scope was fine — live trace, DSP 7%, xrun 0. What the shot
+*also* showed, on every single node, was this:
+
+    ? reset          x ?
+    ? in             y ?
+    ? gate           z ?
+
+Those are meant to be `◀ reset` and `x ▶`. DearPyGui's built-in font
+(ProggyClean) covers basic Latin only, so every codepoint above U+00FF
+paints as a replacement `?`. Nobody had ever mentioned it, which is the
+interesting part: it had been true since the node editor was written, and
+you stop seeing it. It took a screenshot — a *photograph* of the app
+rather than the app itself — to make it visible.
+
+Blast radius, measured rather than guessed: **336 port labels** across the
+87 module types (i.e. every jack on every node in every patch), **24 of
+104** example patches with em dashes / `→` / `≈` in their node titles, and
+11 strings in `ui/app.py`. On `possibility_seq`, whose entire idea is a
+`?`, the jacks reading `?` was actively confusing.
+
+**The fork, and Matthew's call.** Two real options: bundle a TTF with wide
+coverage and register a dpg font (keeps the pretty triangles, costs a
+~300–700 KB file, a licence, and a PyInstaller spec change), or go ASCII.
+He picked ASCII, so jacks now read `< in` and `x >`, em dashes become `-`,
+`→` becomes `->`, `…` becomes `...`, `≈` becomes `~`.
+
+**The sweep went wider than `ui/`,** because "reaches a screen" is not the
+same as "lives in the UI layer". `core/patch.py`'s cable-refusal
+ValueError and `numpy_backend`'s sounddevice RuntimeError both arrive in
+the status bar via `_set_status(f"...: {exc}")`. And two `cli.py` prints
+were a genuine latent *crash*, not just mush: piping stdout on Windows
+encodes with the locale codec (cp1252), where `→` raises
+UnicodeEncodeError and takes the run down. I hit exactly that while
+investigating, in my own shell, which is how I noticed.
+
+**Tripwires,** because this is the failure mode that hides: an em dash
+typed into a status message looks perfect in the editor and only turns to
+mush on screen, so the check has to be mechanical. `tests/
+test_ui_glyphs.py` walks the **AST** of every `ui/*.py` (plus `cli.py` and
+`core/patch.py`) and flags any non-ASCII string constant — excluding
+docstrings precisely rather than by regex guesswork, since developer prose
+keeps its typography and only *display* strings matter. Same check over
+every example patch's node names. Plus a self-test that plants an em dash
+in a temp file and proves the tripwire fires on the display string and
+*not* on the docstring — a tripwire nobody has seen fail is a tripwire
+nobody trusts.
+
+It earned its keep immediately: it caught two patches
+(`ring_governor_auto`, `ring_governor_monitor`) that my raw-text scan had
+declared clean, because they store the dash as a `\u2014` **escape** — the
+file bytes are ASCII, the parsed name isn't. Checking the artifact instead
+of the source text is the whole lesson.
+
+Suite **2699 → 2816** (117 of the new ones are the per-file parametrised
+sweeps). Still unseen: the chaos-x/y-into-scope-**xy** butterfly — the
+screenshot has the scope in `mono` mode, so that view is still owed, and
+it needs two `cv_to_audio` bridges since chaos's outs are cv and the
+scope's traces are audio.
+
+---
+
 ## 2026-08-21 — the pre-Start param bug: ten doors, one door
 
 Matthew: "yes for the pre-start param fix please". So the bug found while

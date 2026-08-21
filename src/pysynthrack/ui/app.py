@@ -648,7 +648,7 @@ class App:
                 with dpg.node_attribute(
                     attribute_type=dpg.mvNode_Attr_Input,
                 ) as attr_id:
-                    dpg.add_text(f"◀ {port.name}")
+                    dpg.add_text(f"< {port.name}")
                 self._attr_to_port[attr_id] = (module.id, port.name, "in")
                 self._port_to_attr[(module.id, port.name, "in")] = attr_id
 
@@ -881,7 +881,7 @@ class App:
                 with dpg.node_attribute(
                     attribute_type=dpg.mvNode_Attr_Output,
                 ) as attr_id:
-                    dpg.add_text(f"{port.name} ▶")
+                    dpg.add_text(f"{port.name} >")
                     # A live meter for CV outputs: a 0..1 bar whose fill
                     # is auto-ranged to the source's recent swing, with
                     # the actual current value printed as the overlay.
@@ -3214,7 +3214,7 @@ class App:
         dst_mod, dst_port, dst_dir = in_info
         # DPG should already enforce out → in, but verify defensively.
         if src_dir != "out" or dst_dir != "in":
-            self._set_status("Cables must go output → input.")
+            self._set_status("Cables must go output -> input.")
             return
         try:
             cable = self.patch.connect(src_mod, src_port, dst_mod, dst_port)
@@ -3333,7 +3333,7 @@ class App:
             if module.params.get("playlist"):
                 self._advance_playlist(module_id)
             else:
-                self._set_status("Queue empty — nothing to skip to")
+                self._set_status("Queue empty - nothing to skip to")
             return
         playing = action == "play"
         if not self._set_module_param(module_id, "playing", playing):
@@ -3396,7 +3396,7 @@ class App:
             queue.extend(paths)
             self._refresh_playlist_display(module_id)
             self._set_status(
-                f"Queued {len(paths)} file(s) — {len(queue)} in the list"
+                f"Queued {len(paths)} file(s) - {len(queue)} in the list"
             )
             return
 
@@ -3547,10 +3547,10 @@ class App:
         if skipped_bad and prev_path:
             self._set_status(
                 f"Skipped unreadable {os.path.basename(prev_path)} "
-                f"→ {os.path.basename(next_path)}"
+                f"-> {os.path.basename(next_path)}"
             )
         else:
-            self._set_status(f"Queue → {os.path.basename(next_path)}")
+            self._set_status(f"Queue -> {os.path.basename(next_path)}")
 
     # ----- device refresh ---------------------------------------------------
 
@@ -3933,7 +3933,7 @@ class App:
             self._refresh_possibility_panel(module_id)
 
     def _on_possibility_param(self, sender, app_data, user_data) -> None:
-        """mode / balanced / seed — no repaint needed, just the write."""
+        """mode / balanced / seed - no repaint needed, just the write."""
         module_id, name = user_data
         value = int(app_data) if name == "seed" else app_data
         self._set_module_param(module_id, name, value)
@@ -3979,7 +3979,7 @@ class App:
         if dpg.does_item_exist("vel_dialog"):
             dpg.delete_item("vel_dialog")
         with dpg.window(
-            label=f"Calibrate keys — {module.name}",
+            label=f"Calibrate keys - {module.name}",
             tag="vel_dialog",
             width=450,
             height=470,
@@ -4030,7 +4030,7 @@ class App:
         curve = module.params.get("velocity_curve") or {}
         if not curve:
             dpg.add_text(
-                "No calibration yet — every key plays at 1.0.",
+                "No calibration yet - every key plays at 1.0.",
                 parent="vel_table",
             )
             return
@@ -4089,7 +4089,7 @@ class App:
             dpg.configure_item("vel_learn_btn", label="Learn")
         captured = self._vel_captured
         if not captured:
-            dpg.set_value("vel_capture_status", "nothing captured — Learn first")
+            dpg.set_value("vel_capture_status", "nothing captured - Learn first")
             return
         curve = dict(module.params.get("velocity_curve") or {})
         curve.update(compute_velocity_curve(captured))
@@ -4265,7 +4265,7 @@ class App:
     def _set_keytrigger_learn_label(self, module_id: int, learning: bool) -> None:
         tag = f"keytrigger_learnbtn_{module_id}"
         if dpg.does_item_exist(tag):
-            dpg.set_item_label(tag, "Press a key…" if learning else "Learn")
+            dpg.set_item_label(tag, "Press a key..." if learning else "Learn")
 
     def _refresh_keytrigger_label(self, module_id: int) -> None:
         module = self.patch.modules.get(module_id)

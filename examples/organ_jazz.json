@@ -5,7 +5,7 @@
     {
       "id": 1,
       "type": "cv_keyboard",
-      "name": "keys — home row plays (A = C4)",
+      "name": "keys - home row plays (A = C4)",
       "params": {
         "octave": 4
       }
@@ -13,7 +13,7 @@
     {
       "id": 2,
       "type": "organ",
-      "name": "ORGAN — drawbars are the sound; try perc 2nd",
+      "name": "ORGAN - drawbars are the sound; try perc 2nd",
       "params": {
         "bar1": 8,
         "bar2": 8,

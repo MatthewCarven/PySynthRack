@@ -15,7 +15,7 @@
     {
       "id": 2,
       "type": "oscillator",
-      "name": "Saw R (221.5 — beats vs L)",
+      "name": "Saw R (221.5 - beats vs L)",
       "params": {
         "waveform": "saw_blep",
         "freq": 221.5,

@@ -111,7 +111,7 @@ class Patch:
         dst_p = dst.get_port(dst_port, "in")
         if not src_p.is_compatible_with(dst_p):
             raise ValueError(
-                f"Cannot connect {src.TYPE}.{src_port} ({src_p.signal_kind}) → "
+                f"Cannot connect {src.TYPE}.{src_port} ({src_p.signal_kind}) -> "
                 f"{dst.TYPE}.{dst_port} ({dst_p.signal_kind}): incompatible."
             )
         # Reject duplicate destination — one cable per input jack.

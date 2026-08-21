@@ -5,7 +5,7 @@
     {
       "id": 1,
       "type": "oscillator",
-      "name": "saw — watch the wave change shape",
+      "name": "saw - watch the wave change shape",
       "params": {
         "waveform": "saw_blep",
         "freq": 110.0,
@@ -25,7 +25,7 @@
     {
       "id": 3,
       "type": "scope",
-      "name": "SCOPE — 2 divs ≈ one 110 Hz cycle",
+      "name": "SCOPE - 2 divs ~ one 110 Hz cycle",
       "params": {
         "time_div": 5.0,
         "gain": 1.5,

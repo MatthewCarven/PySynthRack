@@ -59,7 +59,7 @@ def run_cli(
         )
     for cable in patch.cables:
         print(
-            f"  cable: #{cable.src_module_id}.{cable.src_port} → "
+            f"  cable: #{cable.src_module_id}.{cable.src_port} -> "
             f"#{cable.dst_module_id}.{cable.dst_port}"
         )
 
@@ -79,7 +79,7 @@ def run_cli(
 
     try:
         if seconds is not None:
-            print(f"[pysynthrack] playing for {seconds}s …")
+            print(f"[pysynthrack] playing for {seconds}s ...")
             time.sleep(float(seconds))
         else:
             print("[pysynthrack] playing. Press Enter to stop.")

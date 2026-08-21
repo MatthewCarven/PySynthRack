@@ -5,7 +5,7 @@
     {
       "id": 1,
       "type": "cv_keyboard",
-      "name": "keys — each voice is its own bell",
+      "name": "keys - each voice is its own bell",
       "params": {
         "octave": 4
       }
@@ -22,7 +22,7 @@
     {
       "id": 3,
       "type": "ad_envelope",
-      "name": "strike shape — very short",
+      "name": "strike shape - very short",
       "params": {
         "attack": 0.001,
         "decay": 0.012
@@ -39,7 +39,7 @@
     {
       "id": 5,
       "type": "modal",
-      "name": "BELLS — try material/inharm/decay_tilt",
+      "name": "BELLS - try material/inharm/decay_tilt",
       "params": {
         "material": "bell",
         "modes": 16,

@@ -36,7 +36,7 @@
     {
       "id": 4,
       "type": "lfo",
-      "name": "the mouth — sweeps A→E→I→O→U",
+      "name": "the mouth - sweeps A->E->I->O->U",
       "params": {
         "rate": 0.11,
         "waveform": "triangle"
@@ -45,7 +45,7 @@
     {
       "id": 5,
       "type": "wavetable_morph",
-      "name": "VOWEL TALKER — position is the vowel",
+      "name": "VOWEL TALKER - position is the vowel",
       "params": {
         "table": "vowel",
         "position": 0.0,

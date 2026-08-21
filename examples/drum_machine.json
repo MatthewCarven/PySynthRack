@@ -5,25 +5,25 @@
     {
       "id": 1,
       "type": "clock",
-      "name": "kick clock — every beat",
+      "name": "kick clock - every beat",
       "params": { "bpm": 120.0, "division": 1.0, "pulse_width": 0.2 }
     },
     {
       "id": 2,
       "type": "clock",
-      "name": "hat clock — eighths",
+      "name": "hat clock - eighths",
       "params": { "bpm": 120.0, "division": 2.0, "pulse_width": 0.2 }
     },
     {
       "id": 3,
       "type": "clock",
-      "name": "seq clock — sixteenths",
+      "name": "seq clock - sixteenths",
       "params": { "bpm": 120.0, "division": 4.0, "pulse_width": 0.2 }
     },
     {
       "id": 4,
       "type": "sequencer",
-      "name": "snare pattern — backbeat (steps 5 & 13)",
+      "name": "snare pattern - backbeat (steps 5 & 13)",
       "params": {
         "steps": 16,
         "step1_on": false, "step2_on": false, "step3_on": false, "step4_on": false,
@@ -35,20 +35,20 @@
     {
       "id": 5,
       "type": "kick_drum",
-      "name": "KICK — try bend/click/drive",
+      "name": "KICK - try bend/click/drive",
       "params": { "freq_start": 180.0, "freq_end": 48.0, "bend": 45.0,
                   "decay": 380.0, "click": 0.35, "drive": 0.25, "level": 0.65 }
     },
     {
       "id": 6,
       "type": "snare_drum",
-      "name": "SNARE — snappy is the wires",
+      "name": "SNARE - snappy is the wires",
       "params": { "tone_decay": 110.0, "noise_decay": 190.0, "snappy": 0.6, "level": 0.6 }
     },
     {
       "id": 7,
       "type": "hat_drum",
-      "name": "HATS — closed eighths",
+      "name": "HATS - closed eighths",
       "params": { "decay_closed": 55.0, "decay_open": 400.0, "level": 0.35 }
     },
     {

@@ -5,7 +5,7 @@
     {
       "id": 1,
       "type": "chaos",
-      "name": "THE BUTTERFLY — one orbit runs the whole patch",
+      "name": "THE BUTTERFLY - one orbit runs the whole patch",
       "params": {
         "system": "lorenz",
         "rate": 0.4,
@@ -17,7 +17,7 @@
     {
       "id": 2,
       "type": "quantizer",
-      "name": "in-tune — the orbit becomes a melody",
+      "name": "in-tune - the orbit becomes a melody",
       "params": {
         "root": "C",
         "scale": "pentatonic minor",
@@ -55,7 +55,7 @@
     {
       "id": 6,
       "type": "filter",
-      "name": "z swells the cutoff — same orbit, same breath",
+      "name": "z swells the cutoff - same orbit, same breath",
       "params": {
         "mode": "lowpass",
         "cutoff": 600.0,

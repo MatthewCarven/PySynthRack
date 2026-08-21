@@ -129,6 +129,27 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
 
 ## Later / wishlist
 
+- [x] **Every non-ASCII glyph painted as `?`** — FIXED 2026-08-21,
+      spotted in Matthew's chaos_melody screenshot. DearPyGui's built-in
+      font (ProggyClean) covers basic Latin only, so `◀`/`▶` on the jacks,
+      em dashes in node titles and `→`/`…`/`≈` in status text all rendered
+      as a replacement `?` — **336 port labels** across the 87 module
+      types, plus 24 of 104 example patches, plus 11 UI strings. It had
+      been that way since the node editor was written. Matthew's pick:
+      **ASCII everywhere** (over bundling a TTF) — jacks now read
+      `< in` / `x >`. Also swept the user-facing strings outside `ui/`:
+      the cable-refusal ValueError and the audio-start RuntimeError both
+      surface in the status bar, and two `cli.py` prints would *raise*
+      UnicodeEncodeError when stdout is piped on Windows (locale codec) —
+      a latent crash, not just mush. Tripwires: an AST walk over `ui/*.py`
+      that flags any non-ASCII string constant **except docstrings**
+      (developer prose keeps its typography), the same over every example
+      patch's node names, and a self-test that proves the tripwire fails
+      on a planted em dash. It caught two patches on its first run that a
+      raw-text scan had missed — they stored the dash as a `\u2014`
+      escape. Suite **2699 → 2816**.
+      Later: if the plain `<`/`>` jacks ever grate, bundling a font is
+      still open — the tripwire would need a matching exemption.
 - [~] **Remaining GUI eyeballs: the butterfly view only** — the scope
       face **PASSED 2026-08-21** (Matthew: "Scope seems to work well"),
       and `chaos_melody` "sounded fine" the same sitting. Still unseen:
