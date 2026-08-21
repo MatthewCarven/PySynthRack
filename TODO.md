@@ -30,8 +30,10 @@ shipped; the rest queue behind Matthew's ears.
       bars`) sits under the row. Cycle/count logic lives dpg-free in the
       module (`next_state`, `undecided_count`, `possibility_count`,
       `format_possibilities`) so panel and tests share one truth;
-      20 tests; suite **2686**. NEEDS: a real-GUI eyeball (colours,
-      right-click popup vs tooltip, cell size at zoom).
+      20 tests; suite **2686**. **EYEBALL PASSED 2026-08-21** — Matthew
+      recompiled and played it: "works really well :-{D". The
+      right-click popup and the hover tooltip do get along on one
+      widget (the open question headless testing couldn't answer).
 - [ ] **Generic param widgets don't write the model until audio has run
       once** — found while building the panel above, and NOT fixed there
       (a whole-app behaviour change wants Matthew's yes). `App._on_param_

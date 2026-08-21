@@ -96,9 +96,12 @@ click cells into a one-hit bar, render, assert only step 1 fires. Suite
 **2666 → 2686**. `docs/MODULES.md` gains a **The panel** section on the
 entry, the `fader_seq` precedent.
 
-**Pending:** a real-GUI eyeball — colours in the actual node, whether the
-right-click popup and the hover tooltip get along on one widget (both are
-standard dpg, but they share a widget here), and cell size at zoom.
+**EYEBALL PASSED 2026-08-21.** Matthew recompiled and played it:
+"works really well :-{D". That answers the one question the headless
+tests couldn't — the right-click popup and the hover tooltip *do* get
+along sharing a cell, so the odds stay on right-click and don't need a
+different affordance. Colours and cell size at zoom confirmed fine too.
+Nothing outstanding on the panel.
 
 ---
 
