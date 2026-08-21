@@ -150,12 +150,19 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       escape. Suite **2699 → 2816**.
       Later: if the plain `<`/`>` jacks ever grate, bundling a font is
       still open — the tripwire would need a matching exemption.
-- [~] **Remaining GUI eyeballs: the butterfly view only** — the scope
-      face **PASSED 2026-08-21** (Matthew: "Scope seems to work well"),
-      and `chaos_melody` "sounded fine" the same sitting. Still unseen:
-      the chaos-x/y-into-scope-**xy** butterfly specifically — he didn't
-      mention that view either way, so it stays queued rather than
-      assumed. Original entry: the scope's waveform face
+- [x] **GUI eyeball queue: EMPTY** — the scope face PASSED 2026-08-21
+      ("Scope seems to work well"), `chaos_melody` sounded fine, and the
+      chaos-x/y-into-scope-**xy** butterfly PASSED the same day
+      ("Sweet"): `chaos.x/y -> cv_to_audio -> scope.in/in_r`, mode `xy`,
+      `time_div` 500 ms/div, scope `gain` 0.50 — a clean Lorenz **wing**,
+      correct attractor geometry (thin on the inner edge, fat on the
+      outer). Settings matter and weren't obvious: the capture window is
+      `time_div × 10 divisions`, so the default 10 ms/div shows a
+      *tenth of one orbit* (an arc, not a loop) and the max 500 ms/div
+      is a 5 s window ≈ 5 orbits at rate 1.0. Both wings at once needs
+      more orbits in the window — raise chaos `rate` to ~2–3 — since
+      lobe switches are irregular. Documented on the scope entry.
+      Original entry: the scope's waveform face
       (60 fps repaint, trigger holds a saw still, dual/xy modes,
       freeze) and the chaos-x/y-into-scope-xy butterfly. Everything
       else is CLEARED: the 2026-08-04 six passed ears 2026-08-05, and

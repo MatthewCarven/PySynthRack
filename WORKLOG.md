@@ -10,6 +10,49 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-21 — the butterfly lands: the eyeball queue is empty
+
+Matthew wired the goniometer by hand — `chaos.x`/`y` through two
+`cv_to_audio` bridges into `scope.in`/`in_r` (the bridges are needed:
+chaos's outs are cv, the scope's traces are audio) — and after three
+setting nudges it drew a clean Lorenz **wing**: correct attractor
+geometry, thin on the inner edge and fattening outward. "Sweet." That
+clears the last item on the eyeball queue, which is now **empty for the
+first time** — every module in the rack has been heard and seen.
+
+The screenshots also confirmed the ASCII sweep in the wild: jacks reading
+`< reset`, `x >`, `out >` instead of the old `?` soup.
+
+**Worth writing down, because none of it was obvious from the panel.**
+The scope's capture window is `time_div × 10 divisions`, so the default
+10 ms/div is a **100 ms** window — at 1 orbit/s that is a tenth of one
+orbit, which draws a short arc and looks broken rather than merely
+zoomed-in. The max 500 ms/div gives 5 s ≈ 5 orbits. And chaos's default
+`range` 2.00 bipolar swings to ±2 while the scope face clamps at ±1, so
+the wings flatten against the edges until you drop `range` to 1.00 or
+scope `gain` to 0.50 (Matthew took the gain route). Three settings
+between "looks broken" and "looks like the textbook picture" is a lot to
+ask of a first-time viewer; the MODULES.md chaos entry's cheerful "patch
+x/y into a scope in xy mode — the butterfly, live on the node" was
+underselling the setup required, so both entries now say what to set.
+
+**A limit found, not a bug.** xy mode decimates to **200 points** per
+frame (`_SCOPE_COLS`), so the points-per-orbit budget trades directly
+against how many orbits fit in the window: ~5 orbits reads as a smooth
+loop, ~20 orbits would show both wings but at ~10 points each it goes
+angular. And there is no phosphor persistence — the trace is the live
+window, not an accumulating image — so the classic dense butterfly
+(built from thousands of overlaid passes) isn't reachable as things
+stand. Both wings at once needs a lucky lobe switch inside the window,
+which rate ~2–3 makes likely.
+
+That suggests a **scope persistence/afterglow** option (accumulate N
+frames, fade the old ones) as a genuinely nice small feature. Offered it;
+Matthew didn't take it up, so it is NOT on the TODO — noting it here so
+it's findable if the view ever nags him.
+
+---
+
 ## 2026-08-21 — the jacks were never labelled `?`: a font, not a bug in the words
 
 Matthew sent a screenshot of `chaos_melody` running so I could check the

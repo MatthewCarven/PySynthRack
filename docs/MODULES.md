@@ -2569,7 +2569,17 @@ clipped, then mapped by `range`/`bipolar`. A `reset` edge returns the
 orbit to its seeded start, sample-accurate.
 
 The demo: patch `x`/`y` into a [`scope`](#scope) in **xy** mode — the
-butterfly, live on the node. Or `x` → [`quantizer`](#quantizer) →
+butterfly, live on the node. Three settings stand between "looks
+broken" and the textbook picture, so set them all: chaos's outs are
+**cv** and the scope's traces are **audio**, so each needs a
+[`cv_to_audio`](#cv_to_audio) bridge on the way; the scope's window is
+`time_div` × 10 divisions, so wind `time_div` to **500 ms/div** (the
+default 10 ms/div is a *tenth of one orbit* at `rate` 1.0 — an arc, not
+a loop); and drop `range` to **1.00** (or the scope's `gain` to 0.50),
+because the face clamps at ±1 and a ±2 orbit flattens against the
+edges. One wing is the normal result — lobe switches are irregular — so
+for both at once raise `rate` to ~2–3 and fit more orbits in the window.
+Or `x` → [`quantizer`](#quantizer) →
 [`oscillator`](#oscillator) for a melody that never repeats and
 recalls exactly by seed — see `examples/chaos_melody.json`.
 
@@ -2979,7 +2989,13 @@ draws *that* — LFOs, envelopes, quantizer steps, no `cv_to_audio` bridge
 needed (`in` wins when both are patched; `cv` has no pass-through).
 `in_r` is the second trace: `mode` `dual` stacks both in one face, `xy`
 plots `in` against `in_r` — the goniometer (mono = diagonal line, stereo
-width opens a cloud, quadrature LFOs draw circles). `trigger`
+width opens a cloud, quadrature LFOs draw circles). In `xy` the trace is
+decimated to ~200 points per frame and there is **no persistence** — it
+is the live window, not an accumulating image — so a shape built from
+many slow passes (a [`chaos`](#chaos) attractor, say) wants `time_div`
+wide enough to hold several passes at once rather than a fast repaint;
+past roughly twenty passes per window the point budget starts to show as
+straight edges. `trigger`
 `rising`/`falling` align the sweep to the last `level` crossing that
 fits a full window so periodic signals hold still; `free` shows the
 newest window (envelopes, one-shots); a patched `trig` gate overrides
