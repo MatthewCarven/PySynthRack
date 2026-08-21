@@ -34,22 +34,22 @@ shipped; the rest queue behind Matthew's ears.
       recompiled and played it: "works really well :-{D". The
       right-click popup and the hover tooltip do get along on one
       widget (the open question headless testing couldn't answer).
-- [ ] **Generic param widgets don't write the model until audio has run
-      once** — found while building the panel above, and NOT fixed there
-      (a whole-app behaviour change wants Matthew's yes). `App._on_param_
-      changed` only calls `backend.set_param`, and `NumpyBackend.set_param`
-      returns early while `self._patch is None` — which it is until the
-      first **Start audio** compiles a patch in. So on a freshly opened
-      patch, every knob/slider/combo edit made before pressing Start is
-      silently dropped, and a save right then writes the OLD values. The
-      fix is the helper the panel already uses: write the model first,
-      then notify the backend — `App._set_module_param`. Swapping
-      `_on_param_changed`'s body for it fixes every widget at once; when
-      a patch IS compiled the two paths are identical, so the change only
-      affects the currently-broken case. Worth a pass over the other
-      hand-written callbacks (`_on_fader_pitch`, `_on_buffer_size_
-      changed`, `_on_fm_ratio_changed`, the quantizer/organ ones) at the
-      same time — they all go backend-only too.
+- [x] **Param widgets didn't write the model until audio had run once**
+      — FIXED 2026-08-21 on Matthew's yes ("yes for the pre-start param
+      fix please"). Every knob/slider/combo/fader/transport edit made
+      before the first **Start audio** was silently discarded, and a save
+      right then wrote the OLD values: `App._on_param_changed` called
+      `backend.set_param` alone, and `NumpyBackend.set_param` returns
+      early while `self._patch is None` — which it is until Start
+      compiles a patch in. All **ten** call sites now route through
+      `App._set_module_param` (model first, backend notified after) — the
+      generic callback plus `_on_fader_pitch`, `_on_fm_ratio_changed`,
+      `_on_buffer_size_changed`, `_on_file_transport`, the WAV dialog,
+      the playlist advance, and both velocity-curve writers. 13 tests
+      including a save-round-trip on the headline data loss and a
+      **tripwire** that counts `backend.set_param` call sites in the UI
+      source, so a new callback can't quietly reintroduce it. Rule
+      written into docs/architecture.md. Suite **2699**.
 - [ ] **The selector, meta-possibility version** — a register over WHICH
       module fires: collapse the router itself. Sketch only; earns a spec
       in MODULE_IDEAS.md when the first module has been played.
@@ -129,8 +129,12 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
 
 ## Later / wishlist
 
-- [ ] **Remaining GUI eyeballs: the scope face (+ butterfly demo)** —
-      the last of the module-eyeball queue: the scope's waveform face
+- [~] **Remaining GUI eyeballs: the butterfly view only** — the scope
+      face **PASSED 2026-08-21** (Matthew: "Scope seems to work well"),
+      and `chaos_melody` "sounded fine" the same sitting. Still unseen:
+      the chaos-x/y-into-scope-**xy** butterfly specifically — he didn't
+      mention that view either way, so it stays queued rather than
+      assumed. Original entry: the scope's waveform face
       (60 fps repaint, trigger holds a saw still, dual/xy modes,
       freeze) and the chaos-x/y-into-scope-xy butterfly. Everything
       else is CLEARED: the 2026-08-04 six passed ears 2026-08-05, and

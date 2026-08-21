@@ -10,6 +10,67 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-21 — the pre-Start param bug: ten doors, one door
+
+Matthew: "yes for the pre-start param fix please". So the bug found while
+building the possibility panel gets its proper fix.
+
+**What it was.** `App._on_param_changed` — the callback behind nearly
+every widget in the app — called `backend.set_param` and nothing else.
+`NumpyBackend.set_param` opens with `if self._patch is None ... return`,
+and the backend only receives a patch when **Start audio** compiles one.
+So from launch until the first Start, every knob, slider, combo, fader
+and transport button edit went nowhere: the widget moved, the model
+didn't, and a save at that moment wrote the values the patch was opened
+with. Nine more hand-written callbacks had the same shape.
+
+**The fix** is the order, not the mechanism: `App._set_module_param`
+writes `module.set_param(...)` first and *then* notifies the backend.
+Once a patch is compiled the two orders are identical — the backend's
+`set_param` performs the same assignment — so the change only touches
+the case that was already broken. All ten sites now go through it, and
+`backend.set_param` appears exactly once in `ui/app.py`, inside the
+helper. The helper returns True when the *model* took the value: a
+backend that refuses is reported but doesn't stop a caller mirroring the
+new value into its widget, which is what the file-player transport and
+the fader tooltip actually want to know.
+
+Sites moved: the generic `_on_param_changed`, `_on_fader_pitch`,
+`_on_fm_ratio_changed`, `_on_buffer_size_changed`, `_on_file_transport`,
+the WAV dialog's path write, `_advance_playlist`, `_set_vel_curve` and
+`_on_vel_mult_changed`. Two behaviour details worth noting: the playlist
+advance's error text unifies from "Queue error" to "Param error" (one
+door, one message), and the transport/dialog callbacks now mirror their
+widget whenever the *model* accepted the value rather than bailing on any
+backend hiccup — strictly the more correct read.
+
+**Tests.** `tests/test_param_writes.py`, 13. Both halves of the claim:
+edits land before Start (the bug) *and* still land after it (the
+no-regression). The headline one saves a patch edited before Start and
+reloads it — the data-loss scenario, end to end. Then one per
+hand-written callback, plus the unknown-param and deleted-module paths,
+plus the `device` branch's sink-baseline bookkeeping which hangs off the
+generic callback and had to survive the rewrite.
+
+The one I'd keep: a **tripwire** that reads `ui/app.py`'s own source and
+asserts `self.backend.set_param(` appears exactly once. The bug wasn't
+hard to fix, it was hard to *notice* — a new callback written in the
+obvious style would silently reintroduce it, and no behavioural test
+would catch that until someone lost work. Counting the doors is the
+cheap way to keep there being one.
+
+Suite **2686 → 2699**. Rule written into docs/architecture.md's
+compile-vs-set_param section, since that's where a future contributor
+would look for it.
+
+Also today: **scope face eyeball PASSED** — Matthew: "Scope seems to work
+well" — and `chaos_melody` "sounded fine". That empties the GUI eyeball
+queue apart from the chaos-x/y-into-scope-xy *butterfly* view specifically,
+which he didn't mention either way; leaving it queued rather than
+assuming.
+
+---
+
 ## 2026-08-20 — the possibility panel: sixteen cells, one gesture
 
 Matthew played `possibility_groove.json` — "exactly what I was hoping

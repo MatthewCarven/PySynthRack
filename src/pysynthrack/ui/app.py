@@ -3238,12 +3238,42 @@ class App:
         # DPG removes the visual link itself; we only update our state.
         self._recompile_if_running()
 
-    def _on_param_changed(self, sender, app_data, user_data) -> None:
-        module_id, param_name = user_data
+    def _set_module_param(self, module_id: int, name: str, value) -> bool:
+        """Write a param to the *model* first, then tell the backend.
+
+        **Every** param write in the UI goes through here. The model is the
+        source of truth (see docs/architecture.md) and the backend call is
+        the live-update notification on top of it — not the other way
+        round. Writing backend-first was a real bug: ``NumpyBackend.
+        set_param`` returns early while it holds no patch, and it only gets
+        one when **Start audio** compiles it, so on a freshly opened patch
+        every edit made before pressing Start was silently discarded and a
+        save right then wrote the old values. Once a patch *is* compiled
+        the two orders are identical (the backend's set_param does this
+        same assignment), so this costs nothing in the running case.
+
+        Returns True if the model took the value. A backend that refuses it
+        is reported but does not make this False — the patch still holds
+        the edit, which is what a caller mirroring the value into a widget
+        wants to know.
+        """
+        module = self.patch.modules.get(module_id)
+        if module is None:
+            return False
         try:
-            self.backend.set_param(module_id, param_name, app_data)
+            module.set_param(name, value)
+        except (KeyError, ValueError) as exc:
+            self._set_status(f"Param error: {exc}")
+            return False
+        try:
+            self.backend.set_param(module_id, name, value)
         except Exception as exc:
             self._set_status(f"Param error: {exc}")
+        return True
+
+    def _on_param_changed(self, sender, app_data, user_data) -> None:
+        module_id, param_name = user_data
+        self._set_module_param(module_id, param_name, app_data)
         if param_name == "device":
             # A routed sink's device change swaps its stream identity, so
             # its ring-readout baseline is from the OLD stream; drop it
@@ -3262,12 +3292,9 @@ class App:
         rebuilds just that sink's stream (see NumpyBackend.set_param);
         otherwise it applies at the next Start."""
         module_id, param_name = user_data
-        try:
-            self.backend.set_param(
-                module_id, param_name, coerce_sink_buffer_size(app_data)
-            )
-        except Exception as exc:
-            self._set_status(f"Param error: {exc}")
+        self._set_module_param(
+            module_id, param_name, coerce_sink_buffer_size(app_data)
+        )
         # Stream identity changed — reset the ring-readout baseline, same
         # reasoning as the device branch in _on_param_changed.
         self._sink_buffer_last.pop(module_id, None)
@@ -3278,10 +3305,7 @@ class App:
         as a string; store it as a float (snapped onto the table) so patches
         stay numeric and the renderer's own snap is a no-op on the value."""
         module_id, param_name = user_data
-        try:
-            self.backend.set_param(module_id, param_name, fm_snap_ratio(app_data))
-        except Exception as exc:
-            self._set_status(f"Param error: {exc}")
+        self._set_module_param(module_id, param_name, fm_snap_ratio(app_data))
 
     def _on_file_transport(self, sender, app_data, user_data) -> None:
         """A FilePlayer transport button:
@@ -3312,10 +3336,7 @@ class App:
                 self._set_status("Queue empty — nothing to skip to")
             return
         playing = action == "play"
-        try:
-            self.backend.set_param(module_id, "playing", playing)
-        except Exception as exc:
-            self._set_status(f"Param error: {exc}")
+        if not self._set_module_param(module_id, "playing", playing):
             return
         tag = f"fileplayer_playing_{module_id}"
         if dpg.does_item_exist(tag):
@@ -3390,10 +3411,7 @@ class App:
             if target is not None and target.TYPE == "wavetable_morph"
             else "path"
         )
-        try:
-            self.backend.set_param(module_id, param, path)
-        except Exception as exc:
-            self._set_status(f"Param error: {exc}")
+        if not self._set_module_param(module_id, param, path):
             return
         text_tag = f"fileplayer_path_{module_id}"
         if dpg.does_item_exist(text_tag):
@@ -3518,12 +3536,9 @@ class App:
             return  # nothing queued: stay parked at the end (silence)
         prev_path = str(module.params.get("path") or "")
         next_path = queue.pop(0)
-        try:
-            # Same mutation path as Browse/typing; the renderer re-decodes
-            # and restarts from 0:00 because the path param changed.
-            self.backend.set_param(module_id, "path", next_path)
-        except Exception as exc:
-            self._set_status(f"Queue error: {exc}")
+        # Same mutation path as Browse/typing; the renderer re-decodes
+        # and restarts from 0:00 because the path param changed.
+        if not self._set_module_param(module_id, "path", next_path):
             return
         text_tag = f"fileplayer_path_{module_id}"
         if dpg.does_item_exist(text_tag):
@@ -3647,10 +3662,7 @@ class App:
         sequencer's — one engine, one JSON shape.
         """
         module_id, i = user_data
-        try:
-            self.backend.set_param(module_id, f"step{i}_pitch", float(app_data))
-        except Exception as exc:
-            self._set_status(f"Param error: {exc}")
+        if not self._set_module_param(module_id, f"step{i}_pitch", float(app_data)):
             return
         tip_tag = f"fader_tip_{module_id}_{i}"
         if dpg.does_item_exist(tip_tag):
@@ -3904,30 +3916,6 @@ class App:
         if label is not None:
             dpg.set_value(label, format_possibilities(states, steps))
 
-    def _set_module_param(self, module_id: int, name: str, value) -> bool:
-        """Write a param to the *model* first, then tell the backend.
-
-        The backend's ``set_param`` is a no-op until a patch has been
-        compiled into it (which only happens at Start), so a panel that
-        trusted it alone would flip a cell the patch never records. The
-        model is the source of truth; the backend call is the live-update
-        notification on top of it. See TODO — the generic
-        ``_on_param_changed`` still writes backend-only.
-        """
-        module = self.patch.modules.get(module_id)
-        if module is None:
-            return False
-        try:
-            module.set_param(name, value)
-        except (KeyError, ValueError) as exc:
-            self._set_status(f"Param error: {exc}")
-            return False
-        try:
-            self.backend.set_param(module_id, name, value)
-        except Exception as exc:
-            self._set_status(f"Param error: {exc}")
-        return True
-
     def _on_possibility_step(self, sender, app_data, user_data) -> None:
         """A step cell was clicked: cycle its state 0 -> 1 -> ? -> 0."""
         module_id, i = user_data
@@ -4023,10 +4011,7 @@ class App:
 
     def _set_vel_curve(self, module, curve: dict) -> None:
         """Write a new velocity_curve through the canonical param path."""
-        try:
-            self.backend.set_param(module.id, "velocity_curve", curve)
-        except Exception as exc:
-            self._set_status(f"Param error: {exc}")
+        if not self._set_module_param(module.id, "velocity_curve", curve):
             return
         count_tag = f"vel_curve_count_{module.id}"
         if dpg.does_item_exist(count_tag):
@@ -4130,10 +4115,7 @@ class App:
             return
         curve = dict(module.params.get("velocity_curve") or {})
         curve[key] = float(app_data)
-        try:
-            self.backend.set_param(module_id, "velocity_curve", curve)
-        except Exception as exc:
-            self._set_status(f"Param error: {exc}")
+        self._set_module_param(module_id, "velocity_curve", curve)
 
     def _on_vel_remove(self, sender, app_data, user_data) -> None:
         """A row's remove button: drop that key back to implicit 1.0."""

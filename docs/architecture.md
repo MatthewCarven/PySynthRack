@@ -71,6 +71,14 @@ The backend distinguishes between two kinds of changes:
 
 The UI decides which side a given user action falls on. Adding a cable in the node editor recompiles; dragging a frequency slider doesn't.
 
+**Param writes go to the model first.** Every UI param edit runs through
+`App._set_module_param`, which sets the value on the `Module` and *then*
+notifies the backend. That order matters: a backend holds no patch until
+`compile()` is called (which the UI only does at Start), so a backend-first
+write is dropped on the floor for the whole time a patch sits open and
+un-started. The model is the source of truth; `backend.set_param` is the
+live-update notification on top of it, not the place the value lives.
+
 ## Backend selection
 
 `audio.pick_backend()` picks the first backend whose dependencies import cleanly. The default order is `pyo` then `numpy`. Force a specific backend with the `PYSYNTHRACK_BACKEND` environment variable — handy when debugging or when one backend is misbehaving.
