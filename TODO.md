@@ -209,7 +209,10 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       settles at 0.80× over 30 s, bounded at g21 0.85/0.99/1.0.
       Measured against the same loop with the shift at 0: **12×**
       one-to-two octaves up, **~41,000×** three and beyond. 11 tests.
-      Suite **2842**. NEEDS: a listen.
+      Suite **2842**. **EARS PASSED 2026-08-22** — Matthew: "sounded
+      great". Both feedback examples are now heard, and the pair reads
+      as intended: the drone supports the organ, the shimmer transforms
+      it.
 - [ ] **The 2026-08-04 brainstorm keep-list** — Matthew: "Can you add
       to the todo" (2026-08-04, with the full writeup pasted back).
       Twelve items, one-liners now living in docs/MODULE_IDEAS.md

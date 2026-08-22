@@ -63,7 +63,16 @@ cross-links from `matrix_mixer`, and — the useful one — from
 fifth" and never mentioned that the module's most striking use is
 putting it somewhere its own output comes back.
 
-**Pending:** Matthew's ears.
+**EARS PASSED 2026-08-22** — Matthew: "sounded great". Both halves of
+the feedback pair are now heard, and they land the way the pair was
+designed to: the drone *supports* the organ (his "sounds organ like
+anyways"), the shimmer *transforms* it. The caveat on the first one was
+what shaped the second, which is the useful shape for a two-patch set —
+ship the supportive version, listen, then ship the one that answers what
+the listening revealed.
+
+That also empties the board: no defects open, every example heard, every
+GUI face seen.
 
 ---
 
