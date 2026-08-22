@@ -111,6 +111,12 @@ https://drive.google.com/file/d/1bqbVphSJbcw08xo-yxneqqdNiC5IMGXc/view?usp=shari
 
 <img width="591" height="22" alt="image" src="https://github.com/user-attachments/assets/ec99a758-d7d8-443c-bbfa-03b3b563e95a" />
 
+UltraUltra New Version
+https://drive.google.com/file/d/1GNms7bbO4TcPTAoCGIKJ6UW_IzhtMFPs/view?usp=sharing
+
+<img width="591" height="22" alt="image" src="https://github.com/user-attachments/assets/bdf558a6-7528-4a55-8be3-0a29c672aa7b" />
+
+
 
 ## Installation (Windows)
 
