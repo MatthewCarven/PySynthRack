@@ -962,6 +962,78 @@ class _IRLoader:
         return None
 
 
+class _SampleLoader:
+    """Background whole-file decode for the Sampler.
+
+    The ``_IRLoader`` pattern, minus the FFT build: a daemon worker decodes
+    ``path`` through ``decode_fn`` (the backend's ``_decode_audio`` — WAV
+    fast path, then ffmpeg), sums it to mono and hands over a contiguous
+    ``(N,)`` float64 buffer. The consumer polls ``done`` then reads
+    ``ready`` / ``failed`` / ``samples``; every field is a plain attribute
+    (atomic under the GIL), so the audio thread needs no lock and never
+    waits on a decode.
+
+    Whole-load rather than streaming (the FilePlayer's approach) because a
+    sampler needs random access: sixteen voices may be reading sixteen
+    different places at sixteen different rates.
+
+    The mono sum is written as ``0.5 * (l + r)`` deliberately. A mono file
+    decodes to two identical rows, and halving their sum is *exact* in
+    IEEE arithmetic — so a mono source survives the load bit-for-bit,
+    which is what lets the module's unity read be bit-exact rather than
+    merely close.
+    """
+
+    def __init__(self, path, target_sr, decode_fn, max_seconds) -> None:
+        self.path = str(path)
+        self.target_sr = int(target_sr)
+        self.max_seconds = float(max_seconds)
+        self._decode_fn = decode_fn
+        self.ready = False
+        self.failed = False
+        self.done = False
+        self.truncated = False
+        self.samples = None      # (N,) float64, mono
+        self._thread = threading.Thread(
+            target=self._work, daemon=True, name="SampleLoad"
+        )
+        self._thread.start()
+
+    def _work(self) -> None:
+        try:
+            stereo = self._decode_fn(self.path, self.target_sr)
+            if stereo is None or stereo.shape[1] == 0:
+                self.failed = True
+                return
+            mono = 0.5 * (
+                np.asarray(stereo[0], dtype=np.float64)
+                + np.asarray(stereo[1], dtype=np.float64)
+            )
+            cap = int(self.max_seconds * self.target_sr)
+            if cap > 0 and mono.shape[0] > cap:
+                mono = np.array(mono[:cap])
+                fade = min(int(0.010 * self.target_sr), cap)
+                if fade > 1:
+                    mono[-fade:] *= np.linspace(1.0, 0.0, fade)
+                self.truncated = True
+            self.samples = np.ascontiguousarray(mono, dtype=np.float64)
+            self.ready = True
+        except Exception as exc:  # pragma: no cover - filesystem/codec-specific
+            print(f"[Sampler] sample load failed for {self.path}: {exc}")
+            self.failed = True
+        finally:
+            self.done = True
+
+    def wait(self, timeout=None) -> bool:
+        """Join the worker (tests / offline render only). True if usable."""
+        self._thread.join(timeout)
+        return self.ready and not self.failed
+
+    def close(self) -> None:
+        """No long-lived resource to kill; the daemon worker exits by itself."""
+        return None
+
+
 class NumpyBackend(AudioBackend):
     """Pure-Python fallback. Slower than pyo but works wherever numpy does."""
 
@@ -1207,6 +1279,26 @@ class NumpyBackend(AudioBackend):
                     st["pending"] = {
                         "path": cv_path,
                         "loader": self._start_ir_loader(cv_path, self.block_size),
+                    }
+
+            # Sampler lifecycle: same reasoning as the convolver above --
+            # kick the whole-file decode on the compile (UI) thread so the
+            # audio thread never waits on a disk read. Path unchanged ->
+            # keep the loaded buffer (or the in-flight loader) as-is.
+            for mid, m in patch.modules.items():
+                if m.TYPE != "sampler":
+                    continue
+                st = self._state.setdefault(mid, self._new_sampler_state())
+                sp_path = str(m.params.get("path", ""))
+                pend = st.get("pending")
+                if sp_path and sp_path != st.get("loaded_path") and (
+                    pend is None or pend.get("path") != sp_path
+                ):
+                    if pend is not None and pend.get("loader") is not None:
+                        pend["loader"].close()
+                    st["pending"] = {
+                        "path": sp_path,
+                        "loader": self._start_sample_loader(sp_path),
                     }
 
             # MIDIInput lifecycle: ensure every midi_input module in the new
@@ -2413,6 +2505,8 @@ class NumpyBackend(AudioBackend):
             return self._render_wavetable_morph(module, frames, buffers, patch)
         if module.TYPE == "possibility_seq":
             return self._render_possibility_seq(module, frames, buffers, patch)
+        if module.TYPE == "sampler":
+            return self._render_sampler(module, frames, buffers, patch)
         if module.TYPE == "euclidean":
             return self._render_euclidean(module, frames, buffers, patch)
         if module.TYPE == "burst":
@@ -11804,6 +11898,357 @@ class NumpyBackend(AudioBackend):
     # the voice renders exact silence for free until re-plucked).
     _PLUCK_SILENCE = 1e-5
     _PLUCK_SEED = 0x504C5543  # "PLUC"
+
+    # ----- sampler ----------------------------------------------------------
+
+    # Retrigger declick: a voice re-struck while still sounding keeps its old
+    # playhead running for this long under a falling ramp while the new one
+    # fades in, so the jump never clicks (the drum-voice idiom).
+    _SAMPLER_XFADE_MS = 2.0
+
+    @staticmethod
+    def _sampler_read(samples, positions):
+        """Read a sample buffer at fractional ``positions`` (4-tap cubic).
+
+        The resampler's ``_hermite4`` verbatim, which is the point: at an
+        integer position it returns that sample *exactly* (the spline's
+        constant term is ``p0``, untouched by float ops), so a unity-rate
+        read is a bit-exact copy of the file and an octave jump is a
+        bit-exact ``[::2]``. Neighbours are clamped to the buffer, which
+        only ever affects the outer taps of the first and last sample.
+        """
+        n = samples.shape[0]
+        base = np.floor(positions)
+        i0 = base.astype(np.int64)
+        t = positions - base
+        top = n - 1
+        return _hermite4(
+            samples[np.clip(i0 - 1, 0, top)],
+            samples[np.clip(i0, 0, top)],
+            samples[np.clip(i0 + 1, 0, top)],
+            samples[np.clip(i0 + 2, 0, top)],
+            t,
+        )
+
+    def _new_sampler_state(self) -> dict:
+        return {"path": None, "loaded_path": None, "samples": None,
+                "pending": None, "V": 0, "voices": []}
+
+    @staticmethod
+    def _new_sampler_voice() -> dict:
+        return {
+            "active": False,       # a playhead is running
+            "pos": 0.0,            # playhead, in samples into the file
+            "rate": 1.0,           # samples advanced per output sample
+            "releasing": False,    # gated fall -> ramping out
+            "rel_left": 0,         # release samples still to serve
+            "rel_total": 0,
+            "atk_left": 0,         # declick ramp-in samples still to serve
+            "atk_total": 0,
+            "xf_left": 0,          # retrigger tail still to serve
+            "xf_total": 0,
+            "xf_pos": 0.0,         # the abandoned playhead
+            "xf_rate": 1.0,
+            "prev_gate": False,
+        }
+
+    def _sampler_segment(self, voice, samples, count, end_sample):
+        """Render ``count`` samples of one voice and advance its playhead.
+
+        Everything vectorizes because the playhead is affine within a
+        segment: ``pos + rate·arange(n)``. Segments are cut at gate edges
+        by the caller, which is the only place ``rate``/state can change.
+        Returns the (count,) float64 block.
+        """
+        out = np.zeros(count, dtype=np.float64)
+        if count <= 0:
+            return out
+
+        if voice["active"]:
+            rate = voice["rate"]
+            positions = voice["pos"] + rate * np.arange(count, dtype=np.float64)
+            # How much of this segment still lies inside the region? The
+            # playhead only ever moves forward (rate > 0), so this is a
+            # prefix — searchsorted rather than a mask keeps it exact.
+            live = int(np.searchsorted(positions, float(end_sample)))
+            if live > 0:
+                out[:live] = self._sampler_read(samples, positions[:live])
+            voice["pos"] = float(voice["pos"] + rate * count)
+            if live < count:
+                # Ran off the end of the region: silent from here, and the
+                # voice costs nothing until it is retriggered.
+                voice["active"] = False
+                voice["releasing"] = False
+                voice["rel_left"] = 0
+
+            # Declick ramp in (retrigger, or a non-zero `attack`).
+            if voice["atk_left"] > 0:
+                n = min(count, voice["atk_left"])
+                total = float(voice["atk_total"])
+                done = total - voice["atk_left"]
+                out[:n] *= (done + 1.0 + np.arange(n, dtype=np.float64)) / total
+                voice["atk_left"] -= n
+
+            # Gated release: a linear ramp out, then the voice is done.
+            if voice["releasing"] and voice["rel_left"] > 0:
+                n = min(count, voice["rel_left"])
+                total = float(voice["rel_total"])
+                done = total - voice["rel_left"]
+                out[:n] *= 1.0 - (done + 1.0 + np.arange(n, dtype=np.float64)) / total
+                if n < count:
+                    out[n:] = 0.0
+                voice["rel_left"] -= n
+                if voice["rel_left"] <= 0:
+                    voice["active"] = False
+                    voice["releasing"] = False
+
+        # The abandoned playhead of a retriggered voice, fading out under
+        # the new one. Added, not blended: two reads of the same buffer sum
+        # linearly, so equal-and-opposite ramps cross without a notch.
+        if voice["xf_left"] > 0:
+            n = min(count, voice["xf_left"])
+            rate = voice["xf_rate"]
+            positions = voice["xf_pos"] + rate * np.arange(n, dtype=np.float64)
+            live = int(np.searchsorted(positions, float(end_sample)))
+            if live > 0:
+                total = float(voice["xf_total"])
+                done = total - voice["xf_left"]
+                tail = self._sampler_read(samples, positions[:live])
+                ramp = 1.0 - (done + 1.0 + np.arange(live, dtype=np.float64)) / total
+                out[:live] += tail * ramp
+            voice["xf_pos"] = float(voice["xf_pos"] + rate * n)
+            voice["xf_left"] -= n
+        return out
+
+    def _render_sampler(self, module, frames: int, buffers, patch):
+        """Pitched sample playback with per-voice playheads.
+
+        See ``modules/sampler.py`` for the contract. Structure: the sample
+        is decoded whole on a background thread (``_SampleLoader``, the
+        convolver precedent) and never touched by the audio thread until
+        ready, so a fresh or changed ``path`` is silence rather than a
+        dropout. Each voice owns a float64 playhead; a block is cut into
+        segments at that voice's gate edges, and within a segment the
+        playhead is affine, so the whole segment is one vectorized cubic
+        read (``_sampler_read``).
+
+        Rate comes from ``playback_rate`` in the module file — one
+        definition of what ``root`` means, shared with the tests. Pitch is
+        read per block (mean), the ``pluck`` precedent, so glides and
+        vibrato track at block rate.
+
+        Neutral: root pitch, ``start`` 0, ``end`` 1, ``attack`` 0,
+        ``level`` 1 makes the rate exactly 1.0, every read position an
+        integer, and the output the decoded buffer **bit-exact**. Nothing
+        is faded at the region end for the same reason — a sample that
+        stops abruptly is the file's business, and ``end`` plus a gated
+        ``release`` are the tools for trimming it.
+        """
+        from ..modules.sampler import (
+            MAX_SECONDS as _SAMPLER_MAX_SECONDS,
+            SAMPLER_MODES,
+            playback_rate,
+        )
+
+        pitch = self._input_buffer(
+            patch, buffers, module.id, "pitch_cv", collapse=False
+        )
+        gate = self._input_buffer(
+            patch, buffers, module.id, "gate", collapse=False
+        )
+
+        state = self._state.setdefault(module.id, self._new_sampler_state())
+
+        # --- resolve path -> loaded buffer (never blocks the audio thread) ---
+        path = str(module.params.get("path", ""))
+        if path == "":
+            if state.get("samples") is not None or state.get("loaded_path"):
+                state["samples"] = None
+                state["loaded_path"] = None
+            pend = state.get("pending")
+            if pend is not None:
+                pend["loader"].close()
+                state["pending"] = None
+        else:
+            pend = state.get("pending")
+            if path != state.get("loaded_path") and (
+                pend is None or pend.get("path") != path
+            ):
+                if pend is not None:
+                    pend["loader"].close()
+                state["pending"] = {
+                    "path": path,
+                    "loader": self._start_sample_loader(path),
+                }
+            pend = state.get("pending")
+            if pend is not None and pend["loader"].done:
+                loader = pend["loader"]
+                # Failure is remembered as "this path yields silence" rather
+                # than retried every block — a missing file must not spin a
+                # decode thread per block.
+                state["samples"] = loader.samples if loader.ready else None
+                state["loaded_path"] = pend["path"]
+                state["pending"] = None
+
+        samples = state.get("samples")
+
+        # No gate cable means nothing can ever start: silence, and drop the
+        # voice bank so a reconnect starts clean.
+        if gate is None or samples is None or samples.shape[0] < 1:
+            state["voices"] = []
+            state["V"] = 0
+            return np.zeros(frames, dtype=np.float32)
+
+        voiced = (pitch is not None and pitch.ndim == 2) or gate.ndim == 2
+        V = 1
+        for sig in (pitch, gate):
+            if sig is not None and sig.ndim == 2:
+                V = max(V, sig.shape[0])
+
+        def row(sig, v):
+            if sig is None:
+                return None
+            if sig.ndim == 2:
+                return sig[v] if v < sig.shape[0] else sig[0]
+            return sig
+
+        # --- params ---------------------------------------------------------
+        def _f(name, default, lo, hi):
+            try:
+                value = float(module.params.get(name, default))
+            except (TypeError, ValueError):
+                value = default
+            return min(hi, max(lo, value))
+
+        root = _f("root", 60.0, 0.0, 127.0)
+        tune = _f("tune", 0.0, -12.0, 12.0)
+        fine = _f("fine", 0.0, -50.0, 50.0)
+        level = _f("level", 0.8, 0.0, 1.0)
+        start_frac = _f("start", 0.0, 0.0, 1.0)
+        end_frac = _f("end", 1.0, 0.0, 1.0)
+        attack_ms = _f("attack", 0.0, 0.0, 500.0)
+        release_ms = _f("release", 10.0, 1.0, 2000.0)
+        mode = str(module.params.get("mode", "one_shot"))
+        if mode not in SAMPLER_MODES:
+            mode = "one_shot"
+
+        n_samples = int(samples.shape[0])
+        start_sample = float(start_frac) * n_samples
+        end_sample = float(end_frac) * n_samples
+        if end_sample <= start_sample:
+            # A collapsed or inverted region plays nothing rather than
+            # running backwards off the front of the buffer.
+            return np.zeros((V, frames), dtype=np.float32) if voiced else \
+                np.zeros(frames, dtype=np.float32)
+
+        sr = float(self.sample_rate)
+        attack_n = int(round(attack_ms * 1e-3 * sr))
+        release_n = max(1, int(round(release_ms * 1e-3 * sr)))
+        xfade_n = max(1, int(round(self._SAMPLER_XFADE_MS * 1e-3 * sr)))
+
+        voices = state.get("voices") or []
+        if state.get("V") != V or len(voices) != V:
+            voices = [self._new_sampler_voice() for _ in range(V)]
+            state["V"] = V
+            state["voices"] = voices
+
+        gate_high = self._GATE_HIGH
+        out = np.zeros((V, frames), dtype=np.float64)
+
+        for v in range(V):
+            voice = voices[v]
+            g = np.asarray(row(gate, v)) > gate_high
+            pv = row(pitch, v)
+            cv = float(np.mean(pv)) if pv is not None else 0.0
+            rate = playback_rate(cv, root, tune, fine)
+
+            prev = voice["prev_gate"]
+            shifted = np.empty(frames, dtype=bool)
+            shifted[0] = prev
+            shifted[1:] = g[:-1]
+            rising = np.flatnonzero(g & ~shifted)
+            falling = (
+                np.flatnonzero(~g & shifted) if mode == "gated"
+                else np.empty(0, dtype=np.int64)
+            )
+            voice["prev_gate"] = bool(g[-1]) if frames else prev
+
+            events = sorted(
+                [(int(i), "on") for i in rising] + [(int(i), "off") for i in falling]
+            )
+
+            row_out = out[v]
+            cursor = 0
+            for at, kind in events:
+                if at > cursor:
+                    row_out[cursor:at] = self._sampler_segment(
+                        voice, samples, at - cursor, end_sample
+                    )
+                    cursor = at
+                if kind == "on":
+                    if voice["active"]:
+                        # Hand the sounding playhead to the crossfade tail
+                        # before the new one takes over.
+                        voice["xf_pos"] = voice["pos"]
+                        voice["xf_rate"] = voice["rate"]
+                        voice["xf_left"] = xfade_n
+                        voice["xf_total"] = xfade_n
+                        ramp_in = max(attack_n, xfade_n)
+                    else:
+                        ramp_in = attack_n
+                    voice["active"] = True
+                    voice["pos"] = start_sample
+                    voice["rate"] = rate
+                    voice["releasing"] = False
+                    voice["rel_left"] = 0
+                    voice["atk_left"] = ramp_in
+                    voice["atk_total"] = max(1, ramp_in)
+                else:  # gated fall
+                    if voice["active"] and not voice["releasing"]:
+                        voice["releasing"] = True
+                        voice["rel_left"] = release_n
+                        voice["rel_total"] = release_n
+            if cursor < frames:
+                row_out[cursor:] = self._sampler_segment(
+                    voice, samples, frames - cursor, end_sample
+                )
+            # A held voice tracks pitch between triggers (block-rate glide);
+            # the retrigger above locks the rate at the edge sample.
+            if voice["active"] and not voice["releasing"]:
+                voice["rate"] = rate
+
+        out *= level
+        if voiced:
+            return out.astype(np.float32)
+        return out[0].astype(np.float32)
+
+    def _start_sample_loader(self, path):
+        """Spawn a background whole-file decode for ``path``."""
+        from ..modules.sampler import MAX_SECONDS
+
+        return _SampleLoader(path, self.sample_rate, self._decode_audio, MAX_SECONDS)
+
+    def wait_for_sample_loads(self, timeout: float = 10.0) -> bool:
+        """Block until every sampler's pending load finishes. Tests only.
+
+        Never call from the audio thread. Returns True when every pending
+        load finished with a usable buffer (no pending load counts as
+        trivially ready, matching the render-silence contract).
+        """
+        import time as _time
+
+        deadline = _time.monotonic() + float(timeout)
+        ok = True
+        for st in list(self._state.values()):
+            if not isinstance(st, dict):
+                continue
+            pend = st.get("pending")
+            loader = pend.get("loader") if isinstance(pend, dict) else None
+            if loader is None or not isinstance(loader, _SampleLoader):
+                continue
+            remaining = max(0.0, deadline - _time.monotonic())
+            ok = loader.wait(remaining) and ok
+        return ok
 
     def _render_pluck(self, module, frames: int, buffers, patch) -> np.ndarray:
         """Extended Karplus–Strong (see modules/pluck.py for the contract).

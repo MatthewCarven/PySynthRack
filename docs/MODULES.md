@@ -197,6 +197,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`key_trigger`](#key_trigger) | Sources | — → `out` (gate) |
 | [`midi_input`](#midi_input) | Sources | — → `out` (audio), `gate`, `pitch_cv`, `mod_cv`, `pressure_cv` |
 | [`file_player`](#file_player) | Sources | — → `left`,`right` (audio) |
+| [`sampler`](#sampler) | Sources | `pitch_cv` (cv), `gate` (gate) → `out` (audio) |
 | [`mic_input`](#mic_input) | Sources | — → `left`,`right` (audio) |
 | [`cv_to_frequency`](#cv_to_frequency) | Sources | `cv` (cv) → `out` (audio) |
 | [`noise`](#noise) | Sources | — → `out` (audio), `cv` (cv) |
@@ -639,6 +640,99 @@ drops to a per-sample loop (bit-identical to the block path at 0). Pairs with
 `ring_mod` / `freq_shifter` as the inharmonic corner, but is a full voice. See
 `examples/fm_op_bell.json` (2-op bell) and `examples/fm_op_epiano.json`
 (3-op electric piano).
+
+#### `sampler`
+
+**Pitched sample playback with per-voice playheads** — the gap
+[`file_player`](#file_player) doesn't fill. FilePlayer is a *transport*:
+one playhead, one speed, transport buttons, you point it at a track and it
+plays. This is a *voice*: each voice gets its own playhead running at a rate
+set by `pitch_cv`, started by a `gate` edge. Load one recording, tell it
+what note the recording **is**, and the rack's 16-slot voice architecture
+turns it into a mellotron, a rompler or a breaks machine with no extra
+patching — a [`cv_keyboard`](#cv_keyboard) or [`midi_input`](#midi_input) in
+front gives you sixteen independent playheads.
+
+`root` is the whole trick: the note the sample was recorded at. Play that
+note and the rate is exactly 1.0 and the file comes back **untouched**
+(bit-for-bit — see below). Play an octave up and it reads every other
+sample. `tune` (±12 semitones) and `fine` (±50 cents) stack on top.
+
+`mode` decides what a gate means:
+
+* **`one_shot`** (default) — a rising edge fires the whole region and the
+  gate's *length is ignored*, the drum-voice idiom. Right for hits and
+  breaks, and what lets a [`euclidean`](#euclidean) or a [`clock`](#clock)
+  drive it directly.
+* **`gated`** — sounds while the gate is high, fading on the fall over
+  `release`. Right for played notes.
+
+`start` / `end` cut a region out of the file (0..1 of its length),
+sample-exact. Three samplers pointed at three regions of one drum loop, each
+triggered by its own euclidean, is a breaks machine built out of nothing but
+those two knobs — see `examples/sampler_breaks.json`.
+
+**`attack` / `release` are declick ramps, not an envelope.** They exist so a
+region boundary landing mid-waveform doesn't tick. For real shaping patch an
+[`adsr`](#adsr) into a [`vca`](#vca), the way every other source here
+expects; raise `attack` only if your `start` point clicks.
+
+**The neutral is bit-exact.** Root pitch, `start` 0, `end` 1, `attack` 0,
+`level` 1 → rate exactly 1.0 → every read position an integer → the output
+*is* the decoded file, sample for sample. The 4-tap cubic read is the
+[`resampler`](#resampler)'s, whose spline returns `p0` untouched at an
+integer position; an octave up is likewise a bit-exact `[::2]`. Nothing is
+faded at the region end for the same reason — a sample that stops abruptly
+is the file's business, and `end` plus a gated `release` are the tools for
+trimming it.
+
+**Pitch-up aliases, deliberately.** Reading faster than 1.0 shifts the
+spectrum up and anything near Nyquist folds. That crunch is the sound of
+every classic sampler and it is left in (the [`bitcrusher`](#bitcrusher)
+precedent — some grit is the point). Pitch *down* is clean. Alias-free
+pitch-up via a mip chain is a later slice.
+
+Loading runs on a background thread, so a fresh or changed `path` never
+blocks audio — the module is simply silent until the sample is ready, and a
+missing or unreadable file *stays* silent rather than raising, so a saved
+patch always loads whatever became of the audio on disk. Multi-channel files
+are summed to mono on load; files longer than 120 s are truncated (the limit
+is RAM, not DSP). Retriggering a voice that is still sounding crossfades the
+old playhead out over ~2 ms rather than cutting to the new one.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `pitch_cv` | in | cv | 1 V/oct, C4 = 0 V. Unpatched → C4 → the root note. Read per block (mean), so glides track at block rate. |
+| `gate` | in | gate | Rising edge starts playback from `start`. No cable → silence. |
+| `out` | out | audio | The voice. Voice-aware: `(V, F)` in gives per-voice playheads. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `path` | `""` | file | The sample. WAV needs nothing; mp3 / flac / ogg / m4a and video audio need the `[media]` extra. Empty or unreadable → silence. |
+| `root` | `60` (C4) | C0…C8 | The note the recording **is**. Playing it reads at rate 1.0. Shown as a note name, stored as a MIDI number. |
+| `tune` | `0` | ±12 st | Semitone shift on top. |
+| `fine` | `0` | ±50 ct | Cent shift on top. |
+| `mode` | `one_shot` | one_shot / gated | What a gate means (above). |
+| `start` | `0` | 0…1 | Region start, as a fraction of the file. |
+| `end` | `1` | 0…1 | Region end. `end` ≤ `start` plays nothing (rather than running backwards). |
+| `attack` | `0` | 0…500 ms | Declick ramp in. |
+| `release` | `10` | 1…2000 ms | Declick ramp out on a `gated` release. |
+| `level` | `0.8` | 0…1 | Output level. |
+
+**Patching.** `euclidean.gate → sampler.gate` for a drum voice;
+`cv_keyboard.pitch_cv → sampler.pitch_cv` plus its `gate` for a played
+instrument (set `mode` to `gated`). [`chord`](#chord) in front of the pitch
+gives a four-deep sample stack for free. Put a [`quantizer`](#quantizer)
+before `pitch_cv` and a [`shift_random`](#shift_random) before that and the
+sample plays itself in key.
+
+*(`loop` mode — sustaining by looping a region, the mellotron trick — plus
+the region UI, stereo output and alias-free pitch-up are later slices; see
+TODO.)*
 
 #### `pluck`
 
@@ -3441,6 +3535,12 @@ The `examples/` folder is the fastest way to learn a module — each `.json`
 loads in the app. Notable ones referenced above:
 
 - `hello_sine.json`, `fat_saw.json` — basic oscillators.
+- `sampler_breaks.json` — a breaks machine: three [`sampler`](#sampler)s
+  pointed at three regions of one synthetic drum loop, each fired by its
+  own [`euclidean`](#euclidean) (4, 2 and 6 pulses in 16). Run
+  `python examples/samples/generate_samples.py` first to create the
+  loop — until you do, the patch loads and plays silently rather than
+  failing, because an unreadable path is silence by contract.
 - `organ_feedback_drone.json` — the drone machine: a slow Cm7 on the
   [`organ`](#organ) into the [`matrix_mixer`](#matrix_mixer)'s
   regenerating loop (via a 700 ms [`delay`](#delay)), with the

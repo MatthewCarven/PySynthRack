@@ -127,6 +127,40 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       → sliced frames); Browse-button close-look not separately
       exercised (shared dialog path).
 
+## The sampler (opened 2026-08-22)
+
+Spec in docs/MODULE_IDEAS.md § "New voices"; three slices, Matthew's pick
+once the board cleared.
+
+- [x] **Slice 1 — the voice** — SHIPPED 2026-08-22. `sampler` (Sources):
+      `pitch_cv` + `gate` in, `out`; whole-file background load
+      (`_SampleLoader`, the convolver's `_IRLoader` precedent), per-voice
+      float64 playheads, 4-tap Hermite read (`_hermite4` verbatim from the
+      resampler), `root`/`tune`/`fine`, `one_shot`/`gated`, `start`/`end`
+      region, attack/release **declick ramps** (not an envelope — patch an
+      adsr→vca for shaping), ~2 ms retrigger crossfade, `level`.
+      **The neutral is bit-exact**: root pitch + full region + attack 0 +
+      level 1 → rate exactly 1.0 → integer positions → the decoded file
+      sample-for-sample; an octave up is a bit-exact `[::2]`. Block-size
+      independent, pinned. 28 tests + 6 for the new `name_to_midi`;
+      suite **2888**. Example `sampler_breaks.json` (three samplers on
+      three regions of one loop, euclidean 4/2/6 — a breaks machine built
+      out of `start`/`end` alone) with `examples/samples/
+      generate_samples.py` making the audio (the `examples/irs/`
+      precedent: generator in git, wavs ignored). NEEDS: a listen.
+- [ ] **Slice 2 — loop mode + the region UI** — `loop` joins the `mode`
+      combo (gated, but looping `loop_start`..`loop_end` while held) with
+      a `loop_xfade` 1..100 ms linear crossfade across the seam (the
+      resampler seam-declick lesson). Bounded region drags per the polish
+      standard. Example: keys → loop-mode sampler → reverb (mellotron
+      pad; `chord` in front = a 4-deep sample stack for free).
+- [ ] **Slice 3 — the stretch menu** — stereo `out_l`/`out_r`; an on-load
+      halfband mip chain (`*_wt` infra) for alias-free pitch-**up** (down
+      is already clean); `start_cv` + depth per conventions — the one
+      that makes a real breaks machine, CV-scrubbing the slice point;
+      `reverse`; velocity into level; a waveform face with region markers
+      (scope-face precedent).
+
 ## Later / wishlist
 
 - [x] **Every non-ASCII glyph painted as `?`** — FIXED 2026-08-21,

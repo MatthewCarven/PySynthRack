@@ -28,7 +28,11 @@ from ..core.patch import Cable, Patch
 from ..io_patch import load_patch, save_patch
 from ..modules.filter import FILTER_MODES
 from ..modules.fm_op import RATIO_TABLE as FM_RATIO_TABLE, snap_ratio as fm_snap_ratio
-from ..modules.keyboard import midi_to_name, semitone_to_midi
+from ..modules.keyboard import (
+    midi_to_name,
+    name_to_midi,
+    semitone_to_midi,
+)
 from ..modules.key_trigger import KEY_TRIGGER_MODES
 from ..modules.cvcombiner import CVCOMBINER_MODES
 from ..modules.cvtofrequency import MODES as CVTOFREQ_MODES
@@ -49,6 +53,11 @@ from ..modules.organ import (
     PERC_MODES,
 )
 from ..modules.sequencer import MAX_STEPS as SEQ_MAX_STEPS
+from ..modules.sampler import (
+    ROOT_MAX_NOTE as SAMPLER_ROOT_MAX,
+    ROOT_MIN_NOTE as SAMPLER_ROOT_MIN,
+    SAMPLER_MODES,
+)
 from ..modules.possibility_seq import (
     MAX_STEPS as PSEQ_MAX_STEPS,
     POSSIBILITY_MODES,
@@ -904,7 +913,7 @@ class App:
         user_data = (module.id, param_name)
 
         if (
-            module.TYPE in ("file_player", "convolver")
+            module.TYPE in ("file_player", "convolver", "sampler")
             and param_name == "path"
         ) or (module.TYPE == "wavetable_morph" and param_name == "file"):
             # Path field + a Browse button that opens the shared WAV
@@ -2919,6 +2928,80 @@ class App:
             )
             return
 
+        if module.TYPE == "sampler":
+            # `root` is the note the recording IS. Shown as a note name and
+            # stored as a MIDI number (the fm_op ratio-combo precedent), so
+            # the panel reads musically while the patch stays numeric.
+            if param_name == "root":
+                items = [
+                    midi_to_name(n)
+                    for n in range(SAMPLER_ROOT_MIN, SAMPLER_ROOT_MAX + 1)
+                ]
+                try:
+                    current_name = midi_to_name(int(round(float(current))))
+                except (TypeError, ValueError):
+                    current_name = midi_to_name(60)
+                if current_name not in items:
+                    current_name = items[0]
+                dpg.add_combo(
+                    label="root (the note the sample is)",
+                    items=items,
+                    default_value=current_name,
+                    width=90,
+                    callback=self._on_sampler_root_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name == "mode":
+                dpg.add_combo(
+                    label=param_name, items=list(SAMPLER_MODES),
+                    default_value=str(current), width=110,
+                    callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "tune":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-12.0, max_value=12.0, format="%.2f st",
+                    width=140, callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name == "fine":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-50.0, max_value=50.0, format="%.1f ct",
+                    width=140, callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name in ("start", "end"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.3f",
+                    width=140, callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name == "attack":
+                # Milliseconds, and a declick ramp rather than an envelope —
+                # the generic attack branch below reads seconds.
+                dpg.add_slider_float(
+                    label="attack (declick)", default_value=float(current),
+                    min_value=0.0, max_value=500.0, format="%.1f ms",
+                    width=140, callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name == "release":
+                dpg.add_slider_float(
+                    label="release (declick)", default_value=float(current),
+                    min_value=1.0, max_value=2000.0, format="%.1f ms",
+                    width=140, callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+
         # Integer octave selector — keep before the generic int/float case
         # so it isn't treated as a free-range float.
         if param_name == "octave":
@@ -3306,6 +3389,18 @@ class App:
         stay numeric and the renderer's own snap is a no-op on the value."""
         module_id, param_name = user_data
         self._set_module_param(module_id, param_name, fm_snap_ratio(app_data))
+
+    def _on_sampler_root_changed(self, sender, app_data, user_data) -> None:
+        """The sampler's `root` combo changed. The combo carries a note name;
+        store the MIDI number so patches stay numeric and the renderer's
+        rate maths needs no parsing. An unparseable name leaves the param
+        alone rather than silently retuning the instrument."""
+        module_id, param_name = user_data
+        note = name_to_midi(str(app_data))
+        if note is None:
+            self._set_status(f"Unknown note name: {app_data}")
+            return
+        self._set_module_param(module_id, param_name, float(note))
 
     def _on_file_transport(self, sender, app_data, user_data) -> None:
         """A FilePlayer transport button:

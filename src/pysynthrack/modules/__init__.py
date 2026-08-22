@@ -64,6 +64,7 @@ from .pluck import Pluck
 from .possibility_seq import PossibilitySeq
 from .quantizer import Quantizer
 from .resampler import Resampler
+from .sampler import Sampler
 from .reverb import Reverb
 from .ring_mod import RingMod
 from .pitch_shifter import PitchShifter
@@ -156,6 +157,7 @@ __all__ = [
     "PossibilitySeq",
     "Quantizer",
     "Resampler",
+    "Sampler",
     "Reverb",
     "RingMod",
     "PitchShifter",

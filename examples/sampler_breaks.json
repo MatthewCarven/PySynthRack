@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "next_id": 10,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "120 BPM, sixteenths",
+      "params": {
+        "bpm": 120.0,
+        "division": 4.0,
+        "pulse_width": 0.3
+      }
+    },
+    {
+      "id": 2,
+      "type": "euclidean",
+      "name": "4 in 16 - the floor",
+      "params": {
+        "steps": 16,
+        "fills": 4,
+        "rotate": 0,
+        "gate_len": 0.4
+      }
+    },
+    {
+      "id": 3,
+      "type": "euclidean",
+      "name": "2 in 16, rotated 4 - the backbeat",
+      "params": {
+        "steps": 16,
+        "fills": 2,
+        "rotate": 4,
+        "gate_len": 0.4
+      }
+    },
+    {
+      "id": 4,
+      "type": "euclidean",
+      "name": "6 in 16 - the chatter",
+      "params": {
+        "steps": 16,
+        "fills": 6,
+        "rotate": 2,
+        "gate_len": 0.3
+      }
+    },
+    {
+      "id": 5,
+      "type": "sampler",
+      "name": "SLICE 1 - kick (run generate_samples.py) start 0 end 0.25",
+      "params": {
+        "path": "examples/samples/breaks.wav",
+        "root": 60.0,
+        "mode": "one_shot",
+        "start": 0.0,
+        "end": 0.25,
+        "level": 0.9
+      }
+    },
+    {
+      "id": 6,
+      "type": "sampler",
+      "name": "SLICE 2 - snare, quarter two of the same file",
+      "params": {
+        "path": "examples/samples/breaks.wav",
+        "root": 60.0,
+        "mode": "one_shot",
+        "start": 0.25,
+        "end": 0.5,
+        "level": 0.7
+      }
+    },
+    {
+      "id": 7,
+      "type": "sampler",
+      "name": "SLICE 3 - hats, tuned up 5 st because you can",
+      "params": {
+        "path": "examples/samples/breaks.wav",
+        "root": 60.0,
+        "tune": 5.0,
+        "mode": "one_shot",
+        "start": 0.5,
+        "end": 0.5625,
+        "level": 0.5
+      }
+    },
+    {
+      "id": 8,
+      "type": "mixer",
+      "name": "the kit",
+      "params": {
+        "gain1": 1.0,
+        "gain2": 1.0,
+        "gain3": 1.0,
+        "master": 0.8
+      }
+    },
+    {
+      "id": 9,
+      "type": "speaker_output",
+      "name": "out",
+      "params": {
+        "gain": 0.9
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "gate",
+      "dst_module_id": 5,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "gate",
+      "dst_module_id": 6,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "gate",
+      "dst_module_id": 7,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out",
+      "dst_module_id": 8,
+      "dst_port": "in1"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "out",
+      "dst_module_id": 8,
+      "dst_port": "in2"
+    },
+    {
+      "src_module_id": 7,
+      "src_port": "out",
+      "dst_module_id": 8,
+      "dst_port": "in3"
+    },
+    {
+      "src_module_id": 8,
+      "src_port": "out",
+      "dst_module_id": 9,
+      "dst_port": "in"
+    }
+  ],
+  "ui": {}
+}

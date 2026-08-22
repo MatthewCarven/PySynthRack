@@ -55,6 +55,34 @@ def midi_to_name(midi_note: int) -> str:
     return f"{_NOTE_NAMES[midi_note % 12]}{octave}"
 
 
+def name_to_midi(name: str):
+    """The inverse of :func:`midi_to_name`: 'C4' -> 60, 'A#3' -> 58.
+
+    Returns ``None`` for anything unparseable rather than guessing, so a
+    caller can leave a param alone instead of silently retuning something.
+    Accepts flats as well as sharps ('Bb3' == 'A#3') and is case-insensitive
+    on the letter, because a human typing a note name is not thinking about
+    either.
+    """
+    text = str(name).strip()
+    if not text:
+        return None
+    letter = text[0].upper()
+    rest = text[1:]
+    if letter not in "ABCDEFG":
+        return None
+    semitone = _NOTE_NAMES.index(letter)
+    while rest and rest[0] in ("#", "b", "B"):
+        semitone += 1 if rest[0] == "#" else -1
+        rest = rest[1:]
+    try:
+        octave = int(rest)
+    except ValueError:
+        return None
+    note = 12 * (octave + 1) + semitone
+    return note if 0 <= note <= 127 else None
+
+
 @register_module_type
 class Keyboard(Module):
     """Polyphonic computer-keyboard input.

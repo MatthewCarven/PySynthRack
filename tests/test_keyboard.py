@@ -20,8 +20,41 @@ from pysynthrack.modules.keyboard import (
     Keyboard,
     midi_to_freq,
     midi_to_name,
+    name_to_midi,
     semitone_to_midi,
 )
+
+
+class TestNameToMidi:
+    """The inverse of midi_to_name, added for the sampler's `root` combo:
+    the panel shows a note name, the patch stores a number."""
+
+    def test_round_trips_every_midi_note(self):
+        assert all(name_to_midi(midi_to_name(m)) == m for m in range(128))
+
+    @pytest.mark.parametrize(
+        "name,note",
+        [("C4", 60), ("A4", 69), ("C-1", 0), ("G9", 127), ("A#3", 58)],
+    )
+    def test_known_names(self, name, note):
+        assert name_to_midi(name) == note
+
+    def test_flats_are_the_same_key_as_sharps(self):
+        assert name_to_midi("Bb3") == name_to_midi("A#3")
+        assert name_to_midi("Db4") == name_to_midi("C#4")
+
+    def test_lowercase_letter_is_accepted(self):
+        assert name_to_midi("c4") == 60
+
+    @pytest.mark.parametrize("bad", ["", "junk", "H4", "C", "4C", "C4.5"])
+    def test_unparseable_returns_none_rather_than_guessing(self, bad):
+        """A caller leaves the param alone on None; a guess would silently
+        retune whatever it is attached to."""
+        assert name_to_midi(bad) is None
+
+    @pytest.mark.parametrize("bad", ["C-2", "C10"])
+    def test_outside_the_midi_range_is_none(self, bad):
+        assert name_to_midi(bad) is None
 
 
 class TestNoteMath:

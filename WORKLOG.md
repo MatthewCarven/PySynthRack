@@ -10,6 +10,96 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-22 — the sampler, slice 1: a voice, not a transport
+
+Board clear, Matthew picked the sampler. The 2026-08-04 spec sliced it
+three ways; this is slice 1 — the voice itself. Slices 2 (loop mode) and
+3 (the stretch menu) are on TODO, per the working agreement about not
+attempting a large job in one pass.
+
+**The positioning, which is the whole design.** `file_player` is a
+*transport*: one playhead, one speed, buttons. `sampler` is a *voice*:
+per-voice playheads, each at a rate set by `pitch_cv`, started by a gate
+edge. That single distinction is why it needed to be a new module rather
+than a FilePlayer mode — and why the rack's existing 16-slot voice
+architecture does most of the work. A `cv_keyboard` in front gives
+sixteen independent playheads for free.
+
+`root` — the note the recording *is* — is the trick that makes it an
+instrument rather than a tape player. Play the root and the rate is
+exactly 1.0.
+
+**Bit-exactness was the design target, not a nice-to-have.** The spec
+asked for a neutral: root pitch, full region, attack 0, level 1 → the
+decoded buffer *verbatim*. Everything downstream was chosen to keep that
+true. The read is `_hermite4` from the resampler verbatim, whose spline
+constant term is `p0` untouched by float ops, so an integer position
+returns that sample exactly. The mono sum is written `0.5 * (l + r)`
+because a mono file decodes to two identical rows and halving their sum
+is exact in IEEE arithmetic — a lazier `mean(axis=0)` would have been
+the same value here but the explicit halving is the version that's
+*obviously* exact. `level` 1.0 multiplies by exactly 1.0. Result: the
+output is the file, sample for sample, and an octave up is a bit-exact
+`[::2]` — the strong version, since rate 2.0 also lands on integers.
+Both pinned, plus block-size independence.
+
+**Structure.** Whole-file background load (`_SampleLoader`, the
+convolver's `_IRLoader` pattern minus the FFT build) kicked at
+`compile()` on the UI thread — the first cut kicked it lazily in the
+renderer instead, and the neutral test failed with silence because
+`wait_for_sample_loads()` had nothing to wait on yet. Whole-load rather
+than streaming because a sampler needs random access: sixteen voices
+may be reading sixteen places at sixteen rates. Each block is cut into
+segments at that voice's gate edges; within a segment the playhead is
+affine (`pos + rate·arange(n)`), so the whole segment is one vectorized
+gather. Region end is found with `searchsorted` rather than a mask —
+the playhead only moves forward, so the live part is a prefix.
+
+**Two design calls worth recording.** (1) *Nothing is faded at the region
+end.* A fade there would be kinder to abrupt samples but would break the
+bit-exact neutral, and the neutral is worth more — `end` and a gated
+`release` are the tools for trimming. (2) *Pitch-up aliases, deliberately*
+— that crunch is the sound of every classic sampler (the bitcrusher
+precedent: some grit is the point). Pitch down is clean. A mip chain for
+clean pitch-up is slice 3.
+
+`attack`/`release` are declick ramps and are documented as such, twice,
+because the names invite the other reading. Real shaping is adsr→vca like
+every other source. Retriggering a sounding voice hands the old playhead
+to a ~2 ms falling tail while the new one fades in — added, not blended,
+since two reads of one buffer sum linearly, so equal-and-opposite ramps
+cross without a notch. Measured: max sample delta 0.034 across a
+retrigger versus 0.031 for the waveform's own steepest slope.
+
+**A helper that was missing.** The `root` combo shows note names and
+stores MIDI numbers (the fm_op ratio-combo precedent), which needed
+`name_to_midi` — `midi_to_name`'s inverse, which the codebase never had.
+Put beside it in `keyboard.py`, accepts flats and lowercase (a human
+typing a note name isn't thinking about either), and returns **None**
+rather than guessing on junk, so the callback leaves the instrument
+alone instead of silently retuning it. 6 tests including a 0..127
+round-trip.
+
+**Example.** `sampler_breaks.json`: three samplers pointed at three
+regions of one synthetic drum loop, each fired by its own euclidean — a
+breaks machine built out of `start`/`end` alone, which is a better
+advertisement for the region controls than any single-slice demo. First
+attempt used 4+5+9 pulses and half-second slices and came out a *wall*:
+30 of 31 sixteenths filled. Thinned to 4+2+6 with a shorter hat slice
+and it reads as a groove — `XX..XXX.XX..XXX.` — peak 0.516. Audio comes
+from `examples/samples/generate_samples.py` (synthetic kick/snare/hats
+plus a marimba C4 for the pitched case), following the `examples/irs/`
+precedent exactly: generator in git, wavs gitignored, and the patch
+loads and plays *silently* until you run it rather than failing.
+
+28 tests, suite **2842 → 2888**. MODULES.md entry + index row + appendix;
+README 87 → 88 modules.
+
+**Pending:** Matthew's ears on `sampler_breaks.json` (run the generator
+first). Slices 2 and 3 queued.
+
+---
+
 ## 2026-08-21 — the shimmer: an octave inside the loop
 
 The drone passed ears ("That works well"), with a caveat worth keeping:
