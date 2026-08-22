@@ -10,6 +10,42 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## Where things stand (snapshot, 2026-08-22)
+
+A marker for whoever picks this up next — the entries below are the record,
+this is just the state they add up to.
+
+**Rack:** 88 module types across seven categories. Suite **2888 passed, 1
+skipped** (~90 s). Working tree clean, `origin/main == main` at `9355129`.
+104 example patches, all of which load, compile and render under the
+examples sweep.
+
+**Outstanding: one thing.** Matthew's ears on the sampler
+(`examples/sampler_breaks.json`) — run
+`python examples/samples/generate_samples.py` first, the wavs are
+gitignored by design and the patch plays silently until they exist.
+
+Everything else is clear: no open defects, all 18 example patches heard,
+every GUI face seen. The eyeball queue emptied for the first time on
+2026-08-21.
+
+**What the 2026-08-20/22 run added:** the possibility panel (sixteen
+click-to-cycle cells); the pre-Start param-write fix (every widget edit
+before the first Start used to be silently discarded); ASCII on screen
+(336 port labels had been rendering as `?` since the node editor was
+written); the organ-feedback pair (drone + shimmer); and sampler slice 1.
+Three tripwires came out of it and are worth knowing about before adding
+code: `tests/test_ui_glyphs.py` (nothing non-ASCII reaches a screen),
+the `backend.set_param` call-site count in `tests/test_param_writes.py`,
+and the docs-coverage sweep that has been there longer.
+
+**Next up, in the order most likely to be picked:** sampler slice 2 (loop
+mode + region UI), sampler slice 3 (`start_cv` is the real prize),
+`function_generator`, `rotary`. Full menu in TODO.md and
+docs/MODULE_IDEAS.md.
+
+---
+
 ## 2026-08-22 — the sampler, slice 1: a voice, not a transport
 
 Board clear, Matthew picked the sampler. The 2026-08-04 spec sliced it
