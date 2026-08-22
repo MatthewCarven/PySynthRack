@@ -1,0 +1,158 @@
+{
+  "version": 1,
+  "next_id": 9,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "slower, and half off - the gaps are where the shimmer lives",
+      "params": {
+        "bpm": 50.0,
+        "division": 0.5,
+        "pulse_width": 0.45
+      }
+    },
+    {
+      "id": 2,
+      "type": "sequencer",
+      "name": "same Cm7 as the drone - C G Eb Bb",
+      "params": {
+        "steps": 4,
+        "step1_pitch": 0.0,
+        "step2_pitch": 7.0,
+        "step3_pitch": 3.0,
+        "step4_pitch": 10.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "organ",
+      "name": "the voice - same drawbars, it just holds",
+      "params": {
+        "bar1": 8,
+        "bar2": 6,
+        "bar3": 8,
+        "bar4": 4,
+        "bar6": 3,
+        "click": 0.1,
+        "perc": "off",
+        "level": 0.3
+      }
+    },
+    {
+      "id": 4,
+      "type": "matrix_mixer",
+      "name": "FEEDBACK DOOR - g21 is the regen; 0.6 climbs, 0.85 never lands",
+      "params": {
+        "g11": 1.0,
+        "g21": 0.6,
+        "soft_clip": true
+      }
+    },
+    {
+      "id": 5,
+      "type": "pitch_shifter",
+      "name": "THE SHIMMER - every lap goes up an octave",
+      "params": {
+        "semitones": 12.0,
+        "cents": 0.0,
+        "mix": 1.0,
+        "grain_size": 70.0,
+        "overlap": 2
+      }
+    },
+    {
+      "id": 6,
+      "type": "delay",
+      "name": "one lap = 500 ms; tone 0.3 is the ceiling the climb dies against",
+      "params": {
+        "time": 500.0,
+        "feedback": 0.0,
+        "tone": 0.3,
+        "mix": 1.0
+      }
+    },
+    {
+      "id": 7,
+      "type": "reverb",
+      "name": "the room, outside the loop",
+      "params": {
+        "size": 0.9,
+        "decay": 0.85,
+        "damping": 0.35,
+        "mix": 0.5
+      }
+    },
+    {
+      "id": 8,
+      "type": "stereo_speaker_output",
+      "name": "out",
+      "params": {
+        "gain": 0.75
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "cv",
+      "dst_module_id": 3,
+      "dst_port": "pitch_cv"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "gate",
+      "dst_module_id": 3,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "in_1"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out_1",
+      "dst_module_id": 5,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out",
+      "dst_module_id": 6,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "in_2"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out_1",
+      "dst_module_id": 7,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 7,
+      "src_port": "out_l",
+      "dst_module_id": 8,
+      "dst_port": "in_l"
+    },
+    {
+      "src_module_id": 7,
+      "src_port": "out_r",
+      "dst_module_id": 8,
+      "dst_port": "in_r"
+    }
+  ],
+  "ui": {}
+}

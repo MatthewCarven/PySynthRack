@@ -191,8 +191,25 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       "0.9 blooms" safe to write on the node. 11 tests (loop closed,
       regen row open, delay not double-regenerating, reverb out of the
       loop, cranked-ceiling sweep). Suite **2829**. NEEDS: a listen.
-      Later: the shimmer variant (pitch_shifter +12 in the loop) is the
-      obvious sequel — same door, brighter room.
+      **EARS PASSED 2026-08-21** ("That works well"; "definitely sounds
+      organ like anyways" — fair, and diagnostic: at the shipped 0.65 the
+      loop *supports* the organ rather than transforming it; 0.9 is where
+      it stops sounding like an organ).
+- [x] **Example: the shimmer variant** — SHIPPED 2026-08-21 as
+      `examples/organ_shimmer.json`, Matthew's pick straight after the
+      drone. Same head, same feedback door, with a `pitch_shifter` at
+      **+12 inside the loop** so every lap returns an octave higher and
+      the chord climbs away from itself. Two supporting changes, both
+      load-bearing: `pulse_width` 0.45 (gaps for the cascade to bloom
+      into) and delay `tone` 0.3 — the dark roll-off is what the climb
+      dies against, otherwise it just accumulates hiss. Levels had to
+      come down (organ 0.4→0.3, out 0.8→0.75, reverb mix 0.6→0.5): the
+      first attempt pinned the output at 1.000, so a listener would have
+      heard the ceiling instead of the effect. Shipped peak **0.836**,
+      settles at 0.80× over 30 s, bounded at g21 0.85/0.99/1.0.
+      Measured against the same loop with the shift at 0: **12×**
+      one-to-two octaves up, **~41,000×** three and beyond. 11 tests.
+      Suite **2842**. NEEDS: a listen.
 - [ ] **The 2026-08-04 brainstorm keep-list** — Matthew: "Can you add
       to the todo" (2026-08-04, with the full writeup pasted back).
       Twelve items, one-liners now living in docs/MODULE_IDEAS.md

@@ -1249,7 +1249,11 @@ for vibrato. Set `mix` to ~0.5 with `semitones` = 7 for a fifth stacked
 over the dry (instant harmony), or a couple of cents for detune-
 thickening. For pitch shifting where speed *should* follow, use the
 [resampler](#resampler). See `examples/pitch_shifter_harmony.json`
-(saw → +7 st at 50% mix → speaker: a self-playing fifth).
+(saw → +7 st at 50% mix → speaker: a self-playing fifth). Put one at
+**+12 inside a feedback loop** and you get shimmer — every lap returns
+an octave higher, stacking into a cloud that climbs away from the note
+that started it; see `examples/organ_shimmer.json`, where a dark delay
+in the same loop is what the climb finally dies against.
 
 **Accuracy & deep bass (2026-07-02).** The analysis clock runs on the
 ideal WSOLA grid (search excursions never accumulate into the input
@@ -2808,7 +2812,10 @@ gain can't exceed unity.
 `soft_clip` (on). See `examples/matrix_feedback_echo.json` — a kick
 through a regenerating echo network; `g21` is the regen knob — and
 `examples/organ_feedback_drone.json`, the same door held open under a
-sustained [`organ`](#organ) instead of a transient.
+sustained [`organ`](#organ) instead of a transient, and
+`examples/organ_shimmer.json`, which adds a
+[`pitch_shifter`](#pitch_shifter) inside the loop so every lap climbs an
+octave.
 
 #### `mid_side`
 
@@ -3443,6 +3450,15 @@ loads in the app. Notable ones referenced above:
   matrix's `soft_clip` ceiling holds it at unity even with the loop
   wound past 1.0, which is exactly what makes an invitation like that
   shippable.
+- `organ_shimmer.json` — the same door with an octave in it: a
+  [`pitch_shifter`](#pitch_shifter) at **+12** sits *inside* the loop, so
+  every lap comes back an octave higher and the chord climbs away from
+  itself in stacked octaves. The clock's `pulse_width` drops to 0.45 so
+  there are gaps for the cascade to bloom into, and the delay's `tone` is
+  wound dark (0.3) — that roll-off is what the climb finally dies
+  against, otherwise it just accumulates hiss. Measured against the same
+  loop with the shift set to 0: 12× the energy one-to-two octaves up and
+  ~41,000× three octaves and beyond.
 - `keyboard_adsr.json`, `filter_envelope.json` — envelopes into VCA / filter.
 - `two_way_crossover.json` — the crossover splitting a keyboard.
 - `file_crossover_split.json` — a WAV track split and used as modulation.

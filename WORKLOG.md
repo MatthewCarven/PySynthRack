@@ -10,6 +10,63 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-21 — the shimmer: an octave inside the loop
+
+The drone passed ears ("That works well"), with a caveat worth keeping:
+*"definitely sounds organ like anyways."* Fair, and diagnostic — at the
+shipped `g21` 0.65 the loop **supports** the organ rather than
+transforming it. 0.9 is where it stops sounding like an organ and starts
+sounding like a room that won't let go. So the sequel wanted to be a
+patch whose transformation is unmistakable at its *default*. Matthew
+picked exactly that: the shimmer.
+
+**The change is one module.** Same clock → sequencer → organ head, same
+matrix door, but the loop now reads `out_1 → pitch_shifter (+12) → delay
+→ in_2`. Every lap comes back an octave up, so the chord stacks octaves
+and climbs away from the note that started it. That one-module delta is
+the point pedagogically: the two sibling patches differ by exactly the
+thing being taught.
+
+Two supporting changes, both load-bearing rather than taste.
+`pulse_width` 0.8 → **0.45**, so the organ stops between chords and the
+cascade has a gap to bloom into — with the note still sounding you hear
+a thicker organ, not a climb. And the delay's `tone` down to **0.3**: a
+dark loop is what each successive octave dies against. Left bright, the
+cascade never resolves into anything, it just accumulates hiss. The
+climb needs a ceiling to lose against, and a low-pass in the loop is it.
+
+**The levels were wrong first time, and measuring caught it.** The first
+pass reused the drone's levels and peaked at **1.000** — pinned against
+the soft ceiling for most of its length. Not unsafe (that is the ceiling
+doing its job) but wrong to ship: the listener would hear the limiter
+working, not the shimmer. An octave-multiplying loop simply puts more
+energy in than a flat one does. Swept organ level × output gain × reverb
+mix and landed on 0.30 / 0.75 / 0.50 → peak **0.836**, with the
+30-second halves at 0.137 then 0.110 (0.80×), so it settles rather than
+climbs. The regen sweep stays finite and bounded at 0.85, 0.99 and 1.0.
+
+**Testing a spectral claim spectrally.** A structural test — "the
+shifter is in the loop" — passes just as happily on a patch whose
+shifter sits at 0 semitones and shimmers nothing. So the headline test
+renders the patch twice, identical but for `semitones` (12 vs 0), and
+compares octave-band energy in the tail. Everything else (loop gain,
+delay, reverb, organ) is held fixed, so any difference upstairs is the
+shifter's doing and nothing else's. Shipped margins: **12×** in the
+700–2800 Hz band, **~41,000×** above 2800 Hz, where the dry loop
+essentially never goes. Thresholds set at 4× and 50× — far under the
+measurement, so the test fails on a broken shimmer without being
+brittle about ordinary DSP tweaks.
+
+11 tests, suite **2829 → 2842**. `docs/MODULES.md`: an appendix entry,
+cross-links from `matrix_mixer`, and — the useful one — from
+`pitch_shifter` itself, whose entry previously stopped at "stack a
+fifth" and never mentioned that the module's most striking use is
+putting it somewhere its own output comes back.
+
+**Pending:** Matthew's ears.
+
+---
+
 ## 2026-08-21 — the organ through the feedback door
 
 Board clear, so Matthew picked the small high-joy one: his own idea from
