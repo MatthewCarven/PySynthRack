@@ -2806,7 +2806,9 @@ gain can't exceed unity.
 **Ports**: `in_1`…`in_4` (audio), `cv_1`…`cv_4` (cv, per-column) →
 `out_1`…`out_4` (audio). **Params**: `g11`…`g44` −1..+1 (identity) ·
 `soft_clip` (on). See `examples/matrix_feedback_echo.json` — a kick
-through a regenerating echo network; `g21` is the regen knob.
+through a regenerating echo network; `g21` is the regen knob — and
+`examples/organ_feedback_drone.json`, the same door held open under a
+sustained [`organ`](#organ) instead of a transient.
 
 #### `mid_side`
 
@@ -3432,6 +3434,15 @@ The `examples/` folder is the fastest way to learn a module — each `.json`
 loads in the app. Notable ones referenced above:
 
 - `hello_sine.json`, `fat_saw.json` — basic oscillators.
+- `organ_feedback_drone.json` — the drone machine: a slow Cm7 on the
+  [`organ`](#organ) into the [`matrix_mixer`](#matrix_mixer)'s
+  regenerating loop (via a 700 ms [`delay`](#delay)), with the
+  [`reverb`](#reverb) outside the loop as polish. `g21` on the matrix is
+  the whole patch: 0 is a dry organ, 0.65 sings, 0.9 blooms into a pad
+  that keeps arriving after the note stops. Safe to crank — the
+  matrix's `soft_clip` ceiling holds it at unity even with the loop
+  wound past 1.0, which is exactly what makes an invitation like that
+  shippable.
 - `keyboard_adsr.json`, `filter_envelope.json` — envelopes into VCA / filter.
 - `two_way_crossover.json` — the crossover splitting a keyboard.
 - `file_crossover_split.json` — a WAV track split and used as modulation.

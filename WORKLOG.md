@@ -10,6 +10,64 @@ Running log of decisions and progress. Newest first.
 
 ---
 
+## 2026-08-21 — the organ through the feedback door
+
+Board clear, so Matthew picked the small high-joy one: his own idea from
+2026-08-05, "maybe feedback with the organ?". Shipped as
+`examples/organ_feedback_drone.json`.
+
+**The patch.** Slow clock (60 bpm, division 0.5 — one chord every two
+beats, 80% pulse width) → a 4-step sequencer spelling **Cm7**: C, G, Eb,
+Bb → organ, percussion off, drawbars 16'/5⅓'/8'/4'/2⅔' so there's upper
+harmonic material for the loop to chew on. Organ into `matrix in_1`;
+`out_1` → a 700 ms delay → back into `in_2`. Reverb hangs off `out_1`
+**outside** the loop as polish. The delay's own `feedback` is 0 and its
+`mix` fully wet — it's a plain send, so `g21` is the only regeneration
+in the patch and the knob can't lie about what it does. That's the
+`matrix_feedback_echo` precedent, held open under a *sustained* source
+instead of a transient, which is the whole difference: a kick through
+that door gives you echoes, an organ gives you a pad that keeps arriving
+after the note stops.
+
+**Measured rather than hoped.** Shipped at `g21` 0.65: peak **0.858**,
+and the per-2-second RMS breathes on an 8-second cycle (matching the
+four-step progression) rather than climbing — 0.246, 0.169, 0.131,
+0.181, 0.262, 0.176 … it settles into the loop instead of swelling to
+the rail. Then the sweep that matters, because the node label invites
+you to turn it up: at `g21` **0.9, 0.99 and 1.0** the output is finite
+and pinned at exactly **1.000**. The matrix's soft ceiling holds a loop
+wound to unity. That measurement is what makes "0.9 blooms" shippable
+text rather than a trap.
+
+Also FFT-verified the musical claim before writing it on the node —
+rendered the organ in isolation (loop removed, straight to a speaker)
+and read the strongest partial per step: 261.3 Hz C4, 196.2 Hz G3,
+311.2 Hz D#4, 466.2 Hz A#4. Pitch classes C/G/Eb/Bb, so the label is
+true. Worth doing: a node name that names a chord is a claim, and the
+16' drawbar makes the dominant partial jump octave between steps, so
+eyeballing the sequencer numbers wouldn't have confirmed what you
+actually hear.
+
+**Tests** (11, `tests/test_organ_feedback_example.py`) follow the
+`ring_governor` pattern — pin what makes the patch *this* patch, since
+the examples sweep already covers loads-and-renders. The loop is closed
+(out of the matrix, through the delay, back into the regen row); the
+regen row is open (a future edit zeroing `g21` would leave something
+that still renders, still sounds like an organ, and is silently no
+longer a feedback demo); the delay doesn't regenerate on its own; the
+reverb stays out of the loop; regen audibly adds energy over the dry
+door; shipped settings leave headroom; it settles rather than grows; and
+the cranked-ceiling sweep at 0.9/0.99/1.0. Suite **2816 → 2829**.
+
+`docs/MODULES.md` gains an appendix entry and a cross-link from
+`matrix_mixer`, which previously pointed only at the kick demo.
+
+**Pending:** Matthew's ears. The sequel, if he likes it: a shimmer
+variant with a `pitch_shifter` at +12 inside the loop — same door,
+brighter room — already noted on TODO.
+
+---
+
 ## 2026-08-21 — the butterfly lands: the eyeball queue is empty
 
 Matthew wired the goniometer by hand — `chaos.x`/`y` through two

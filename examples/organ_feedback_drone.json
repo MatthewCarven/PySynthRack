@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "next_id": 8,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "slow breath - one chord every two beats",
+      "params": {
+        "bpm": 60.0,
+        "division": 0.5,
+        "pulse_width": 0.8
+      }
+    },
+    {
+      "id": 2,
+      "type": "sequencer",
+      "name": "Cm7 spelled out - C G Eb Bb",
+      "params": {
+        "steps": 4,
+        "step1_pitch": 0.0,
+        "step2_pitch": 7.0,
+        "step3_pitch": 3.0,
+        "step4_pitch": 10.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "organ",
+      "name": "the voice - drawbars, no percussion, it just holds",
+      "params": {
+        "bar1": 8,
+        "bar2": 6,
+        "bar3": 8,
+        "bar4": 4,
+        "bar6": 3,
+        "click": 0.1,
+        "perc": "off",
+        "level": 0.4
+      }
+    },
+    {
+      "id": 4,
+      "type": "matrix_mixer",
+      "name": "FEEDBACK DOOR - g21 is the regen; 0.65 sings, 0.9 blooms",
+      "params": {
+        "g11": 1.0,
+        "g21": 0.65,
+        "soft_clip": true
+      }
+    },
+    {
+      "id": 5,
+      "type": "delay",
+      "name": "the loop's flight time - feedback 0, the matrix regenerates",
+      "params": {
+        "time": 700.0,
+        "feedback": 0.0,
+        "tone": 0.55,
+        "mix": 1.0
+      }
+    },
+    {
+      "id": 6,
+      "type": "reverb",
+      "name": "the room, outside the loop - polish, not regen",
+      "params": {
+        "size": 0.8,
+        "decay": 0.75,
+        "damping": 0.4,
+        "mix": 0.5
+      }
+    },
+    {
+      "id": 7,
+      "type": "stereo_speaker_output",
+      "name": "out",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "cv",
+      "dst_module_id": 3,
+      "dst_port": "pitch_cv"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "gate",
+      "dst_module_id": 3,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "in_1"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out_1",
+      "dst_module_id": 5,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "in_2"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out_1",
+      "dst_module_id": 6,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "out_l",
+      "dst_module_id": 7,
+      "dst_port": "in_l"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "out_r",
+      "dst_module_id": 7,
+      "dst_port": "in_r"
+    }
+  ],
+  "ui": {}
+}

@@ -177,12 +177,22 @@ polish standard (tests, example, MODULES.md entry, tripwires green).
       :-{D; `mid_side_breathe` "pretty awesome, ima USE THIS IN
       MUSIC for sure"; `octaver_bass_lead` :-{D. Per-entry pendings
       below updated.
-- [ ] **Example idea: organ through the feedback door** (Matthew,
-      2026-08-05: "maybe feedback with the organ?") — the organ's
-      sustained tones into the matrix's regenerating loop (organ →
-      matrix in_1; out_1 → delay and/or reverb → back in; soft
-      ceiling on so it can sing without running away). Drone/ambient
-      machine; pairs the two ear-favorites of the 08-04 batch.
+- [x] **Example: organ through the feedback door** — SHIPPED
+      2026-08-21 as `examples/organ_feedback_drone.json`, Matthew's own
+      idea from 2026-08-05 ("maybe feedback with the organ?") and his
+      pick when the board cleared. Slow clock → 4-step sequencer
+      spelling Cm7 (C G Eb Bb, FFT-verified) → organ (no percussion,
+      it just holds) → matrix `in_1`; `out_1` → 700 ms delay → back
+      into `in_2`, with the reverb OUTSIDE the loop as polish. `g21` is
+      the whole patch: 0 dry, 0.65 sings (shipped), 0.9 blooms.
+      Measured: peak 0.858 shipped with the per-2 s RMS breathing on an
+      8 s cycle rather than growing; at g21 0.9/0.99/1.0 the soft
+      ceiling pins it at exactly 1.000, finite — which is what makes
+      "0.9 blooms" safe to write on the node. 11 tests (loop closed,
+      regen row open, delay not double-regenerating, reverb out of the
+      loop, cranked-ceiling sweep). Suite **2829**. NEEDS: a listen.
+      Later: the shimmer variant (pitch_shifter +12 in the loop) is the
+      obvious sequel — same door, brighter room.
 - [ ] **The 2026-08-04 brainstorm keep-list** — Matthew: "Can you add
       to the todo" (2026-08-04, with the full writeup pasted back).
       Twelve items, one-liners now living in docs/MODULE_IDEAS.md
