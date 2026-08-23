@@ -2531,6 +2531,8 @@ class NumpyBackend(AudioBackend):
             return self._render_adsr(module, frames, buffers, patch)
         if module.TYPE == "ad_envelope":
             return self._render_ad(module, frames, buffers, patch)
+        if module.TYPE == "function_generator":
+            return self._render_function_generator(module, frames, buffers, patch)
         if module.TYPE == "vca":
             return self._render_vca(module, frames, buffers, patch)
         if module.TYPE == "audio_to_cv":
@@ -5416,6 +5418,262 @@ class NumpyBackend(AudioBackend):
         state["level_arr"] = level
         state["prev_gate_arr"] = prev
         return out.astype(np.float32)
+
+    # ----- Function generator ---------------------------------------------
+
+    _FG_IDLE = 0
+    _FG_RISE = 1
+    _FG_HOLD = 2
+    _FG_FALL = 3
+    # EOR/EOC pulse width. Long enough to see on a scope and to survive a
+    # Schmitt, short enough never to swamp a fast loop -- so it is also
+    # capped at a quarter of the cycle (and never shorter than one sample).
+    _FG_PULSE_S = 0.002
+
+    @staticmethod
+    def _fg_exponent(curve: float) -> float:
+        """Map the bipolar ``curve`` knob to a power-law exponent k.
+
+        The slope shape is ``level = pos ** k`` on the way up and its
+        mirror ``(1 - pos) ** k`` on the way down, so one exponent bends
+        both slopes and the fall is the rise played backwards.
+
+        ``curve`` 0 -> k = 1 (a straight line). Positive is exponential
+        (k = 1 + 3c, up to 4 -- a rise that starts slow and accelerates,
+        a fall that drops fast then trails). Negative is logarithmic
+        (k = 1/(1 - 3c), down to 1/4 -- a rise that leaps then eases, a
+        fall that lingers then drops). The two halves are reciprocals at
+        equal magnitude, so +c and -c are mirror images of each other.
+        """
+        c = min(1.0, max(-1.0, curve))
+        return 1.0 + 3.0 * c if c >= 0.0 else 1.0 / (1.0 - 3.0 * c)
+
+    @staticmethod
+    def _fg_fresh_state() -> dict:
+        return {"phase": NumpyBackend._FG_IDLE, "cnt": 0, "level": 0.0,
+                "prev_gate": False, "eor_left": 0, "eoc_left": 0}
+
+    def _render_function_generator(self, module, frames: int, buffers, patch) -> dict:
+        """Rise/fall function generator with EOR/EOC (see modules/function_generator.py).
+
+        State machine: idle -> rise -> [hold] -> fall -> idle, with the
+        mode deciding what the trigger means and whether the cycle ends
+        at idle or wraps straight back into the rise.
+
+        Stage progress is an INTEGER sample counter against an integer
+        stage length, never a float step accumulated per sample -- the
+        organ's lone-8' lesson. Accumulating ``1/(t*sr)`` drifts about a
+        sample per stage, which is invisible in an envelope and audible
+        in a loop-mode clock, where it compounds every cycle. Counting
+        makes a stage exactly ``round(t*sr)`` samples long, forever.
+
+        Every stage *entry* solves the curve backwards instead --
+        ``cnt = len * level**(1/k)`` for a rise, ``len * (1 -
+        level**(1/k))`` for a fall -- so a retrigger or a release picks
+        up from the current output level rather than jumping. That is
+        what keeps it click-free at any point in the cycle, which the
+        plain level-stepping of ``ad_envelope`` gets for free only
+        because its curve is linear.
+
+        Shape-polymorphic like ADSR/AD, branched on ``trig``: a 1D
+        ``(F,)`` (or absent) trigger runs one function and emits ``(F,)``
+        on all three jacks; a 2D ``(V, F)`` trigger runs V independent
+        functions and emits ``(V, F)``. Both paths drive the SAME scalar
+        kernel (:meth:`_fg_kernel`), so a voice row is bit-identical to
+        the mono result by construction. ``rate_cv`` is collapsed to
+        mono in both -- one rate for every voice, as a hardware "both"
+        CV would be.
+        """
+        gate_buf = self._input_buffer(
+            patch, buffers, module.id, "trig", collapse=False
+        )
+        rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
+
+        sr = float(self.sample_rate)
+        mode = str(module.params.get("mode", "trigger"))
+        if mode not in ("trigger", "gate", "loop"):
+            mode = "trigger"
+        try:
+            rise_s = float(module.params.get("rise", 0.05))
+        except (TypeError, ValueError):
+            rise_s = 0.05
+        try:
+            fall_s = float(module.params.get("fall", 0.5))
+        except (TypeError, ValueError):
+            fall_s = 0.5
+        try:
+            curve = float(module.params.get("curve", 0.0))
+        except (TypeError, ValueError):
+            curve = 0.0
+        rise_s = min(10.0, max(0.0, rise_s))
+        fall_s = min(10.0, max(0.0, fall_s))
+
+        # rate_cv is 1 V/oct on the RATE (+1 = twice as fast), block-mean
+        # like the LFO's, clamped to +/-5 octaves so a runaway CV cannot
+        # ask for a sub-sample cycle or a half-hour one.
+        if rate_cv is not None and rate_cv.size > 0:
+            octaves = min(5.0, max(-5.0, float(np.mean(rate_cv))))
+            scale = 1.0 / (2.0 ** octaves)
+            rise_s *= scale
+            fall_s *= scale
+
+        k = self._fg_exponent(curve)
+        inv_k = 1.0 / k
+        rise_len = max(1, int(round(rise_s * sr)))
+        fall_len = max(1, int(round(fall_s * sr)))
+        # Pulse width: 2 ms, but never more than a quarter of the cycle
+        # (so a 20 ms loop still emits a distinguishable blip) and never
+        # less than one sample (so an instant rise still announces itself).
+        pulse_len = max(
+            1, min(int(round(self._FG_PULSE_S * sr)), (rise_len + fall_len) // 4 or 1)
+        )
+
+        args = (frames, mode, k, inv_k, rise_len, fall_len, pulse_len)
+        if gate_buf is not None and gate_buf.ndim == 2:
+            return self._render_fg_voice(module, gate_buf, *args)
+        return self._render_fg_mono(module, gate_buf, *args)
+
+    def _fg_kernel(
+        self, frames, gate_row, mode, k, inv_k, rise_len, fall_len,
+        pulse_len, st, out, eor, eoc,
+    ):
+        """One function, one block, pure-Python scalars, written in place.
+
+        THE single implementation of the state machine: the mono path
+        calls it once and the voice path calls it once per slot, so a
+        voice row is bit-identical to the mono result by construction
+        rather than by assertion.
+
+        Scalars rather than numpy-over-(V,) is the slew lesson applied:
+        at a block's worth of samples a numpy op is overhead, not
+        arithmetic. The vectorized-across-voices draft of this cost
+        ~117% of one block's budget at 16 voices; per-voice scalars cost
+        ~36%, and idle slots (see :meth:`_render_fg_voice`) skip out
+        entirely.
+        """
+        phase = st["phase"]
+        cnt = st["cnt"]
+        level = st["level"]
+        prev = st["prev_gate"]
+        eor_left = st["eor_left"]
+        eoc_left = st["eoc_left"]
+        looping = mode == "loop"
+        gating = mode == "gate"
+        rise_next = self._FG_HOLD if gating else self._FG_FALL
+        fall_next = self._FG_RISE if looping else self._FG_IDLE
+        high = self._GATE_HIGH
+
+        # A loop-mode generator never waits to be asked: kick it out of
+        # idle so a freshly placed module (or one just switched to loop)
+        # starts cycling on its first block, the way ``clock`` does.
+        if looping and phase == self._FG_IDLE:
+            phase = self._FG_RISE
+            cnt = int(round(rise_len * (level ** inv_k))) if level > 0.0 else 0
+
+        for n in range(frames):
+            g = bool(gate_row[n] > high) if gate_row is not None else False
+            rising = g and not prev
+            prev = g
+
+            if rising:
+                # Every mode restarts the rise from the CURRENT level; in
+                # loop mode that is what makes ``trig`` a click-free sync.
+                cnt = int(round(rise_len * (level ** inv_k))) if level > 0.0 else 0
+                phase = self._FG_RISE
+            elif gating and not g and (phase == self._FG_RISE or phase == self._FG_HOLD):
+                # Gate released: fall from wherever the rise got to.
+                pos = level ** inv_k if level > 0.0 else 0.0
+                cnt = int(round(fall_len * (1.0 - pos)))
+                phase = self._FG_FALL
+
+            if phase == self._FG_RISE:
+                cnt += 1
+                if cnt >= rise_len:
+                    cnt = 0
+                    level = 1.0
+                    phase = rise_next
+                    eor_left = pulse_len
+                else:
+                    level = (cnt / rise_len) ** k
+            elif phase == self._FG_HOLD:
+                level = 1.0
+            elif phase == self._FG_FALL:
+                cnt += 1
+                if cnt >= fall_len:
+                    cnt = 0
+                    level = 0.0
+                    phase = fall_next
+                    eoc_left = pulse_len
+                else:
+                    level = (1.0 - cnt / fall_len) ** k
+            else:  # idle: parked at 0 until the next trigger
+                level = 0.0
+
+            out[n] = level
+            if eor_left > 0:
+                eor[n] = 1.0
+                eor_left -= 1
+            if eoc_left > 0:
+                eoc[n] = 1.0
+                eoc_left -= 1
+
+        st["phase"] = phase
+        st["cnt"] = cnt
+        st["level"] = level
+        st["prev_gate"] = prev
+        st["eor_left"] = eor_left
+        st["eoc_left"] = eoc_left
+
+    def _render_fg_mono(self, module, gate_buf, frames, *args):
+        """Mono path: one function, ``(F,)`` on each jack."""
+        state = self._state.setdefault(module.id, None)
+        if state is None or "voices" in state:  # fresh, or was the voice branch
+            state = self._fg_fresh_state()
+            self._state[module.id] = state
+
+        out = np.zeros(frames, dtype=np.float32)
+        eor = np.zeros(frames, dtype=np.float32)
+        eoc = np.zeros(frames, dtype=np.float32)
+        self._fg_kernel(frames, gate_buf, *args, state, out, eor, eoc)
+        return {"out": out, "eor": eor, "eoc": eoc}
+
+    def _render_fg_voice(self, module, gate_buf, frames, mode, *args):
+        """Voice path: V independent functions, ``(V, F)`` on each jack.
+
+        One scalar kernel run per slot. A slot whose trigger row is all
+        low and whose function has already finished is skipped outright
+        -- in a 16-slot poly patch most slots are silent most of the
+        time, and that skip is worth more than any vectorization.
+        """
+        V = gate_buf.shape[0]
+        state = self._state.setdefault(module.id, None)
+        if state is None or "voices" not in state or len(state["voices"]) != V:
+            state = {"voices": [self._fg_fresh_state() for _ in range(V)]}
+            self._state[module.id] = state
+        voices = state["voices"]
+
+        out = np.zeros((V, frames), dtype=np.float32)
+        eor = np.zeros((V, frames), dtype=np.float32)
+        eoc = np.zeros((V, frames), dtype=np.float32)
+        any_high = (gate_buf > self._GATE_HIGH).any(axis=1)
+
+        for v in range(V):
+            st = voices[v]
+            if (
+                not any_high[v]
+                and st["phase"] == self._FG_IDLE
+                and st["eor_left"] == 0
+                and st["eoc_left"] == 0
+            ):
+                # Nothing to do: parked at 0 with no gate and no pulse in
+                # flight. The rows are already zeros.
+                st["prev_gate"] = False
+                st["level"] = 0.0
+                continue
+            self._fg_kernel(
+                frames, gate_buf[v], mode, *args, st, out[v], eor[v], eoc[v]
+            )
+        return {"out": out, "eor": eor, "eoc": eoc}
 
     # ----- LFO rendering --------------------------------------------------
 

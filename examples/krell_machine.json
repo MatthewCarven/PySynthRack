@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "next_id": 11,
+  "modules": [
+    {
+      "id": 1,
+      "type": "function_generator",
+      "name": "THE KRELL ENGINE - loop mode, it fires itself forever",
+      "params": { "mode": "loop", "rise": 0.15, "fall": 0.7, "curve": 0.5 }
+    },
+    {
+      "id": 2,
+      "type": "lfo",
+      "name": "stepped random - a new pace every step",
+      "params": {
+        "waveform": "random",
+        "rate": 0.7,
+        "depth": 1.0,
+        "bipolar": true,
+        "cv_depth": 1.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "cv_scale",
+      "name": "+-0.8 octaves of pace",
+      "params": { "scale": 0.8 }
+    },
+    {
+      "id": 4,
+      "type": "noise",
+      "name": "the dice",
+      "params": { "color": "white", "amp": 1.0 }
+    },
+    {
+      "id": 5,
+      "type": "sample_hold",
+      "name": "eoc grabs one voltage per note",
+      "params": {}
+    },
+    {
+      "id": 6,
+      "type": "quantizer",
+      "name": "in tune - pentatonic minor",
+      "params": {
+        "root": "C",
+        "scale": "pentatonic minor",
+        "hysteresis": 10.0,
+        "transpose": -12.0
+      }
+    },
+    {
+      "id": 7,
+      "type": "oscillator",
+      "name": "voice",
+      "params": { "waveform": "saw_blep", "freq": 261.6256, "amp": 0.5 }
+    },
+    {
+      "id": 8,
+      "type": "vca",
+      "name": "vca",
+      "params": {}
+    },
+    {
+      "id": 9,
+      "type": "filter",
+      "name": "the same shape opens the filter",
+      "params": {
+        "mode": "lowpass",
+        "cutoff": 300.0,
+        "resonance": 1.4,
+        "cv_depth": 3.5
+      }
+    },
+    {
+      "id": 10,
+      "type": "stereo_speaker_output",
+      "name": "out",
+      "params": {}
+    }
+  ],
+  "cables": [
+    { "src_module_id": 2, "src_port": "cv",  "dst_module_id": 3,  "dst_port": "in" },
+    { "src_module_id": 3, "src_port": "out", "dst_module_id": 1,  "dst_port": "rate_cv" },
+    { "src_module_id": 4, "src_port": "cv",  "dst_module_id": 5,  "dst_port": "in" },
+    { "src_module_id": 1, "src_port": "eoc", "dst_module_id": 5,  "dst_port": "trig" },
+    { "src_module_id": 5, "src_port": "out", "dst_module_id": 6,  "dst_port": "in" },
+    { "src_module_id": 6, "src_port": "out", "dst_module_id": 7,  "dst_port": "freq_cv" },
+    { "src_module_id": 7, "src_port": "out", "dst_module_id": 8,  "dst_port": "audio" },
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 8,  "dst_port": "cv" },
+    { "src_module_id": 8, "src_port": "out", "dst_module_id": 9,  "dst_port": "in" },
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 9,  "dst_port": "cutoff_cv" },
+    { "src_module_id": 9, "src_port": "out", "dst_module_id": 10, "dst_port": "in_l" },
+    { "src_module_id": 9, "src_port": "out", "dst_module_id": 10, "dst_port": "in_r" }
+  ],
+  "ui": {
+    "node_positions": {
+      "2": [40, 420], "3": [320, 420], "1": [600, 420],
+      "4": [40, 40], "5": [320, 40], "6": [600, 40], "7": [880, 40],
+      "8": [1160, 200], "9": [1440, 200], "10": [1720, 200]
+    }
+  }
+}

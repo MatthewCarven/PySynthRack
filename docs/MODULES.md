@@ -243,6 +243,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
 | [`adsr`](#adsr) | Modulation | `gate` (gate) → `cv` (cv) |
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
+| [`function_generator`](#function_generator) | Modulation | `trig` (gate), `rate_cv` (cv) → `out` (cv), `eor`,`eoc` (gate) |
 | [`clock`](#clock) | Modulation | — → `out` (gate) |
 | [`sequencer`](#sequencer) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
 | [`fader_seq`](#fader_seq) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
@@ -2465,6 +2466,43 @@ A trigger-style **Attack–Decay** envelope for percussion and plucks. A trigger
 **How it works.** Rising edge → attack from the current level (a retrigger mid-decay picks up where it was, no click) → decay to 0 → idle. The trigger going low does nothing; the decay always completes. Shape-polymorphic like [adsr](#adsr): a `(V, F)` trigger drives V independent envelopes, bit-identical to the mono path per voice.
 
 **Patching.** `lfo → schmitt → ad_envelope.trig`, then `ad_envelope.cv → vca.cv` for a self-playing drum, or a keyboard/MIDI `gate → trig`. See `examples/ad_kick.json` (a clocked sine kick).
+
+#### `function_generator`
+
+The **rise/fall function** — the west-coast module that is an envelope, an LFO, a clock or a gate delay depending only on how you cable it. A ramp up over `rise` seconds and down over `fall` seconds, with a `curve` knob that bends both slopes, and — the part that matters — two gate outs that announce **end of rise** (`eor`) and **end of cycle** (`eoc`). Patch `eoc` back into `trig` and it re-fires itself: the "krell" patch, a machine that plays itself forever.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `trig` | in | gate | Start / sustain / sync — what it means depends on `mode`. Unpatched, only `loop` mode does anything. |
+| `rate_cv` | in | cv | **1 V/oct on the rate**: +1 = twice as fast, −1 = half speed. Scales `rise` and `fall` together, clamped to ±5 octaves. Block-mean, like the [lfo](#lfo)'s. |
+| `out` | out | cv | The function, 0…1. |
+| `eor` | out | gate | ~2 ms pulse the moment the rise completes. |
+| `eoc` | out | gate | ~2 ms pulse the moment the fall completes. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `mode` | `trigger` | `trigger` / `gate` / `loop` | What the trigger means. **trigger** = fire and forget: a rising edge starts the rise and the whole shape plays out, gate length ignored. **gate** = rise, **hold at 1.0** while the gate stays high, fall on release (an AR/ASR). **loop** = free-running; it cycles with nothing patched, and `trig` becomes a click-free **sync reset**. |
+| `rise` | `0.05` | 0…10 s | Time from 0 to 1. 0 = instant. |
+| `fall` | `0.5` | 0…10 s | Time from 1 back to 0. 0 = instant. |
+| `curve` | `0.0` | −1…+1 | Slope shape, applied to both slopes. **0** = straight lines. **Positive = exponential**: a rise that starts slow and accelerates, and (the same curve mirrored) a fall that drops fast then trails away — the natural, percussive shape. **Negative = logarithmic**: a rise that leaps then eases into the top, and a fall that lingers before dropping — the swelling, orchestral shape. |
+
+**How it works.** State machine `idle → rise → [hold] → fall → idle`, with `loop` wrapping the fall straight back into the rise instead of idling. Stage progress is an **integer sample counter** against an integer stage length, not an accumulated float step, so a stage is exactly `round(t × sr)` samples long and a loop-mode clock never drifts. Stage *entry* solves the curve backwards for the position matching the current output level, so every retrigger and every mid-rise gate release starts from where the output already is — click-free anywhere in the cycle. Shape-polymorphic like [adsr](#adsr)/[ad_envelope](#ad_envelope): a `(V, F)` trigger runs V independent functions and `rate_cv` is collapsed to mono (one rate for every voice, as a hardware "both" CV would be). Both shapes drive the *same* scalar kernel, so a voice row is bit-identical to the mono result by construction; a parked slot skips the loop entirely. Cost against one block's budget: ~2.3% mono, ~8.9% at four sounding voices, ~34.6% at all sixteen, ~0.2% idle.
+
+**Compared to its neighbours.** [ad_envelope](#ad_envelope) is the same fire-and-forget idea with a linear curve and no gate outs — reach for it when that is all you need. [adsr](#adsr) has a real sustain *level*; `gate` mode here holds at full, so it is a two-knob envelope with a hold rather than a four-knob one. [lfo](#lfo) gives you waveshapes and a rate in Hz; `loop` mode here gives you a triangle whose up and down slopes are set independently in seconds, which an LFO cannot do. [slew](#slew) shapes a signal you feed it; this generates its own.
+
+**Patching.**
+
+* **Envelope** — `keyboard.gate → trig` (`mode` `gate`), `out → vca.cv`. Positive `curve` for plucks, negative for swells.
+* **Lopsided LFO** — `mode` `loop`, `rise` 2 s, `fall` 0.05 s, `out → filter.cutoff_cv`: a slow swell with an instant reset, which is a saw no LFO knob gives you.
+* **Clock** — `mode` `loop`, `eoc → sequencer.clock`. The period is `rise + fall`, and `rate_cv` becomes a tempo CV.
+* **Gate delay** — `mode` `trigger`, `trig` from a clock, `eoc` out: the same trigger, `rise + fall` seconds later. Chain two for a rhythm.
+* **Krell** — `mode` `loop` with something wandering into `rate_cv` (an [lfo](#lfo) on its `random` waveform, a [shift_random](#shift_random)), and `eoc → sample_hold.trig` so every cycle grabs a fresh pitch: a self-playing generative machine whose pace never repeats. See `examples/krell_machine.json`.
+
+> **On self-patching `eoc → trig`.** On hardware that is *the* krell patch, and the cable is legal here — but it will not fire. This rack closes a feedback loop only through the [matrix_mixer](#matrix_mixer) (the sanctioned one-block-delayed door) or a buffered sink's `fill`; any other cycle is severed by the topological sort rather than delayed, so the returning `eoc` never arrives. `loop` mode is the supported way to get the same machine, which is exactly why it exists. Sanctioning gate-rate self-patching is a compiler change, not a module one — it is on the roadmap.
 
 #### `clock`
 

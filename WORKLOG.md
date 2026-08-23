@@ -10,20 +10,27 @@ Running log of decisions and progress. Newest first.
 
 ---
 
-## Where things stand (snapshot, 2026-08-22)
+## Where things stand (snapshot, 2026-08-23)
 
 A marker for whoever picks this up next — the entries below are the record,
 this is just the state they add up to.
 
-**Rack:** 88 module types across seven categories. Suite **2888 passed, 1
-skipped** (~90 s). Working tree clean, `origin/main == main` at `9355129`.
-104 example patches, all of which load, compile and render under the
-examples sweep.
+**Rack:** 89 module types across seven categories. Suite **2930 passed, 1
+skipped** (~90 s). 105 example patches, all of which load, compile and
+render under the examples sweep.
 
-**Outstanding: one thing.** Matthew's ears on the sampler
-(`examples/sampler_breaks.json`) — run
-`python examples/samples/generate_samples.py` first, the wavs are
-gitignored by design and the patch plays silently until they exist.
+**Outstanding: two listens, no defects.**
+
+1. The **sampler** (`examples/sampler_breaks.json`) — run
+   `python examples/samples/generate_samples.py` first, the wavs are
+   gitignored by design and the patch plays silently until they exist.
+2. The **function generator** (`examples/krell_machine.json`) — nothing
+   to prepare, it plays itself as soon as you hit Start.
+
+One architectural finding is queued rather than fixed: feedback cycles
+close ONLY through a `matrix_mixer` (or a buffered sink's `fill`), so a
+self-patched `eoc → trig` is legal but inert. See the 2026-08-23 entry
+and the TODO item; it is a compiler change and wants its own session.
 
 Everything else is clear: no open defects, all 18 example patches heard,
 every GUI face seen. The eyeball queue emptied for the first time on
@@ -41,8 +48,100 @@ and the docs-coverage sweep that has been there longer.
 
 **Next up, in the order most likely to be picked:** sampler slice 2 (loop
 mode + region UI), sampler slice 3 (`start_cv` is the real prize),
-`function_generator`, `rotary`. Full menu in TODO.md and
-docs/MODULE_IDEAS.md.
+`rotary` (the organ's partner), the feedback-door generalization. Full
+menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-08-23 — the function generator, and the door that isn't open
+
+Board was clear bar the sampler's ears (Matthew was out; that listen is
+still pending). He picked `function_generator` off the 2026-08-04
+keep-list, where it had sat with the note "probably the highest
+patch-value-per-line-of-code item on this list". It earns that: it is one
+shape with three modes and two announcement jacks, and which *module* it
+is depends entirely on how you cable it.
+
+**The design, which is a positioning argument again.** A rise/fall ramp is
+not new — `ad_envelope` is one. What makes this the west-coast module is
+that it tells you where it is. `eor` pulses when the rise completes, `eoc`
+when the fall does, and those two jacks turn a ramp into an envelope, an
+LFO, a clock, or a gate delay depending on what you plug them into. The
+three modes are three answers to "what does the gate mean?" — `trigger`
+ignores its length, `gate` holds at full while it lasts, `loop` doesn't
+need one at all and treats a trigger as a sync instead.
+
+`curve` is one bipolar knob for both slopes, `level = pos**k` with
+`k = 1+3c` for c ≥ 0 and `1/(1-3c)` below, so +c and −c are exact
+reciprocals: the two halves of the knob are mirror images, and the fall
+is always the rise played backwards. Positive is the natural percussive
+shape (slow-then-fast up, fast-then-trailing down), negative the swelling
+orchestral one. Tested by *measuring the shape* — the half-rise level is
+pinned to `0.5**k` at five curve settings, not merely "it goes up".
+
+**Two things went wrong, and both were worth the trip.**
+
+*Integer counters, not float steps.* The first draft advanced stage
+progress with `pos += 1/(t·sr)` per sample. It looked perfect. Then the
+loop-mode period measured **962 samples where 960 was asked for** —
+accumulation error, about a sample per stage, invisible in an envelope
+and compounding every cycle in a clock. This is the organ's lone-8′
+lesson arriving from a new direction: count integers, divide once. A
+stage is now exactly `round(t·sr)` samples, forever, and the test asserts
+`set(periods) == {960}` rather than a mean — the tripwire is only a
+tripwire if it would have caught the bug, and this one demonstrably
+would. Stage *entry* still needs the curve inverted (`cnt =
+len·level^(1/k)`), which is what makes a retrigger deep in the fall, or a
+gate released mid-rise, pick up from the level it is actually at instead
+of jumping. Click-free is measured as a bounded per-sample step, not
+eyeballed.
+
+*The voice path was 117% of the block budget.* Vectorized across the V
+slots, per-sample, like `ad_envelope`'s — and it cost more than a whole
+block's worth of time on its own. The slew lesson, again and harder: at a
+block's worth of samples a numpy op is overhead, not arithmetic, and this
+state machine does about ten of them per sample. Rewritten as ONE scalar
+kernel that the mono path calls once and the voice path calls once per
+slot: **34.6%** at 16 sounding voices, 8.9% at a realistic four, and
+**0.19%** when every slot is parked (idle slots skip the loop entirely,
+which in a poly patch is most of them, most of the time). The refactor
+also made the bit-identity claim structural rather than asserted — a
+voice row equals the mono result because it is literally the same
+function, and the tests now pin that across three modes and three curves
+rather than hoping.
+
+**And one thing that isn't a bug, but is a wall.** The headline patch for
+a module like this is the krell: `eoc` back into `trig`, and the machine
+plays itself forever. That cable is legal here — the editor accepts it,
+the patch compiles, the audio renders, everything looks right. It does
+not fire. `_is_delayed_edge` honours exactly two feedback paths: a cable
+compile marked a `matrix_mixer` late-read, and a buffered sink's `fill`
+out. Every other cycle is *severed* by the topological sort, not delayed
+one block. My first `krell_machine.json` had a starter clock OR'd with
+the returning `eoc`, rendered beautifully, and fired **once every twelve
+seconds** — the starter alone. A patch that merely looks like a krell.
+
+So the example was rebuilt around `loop` mode, which is the supported
+route to the same machine and is precisely why the mode exists: it
+free-runs, a stepped-random LFO into `rate_cv` breathes the pace, and
+`eoc` grabs a fresh pitch through a sample & hold each cycle. Measured
+over 20 s it fires 34 times with gaps from 0.53 s to 1.44 s. The example
+carries a tripwire that **counts the notes and checks the pace varies**,
+because "it renders" was exactly the check that let the broken version
+through. Both the module docstring and the MODULES.md entry say plainly
+that `eoc → trig` will not close in this rack and why.
+
+Generalizing the door — letting any cycle-closing cable become a
+late-read, which is `_compute_late_edges` widened from "dst is a matrix"
+to "closes a cycle" — is queued in TODO as its own item. It changes how
+every patch compiles, so it wants its own session, its own tests and its
+own ears, not a corner of this one.
+
+Shipped: the module, the three-mode renderer + shared kernel, the UI
+panel (mode combo, two time drags, a bipolar curve slider), the
+MODULES.md entry + index row, `examples/krell_machine.json`, and 40
+tests. Suite **2930 passed, 1 skipped**. Both tripwires green (ASCII on
+screen, `backend.set_param` call sites). Needs: a listen.
 
 ---
 

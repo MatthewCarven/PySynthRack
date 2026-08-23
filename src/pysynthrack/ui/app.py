@@ -83,6 +83,7 @@ from ..modules.chord import (
     CHORD_PRESETS,
 )
 from ..modules.clockwork import BERNOULLI_MODES
+from ..modules.function_generator import FUNCTION_GENERATOR_MODES
 from ..modules.modal import MODAL_MATERIALS
 from ..modules.scope import SCOPE_MODES, SCOPE_TRIGGER_MODES
 from ..modules.slew import SLEW_SHAPES
@@ -2834,6 +2835,34 @@ class App:
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=0.005,
                     min_value=0.0, max_value=10.0, format="%.3f s",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "function_generator":
+            # The Maths-style function: ``mode`` decides what the trigger
+            # means (fire-and-forget / hold-while-high / free-running),
+            # ``rise`` and ``fall`` are the two slopes in seconds, and
+            # ``curve`` bends both at once -- negative logarithmic,
+            # 0 straight, positive exponential.
+            if param_name == "mode":
+                dpg.add_combo(
+                    label=param_name, items=list(FUNCTION_GENERATOR_MODES),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("rise", "fall"):
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.005,
+                    min_value=0.0, max_value=10.0, format="%.3f s",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "curve":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-1.0, max_value=1.0, format="%.2f log/exp",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

@@ -161,6 +161,63 @@ once the board cleared.
       `reverse`; velocity into level; a waveform face with region markers
       (scope-face precedent).
 
+## The function generator (opened 2026-08-23)
+
+Matthew's pick off the 2026-08-04 keep-list: "the highest patch-value-per-
+line item on this list". Spec promoted from the one-liner and built the
+same session.
+
+- [x] **`function_generator`** — SHIPPED 2026-08-23. Modulation.
+      `trig` + `rate_cv` in; `out` (cv) + **`eor`/`eoc`** (gate) out.
+      Three modes off one shape: `trigger` (fire-and-forget, gate length
+      ignored), `gate` (rise, hold at 1.0 while held, fall on release —
+      an AR with a proper hold), `loop` (free-running; `trig` becomes a
+      click-free sync). One bipolar `curve` knob bends both slopes via a
+      power law `level = pos**k`, `k = 1+3c` / `1/(1-3c)`, so +c and −c
+      are exact mirrors and the fall is the rise played backwards.
+      `rate_cv` is 1 V/oct on the RATE, block-mean like the LFO's,
+      ±5 octaves.
+      **Stage progress is an integer sample counter**, not an
+      accumulated float step — the organ's lone-8′ lesson, and it
+      mattered: the float draft measured a loop period of 962 samples
+      where 960 was asked for, compounding every cycle. Counted, the
+      period is exactly `rise+fall` forever, and the test asserts the
+      set of measured periods is `{960}` rather than a mean.
+      Click-free by **solving the curve backwards** on every stage entry
+      (`cnt = len·level^(1/k)`), so retriggers and mid-rise releases pick
+      up from the current level.
+      Perf: one scalar kernel shared by both shapes (the slew lesson —
+      the vectorized-across-voices draft cost **117%** of a block's
+      budget at 16 voices; per-voice scalars cost **34.6%**, 8.9% at a
+      realistic 4 notes, 0.19% all-idle thanks to a skip for parked
+      slots). Voice rows are bit-identical to mono *by construction*
+      because it is literally the same function.
+      40 tests; suite **2930**. Example `krell_machine.json`. NEEDS: a
+      listen.
+- [ ] **Sanction gate-rate feedback (`eoc → trig`)** — FOUND while
+      building the example, and it is a **compiler** job, not a module
+      one, so it is queued rather than done. On hardware, `eoc` patched
+      back to `trig` is *the* krell patch. Here that cable is legal and
+      inert: `_is_delayed_edge` only honours a `matrix_mixer` late-read
+      or a buffered sink's `fill`, so every other cycle is severed by
+      the topological sort instead of delayed one block. The first draft
+      of `krell_machine.json` rendered beautifully while firing once per
+      starter-clock pulse — a patch that merely *looked* like a krell,
+      which is why the example now carries a tripwire that counts notes.
+      The fix is to generalize the sanctioned door beyond the matrix:
+      let any cable that would close a cycle become a late-read, seeded
+      from the previous block, with the one-block latency documented.
+      That is the same machinery `_compute_late_edges` already has,
+      widened from `dst is a matrix_mixer` to `any cycle-closing cable`.
+      Worth a session of its own: it changes how EVERY patch compiles,
+      so it wants its own tests and its own ears. Until then `loop` mode
+      is the supported route and both the module docstring and
+      MODULES.md say so plainly.
+- [ ] **Follow-ons, if the ears like it** — a per-slope `curve_rise` /
+      `curve_fall` pair (Maths has one knob per slope); a `both`-style
+      second CV in for `rise` and `fall` separately; an `out_inv` jack;
+      `eor`-into-`trig` as a rise-only retrigger once feedback closes.
+
 ## Later / wishlist
 
 - [x] **Every non-ASCII glyph painted as `?`** — FIXED 2026-08-21,
@@ -254,8 +311,8 @@ once the board cleared.
       picked, the usual workflow. The menu:
       * Sources: `bowed`/`wind` (M–L, sustained-excitation waveguide
         — completes pluck/modal's physical family).
-      * Modulation: `function_generator` (M — Maths-style rise/fall +
-        loop + EOR/EOC; the highest patch-value-per-line item),
+      * Modulation: `function_generator` — **SHIPPED 2026-08-23**, see
+        § "The function generator" below,
         `drift` (S — smooth wandering random; chaos orbits, drift
         stumbles), `cv_math` (S — logic-for-CVs, zero params),
         `cv_recorder` (M — the modulation looper; nothing else

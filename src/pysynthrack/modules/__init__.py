@@ -39,6 +39,7 @@ from .filter import Filter
 from .flanger import Flanger
 from .fm_op import FMOperator
 from .freq_shifter import FreqShifter
+from .function_generator import FunctionGenerator
 from .keyboard import Keyboard
 from .key_trigger import KeyTrigger
 from .lfo import LFO
@@ -129,6 +130,7 @@ __all__ = [
     "Flanger",
     "FMOperator",
     "FreqShifter",
+    "FunctionGenerator",
     "HatDrum",
     "Keyboard",
     "KeyTrigger",
