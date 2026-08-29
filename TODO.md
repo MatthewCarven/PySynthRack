@@ -439,7 +439,10 @@ same session.
       tripwires (docs coverage) green, WORKLOG + this entry updated,
       ONE commit for the pair (Session A precedent). Perf numbers in
       the worklog. Ears go to the meatthread0 queue as usual.
-- [ ] **`sampler` — keyboard-tracked pitched sample voice** — spec'd
+- [x] **`sampler` — keyboard-tracked pitched sample voice** — SLICE 1
+      SHIPPED 2026-08-22 (`9355129`), **EARS PASSED 2026-08-29**
+      ("works well"). Slices 2 and 3 are tracked in § "The sampler"
+      above; this entry is the original spec-pick record. Spec'd
       2026-08-04 at Matthew's pick (":-{D") from the "what's left"
       brainstorm; full spec in docs/MODULE_IDEAS.md § New voices. The
       gap FilePlayer doesn't fill: per-voice playheads at

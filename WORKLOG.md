@@ -19,7 +19,22 @@ this is just the state they add up to.
 skipped** (~90 s). 105 example patches, all of which load, compile and
 render under the examples sweep.
 
-**Outstanding: nothing. The board is clear**, as it was on 2026-08-21.
+**Outstanding: nothing on the MODULE board** — every module is heard and
+seen, as of 2026-08-21. Two older non-module items are still open and are
+easy to lose, so they are named here rather than left in the tail of
+TODO.md:
+
+* **Buffered sink: `buffer_size` 8192 fails `open()` and the sink goes
+  silently `buffer: idle`** (screenshot-confirmed 2026-07-16, TODO
+  "Later/wishlist"). A real defect, and note the family resemblance to
+  the media-path bug fixed today: *another* subsystem failing soft with
+  nothing to say so. Fall back instead of going quiet, and surface the
+  fallback in the readout.
+* **Real-GUI eyeball: the governor patch** (meatthread0) — fill ->
+  CVOffset(-0.5) -> CVScale -> ratio_cv against a second device. Never
+  ticked; the 2026-08-21 "eyeball queue empty" covered modules and
+  examples, not this hand-built patch.
+
 Both 2026-08 modules passed on 2026-08-29: the **function generator**
 ("works fine") and the **sampler** ("definitely works now... and works
 well", once the media path fix let it find its samples). That second one
