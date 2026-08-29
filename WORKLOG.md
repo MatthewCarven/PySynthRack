@@ -19,16 +19,14 @@ this is just the state they add up to.
 skipped** (~90 s). 105 example patches, all of which load, compile and
 render under the examples sweep.
 
-**Outstanding: nothing.** Both 2026-08 modules are heard and working —
-the **function generator** ("works fine") and the **sampler**
-("definitely works now", once the media path fix let it find its
-samples). The board is clear again, as it was on 2026-08-21.
-
-The one thing still open is not a defect but an opinion: whether the
-sampler *plays* like an instrument rather than a transport, which is the
-whole design argument for it being a new module rather than a
-`file_player` mode. Matthew's to give whenever he sits down with it;
-nothing is blocked on it.
+**Outstanding: nothing. The board is clear**, as it was on 2026-08-21.
+Both 2026-08 modules passed on 2026-08-29: the **function generator**
+("works fine") and the **sampler** ("definitely works now... and works
+well", once the media path fix let it find its samples). That second one
+settles the design question too — the voice-not-a-transport positioning
+holds up in play, which was the whole argument for the sampler being a
+new module rather than a `file_player` mode. Slices 2 and 3 are
+unblocked whenever Matthew wants them.
 
 One architectural finding is queued rather than fixed: feedback cycles
 close ONLY through a `matrix_mixer` (or a buffered sink's `fill`), so a

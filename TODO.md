@@ -147,13 +147,13 @@ once the board cleared.
       three regions of one loop, euclidean 4/2/6 — a breaks machine built
       out of `start`/`end` alone) with `examples/samples/
       generate_samples.py` making the audio (the `examples/irs/`
-      precedent: generator in git, wavs ignored). **HEARD AND WORKING
-      2026-08-29** — Matthew: "definitely works now", after the media
-      path fix (`aed768c`); the first attempt on the same day heard
-      nothing and that was the path bug, not the module. A verdict on
-      how it *plays* (instrument vs transport — the design argument for
-      it being a new module) is still his to give whenever he sits down
-      with it properly; nothing is blocked on it.
+      precedent: generator in git, wavs ignored). **EARS PASSED
+      2026-08-29** — Matthew: "definitely works now... and works well",
+      after the media path fix (`aed768c`); the first attempt that day
+      heard nothing and that was the path bug, not the module. The
+      voice-not-a-transport design holds up in play, which was the whole
+      argument for it being a new module rather than a `file_player`
+      mode. Slices 2 and 3 are unblocked.
 - [ ] **Slice 2 — loop mode + the region UI** — `loop` joins the `mode`
       combo (gated, but looping `loop_start`..`loop_end` while held) with
       a `loop_xfade` 1..100 ms linear crossfade across the seam (the
