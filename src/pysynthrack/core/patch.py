@@ -55,6 +55,18 @@ class Patch:
     # state, etc. Schema by convention:
     #   {"node_positions": {"<module_id>": [x, y]}}
     ui: dict[str, Any] = field(default_factory=dict)
+    # Where this patch was last read from or written to, as an absolute
+    # path -- set by ``load_patch`` / ``save_patch``, ``None`` for a patch
+    # built in memory. Deliberately NOT serialized: it describes where the
+    # file *is*, not what it contains, so it must not travel inside it.
+    #
+    # The audio backend uses it to resolve RELATIVE media paths (a
+    # sampler's `path`, a convolver's IR) against the patch's own folder
+    # rather than the process working directory, which is what makes a
+    # patch play the same whether it was launched from the project root,
+    # from `dist/`, or by double-clicking it. See
+    # ``NumpyBackend._resolve_media_path``.
+    source_path: str | None = None
 
     # ----- modules ---------------------------------------------------------
 

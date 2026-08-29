@@ -10,22 +10,22 @@ Running log of decisions and progress. Newest first.
 
 ---
 
-## Where things stand (snapshot, 2026-08-23)
+## Where things stand (snapshot, 2026-08-29)
 
 A marker for whoever picks this up next — the entries below are the record,
 this is just the state they add up to.
 
-**Rack:** 89 module types across seven categories. Suite **2930 passed, 1
+**Rack:** 89 module types across seven categories. Suite **2950 passed, 1
 skipped** (~90 s). 105 example patches, all of which load, compile and
 render under the examples sweep.
 
-**Outstanding: two listens, no defects.**
-
-1. The **sampler** (`examples/sampler_breaks.json`) — run
-   `python examples/samples/generate_samples.py` first, the wavs are
-   gitignored by design and the patch plays silently until they exist.
-2. The **function generator** (`examples/krell_machine.json`) — nothing
-   to prepare, it plays itself as soon as you hit Start.
+**Outstanding: one listen.** The **function generator**
+(`examples/krell_machine.json`) is heard and PASSED; the **sampler**
+(`examples/sampler_breaks.json`) is still to hear — the first attempt hit
+the working-directory path bug fixed on 2026-08-29, not the module. Run
+`python examples/samples/generate_samples.py` first (the wavs are
+gitignored by design); it now plays from any directory, and if a media
+file is genuinely missing the status bar says so instead of going quiet.
 
 One architectural finding is queued rather than fixed: feedback cycles
 close ONLY through a `matrix_mixer` (or a buffered sink's `fill`), so a
@@ -50,6 +50,89 @@ and the docs-coverage sweep that has been there longer.
 mode + region UI), sampler slice 3 (`start_cv` is the real prize),
 `rotary` (the organ's partner), the feedback-door generalization. Full
 menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-08-29 — the sampler wasn't broken, the working directory was
+
+Matthew went to listen to the sampler and heard nothing: *"didn't hear any
+audio? Maybe a file/path issue?"* — with `krell_machine.json` playing fine
+in the same sitting. That contrast was the whole diagnosis: the krell patch
+touches no files.
+
+**What it was.** `examples/sampler_breaks.json` stores its sample as a
+*relative* path, `examples/samples/breaks.wav`, and the backend resolved
+relative paths against the **process working directory** and nothing else.
+So the patch was audible from the project root and silent from anywhere
+else. Reproduced exactly:
+
+```
+cwd = project root  ->  peak 0.515   (plays)
+cwd = home          ->  peak 0.0     (silence)
+```
+
+His wavs were present and correct all along; he had run the generator. He
+was about to move the file, which would only have helped if he had guessed
+the right destination — so the diagnosis was worth more than the fix would
+have been on its own.
+
+**It was never sampler-specific.** `convolver` (`examples/irs/hall.wav`)
+and the `file_player` examples (`take_01.wav`, the two recordings) carry
+relative paths through the same six call sites and break identically. This
+had been latent since the convolver shipped; nobody had launched from
+anywhere but the root.
+
+**The fix: resolve against the patch, not the process.** `Patch` gains a
+`source_path`, stamped by `load_patch` and `save_patch` and deliberately
+*not* serialized — it describes where the file is, not what it contains, so
+a copied patch must not carry the original's folder. `compile()` captures
+that folder, and one helper, `_resolve_media_path`, now stands in front of
+all six reads. A relative path is tried against, in order:
+
+1. the patch's own folder — the DAW convention, and what makes a patch plus
+   its samples portable as a unit;
+2. that folder's parent — because the shipped examples live in `examples/`
+   while naming their media from the project root, and rewriting them would
+   break every patch a user has already saved in that style;
+3. the working directory — the historical behaviour, so nothing that worked
+   before stops working;
+4. the resource root — where the examples and their media live in a frozen
+   build, which is exactly the case Matthew was heading for.
+
+First hit wins. Absolute paths are returned untouched: the user named an
+exact file, and second-guessing them is worse than failing. Nothing found
+comes back unchanged so the failure names what the patch actually asked
+for. Results are memoized per compile — not for the stat calls but because
+**the renderers use the resolved string as a "still the right file?" cache
+key**, so an unstable answer would reload every block forever; the memo is
+dropped on every `compile()`, so dropping a missing file into place and
+recompiling finds it.
+
+**The second half, which is the real lesson.** The loaders all fail *soft* —
+they must, or a typo'd path would raise on the audio thread — and the price
+of that is a missing file being indistinguishable from a patch that is
+working correctly and happens to be quiet. That is what cost the listening
+pass, and it is worse than the path bug: Matthew had to guess. So
+`media_load_failures()` reports any sampler/convolver whose load finished
+empty, and the GUI names it in the status bar once per failure, quoting the
+path **as written in the patch** because that is what he will go looking
+for. Cleared on load and on recompile, so a fix gets a fresh verdict.
+
+I had also written the old behaviour into the docs as though it were
+expected — *"plays silently rather than failing"*. Documenting a wart is
+not the same as deciding it is a feature; that note is gone.
+
+**Testing note.** The first version of the identical-audio test compared
+two renders sample-for-sample and failed on the first ~5,500 samples. Not
+the fix: the decode runs on a daemon thread, so how many blocks render
+before a sample is available is disk timing. The test now settles the
+loaders before rendering — the claim is about the audio, not the race.
+Testing the kind of claim you are making, again.
+
+`tests/test_media_paths.py`: 20 tests, including the two shipped examples
+rendered from a foreign cwd (the regression itself), the four-base search
+order, the not-serialized rule, and a missing sample being *reportable*
+rather than silent. Suite **2950 passed, 1 skipped**.
 
 ---
 

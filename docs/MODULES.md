@@ -496,7 +496,7 @@ steady-state playback is an in-memory array slice — no per-block disk I/O.
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
-| `path` | `""` | file path | Path to an audio/video file — type it or use the node's **Browse...** button. WAV always works; other formats (mp3/flac/ogg, video-audio) need ffmpeg. Empty/missing/unreadable → silence (the patch still loads). |
+| `path` | `""` | file path | Path to an audio/video file — type it or use the node's **Browse...** button. WAV always works; other formats (mp3/flac/ogg, video-audio) need ffmpeg. Empty/missing/unreadable → silence (the patch still loads). A **relative** path is looked up next to the patch file first, then in its parent folder, then in the directory you launched from — so a patch plus its media travels as a unit and plays the same however the app was started. A file that fails to load says so in the status bar instead of quietly playing silence. |
 | `gain` | `1.0` | 0…2 | Linear gain on both channels. |
 | `loop` | `false` | bool | `true` repeats seamlessly; `false` (default) plays once then silence until restart/re-arm. |
 | `armed` | `true` | bool | `false` outputs silence and parks the playhead at the start, so re-arming replays from the top. |
@@ -713,7 +713,7 @@ old playhead out over ~2 ms rather than cutting to the new one.
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
-| `path` | `""` | file | The sample. WAV needs nothing; mp3 / flac / ogg / m4a and video audio need the `[media]` extra. Empty or unreadable → silence. |
+| `path` | `""` | file | The sample. WAV needs nothing; mp3 / flac / ogg / m4a and video audio need the `[media]` extra. Empty or unreadable → silence. A **relative** path is looked up next to the patch file first, then in its parent folder, then in the directory you launched from — so a patch plus its media travels as a unit and plays the same however the app was started. A file that fails to load says so in the status bar instead of quietly playing silence. |
 | `root` | `60` (C4) | C0…C8 | The note the recording **is**. Playing it reads at rate 1.0. Shown as a note name, stored as a MIDI number. |
 | `tune` | `0` | ±12 st | Semitone shift on top. |
 | `fine` | `0` | ±50 ct | Cent shift on top. |
@@ -2168,7 +2168,7 @@ Both act on the wet only, so `mix = 0` stays a bit-exact dry bypass.
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
-| `path` | `""` | file path | IR audio file (WAV or ffmpeg-decodable). Empty / missing / unreadable → a unit-impulse IR (transparent insert). Loaded whole off the audio thread, energy-normalised and length-capped; **Browse…** opens the file picker. |
+| `path` | `""` | file path | IR audio file (WAV or ffmpeg-decodable). Empty / missing / unreadable → a unit-impulse IR (transparent insert). Loaded whole off the audio thread, energy-normalised and length-capped; **Browse…** opens the file picker. A **relative** path is looked up next to the patch file first, then in its parent folder, then in the directory you launched from — so a patch plus its media travels as a unit and plays the same however the app was started. A file that fails to load says so in the status bar instead of quietly playing silence. |
 | `predelay` | `0.0` | 0 … 500 ms | Wet-only pre-delay — how far the reverb onset sits behind the dry. 0 = starts with the dry. |
 | `tone` | `20000.0` | 1000 … 20000 Hz | Wet low-pass cutoff. At 20000 (max) the filter is **off** (transparent wet); lower darkens the tail. |
 | `gain` | `1.0` | 0 … 2 | Linear trim on the **wet** only. The dry path is never scaled, so `mix = 0` is a bit-exact dry bypass whatever `gain` is. |

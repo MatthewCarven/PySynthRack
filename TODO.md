@@ -218,6 +218,30 @@ same session.
       second CV in for `rise` and `fall` separately; an `out_inv` jack;
       `eor`-into-`trig` as a rise-only retrigger once feedback closes.
 
+## Media paths (2026-08-29)
+
+- [x] **Relative media paths depended on the working directory** — FIXED
+      2026-08-29, reported by Matthew ("didn't hear any audio? Maybe a
+      file/path issue?"). `sampler_breaks.json` names its sample
+      relatively and the backend resolved relative paths against the
+      PROCESS CWD alone, so it played from the project root and rendered
+      silence from anywhere else — `dist/` included. Never
+      sampler-specific: `convolver` and the `file_player` examples share
+      the same six call sites. `Patch.source_path` (stamped on load/save,
+      never serialized) + one `_resolve_media_path` helper in front of
+      all six: patch folder, its parent, cwd, resource root, first hit
+      wins; absolute untouched; memoized per compile because the
+      renderers use the result as a cache key. **And the silent-failure
+      half**, which was worse than the path bug — `media_load_failures()`
+      + a status-bar report, so a missing file says so once instead of
+      leaving you to guess. 20 tests (`tests/test_media_paths.py`),
+      including both shipped examples rendered from a foreign cwd. Suite
+      **2950**.
+- [ ] **`disk_writer`'s output path is still cwd-relative** — deliberate
+      and documented (it is a *destination*, not a lookup: there is no
+      "search for where the user meant to write"), but worth revisiting
+      if anyone is ever surprised by where their recording landed.
+
 ## Later / wishlist
 
 - [x] **Every non-ASCII glyph painted as `?`** — FIXED 2026-08-21,

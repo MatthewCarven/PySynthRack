@@ -339,6 +339,9 @@ class App:
         # fails between two polls is still skipped (not stalled on) once.
         self._playlist_listboxes: dict[int, int] = {}
         self._fileplayer_advanced_gen: dict[int, int] = {}
+        # (module_id, path) pairs already named in the status bar, so a
+        # failed media load is reported ONCE rather than every frame.
+        self._media_failures_reported: set[tuple[int, str]] = set()
 
     # ----- entry point ----------------------------------------------------
 
@@ -384,6 +387,7 @@ class App:
                 self._update_sink_buffers()
                 self._update_file_positions()
                 self._advance_file_playlists()
+                self._report_media_failures()
                 self._update_velocity_capture()
                 dpg.render_dearpygui_frame()
                 if _crash_test_after is not None:
@@ -3647,6 +3651,42 @@ class App:
                 self._advance_playlist(module_id, skipped_bad=now_failed)
                 self._fileplayer_advanced_gen[module_id] = gen
 
+    def _report_media_failures(self) -> None:
+        """Say so when a sampler/convolver's file did not load.
+
+        These loaders fail soft by design -- they run on background
+        threads and must never raise into the audio callback -- so a
+        missing sample sounds exactly like a patch that is working
+        correctly and happens to be quiet. That silence cost a listening
+        pass on 2026-08-29: `sampler_breaks.json` was launched from a
+        directory where its relative sample path did not resolve, played
+        nothing, and gave no clue why.
+
+        Each (module, path) is named once, not once per frame. The set is
+        cleared on load/compile so fixing the file and recompiling gets a
+        fresh verdict rather than being suppressed by the old one.
+        """
+        query = getattr(self.backend, "media_load_failures", None)
+        if query is None:
+            return
+        try:
+            failures = query()
+        except Exception:
+            return
+        for module_id, module_type, path in failures:
+            key = (module_id, path)
+            if key in self._media_failures_reported:
+                continue
+            self._media_failures_reported.add(key)
+            module = self.patch.modules.get(module_id)
+            name = (module.name if module is not None else None) or module_type
+            shown = path or "(no file set)"
+            self._set_status(
+                f"{name}: could not load '{shown}' - check the file exists "
+                f"(relative paths are looked up next to the patch, then in "
+                f"the folder you launched from)"
+            )
+
     def _advance_playlist(self, module_id: int, skipped_bad: bool = False) -> None:
         """Pop the next queued file into a FilePlayer and let it play.
 
@@ -4932,6 +4972,8 @@ class App:
         # positions land correctly; the saved zoom is re-applied below.
         self._reset_zoom_state()
         self.patch = load_patch(path)
+        # A new patch gets a fresh verdict on its media files.
+        self._media_failures_reported.clear()
 
         saved_positions = self.patch.ui.get("node_positions", {})
         for module in self.patch:
@@ -5485,6 +5527,10 @@ class App:
     def _recompile_if_running(self) -> None:
         if self.backend.is_running:
             try:
+                # Recompile re-resolves every media path, so a file that
+                # was missing gets another chance to be found -- and to be
+                # reported again if it still isn't.
+                self._media_failures_reported.clear()
                 self.backend.compile(self.patch)
             except Exception as exc:
                 traceback.print_exc()

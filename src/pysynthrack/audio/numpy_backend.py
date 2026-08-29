@@ -40,6 +40,7 @@ import queue
 import threading
 import time
 import wave
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -48,6 +49,7 @@ from scipy.signal import butter, firwin, lfilter, resample_poly, sosfilt
 from . import media
 from scipy.io import wavfile
 
+from .._resources import resource_root
 from ..core.patch import Patch
 from ..modules.keyboard import midi_to_freq
 from ..modules.cv_keyboard import CV_REFERENCE_NOTE, KEY_GATE_NAMES
@@ -1043,6 +1045,13 @@ class NumpyBackend(AudioBackend):
         super().__init__(sample_rate=sample_rate, block_size=block_size)
         self._patch: Patch | None = None
         self._topo_order: list[int] = []
+        # Where the compiled patch was loaded from (its folder), and the
+        # per-compile memo of resolved media paths. See
+        # :meth:`_resolve_media_path` -- the memo must live at least as
+        # long as a compile generation because the renderers use the
+        # resolved string as a "still the right file?" cache key.
+        self._patch_dir: str | None = None
+        self._media_path_cache: dict[tuple[str, str | None], str] = {}
         # Matrix feedback: cables marked late-read at compile, and the
         # previous block's buffers for their source ports (seeded into
         # the store before each render walk). _late_prev survives live
@@ -1158,6 +1167,13 @@ class NumpyBackend(AudioBackend):
     def compile(self, patch: Patch) -> None:
         with self._lock:
             self._patch = patch
+            # Media paths resolve relative to the patch's own folder (see
+            # _resolve_media_path). Recompute both here: a different patch
+            # means a different folder, and dropping the memo is what lets
+            # a file that was missing last time be found once it appears.
+            source = getattr(patch, "source_path", None)
+            self._patch_dir = str(Path(source).resolve().parent) if source else None
+            self._media_path_cache = {}
             # Feedback door: cables into a matrix_mixer that would close
             # a cycle become LATE-READS (previous-block buffer, one block
             # of loop latency) — computed BEFORE the sort so the sort can
@@ -1251,7 +1267,7 @@ class NumpyBackend(AudioBackend):
                 st = self._state.setdefault(
                     mid, {"path": None, "decoder": None, "pos": 0, "seek": None}
                 )
-                fp_path = str(m.params.get("path", ""))
+                fp_path = self._resolve_media_path(m.params.get("path", ""))
                 if st.get("decoder") is None or st.get("path") != fp_path:
                     old_dec = st.get("decoder")
                     if old_dec is not None:
@@ -1269,7 +1285,7 @@ class NumpyBackend(AudioBackend):
                 if m.TYPE != "convolver":
                     continue
                 st = self._state.setdefault(mid, self._new_convolver_state())
-                cv_path = str(m.params.get("path", ""))
+                cv_path = self._resolve_media_path(m.params.get("path", ""))
                 pend = st.get("pending")
                 if cv_path and cv_path != st.get("loaded_path") and (
                     pend is None or pend.get("path") != cv_path
@@ -1289,7 +1305,7 @@ class NumpyBackend(AudioBackend):
                 if m.TYPE != "sampler":
                     continue
                 st = self._state.setdefault(mid, self._new_sampler_state())
-                sp_path = str(m.params.get("path", ""))
+                sp_path = self._resolve_media_path(m.params.get("path", ""))
                 pend = st.get("pending")
                 if sp_path and sp_path != st.get("loaded_path") and (
                     pend is None or pend.get("path") != sp_path
@@ -10471,7 +10487,7 @@ class NumpyBackend(AudioBackend):
         state = self._state.setdefault(
             module.id, {"path": None, "decoder": None, "pos": 0, "seek": None}
         )
-        path = str(module.params.get("path", ""))
+        path = self._resolve_media_path(module.params.get("path", ""))
         if state.get("decoder") is None or state.get("path") != path:
             # First arrival, or a live path edit between compiles. Starting
             # a decoder is just a thread spawn — safe on the audio thread.
@@ -10553,6 +10569,81 @@ class NumpyBackend(AudioBackend):
             left *= gain
             right *= gain
         return {"left": left, "right": right}
+
+    # ----- media path resolution ------------------------------------------
+
+    def _resolve_media_path(self, path) -> str:
+        """Turn a patch's media ``path`` param into one that actually opens.
+
+        Patches store media paths (a sampler's sample, a convolver's IR, a
+        file player's track) as written by whoever made them, which in
+        practice means RELATIVE -- and until 2026-08-29 a relative path was
+        resolved against the process working directory alone. That made a
+        patch's audio depend on where the app happened to be launched from:
+        `examples/sampler_breaks.json` played perfectly from the project
+        root and rendered pure silence from anywhere else, including from
+        `dist/`. Silence, not an error, because every loader here fails
+        soft so the audio thread never raises.
+
+        So a relative path is now tried against an ordered list of bases
+        and the FIRST ONE THAT EXISTS wins:
+
+          1. the patch's own folder -- the DAW convention, and what makes a
+             patch plus its samples portable as a unit;
+          2. that folder's parent -- because the shipped examples live in
+             ``examples/`` while naming their media from the project root
+             (``examples/samples/breaks.wav``), and rewriting them would
+             break every patch a user has already saved in that style;
+          3. the process working directory -- the historical behaviour, so
+             nothing that worked before stops working;
+          4. the resource root -- the install/bundle directory, which is
+             where the examples and their media live in a frozen build.
+
+        An ABSOLUTE path is returned untouched: the user named an exact
+        file and second-guessing them would be worse than failing. An empty
+        path stays empty (an unpatched slot, not an error). If nothing
+        matches, the original string comes back unchanged so the failure
+        message names what the patch actually asked for.
+
+        Results are cached per compile generation. That is not (only) about
+        the stat calls -- the renderers use this string as the cache key
+        for "is the loaded buffer still the right one", so it MUST be
+        stable within a compile or they would reload forever. The cache is
+        dropped on every ``compile()``, so moving a missing file into place
+        and hitting recompile finds it.
+        """
+        raw = str(path or "")
+        if not raw:
+            return ""
+        key = (raw, self._patch_dir)
+        hit = self._media_path_cache.get(key)
+        if hit is not None:
+            return hit
+
+        resolved = raw
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            bases: list[Path] = []
+            if self._patch_dir:
+                patch_dir = Path(self._patch_dir)
+                bases.append(patch_dir)
+                bases.append(patch_dir.parent)
+            bases.append(Path.cwd())
+            try:
+                bases.append(resource_root())
+            except Exception:  # pragma: no cover - defensive; never fatal
+                pass
+            for base in bases:
+                try:
+                    found = base / candidate
+                    if found.is_file():
+                        resolved = str(found)
+                        break
+                except (OSError, ValueError):  # pragma: no cover - odd paths
+                    continue
+
+        self._media_path_cache[key] = resolved
+        return resolved
 
     def _start_file_decoder(self, path):
         """Spawn a background decoder for ``path`` (None for an empty path)."""
@@ -10636,6 +10727,53 @@ class NumpyBackend(AudioBackend):
         # ``pos >= total`` means exactly "a non-looping, armed track ran off
         # the end" without having to re-read the loop/armed params here.
         return int(state.get("pos", 0)) >= total
+
+    def media_load_failures(self) -> list[tuple[int, str, str]]:
+        """UI hook: every module whose media file did not load.
+
+        Returns ``(module_id, module_type, path_as_written)`` for each
+        ``sampler`` / ``convolver`` whose background load has finished
+        and come back empty -- a missing file, an unreadable one, or an
+        encoding nothing here can decode.
+
+        This exists because the loaders all fail SOFT: they must, or a
+        typo'd path would raise on the audio thread. The cost of that
+        choice is that a missing sample is indistinguishable from silence
+        unless someone asks, and on 2026-08-29 it cost a listening pass --
+        `sampler_breaks.json` played nothing and looked perfectly healthy
+        doing it. So the GUI asks, once per failure, and says so.
+
+        The reported path is the one WRITTEN IN THE PATCH, not the
+        resolved one: it is what the user typed and what they will go
+        looking for. Resolution having failed is precisely the news.
+
+        ``file_player`` is deliberately not included -- it has its own
+        per-module hook (:meth:`file_player_failed`) that the playlist
+        advancer already uses to skip a dud track, and folding it in here
+        would report every skipped file twice.
+        """
+        patch = self._patch
+        if patch is None:
+            return []
+        out: list[tuple[int, str, str]] = []
+        for mid, module in patch.modules.items():
+            if module.TYPE not in ("sampler", "convolver"):
+                continue
+            state = self._state.get(mid)
+            if not state:
+                continue
+            # A load that has RESOLVED (loaded_path set, nothing pending)
+            # but produced no audio is a failure. Still-pending or never
+            # attempted is not news yet.
+            if state.get("pending") is not None or not state.get("loaded_path"):
+                continue
+            loaded = (
+                state.get("samples") if module.TYPE == "sampler"
+                else state.get("ir_l")
+            )
+            if loaded is None:
+                out.append((mid, module.TYPE, str(module.params.get("path", ""))))
+        return out
 
     def file_player_failed(self, module_id: int) -> bool:
         """UI hook: True once a ``file_player`` decode has terminally failed.
@@ -11694,7 +11832,7 @@ class NumpyBackend(AudioBackend):
         state = self._state.setdefault(module.id, self._new_convolver_state())
 
         # --- resolve path -> active engines (never blocks the audio thread) ---
-        path = str(module.params.get("path", ""))
+        path = self._resolve_media_path(module.params.get("path", ""))
         if path == "":
             # Transparent insert: drop any IR + cancel a pending load.
             if state.get("ir_l") is not None or state.get("loaded_path") is not None:
@@ -12318,7 +12456,7 @@ class NumpyBackend(AudioBackend):
         state = self._state.setdefault(module.id, self._new_sampler_state())
 
         # --- resolve path -> loaded buffer (never blocks the audio thread) ---
-        path = str(module.params.get("path", ""))
+        path = self._resolve_media_path(module.params.get("path", ""))
         if path == "":
             if state.get("samples") is not None or state.get("loaded_path"):
                 state["samples"] = None
