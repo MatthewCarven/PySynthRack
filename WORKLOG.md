@@ -19,13 +19,16 @@ this is just the state they add up to.
 skipped** (~90 s). 105 example patches, all of which load, compile and
 render under the examples sweep.
 
-**Outstanding: one listen.** The **function generator**
-(`examples/krell_machine.json`) is heard and PASSED; the **sampler**
-(`examples/sampler_breaks.json`) is still to hear — the first attempt hit
-the working-directory path bug fixed on 2026-08-29, not the module. Run
-`python examples/samples/generate_samples.py` first (the wavs are
-gitignored by design); it now plays from any directory, and if a media
-file is genuinely missing the status bar says so instead of going quiet.
+**Outstanding: nothing.** Both 2026-08 modules are heard and working —
+the **function generator** ("works fine") and the **sampler**
+("definitely works now", once the media path fix let it find its
+samples). The board is clear again, as it was on 2026-08-21.
+
+The one thing still open is not a defect but an opinion: whether the
+sampler *plays* like an instrument rather than a transport, which is the
+whole design argument for it being a new module rather than a
+`file_player` mode. Matthew's to give whenever he sits down with it;
+nothing is blocked on it.
 
 One architectural finding is queued rather than fixed: feedback cycles
 close ONLY through a `matrix_mixer` (or a buffered sink's `fill`), so a
