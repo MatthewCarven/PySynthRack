@@ -192,8 +192,8 @@ same session.
       realistic 4 notes, 0.19% all-idle thanks to a skip for parked
       slots). Voice rows are bit-identical to mono *by construction*
       because it is literally the same function.
-      40 tests; suite **2930**. Example `krell_machine.json`. NEEDS: a
-      listen.
+      40 tests; suite **2930**. Example `krell_machine.json`.
+      **EARS PASSED 2026-08-29** — Matthew: "works fine".
 - [ ] **Sanction gate-rate feedback (`eoc → trig`)** — FOUND while
       building the example, and it is a **compiler** job, not a module
       one, so it is queued rather than done. On hardware, `eoc` patched
