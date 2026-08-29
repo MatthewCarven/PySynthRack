@@ -134,6 +134,12 @@ rendered from a foreign cwd (the regression itself), the four-base search
 order, the not-serialized rule, and a missing sample being *reportable*
 rather than silent. Suite **2950 passed, 1 skipped**.
 
+**VERIFIED in the real app 2026-08-29** — Matthew recompiled and reported
+back: "works fine now". `sampler_breaks.json` makes sound where it made
+none. Note this confirms the *path fix*, not the sampler: slice 1 still
+has not had a proper musical listen, which is now the only thing on the
+board.
+
 ---
 
 ## 2026-08-23 — the function generator, and the door that isn't open

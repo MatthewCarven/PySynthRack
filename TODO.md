@@ -236,7 +236,8 @@ same session.
       + a status-bar report, so a missing file says so once instead of
       leaving you to guess. 20 tests (`tests/test_media_paths.py`),
       including both shipped examples rendered from a foreign cwd. Suite
-      **2950**.
+      **2950**. **VERIFIED in the real app 2026-08-29** — Matthew
+      recompiled: "works fine now".
 - [ ] **`disk_writer`'s output path is still cwd-relative** — deliberate
       and documented (it is a *destination*, not a lookup: there is no
       "search for where the user meant to write"), but worth revisiting
