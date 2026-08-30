@@ -15,9 +15,18 @@ Running log of decisions and progress. Newest first.
 A marker for whoever picks this up next — the entries below are the record,
 this is just the state they add up to.
 
-**Rack:** 89 module types across seven categories. Suite **2950 passed, 1
-skipped** (~90 s). 105 example patches, all of which load, compile and
-render under the examples sweep.
+**Rack:** 89 module types across seven categories. Suite **2984 passed, 1
+skipped** (~90 s). 109 example patches, all of which load, compile and
+render under the examples sweep. (The 2026-08-29 snapshot said 105; it was
+already three light before slice 2 added one -- count with
+`ls examples/*.json | wc -l` rather than trusting the line above.)
+
+> Updated 2026-08-30: sampler slice 2 (loop mode) shipped, and with it a
+> fix for a slice-1 defect — the sampler's `mode` dropdown had been
+> offering the *filter's* modes since it shipped, which left `gated`
+> unreachable from the GUI. New tripwire `tests/test_mode_combos.py`.
+> **Two things want a human:** ears on `sampler_mellotron.json`, and a
+> look at the sampler's mode dropdown now that it lists its own modes.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -66,6 +75,127 @@ and the docs-coverage sweep that has been there longer.
 mode + region UI), sampler slice 3 (`start_cv` is the real prize),
 `rotary` (the organ's partner), the feedback-door generalization. Full
 menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-08-30 — sampler slice 2: loop mode, and the dropdown nobody could reach
+
+Matthew picked slice 2 off the queue. It shipped, and on the way it turned
+up a defect in slice 1 that had been sitting in plain sight since the day
+it shipped.
+
+### The loop
+
+`loop` joins the `mode` combo: `gated` underneath — it sustains while held
+and releases on the fall — but the playhead wraps `loop_end` back to
+`loop_start` instead of running out. Three new params: `loop_start` /
+`loop_end` (0..1) and `loop_xfade` (ms).
+
+**`loop_start`/`loop_end` are fractions of the REGION, not of the file.**
+That was the one design call worth making deliberately: it means dragging
+`start`/`end` carries the loop along instead of stranding it outside the
+region, which is what you want the moment you use both. The playhead still
+starts at `start`, so everything before `loop_start` plays once as the
+attack and only the loop repeats — that is what lets a bowed or struck
+sample keep its onset and still sustain forever.
+
+**The wrap is one modulo on the affine array.** The segment renderer
+already computed `pos + rate*arange(n)`; looping adds
+`where(over < 0, raw, lo + mod(over, L))` and nothing else, so it stays a
+single vectorized expression *and* stays exact on integers. That last part
+matters more than it sounds: **a unity-rate loop with the crossfade off is
+a bit-exact tiling of the file.** Slice 1's whole spine is that the neutral
+is bit-exact, and the loop keeps it — so "the steady-state period is
+exactly the loop length" is an `array_equal` in the tests, not a tolerance.
+An octave up is `np.tile(data[::2], 4)`, also exact.
+
+**The seam crossfade reads the previous lap.** Over the last `loop_xfade`
+of the loop the read is mixed with `read(pos - loop_length)` — the same
+signal one lap earlier, i.e. the material running *into* `loop_start`. The
+weight reaches 1 exactly as the playhead reaches `loop_end`, so the wrap
+lands on what was already sounding. Measured on the shipped `pad_c4.wav`
+at the shipped settings:
+
+```
+worst sample step at the seam:  hard 0.28532  ->  crossfaded 0.03528
+the recording's own worst step:              0.15780
+```
+
+The faded seam is *quieter than the material around it*. Two more calls
+worth not re-litigating: the fade is measured on the **sample**, not the
+clock, so it covers the same slice of waveform whatever the pitch; and it
+is clamped to the loop length, because there is only one lap to fade into.
+
+**Deviation from the spec, noted per the standing principle:** MODULE_IDEAS
+specified `loop_xfade` as 1..100 ms. It ships as **0..100**. The spec's own
+test line asks for "seam spike-free vs xfade=off", which needs 0 to be
+reachable — and 0 is independently worth having, both as a real musical
+setting (a loop already cut on a zero crossing) and as the only way to keep
+a loop bit-exact. The A/B test that proves the crossfade works is exactly
+that pair of renders.
+
+Two more forgiving-rather-than-clever calls: an inverted loop region plays
+as `gated` rather than falling silent (unlike an inverted *playback*
+region, which is silence) — this is a slider you can drag past its partner,
+and going quiet would be a trap; and the retrigger crossfade tail wraps too,
+so a re-struck voice near the seam does not drop out.
+
+15 new tests, plus 17 in the new tripwire file below (suite **2950 ->
+2984**). Example `sampler_mellotron.json`:
+keys -> loop-mode sampler -> reverb, holding a chord on three seconds of
+pad indefinitely. `generate_samples.py` gained `build_pad` / `pad_c4.wav` —
+the percussive samples had nothing to loop, being over long before you let
+go of the key. Its partials are deliberately not phase-aligned across the
+loop points: hiding a seam that does not match is the entire job of
+`loop_xfade`.
+
+### The dropdown nobody could reach
+
+The new "does the mode combo offer `loop`?" test failed, and not for the
+reason expected. The sampler's `mode` combo was offering
+**`lowpass / highpass / bandpass`**.
+
+`_add_param_widget` has one shared branch for `mode`/`mode_neg` that runs
+*before* the per-module TYPE blocks, and whose `else` arm hands out the
+**filter's** items. `function_generator`'s TYPE block sits above that
+branch and works; `sampler`'s sits below it and was shadowed. So from
+2026-08-22 to today the sampler's mode dropdown listed three filter
+responses, picking one wrote a value the renderer rejects, and the renderer
+falls back to `one_shot` — which means **`gated` was unreachable from the
+GUI for the whole of slice 1**, and `loop` would have been too.
+
+Nothing crashed and nothing looked wrong. The reason it survived the ears
+pass is that `sampler_breaks.json` sets `one_shot` in JSON, so the mode
+that worked was the only one anyone used. And the reason it survived the
+tests is worse: slice 1's widget sweep asserted `"mode" in combos` — and
+the *filter's* combo carries that label too. **Matching a label is not
+matching the widget.** Same family as the count-the-doors lesson, one level
+along: the tripwire was looking at the right kind of thing and never
+checked whose it was.
+
+It has also happened before. The comment in that very branch records
+`cv_to_frequency` listing the filter's items until 2026-06-07. Second
+occurrence, same shape.
+
+**Fixed, and then closed off properly.** A registry-walking audit found
+`sampler` was the *only* casualty — the other 14 mode combos are correct,
+which is worth knowing rather than guessing. The fix is one arm on the
+shared chain plus deleting the block it was shadowing; the durable half is
+`tests/test_mode_combos.py`, which walks the registry and asserts every
+module's `mode` dropdown contains that module's own default. It fails on
+the pre-fix code (checked — a tripwire that cannot fail is decoration), and
+it covers a module the day it registers whether or not anyone remembers the
+file exists. The shared branch now carries an ADD YOUR MODULE HERE comment
+naming the shadowing hazard.
+
+Its assertion is deliberately weak — "your default is in your own list" —
+because that is enough to catch the entire class of "this combo belongs to
+another module", which is the only way this has ever actually broken.
+
+**Still wanted: ears on the mellotron patch, and eyes on the mode dropdown**
+(meatthread0). Run `python examples/samples/generate_samples.py` first —
+the wavs are gitignored. Worth checking `gated` while you are in there: it
+has never once been selectable.
 
 ---
 

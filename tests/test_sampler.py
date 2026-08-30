@@ -1,4 +1,4 @@
-"""Sampler — pitched, gate-triggered sample playback (slice 1).
+"""Sampler — pitched, gate-triggered sample playback (slices 1 and 2).
 
 The contract these pin, in order of importance:
 
@@ -11,6 +11,12 @@ The contract these pin, in order of importance:
   of exactly 2.0 still lands on integers.
 * Everything else (mode behaviour, region, declick ramps, voices) is
   measured against that spine.
+* **Slice 2's loop keeps the spine.** A unity-rate loop with the seam
+  crossfade off is a bit-exact *tiling* of the file, so "the period is
+  exactly the loop length" is an ``array_equal``, not a tolerance. The
+  crossfade is the one claim that cannot be stated that way — it is about
+  a discontinuity, so it is measured with a two-render A/B against the same
+  loop with the fade switched off.
 
 Note the tests drive ``_render_sampler`` directly with hand-built gate and
 pitch buffers rather than going through a whole patch: that is the only way
@@ -334,6 +340,206 @@ def test_a_patch_round_trips_with_its_sample(tmp_path, noise_wav):
     assert back.params["root"] == 55.0
 
 
+# ----- loop mode (slice 2) ----------------------------------------------------
+
+@pytest.fixture(scope="module")
+def ramp_wav(tmp_path_factory):
+    """A rising ramp. Wrapping its end back to its start is a full-scale
+    step — the loudest possible seam — so whether the crossfade works is
+    not a matter of opinion."""
+    data = np.linspace(0.0, 1.0, 4000, endpoint=False).astype(np.float32)
+    path = tmp_path_factory.mktemp("samples") / "ramp.wav"
+    wavfile.write(path, SR, data)
+    return str(path), data
+
+
+def _held(frames, voices=None):
+    """A gate that never falls — a key held down."""
+    shape = (voices, frames) if voices else (frames,)
+    return np.ones(shape, dtype=np.float32)
+
+
+#: The loop neutral: whole region, no seam fade, so every read position is
+#: still an integer and the output can be compared with ``array_equal``.
+LOOP = dict(NEUTRAL, mode="loop", loop_start=0.0, loop_end=1.0,
+            loop_xfade=0.0)
+
+
+def test_loop_joined_the_modes_without_moving_the_default():
+    assert "loop" in SAMPLER_MODES
+    assert Sampler.DEFAULT_PARAMS["mode"] == "one_shot", "default changed"
+    for name in ("loop_start", "loop_end", "loop_xfade"):
+        assert name in Sampler.DEFAULT_PARAMS
+
+
+def test_a_held_loop_is_a_bit_exact_tiling_of_the_file(noise_wav):
+    """The strong form of "the steady-state period is exactly the loop
+    length": at unity rate the wrap still lands on integers, so four laps
+    are the file four times over, sample for sample."""
+    path, data = noise_wav
+    out = _render(dict(LOOP, path=path), _held(4 * len(data)))
+    assert np.array_equal(out, np.tile(data, 4))
+
+
+def test_an_octave_up_loops_every_other_sample(noise_wav):
+    """Rate 2.0 also lands on integers, so a transposed loop is exact too
+    — slice 1's statement about a one-shot, now wrapped."""
+    path, data = noise_wav
+    out = _render(dict(LOOP, path=path, root=48.0), _held(4 * len(data) // 2))
+    assert np.array_equal(out, np.tile(data[::2], 4))
+
+
+def test_the_loop_is_measured_inside_the_playback_region(noise_wav):
+    """`loop_start`/`loop_end` are fractions OF THE REGION, so moving
+    `start` carries the loop along instead of stranding it."""
+    path, data = noise_wav
+    half = len(data) // 2
+    out = _render(dict(LOOP, path=path, start=0.5, end=1.0), _held(4 * half))
+    assert np.array_equal(out, np.tile(data[half:], 4))
+
+
+def test_everything_before_the_loop_plays_once_as_the_attack(noise_wav):
+    """The onset is what makes a recording an instrument: the playhead
+    still starts at `start`, so the strike sounds once and only the loop
+    repeats."""
+    path, data = noise_wav
+    n = len(data)
+    out = _render(
+        dict(LOOP, path=path, loop_start=0.25, loop_end=0.5), _held(12000)
+    )
+    expected = np.concatenate([data[:n // 2]] + [data[n // 4:n // 2]] * 10)
+    assert np.array_equal(out, expected[:12000])
+
+
+def test_a_loop_outlives_the_region_a_gated_voice_dies_at(noise_wav):
+    """The whole point of the mode. The gated render is the control: same
+    file, same gate, and it has been silent for a quarter of a second by
+    the time the loop is still going."""
+    path, data = noise_wav
+    gate = np.zeros(20000, dtype=np.float32)
+    gate[:15000] = 1.0
+    gated = _render(dict(NEUTRAL, path=path, mode="gated"), gate)
+    looped = _render(dict(LOOP, path=path), gate)
+    assert np.all(gated[len(data):] == 0.0), "the control did not run out"
+    assert np.any(np.abs(looped[14000:15000]) > 0.0), "the loop ran out"
+
+
+def test_the_loop_still_lets_go_of_the_key(noise_wav):
+    """`loop` is `gated` underneath: it sustains, it does not run away."""
+    path, _data = noise_wav
+    release_ms = 10.0
+    gate = np.zeros(20000, dtype=np.float32)
+    gate[:15000] = 1.0
+    out = _render(dict(LOOP, path=path, release=release_ms), gate)
+    release_n = int(round(release_ms * 1e-3 * SR))
+    assert np.all(out[15000 + release_n:] == 0.0), "the loop outlived its gate"
+    assert np.any(np.abs(out[15000:15000 + release_n]) > 0), "release was instant"
+
+
+def test_the_seam_crossfade_removes_the_wrap_step(ramp_wav):
+    """A claim about a discontinuity needs two renders: the same loop with
+    the fade off and on. The ramp wraps 1.0 -> 0.0, which is exactly the
+    click `loop_xfade` exists to hide."""
+    path, _data = ramp_wav
+    gate = _held(12000)
+    hard = _render(dict(LOOP, path=path, loop_xfade=0.0), gate)
+    faded = _render(dict(LOOP, path=path, loop_xfade=10.0), gate)
+    hard_step = float(np.abs(np.diff(hard)).max())
+    faded_step = float(np.abs(np.diff(faded)).max())
+    assert hard_step > 0.9, "the control did not actually step"
+    assert faded_step < hard_step / 50, (
+        f"seam step {faded_step} with the fade vs {hard_step} without"
+    )
+
+
+def test_the_crossfaded_seam_is_as_smooth_as_the_recording(noise_wav):
+    """Not merely "smaller". The fade ends on the lap before, so the wrap
+    lands between two ADJACENT samples of the file: the seam step is an
+    ordinary step plus the fade's own slew, and nothing more."""
+    path, data = noise_wav
+    natural = float(np.abs(np.diff(data)).max())
+    xfade_ms = 10.0
+    out = _render(
+        dict(LOOP, path=path, loop_start=0.25, loop_end=0.5,
+             loop_xfade=xfade_ms),
+        _held(12000),
+    )
+    # The fade itself slews between two reads at most 2*peak apart, over
+    # its whole length -- a few thousandths next to a real sample step.
+    slew = 2.0 * float(np.abs(data).max()) / (xfade_ms * 1e-3 * SR)
+    worst = float(np.abs(np.diff(out[2500:])).max())
+    assert worst <= natural + slew, f"{worst} vs {natural} natural + {slew}"
+
+
+def test_the_crossfade_cannot_outrun_the_loop(noise_wav):
+    """100 ms of fade asked of a 4.5 ms loop is clamped to the loop rather
+    than reading laps that were never played."""
+    path, data = noise_wav
+    short = dict(LOOP, path=path, loop_start=0.0, loop_end=0.05)
+    loop_n = 0.05 * len(data)
+    asked_too_much = _render(dict(short, loop_xfade=100.0), _held(8000))
+    exactly_the_loop = _render(
+        dict(short, loop_xfade=loop_n / SR * 1000.0), _held(8000)
+    )
+    assert np.array_equal(asked_too_much, exactly_the_loop)
+
+
+def test_an_inverted_loop_region_plays_as_gated(noise_wav):
+    """Not silence, the way an inverted *playback* region is. This is a
+    slider you can drag past its partner, and going quiet would be a trap
+    rather than an answer."""
+    path, _data = noise_wav
+    gate = np.zeros(12000, dtype=np.float32)
+    gate[:8000] = 1.0
+    gated = _render(dict(NEUTRAL, path=path, mode="gated"), gate)
+    inverted = _render(dict(LOOP, path=path, loop_start=0.8, loop_end=0.2), gate)
+    assert np.array_equal(inverted, gated)
+
+
+def test_the_loop_survives_block_joins_bit_exact(noise_wav):
+    """Wrap and crossfade are both derived from the playhead position, so
+    where the block boundaries fall must not matter — including when a
+    seam lands inside a block."""
+    path, _data = noise_wav
+    gate = _held(12288)
+    params = dict(LOOP, path=path, loop_start=0.13, loop_end=0.77,
+                  loop_xfade=7.0)
+    one = _render(params, gate, chunks=1)
+    many = _render(params, gate, chunks=48)
+    assert np.array_equal(one, many)
+
+
+def test_loops_do_not_bleed_between_voices(noise_wav):
+    """The mellotron claim is a polyphonic one: sixteen keys, sixteen
+    independent laps."""
+    path, data = noise_wav
+    frames = 8000
+    gate = np.zeros((2, frames), dtype=np.float32)
+    gate[0, :] = 1.0                  # slot 0 held from the first sample
+    gate[1, 2000:] = 1.0              # slot 1 joins later
+    pitch = np.zeros((2, frames), dtype=np.float32)
+    out = _render(dict(LOOP, path=path), gate, pitch=pitch)
+    assert np.array_equal(out[0], np.tile(data, 2))
+    assert np.all(out[1, :2000] == 0.0), "slot 1 sounded before its gate"
+    assert np.array_equal(out[1, 2000:2000 + len(data)], data)
+
+
+def test_the_other_modes_ignore_the_loop_params(noise_wav):
+    """A tripwire on slice 1's neutral: the loop knobs must not leak into
+    `one_shot` or `gated`, or the bit-exactness above stops meaning
+    anything the moment someone drags a loop slider."""
+    path, _data = noise_wav
+    gate = _hit(8000)
+    for mode in ("one_shot", "gated"):
+        plain = _render(dict(NEUTRAL, path=path, mode=mode), gate)
+        meddled = _render(
+            dict(NEUTRAL, path=path, mode=mode, loop_start=0.3,
+                 loop_end=0.6, loop_xfade=55.0),
+            gate,
+        )
+        assert np.array_equal(plain, meddled), mode
+
+
 # ----- the node's widgets -----------------------------------------------------
 
 pytest.importorskip("dearpygui.dearpygui")
@@ -366,8 +572,25 @@ def test_every_sampler_param_gets_a_purpose_built_widget(monkeypatch):
     assert "mode" in combos
     for name in ("tune", "fine", "start", "end"):
         assert name in sliders, f"{name} has no bounded slider"
-    assert any("attack" in str(label) for label in sliders)
-    assert any("release" in str(label) for label in sliders)
+    for name in ("attack", "release", "loop_start", "loop_end", "loop_xfade"):
+        assert any(name in str(label) for label in sliders), (
+            f"{name} has no bounded slider"
+        )
+
+
+def test_the_mode_combo_offers_the_loop(monkeypatch):
+    """The mellotron mode has to be reachable without hand-editing JSON."""
+    app, app_mod = _ui_app(monkeypatch)
+    module = app.patch.add_module("sampler")
+    app._create_node_for_module(module)
+    modes = [
+        c.kwargs.get("items") for c in app_mod.dpg.add_combo.call_args_list
+        if c.kwargs.get("label") == "mode"
+    ]
+    # Match on the whole item list: the mock also carries combos built
+    # while the App itself was constructed, and `loop` alone would happily
+    # match the function generator's mode combo.
+    assert list(SAMPLER_MODES) in modes, modes
 
 
 def test_the_path_field_gets_the_shared_browse_button(monkeypatch):

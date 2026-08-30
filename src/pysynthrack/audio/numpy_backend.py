@@ -12348,12 +12348,73 @@ class NumpyBackend(AudioBackend):
             "prev_gate": False,
         }
 
-    def _sampler_segment(self, voice, samples, count, end_sample):
+    @staticmethod
+    def _sampler_advance(pos, rate, count, end_sample, loop):
+        """Where the playhead reads, where it ends up, and how much counts.
+
+        Returns ``(positions, next_pos, live)``. Without a ``loop`` the
+        playhead is affine — ``pos + rate·arange(count)`` — and eventually
+        walks off the end of the region; because the rate is positive that
+        is always a *prefix*, so ``searchsorted`` finds the cut exactly and
+        ``live`` says how much of the segment is still inside.
+
+        With a loop it wraps ``loop_end`` back to ``loop_start`` instead,
+        and so never leaves the region at all (``live`` is the whole
+        segment — that is what looping means). The wrap is one modulo on
+        the same affine array, which keeps it a single vectorized
+        expression *and* keeps it exact on integers: a unity-rate loop of
+        an integer-bounded region is a bit-exact tiling of the file, not an
+        approximation of one.
+        """
+        raw = pos + rate * np.arange(count, dtype=np.float64)
+        end_raw = float(pos + rate * count)
+        if loop is None:
+            return raw, end_raw, int(np.searchsorted(raw, float(end_sample)))
+        lo, hi, length = loop[0], loop[1], loop[2]
+        over = raw - hi
+        positions = np.where(over < 0.0, raw, lo + np.mod(over, length))
+        if end_raw >= hi:
+            end_raw = float(lo + np.mod(end_raw - hi, length))
+        return positions, end_raw, count
+
+    def _sampler_seam(self, block, samples, positions, loop):
+        """Crossfade the loop's tail into the lap before it, in place.
+
+        Over the last ``xfade`` of the loop the read is mixed with
+        ``read(pos - loop_length)`` — the same point one lap earlier, which
+        is the material running *into* ``loop_start``. The weight reaches 1
+        exactly as the playhead reaches ``loop_end``, so the wrap lands on
+        what was already sounding and the seam is continuous instead of a
+        step (the resampler's seam-declick lesson: fade between two reads,
+        never cut).
+
+        A ``loop_start`` at the very beginning of the file has no previous
+        lap; the read clamps to the file's first sample, which is exactly
+        where the wrap is about to land, so the fade stays continuous.
+
+        Only the faded samples are read twice — everything else keeps the
+        single read it already had, which is what leaves ``xfade`` 0
+        bit-exact rather than merely close.
+        """
+        _lo, hi, length, xfade = loop
+        if xfade <= 0.0:
+            return
+        weight = (positions - (hi - xfade)) / xfade
+        idx = np.flatnonzero(weight > 0.0)
+        if idx.size == 0:
+            return
+        w = weight[idx]
+        prev = self._sampler_read(samples, positions[idx] - length)
+        block[idx] = block[idx] * (1.0 - w) + prev * w
+
+    def _sampler_segment(self, voice, samples, count, end_sample, loop=None):
         """Render ``count`` samples of one voice and advance its playhead.
 
         Everything vectorizes because the playhead is affine within a
         segment: ``pos + rate·arange(n)``. Segments are cut at gate edges
         by the caller, which is the only place ``rate``/state can change.
+        ``loop`` is ``(start, end, length, xfade)`` in sample units, or
+        None for the modes that don't loop.
         Returns the (count,) float64 block.
         """
         out = np.zeros(count, dtype=np.float64)
@@ -12362,17 +12423,18 @@ class NumpyBackend(AudioBackend):
 
         if voice["active"]:
             rate = voice["rate"]
-            positions = voice["pos"] + rate * np.arange(count, dtype=np.float64)
-            # How much of this segment still lies inside the region? The
-            # playhead only ever moves forward (rate > 0), so this is a
-            # prefix — searchsorted rather than a mask keeps it exact.
-            live = int(np.searchsorted(positions, float(end_sample)))
+            positions, next_pos, live = self._sampler_advance(
+                voice["pos"], rate, count, end_sample, loop
+            )
             if live > 0:
                 out[:live] = self._sampler_read(samples, positions[:live])
-            voice["pos"] = float(voice["pos"] + rate * count)
+                if loop is not None:
+                    self._sampler_seam(out, samples, positions, loop)
+            voice["pos"] = next_pos
             if live < count:
                 # Ran off the end of the region: silent from here, and the
-                # voice costs nothing until it is retriggered.
+                # voice costs nothing until it is retriggered. A looping
+                # voice never reaches this — it wrapped instead.
                 voice["active"] = False
                 voice["releasing"] = False
                 voice["rel_left"] = 0
@@ -12404,15 +12466,20 @@ class NumpyBackend(AudioBackend):
         if voice["xf_left"] > 0:
             n = min(count, voice["xf_left"])
             rate = voice["xf_rate"]
-            positions = voice["xf_pos"] + rate * np.arange(n, dtype=np.float64)
-            live = int(np.searchsorted(positions, float(end_sample)))
+            # The abandoned playhead keeps doing what the voice was doing,
+            # loop and all, so a retrigger near the seam doesn't drop out.
+            positions, next_xf, live = self._sampler_advance(
+                voice["xf_pos"], rate, n, end_sample, loop
+            )
             if live > 0:
                 total = float(voice["xf_total"])
                 done = total - voice["xf_left"]
                 tail = self._sampler_read(samples, positions[:live])
+                if loop is not None:
+                    self._sampler_seam(tail, samples, positions[:live], loop)
                 ramp = 1.0 - (done + 1.0 + np.arange(live, dtype=np.float64)) / total
                 out[:live] += tail * ramp
-            voice["xf_pos"] = float(voice["xf_pos"] + rate * n)
+            voice["xf_pos"] = next_xf
             voice["xf_left"] -= n
         return out
 
@@ -12433,12 +12500,23 @@ class NumpyBackend(AudioBackend):
         read per block (mean), the ``pluck`` precedent, so glides and
         vibrato track at block rate.
 
+        ``loop`` mode is ``gated`` plus a wrapped playhead: the loop
+        region is resolved here, once per block, into absolute sample
+        positions (``loop_start``/``loop_end`` are fractions **of the
+        region**, so moving ``start``/``end`` carries the loop with them)
+        and handed to the segment renderer, which does the wrapping and
+        the seam crossfade. A collapsed or inverted loop region resolves to
+        ``None`` and the voice simply plays as ``gated`` — kinder than
+        silence for something you drag with a slider.
+
         Neutral: root pitch, ``start`` 0, ``end`` 1, ``attack`` 0,
         ``level`` 1 makes the rate exactly 1.0, every read position an
         integer, and the output the decoded buffer **bit-exact**. Nothing
         is faded at the region end for the same reason — a sample that
         stops abruptly is the file's business, and ``end`` plus a gated
-        ``release`` are the tools for trimming it.
+        ``release`` are the tools for trimming it. A unity-rate loop with
+        ``loop_xfade`` 0 keeps that property: it is a bit-exact *tiling*
+        of the file.
         """
         from ..modules.sampler import (
             MAX_SECONDS as _SAMPLER_MAX_SECONDS,
@@ -12522,6 +12600,9 @@ class NumpyBackend(AudioBackend):
         level = _f("level", 0.8, 0.0, 1.0)
         start_frac = _f("start", 0.0, 0.0, 1.0)
         end_frac = _f("end", 1.0, 0.0, 1.0)
+        loop_start_frac = _f("loop_start", 0.0, 0.0, 1.0)
+        loop_end_frac = _f("loop_end", 1.0, 0.0, 1.0)
+        loop_xfade_ms = _f("loop_xfade", 10.0, 0.0, 100.0)
         attack_ms = _f("attack", 0.0, 0.0, 500.0)
         release_ms = _f("release", 10.0, 1.0, 2000.0)
         mode = str(module.params.get("mode", "one_shot"))
@@ -12541,6 +12622,27 @@ class NumpyBackend(AudioBackend):
         attack_n = int(round(attack_ms * 1e-3 * sr))
         release_n = max(1, int(round(release_ms * 1e-3 * sr)))
         xfade_n = max(1, int(round(self._SAMPLER_XFADE_MS * 1e-3 * sr)))
+
+        # The loop region, in absolute samples. `loop_start`/`loop_end` are
+        # fractions OF THE REGION, not of the file, so dragging
+        # `start`/`end` carries the loop along instead of stranding it.
+        # None means "don't loop", which is also what a collapsed or
+        # inverted loop region gets: play as `gated` rather than fall
+        # silent, because this is a thing you drag with a slider.
+        loop = None
+        if mode == "loop":
+            span = end_sample - start_sample
+            loop_lo = start_sample + loop_start_frac * span
+            loop_hi = start_sample + loop_end_frac * span
+            loop_len = loop_hi - loop_lo
+            if loop_len > 0.0:
+                # Measured on the sample (so it covers the same slice of
+                # waveform whatever the pitch) and clamped to the loop:
+                # there is only one lap to fade into.
+                seam_n = min(
+                    float(int(round(loop_xfade_ms * 1e-3 * sr))), loop_len
+                )
+                loop = (loop_lo, loop_hi, loop_len, seam_n)
 
         voices = state.get("voices") or []
         if state.get("V") != V or len(voices) != V:
@@ -12564,7 +12666,7 @@ class NumpyBackend(AudioBackend):
             shifted[1:] = g[:-1]
             rising = np.flatnonzero(g & ~shifted)
             falling = (
-                np.flatnonzero(~g & shifted) if mode == "gated"
+                np.flatnonzero(~g & shifted) if mode in ("gated", "loop")
                 else np.empty(0, dtype=np.int64)
             )
             voice["prev_gate"] = bool(g[-1]) if frames else prev
@@ -12578,7 +12680,7 @@ class NumpyBackend(AudioBackend):
             for at, kind in events:
                 if at > cursor:
                     row_out[cursor:at] = self._sampler_segment(
-                        voice, samples, at - cursor, end_sample
+                        voice, samples, at - cursor, end_sample, loop
                     )
                     cursor = at
                 if kind == "on":
@@ -12606,7 +12708,7 @@ class NumpyBackend(AudioBackend):
                         voice["rel_total"] = release_n
             if cursor < frames:
                 row_out[cursor:] = self._sampler_segment(
-                    voice, samples, frames - cursor, end_sample
+                    voice, samples, frames - cursor, end_sample, loop
                 )
             # A held voice tracks pitch between triggers (block-rate glide);
             # the retrigger above locks the rate at the edge sample.

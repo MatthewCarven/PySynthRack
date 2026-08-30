@@ -154,12 +154,41 @@ once the board cleared.
       voice-not-a-transport design holds up in play, which was the whole
       argument for it being a new module rather than a `file_player`
       mode. Slices 2 and 3 are unblocked.
-- [ ] **Slice 2 — loop mode + the region UI** — `loop` joins the `mode`
-      combo (gated, but looping `loop_start`..`loop_end` while held) with
-      a `loop_xfade` 1..100 ms linear crossfade across the seam (the
-      resampler seam-declick lesson). Bounded region drags per the polish
-      standard. Example: keys → loop-mode sampler → reverb (mellotron
-      pad; `chord` in front = a 4-deep sample stack for free).
+- [x] **Slice 2 — loop mode + the region UI** — SHIPPED 2026-08-30.
+      `loop` joins the `mode` combo: `gated` underneath, but the playhead
+      wraps `loop_end` back to `loop_start` while held. `loop_start` /
+      `loop_end` are fractions **of the region**, not of the file, so
+      moving `start`/`end` carries the loop along instead of stranding it;
+      the playhead still starts at `start`, so everything before
+      `loop_start` plays once as the attack. The wrap is one modulo on the
+      existing affine position array, which keeps it exact on integers:
+      **a unity-rate loop with `loop_xfade` 0 is a bit-exact tiling of the
+      file**, so slice 1's spine survives and "period exactly the loop
+      length" is an `array_equal`. `loop_xfade` **0..100 ms** (spec said
+      1..100 — 0 is needed for the xfade-off A/B the spec's own test list
+      asks for, and is a real setting besides), crossfading into the
+      *previous lap*; on `pad_c4.wav` that takes the seam step 0.285 ->
+      0.035, below the file's own natural 0.158. Inverted loop region
+      plays as `gated` (not silence — it is a draggable slider). Three
+      bounded sliders. 15 tests, suite **2984**. Example
+      `sampler_mellotron.json` (keys -> loop sampler -> reverb) with a new
+      sustaining `pad_c4.wav` in `generate_samples.py`. **Wants ears.**
+- [x] **Sampler `mode` dropdown offered the FILTER's modes** — found and
+      fixed 2026-08-30, a slice-1 defect. The shared `mode`/`mode_neg`
+      combo branch in `_add_param_widget` runs before the per-TYPE blocks
+      and its `else` hands out `FILTER_MODES`; the sampler's own block sat
+      below it and was shadowed. So `gated` was **unreachable from the
+      GUI** for all of slice 1 (the renderer rejects an unknown mode and
+      falls back to `one_shot`), and `loop` would have been too. Survived
+      the ears pass because `sampler_breaks.json` sets `one_shot` in JSON,
+      and survived the tests because slice 1's sweep asserted
+      `"mode" in combos` — which the *filter's* combo also satisfies.
+      Second occurrence of this shape (`cv_to_frequency` did it until
+      2026-06-07). A registry audit found the sampler was the only
+      casualty; the other 14 are correct. New tripwire
+      `tests/test_mode_combos.py` walks the registry and asserts every
+      module's `mode` dropdown offers that module's own default — verified
+      to fail on the pre-fix code. **Wants eyes** on the dropdown.
 - [ ] **Slice 3 — the stretch menu** — stereo `out_l`/`out_r`; an on-load
       halfband mip chain (`*_wt` infra) for alias-free pitch-**up** (down
       is already clean); `start_cv` + depth per conventions — the one

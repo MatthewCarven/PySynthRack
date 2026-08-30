@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    {
+      "id": 1,
+      "type": "cv_keyboard",
+      "name": "the keys - hold a chord, ASDFGHJ are white notes",
+      "params": {
+        "octave": 4
+      }
+    },
+    {
+      "id": 2,
+      "type": "sampler",
+      "name": "LOOP MODE - 3 s of pad, held forever (run generate_samples.py)",
+      "params": {
+        "path": "examples/samples/pad_c4.wav",
+        "root": 60.0,
+        "tune": 0.0,
+        "fine": 0.0,
+        "mode": "loop",
+        "start": 0.0,
+        "end": 1.0,
+        "loop_start": 0.2,
+        "loop_end": 0.8,
+        "loop_xfade": 60.0,
+        "attack": 0.0,
+        "release": 500.0,
+        "level": 0.55
+      }
+    },
+    {
+      "id": 3,
+      "type": "reverb",
+      "name": "the room the mellotron is in",
+      "params": {
+        "size": 0.8,
+        "decay": 0.75,
+        "damping": 0.45,
+        "mix": 0.45
+      }
+    },
+    {
+      "id": 4,
+      "type": "stereo_speaker_output",
+      "name": "out",
+      "params": {
+        "gain": 0.9,
+        "width": 1.0
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "pitch_cv",
+      "dst_module_id": 2,
+      "dst_port": "pitch_cv"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "gate",
+      "dst_module_id": 2,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out_l",
+      "dst_module_id": 4,
+      "dst_port": "in_l"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out_r",
+      "dst_module_id": 4,
+      "dst_port": "in_r"
+    }
+  ],
+  "ui": {}
+}

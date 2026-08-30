@@ -667,11 +667,42 @@ sample. `tune` (±12 semitones) and `fine` (±50 cents) stack on top.
   drive it directly.
 * **`gated`** — sounds while the gate is high, fading on the fall over
   `release`. Right for played notes.
+* **`loop`** — `gated`, plus the playhead wraps `loop_end` back to
+  `loop_start` instead of running out, so a three-second recording sustains
+  for as long as you hold the key. The mellotron mode.
 
 `start` / `end` cut a region out of the file (0..1 of its length),
 sample-exact. Three samplers pointed at three regions of one drum loop, each
 triggered by its own euclidean, is a breaks machine built out of nothing but
 those two knobs — see `examples/sampler_breaks.json`.
+
+**The loop is where a recording becomes an instrument.** `loop_start` and
+`loop_end` are fractions **of the region**, not of the file, so moving
+`start`/`end` carries the loop along instead of stranding it. The playhead
+still begins at `start`, so everything before `loop_start` plays *once* as
+the note's attack and only the loop repeats — put `loop_start` past the bow
+scrape or the mallet strike and you get a natural onset over an endless
+sustain. A collapsed or inverted loop region (`loop_end` at or below
+`loop_start`) is not an error and not silence: it simply doesn't loop, and
+the voice plays as `gated`. This is a slider you can drag past its partner,
+and going quiet would be a trap rather than an answer.
+
+`loop_xfade` hides the seam. Over the last stretch of the loop the read
+crossfades into **the previous lap** — the same signal one loop length
+earlier, which is the material running into `loop_start` — so where a bare
+wrap would step from one waveform to an unrelated one, the two are faded
+across and arrive at `loop_start` already matching. On the shipped
+`pad_c4.wav` that takes the worst sample-to-sample step at the seam from
+0.285 down to 0.035, which is *below* the recording's own natural worst
+step of 0.158: the seam ends up quieter than the material around it. The
+fade is measured on the **sample**, not the clock, so it covers the same
+slice of waveform whatever the pitch, and it is clamped to the loop length
+— there is only one lap to fade into. A `loop_start` sitting at the very
+beginning of the file has no previous lap, so the fade runs into the file's
+first sample instead: still continuous, because that is exactly where the
+wrap lands. Set it to **0** for a hard seam — right when the loop is
+already cut on a zero crossing, and the only way to keep a loop bit-exact
+(a unity-rate loop with no fade is a bit-exact *tiling* of the file).
 
 **`attack` / `release` are declick ramps, not an envelope.** They exist so a
 region boundary landing mid-waveform doesn't tick. For real shaping patch an
@@ -717,9 +748,12 @@ old playhead out over ~2 ms rather than cutting to the new one.
 | `root` | `60` (C4) | C0…C8 | The note the recording **is**. Playing it reads at rate 1.0. Shown as a note name, stored as a MIDI number. |
 | `tune` | `0` | ±12 st | Semitone shift on top. |
 | `fine` | `0` | ±50 ct | Cent shift on top. |
-| `mode` | `one_shot` | one_shot / gated | What a gate means (above). |
+| `mode` | `one_shot` | one_shot / gated / loop | What a gate means (above). |
 | `start` | `0` | 0…1 | Region start, as a fraction of the file. |
 | `end` | `1` | 0…1 | Region end. `end` ≤ `start` plays nothing (rather than running backwards). |
+| `loop_start` | `0` | 0…1 | Loop start, as a fraction **of the region** — not of the file. `loop` mode only. |
+| `loop_end` | `1` | 0…1 | Loop end, likewise. At or below `loop_start` means "don't loop": the voice plays as `gated`. |
+| `loop_xfade` | `10` | 0…100 ms | Seam crossfade, measured on the sample and clamped to the loop length. 0 is a hard seam (and keeps a unity-rate loop bit-exact). |
 | `attack` | `0` | 0…500 ms | Declick ramp in. |
 | `release` | `10` | 1…2000 ms | Declick ramp out on a `gated` release. |
 | `level` | `0.8` | 0…1 | Output level. |
@@ -731,9 +765,15 @@ gives a four-deep sample stack for free. Put a [`quantizer`](#quantizer)
 before `pitch_cv` and a [`shift_random`](#shift_random) before that and the
 sample plays itself in key.
 
-*(`loop` mode — sustaining by looping a region, the mellotron trick — plus
-the region UI, stereo output and alias-free pitch-up are later slices; see
-TODO.)*
+For the mellotron: a [`cv_keyboard`](#cv_keyboard) into a `loop`-mode
+sampler into a [`reverb`](#reverb), with `loop_start` past the sample's
+attack — see `examples/sampler_mellotron.json`, which holds a chord on
+three seconds of pad indefinitely. Percussive samples have nothing to loop
+(they are over before you let go of the key); `loop` wants material that
+sustains.
+
+*(Stereo output, alias-free pitch-up via a mip chain, and `start_cv` for
+CV-scrubbing the slice point are a later slice; see TODO.)*
 
 #### `pluck`
 

@@ -25,6 +25,12 @@ nothing breaks; it just has nothing to play.
 Also writes **marimba_c4.wav**: a single struck-bar note at C4 (261.63 Hz),
 the pitched counterpart - point a keyboard at a Sampler with `root` = C4
 and you have a playable instrument.
+
+And **pad_c4.wav**: three seconds of a sustaining bowed/choral tone, also
+at C4, for the Sampler's `loop` mode. The two above are percussive - they
+are over long before you let go of the key, which is precisely what a loop
+is for. This one swells in and then just keeps going, so
+`examples/sampler_mellotron.json` can hold a chord on it indefinitely.
 """
 from __future__ import annotations
 
@@ -114,6 +120,51 @@ def build_marimba(rng, freq=261.6255653005986, seconds=1.6):
     return out
 
 
+def build_pad(rng, freq=261.6255653005986, seconds=3.0):
+    """A sustaining bowed/choral tone - the loop-mode counterpart.
+
+    Built the opposite way round from the percussive samples above: a slow
+    swell into a long body with no decay at all, so `loop` mode has
+    something to sustain. Each partial is detuned a few cents and given its
+    own slow, shallow vibrato, which keeps a looped middle section from
+    sounding frozen the way a static waveform would.
+
+    The partials are deliberately NOT phase-aligned between the loop points
+    - the seam does not match, and hiding a seam that does not match is
+    exactly what `loop_xfade` is for. A tiny fade sits on the very tail so
+    that even the lazy whole-file loop has somewhere soft to wrap.
+    """
+    n = int(seconds * SR)
+    t = np.arange(n, dtype=np.float64) / SR
+    out = np.zeros(n)
+    for k in range(1, 9):
+        cents = rng.uniform(-6.0, 6.0)
+        rate = rng.uniform(0.17, 0.43)        # Hz - slower than the loop
+        depth = rng.uniform(0.002, 0.006)     # fraction of the partial
+        phase = rng.uniform(0.0, 2 * np.pi)
+        wobble = 1.0 + depth * np.sin(2 * np.pi * rate * t + phase)
+        f = freq * k * (2.0 ** (cents / 1200.0)) * wobble
+        out += (1.0 / k) * np.sin(2 * np.pi * np.cumsum(f) / SR + phase)
+
+    # Breath: high-passed noise, quiet, so the top is not glassy.
+    breath = rng.standard_normal(n)
+    a = 0.92
+    lp = np.zeros(n)
+    for i in range(1, n):
+        lp[i] = a * lp[i - 1] + (1 - a) * breath[i]
+    out += (breath - lp) * 0.035
+
+    swell = int(0.35 * SR)
+    out[:swell] *= np.linspace(0.0, 1.0, swell) ** 1.7
+    tail = int(0.05 * SR)
+    out[-tail:] *= np.linspace(1.0, 0.0, tail)
+
+    peak = np.abs(out).max()
+    if peak > 0:
+        out *= 0.80 / peak
+    return out
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     rng = np.random.default_rng(20260822)
@@ -121,6 +172,7 @@ def main() -> None:
     for name, data in (
         ("breaks.wav", build_break(rng)),
         ("marimba_c4.wav", build_marimba(rng)),
+        ("pad_c4.wav", build_pad(rng)),
     ):
         path = os.path.join(here, name)
         wavfile.write(path, SR, data.astype(np.float32))

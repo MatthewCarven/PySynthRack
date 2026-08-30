@@ -2901,9 +2901,19 @@ class App:
             # ``mode`` means different things on different modules:
             # filter picks LP/HP/BP, cv_combiner picks sum/average,
             # cv_to_frequency picks log/linear (and is the only module
-            # with a ``mode_neg``). The cv_to_frequency arm also fixes
-            # a phase-1 drive-by: its mode combo wrongly listed the
-            # filter's items before 2026-06-07.
+            # with a ``mode_neg``).
+            #
+            # ADD YOUR MODULE HERE. This branch is a catch-all that runs
+            # BEFORE the per-TYPE blocks below, so a ``mode`` handled down
+            # there is shadowed and never reached, and the ``else`` hands
+            # out the *filter's* items to whoever asked. That has now
+            # happened twice: cv_to_frequency listed LP/HP/BP until
+            # 2026-06-07, and `sampler` did from the day it shipped
+            # (2026-08-22) until 2026-08-30 -- which left `gated` and
+            # `loop` unreachable from the panel, since the renderer
+            # rejects a bogus mode and falls back to `one_shot`.
+            # `test_mode_combos.py` walks the registry and fails if any
+            # module's dropdown stops offering that module's own modes.
             if module.TYPE == "cv_combiner":
                 items = list(CVCOMBINER_MODES)
             elif module.TYPE == "cv_to_frequency":
@@ -2924,6 +2934,8 @@ class App:
                 items = list(BERNOULLI_MODES)
             elif module.TYPE == "arpeggiator":
                 items = list(ARP_MODES)
+            elif module.TYPE == "sampler":
+                items = list(SAMPLER_MODES)
             else:
                 items = list(FILTER_MODES)
             dpg.add_combo(
@@ -2985,13 +2997,8 @@ class App:
                     user_data=user_data,
                 )
                 return
-            if param_name == "mode":
-                dpg.add_combo(
-                    label=param_name, items=list(SAMPLER_MODES),
-                    default_value=str(current), width=110,
-                    callback=self._on_param_changed, user_data=user_data,
-                )
-                return
+            # (`mode` is handled by the shared combo branch above, which
+            # runs first -- a second one here would be dead code.)
             if param_name == "tune":
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
@@ -3012,6 +3019,29 @@ class App:
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
                     min_value=0.0, max_value=1.0, format="%.3f",
+                    width=140, callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name in ("loop_start", "loop_end"):
+                # Fractions of the REGION, not of the file, so that moving
+                # start/end carries the loop along instead of stranding it.
+                # The label says so -- that difference is the whole point.
+                dpg.add_slider_float(
+                    label=f"{param_name} (in region)",
+                    default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.3f",
+                    width=140, callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name == "loop_xfade":
+                # Milliseconds of sample crossfaded across the loop seam;
+                # 0 is a hard seam. Bounded like the declick ramps above,
+                # not the generic seconds branch.
+                dpg.add_slider_float(
+                    label="loop_xfade (seam)", default_value=float(current),
+                    min_value=0.0, max_value=100.0, format="%.1f ms",
                     width=140, callback=self._on_param_changed,
                     user_data=user_data,
                 )
