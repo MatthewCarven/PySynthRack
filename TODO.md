@@ -210,6 +210,14 @@ once the board cleared.
       suite **3027**. **Wants ears** (scrub), **eyes** (the face), and a
       real keyboard on `velocity_cv → vel`. The sampler is
       feature-complete against its spec.
+- [ ] **EARS (meatthread0, banked 2026-09-11): `sampler_scrub.json` +
+      `sampler_mellotron.json`** — Matthew: "bank sampler_scrub.json in my
+      todo for now, and I'll test when I can do it properly, where I am
+      is noisy." Both unheard. Run `python examples/samples/generate_samples.py`
+      first. While there: eyes on the sampler node's waveform face and the
+      new `reverse` / `antialias` tickboxes, and `gated` in the mode
+      dropdown (never once selectable before 08-30). Unblocks nothing —
+      the sampler is feature-complete; this is confirmation.
 
 ## The function generator (opened 2026-08-23)
 
