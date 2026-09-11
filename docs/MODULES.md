@@ -103,6 +103,8 @@ The full map:
 | `freq_shifter.shift_cv` | `200.0` (`shift_cv_depth`) | Hz (linear, additive) | `shift + shift_cv_depth·cv[n]`, per-sample; a shift adds Hz, not V/oct; clamped ±Nyquist |
 | `resampler.pitch_cv` | `12.0` | semitones | `st + d·cv` (semitone space) |
 | `sampler.start_cv` | `1.0` (`start_cv_depth`) | fraction of the file | `start + d·cv[edge]`, read at the gate edge and latched per hit; clamped 0…1 |
+| `kick_drum.pitch_cv` | — (calibrated) | 1 V/oct fixed | `tune + 12·cv[edge]`, read at the trigger edge and latched per hit — the pitch bus, like `oscillator.freq_cv` |
+| `sampler.vel` / `kick_drum.vel` / `snare_drum.vel` / `hat_drum.vel` | — (multiplier) | linear | `hit · max(0, cv[edge])`, read at the edge and latched; a `(V, F)` source collapses to the loudest voice at that sample |
 | `pitch_shifter.pitch_cv` | `12.0` | semitones | `st + d·mean cv` |
 | `delay.time_cv` | `50.0` | ms | `time + d·cv` |
 | `loudness.level_cv` | `1.0` | level (0…1) | `level + d·mean cv` |
@@ -205,9 +207,9 @@ signal-flow role (sources → processors → … → sinks).
 | [`fm_op`](#fm_op) | Sources | `pitch_cv`,`amp_cv`,`index_cv` (cv), `pm` (audio) → `out` (audio) |
 | [`pluck`](#pluck) | Sources | `pitch_cv` (cv), `trigger` (gate) → `out` (audio) |
 | [`modal`](#modal) | Sources | `excite` (audio), `pitch_cv` (cv) → `out` (audio) |
-| [`kick_drum`](#kick_drum) | Sources | `trigger` (gate) → `out` (audio) |
-| [`snare_drum`](#snare_drum) | Sources | `trigger` (gate) → `out` (audio) |
-| [`hat_drum`](#hat_drum) | Sources | `closed_trigger`,`open_trigger` (gate) → `out` (audio) |
+| [`kick_drum`](#kick_drum) | Sources | `trigger` (gate), `vel`, `pitch_cv` (cv) → `out` (audio) |
+| [`snare_drum`](#snare_drum) | Sources | `trigger` (gate), `vel` (cv) → `out` (audio) |
+| [`hat_drum`](#hat_drum) | Sources | `closed_trigger`,`open_trigger` (gate), `vel` (cv) → `out` (audio) |
 | [`organ`](#organ) | Sources | `pitch_cv` (cv), `gate` (gate) → `out` (audio) |
 | [`supersaw`](#supersaw) | Sources | `freq_cv`,`amp_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`wavetable_morph`](#wavetable_morph) | Sources | `freq_cv`,`position_cv`,`amp_cv` (cv) → `out` (audio) |
@@ -936,10 +938,24 @@ hit — deterministic, block-size independent, DC-free by construction —
 and a retrigger fades the old tail over ~2 ms (no machine-gun clicks).
 Mono; fan the trigger out for layers. Numpy only; silent stub under pyo.
 
-**Ports**: `trigger` (gate) → `out` (audio). **Params**: `freq_start`
-100..400 Hz (180) · `freq_end` 30..80 Hz (50) · `bend` 5..200 ms (40) ·
-`decay` 50..1500 ms (350) · `click` 0..1 (0.3) · `drive` 0..1 (0) ·
-`tune` ±12 st · `level` (0.7). See `examples/drum_machine.json`.
+**Velocity and pitch (2026-09-11).** `vel` is a level multiplier read
+**at the trigger edge** and latched into that hit — the accent idiom, and
+the [`sampler`](#sampler)'s. Unpatched it is 1, so nothing changes until
+you patch it: a [`midi_input`](#midi_input)'s `velocity_cv` makes the pad
+touch-sensitive; a [`shift_random`](#shift_random) programs accents. On
+the kick, velocity is applied **before** `drive`, so a soft hit stays
+clean and a hard one saturates, the way the circuit would. `pitch_cv` is
+the calibrated 1 V/oct bus (no depth knob, like every pitched voice here),
+also read at the edge and stacked on `tune` — a [`sequencer`](#sequencer)
+into it plays a tuned 808 line. A voice-aware `(V, F)` source on either
+jack collapses to the **loudest voice at that sample** (idle slots read
+0, so that is the key just struck), not the house sum.
+
+**Ports**: `trigger` (gate), `vel`, `pitch_cv` (cv) → `out` (audio).
+**Params**: `freq_start` 100..400 Hz (180) · `freq_end` 30..80 Hz (50) ·
+`bend` 5..200 ms (40) · `decay` 50..1500 ms (350) · `click` 0..1 (0.3) ·
+`drive` 0..1 (0) · `tune` ±12 st · `level` (0.7). See
+`examples/drum_machine.json` and `examples/drum_dynamics.json`.
 
 #### `snare_drum`
 
@@ -949,23 +965,36 @@ seeded per hit). `snappy` balances shell against wires (0 = all tone,
 1 = all noise). Same engine as the kick: whole-hit synthesis at the
 edge, deterministic, retrigger declick. `tune` ±12 st shifts the modes.
 
-**Ports**: `trigger` (gate) → `out` (audio). **Params**: `tone_decay`
-20..500 ms (120) · `noise_decay` 20..1000 ms (200) · `snappy` 0..1
-(0.5) · `tune` ±12 st · `level` (0.7). See `examples/drum_machine.json`.
+`vel` is a level multiplier read at the trigger edge and latched (unpatched
+→ 1; see [`kick_drum`](#kick_drum) for the collapse rule).
+
+**Ports**: `trigger` (gate), `vel` (cv) → `out` (audio). **Params**:
+`tone_decay` 20..500 ms (120) · `noise_decay` 20..1000 ms (200) ·
+`snappy` 0..1 (0.5) · `tune` ±12 st · `level` (0.7). See
+`examples/drum_machine.json`.
 
 #### `hat_drum`
 
-Six detuned **square waves** (the classic metallic ratio stack around
-400 Hz) high-passed near 7 kHz — deterministic, no noise source needed;
+Six detuned **square waves** (the classic metallic ratio stack, base
+`tone` Hz) high-passed near 7 kHz — deterministic, no noise source needed;
 the stack *is* the noise (the squares alias mildly; hats are noise-like
 and it reads as character). One module, two jacks: `closed_trigger`
 (tight, `decay_closed`) and `open_trigger` (ringing, `decay_open`)
 share the voice, and a closed hit **chokes** a ringing open hit with
 the 2 ms fade — the pedal coming down, exactly like hardware.
 
-**Ports**: `closed_trigger`, `open_trigger` (gate) → `out` (audio).
-**Params**: `decay_closed` 10..300 ms (60) · `decay_open` 50..1500 ms
-(400) · `tune` ±12 st · `level` (0.6). See `examples/drum_machine.json`.
+`tone` (2026-09-11) sets the stack's base frequency, 200..1600 Hz (400 is
+the classic). The high-pass is fixed, so what moves is how *dense* the
+stack is above it: a low base packs more partials into the band — noisier,
+trashier — and a high base leaves it sparse and pitched, the thin hat.
+`vel` is a level multiplier read at whichever trigger edge fired and
+latched (unpatched → 1; see [`kick_drum`](#kick_drum) for the collapse
+rule) — a stepped CV into it is the ghost-note machine.
+
+**Ports**: `closed_trigger`, `open_trigger` (gate), `vel` (cv) → `out`
+(audio). **Params**: `decay_closed` 10..300 ms (60) · `decay_open`
+50..1500 ms (400) · `tone` 200..1600 Hz (400) · `tune` ±12 st · `level`
+(0.6). See `examples/drum_machine.json` and `examples/drum_dynamics.json`.
 
 #### `organ`
 
@@ -3676,6 +3705,11 @@ loads in the app. Notable ones referenced above:
   `python examples/samples/generate_samples.py` first to create the
   loop — until you do, the patch loads and plays silently rather than
   failing, because an unreadable path is silence by contract.
+- `drum_dynamics.json` — the drums with feel: a [`shift_random`](#shift_random)
+  (+0.3 via [`cv_offset`](#cv_offset)) into the hat's `vel` for accents and
+  ghost notes, a 4-step [`sequencer`](#sequencer) into the kick's `pitch_cv`
+  for a tuned 808 line with `drive` up (soft hits clean, hard ones
+  saturated), a fixed 0.85 on the snare's `vel`.
 - `sampler_scrub.json` — the slicer: a [`shift_random`](#shift_random)
   into a [`sampler`](#sampler)'s `start_cv` re-cuts the same drum loop on
   every sixteenth (`antialias` on), with a sparse `reverse` stab a fifth

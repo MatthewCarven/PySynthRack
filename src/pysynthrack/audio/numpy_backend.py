@@ -394,14 +394,18 @@ def _pluck_exciter(n: int, color: float, position: float, rng) -> np.ndarray:
     return e
 
 
-def _kick_hit(sr, freq_start, freq_end, bend_s, decay_s, click, drive, tune, rng):
+def _kick_hit(sr, freq_start, freq_end, bend_s, decay_s, click, drive, tune, rng,
+              vel=1.0):
     """One complete kick hit, synthesized closed-form (deterministic).
 
     Phase is the exact integral of the exponential pitch dive
     ``f(t) = fe + (fs − fe)·e^(−t/τ)``, so the trajectory is analytic
     (testable) and DC-free by construction (a sine of a smooth phase).
     ``click`` adds a 2 ms zero-meaned noise transient; ``drive`` is a
-    normalized tanh (no oversampling — the kick is LF-dominant).
+    normalized tanh (no oversampling — the kick is LF-dominant). ``vel``
+    scales the hit BEFORE the drive, so a soft hit stays clean and a hard
+    one saturates; at 1.0 it is not applied at all, keeping the pinned
+    closed-form render exact.
     """
     k = 2.0 ** (tune / 12.0)
     fs, fe = freq_start * k, freq_end * k
@@ -416,6 +420,8 @@ def _kick_hit(sr, freq_start, freq_end, bend_s, decay_s, click, drive, tune, rng
         burst = rng.uniform(-1.0, 1.0, n)
         burst -= burst.mean()
         body[:n] += click * 0.8 * burst
+    if vel != 1.0:
+        body *= vel
     if drive > 0.0:
         g = 1.0 + 6.0 * drive
         body = np.tanh(g * body) / np.tanh(g)
@@ -444,14 +450,16 @@ def _snare_hit(sr, tone_decay_s, noise_decay_s, snappy, tune, rng):
     return (1.0 - snappy) * tone + snappy * noise
 
 
-def _hat_hit(sr, decay_s, tune):
+def _hat_hit(sr, decay_s, tune, tone=400.0):
     """One complete hat hit: six detuned squares, high-passed, enveloped.
 
     Deterministic with no rng — the metallic stack IS the noise. The
     squares alias mildly; hats are noise-like, so it reads as character.
+    ``tone`` is the stack's base frequency (400 Hz is the classic);
+    ``tune`` shifts it in semitones on top.
     """
     k = 2.0 ** (tune / 12.0)
-    base = 400.0 * k
+    base = float(tone) * k
     ratios = (1.0, 1.342, 1.523, 1.782, 2.011, 2.312)
     length = max(16, int(sr * decay_s * 80.0 / 60.0))
     t = np.arange(length) / sr
@@ -13988,6 +13996,22 @@ class NumpyBackend(AudioBackend):
         st["prev_" + key] = bool(g[-1])
         return np.flatnonzero(g & ~prev).tolist()
 
+    @staticmethod
+    def _drum_edge_value(sig, at: int, default: float) -> float:
+        """A CV's value AT the trigger edge sample, for latching into a hit.
+
+        A drum is one drum, so a voice-aware ``(V, F)`` source collapses
+        here — to the **loudest voice at that sample**, not the house sum:
+        a velocity bus carries 0 on idle slots, so the max is the key that
+        was just struck, whereas sixteen velocities added together would
+        be nonsense. Unpatched → ``default``.
+        """
+        if sig is None:
+            return default
+        if sig.ndim == 2:
+            return float(np.max(sig[:, at]))
+        return float(sig[at])
+
     def _drum_fade_slot(self, st, slot: str) -> None:
         """Start the 2 ms fade-out on every active play in ``slot``."""
         fade_total = max(1, int(self.sample_rate * self._DRUM_FADE_SECONDS))
@@ -14052,6 +14076,10 @@ class NumpyBackend(AudioBackend):
 
     def _render_kick(self, module, frames: int, buffers, patch) -> np.ndarray:
         trig = self._input_buffer(patch, buffers, module.id, "trigger")
+        vel = self._input_buffer(patch, buffers, module.id, "vel", collapse=False)
+        pitch = self._input_buffer(
+            patch, buffers, module.id, "pitch_cv", collapse=False
+        )
         p = module.params
 
         def make_hits(st):
@@ -14061,6 +14089,11 @@ class NumpyBackend(AudioBackend):
                     (self._DRUM_SEED, module.id, int(st["hits"]))
                 )
                 st["hits"] += 1
+                # `vel` and `pitch_cv` are read AT THE EDGE and latched
+                # into this hit (the sampler idiom): a hit is a hit.
+                velocity = max(0.0, self._drum_edge_value(vel, e, 1.0))
+                cv = self._drum_edge_value(pitch, e, 0.0)
+                tune = min(12.0, max(-12.0, float(p.get("tune", 0.0))))
                 buf = _kick_hit(
                     self.sample_rate,
                     min(400.0, max(100.0, float(p.get("freq_start", 180.0)))),
@@ -14069,8 +14102,9 @@ class NumpyBackend(AudioBackend):
                     min(1.5, max(0.05, float(p.get("decay", 350.0)) * 1e-3)),
                     min(1.0, max(0.0, float(p.get("click", 0.3)))),
                     min(1.0, max(0.0, float(p.get("drive", 0.0)))),
-                    min(12.0, max(-12.0, float(p.get("tune", 0.0)))),
+                    tune + 12.0 * cv,
                     rng,
+                    vel=velocity,
                 )
                 hits.append((int(e), "main", buf))
             return hits
@@ -14079,6 +14113,7 @@ class NumpyBackend(AudioBackend):
 
     def _render_snare(self, module, frames: int, buffers, patch) -> np.ndarray:
         trig = self._input_buffer(patch, buffers, module.id, "trigger")
+        vel = self._input_buffer(patch, buffers, module.id, "vel", collapse=False)
         p = module.params
 
         def make_hits(st):
@@ -14096,16 +14131,27 @@ class NumpyBackend(AudioBackend):
                     min(12.0, max(-12.0, float(p.get("tune", 0.0)))),
                     rng,
                 )
+                velocity = max(0.0, self._drum_edge_value(vel, e, 1.0))
+                if velocity != 1.0:
+                    buf = buf * velocity
                 hits.append((int(e), "main", buf))
             return hits
 
         return self._render_drum(module, frames, buffers, patch, make_hits)
 
     def _render_hat(self, module, frames: int, buffers, patch) -> np.ndarray:
+        from ..modules.drums import HAT_TONE_MAX, HAT_TONE_MIN
+
         closed = self._input_buffer(patch, buffers, module.id, "closed_trigger")
         opened = self._input_buffer(patch, buffers, module.id, "open_trigger")
+        vel = self._input_buffer(patch, buffers, module.id, "vel", collapse=False)
         p = module.params
         tune = min(12.0, max(-12.0, float(p.get("tune", 0.0))))
+        try:
+            tone = float(p.get("tone", 400.0))
+        except (TypeError, ValueError):
+            tone = 400.0
+        tone = min(HAT_TONE_MAX, max(HAT_TONE_MIN, tone))
 
         def make_hits(st):
             hits = []
@@ -14114,7 +14160,11 @@ class NumpyBackend(AudioBackend):
                     self.sample_rate,
                     min(0.3, max(0.01, float(p.get("decay_closed", 60.0)) * 1e-3)),
                     tune,
+                    tone,
                 )
+                velocity = max(0.0, self._drum_edge_value(vel, e, 1.0))
+                if velocity != 1.0:
+                    buf = buf * velocity
                 # A closed hit chokes BOTH slots (its own retrigger and
                 # any ringing open hit) — the pedal coming down.
                 hits.append((int(e), "closed", buf))
@@ -14123,7 +14173,11 @@ class NumpyBackend(AudioBackend):
                     self.sample_rate,
                     min(1.5, max(0.05, float(p.get("decay_open", 400.0)) * 1e-3)),
                     tune,
+                    tone,
                 )
+                velocity = max(0.0, self._drum_edge_value(vel, e, 1.0))
+                if velocity != 1.0:
+                    buf = buf * velocity
                 hits.append((int(e), "open", buf))
             return hits
 

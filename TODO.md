@@ -211,9 +211,9 @@ once the board cleared.
       real keyboard on `velocity_cv → vel`. The sampler is
       feature-complete against its spec.
 - [ ] **EARS (meatthread0, banked 2026-09-11): `sampler_scrub.json` +
-      `sampler_mellotron.json`** — Matthew: "bank sampler_scrub.json in my
-      todo for now, and I'll test when I can do it properly, where I am
-      is noisy." Both unheard. Run `python examples/samples/generate_samples.py`
+      `sampler_mellotron.json` + `drum_dynamics.json`** — Matthew: "bank
+      sampler_scrub.json in my todo for now, and I'll test when I can do
+      it properly, where I am is noisy." All three unheard. Run `python examples/samples/generate_samples.py`
       first. While there: eyes on the sampler node's waveform face and the
       new `reverse` / `antialias` tickboxes, and `gated` in the mode
       dropdown (never once selectable before 08-30). Unblocks nothing —
@@ -563,6 +563,21 @@ same session.
       2026-08-05** ("drum_machine is a drum machine" — mission
       statement achieved). Later: velocity inputs, kick
       `pitch_cv`, hat `tone` (stack base), per-drum `out` gain_cv.
+- [x] **Drums love pass** — SHIPPED 2026-09-11 (Matthew: "Drums please").
+      Every drum: **`vel`** (cv), read AT THE TRIGGER EDGE and latched per
+      hit, unpatched = 1 (pinned: unpatched renders bit-identical to
+      before), negative = silence, a `(V, F)` source collapses to the
+      **loudest voice at that sample** (max, not the house sum — a
+      velocity bus is 0 on idle slots). Kick: velocity applied BEFORE
+      `drive` (soft = clean, hard = saturated; pinned as a ratio), plus
+      **`pitch_cv`**, the calibrated 1 V/oct bus like every pitched
+      voice, latched per hit (pinned: +1 V ≡ tune +12, and a hit keeps
+      its pitch while the CV moves). Hat: **`tone`** 200..1600 Hz stack
+      base (400 unchanged; pinned by spectral flatness above the HP —
+      centroid was the wrong observable, the band is the band). Per-drum
+      `gain_cv` NOT added: `vel` covers accents, a VCA covers the rest.
+      18 tests; suite **3046**. Example `drum_dynamics.json`. **Wants
+      ears.**
 - [x] **`pluck` — Karplus–Strong string voice** — SHIPPED 2026-08-03
       (same day, part four). Extended KS: allpass fractional delay +
       damping-phase compensation (**±5 ct C2..C6**, pinned), `decay` as a

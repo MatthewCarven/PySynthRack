@@ -33,6 +33,27 @@ character, not error.
 All three: ``tune`` shifts everything ±12 semitones, ``level`` trims the
 output. Mono voices (a drum is one drum; fan the trigger out to several
 modules for flams). Numpy backend only; silent stubs under pyo.
+
+**Velocity (added 2026-09-11).** Every drum has a ``vel`` jack: a level
+multiplier read **at the trigger edge** and latched into that hit — the
+sampler's idiom, and the way a drum machine's accent works. Unpatched it
+is 1, so nothing changes until you patch it; a [`midi_input`](#midi_input)'s
+``velocity_cv`` makes the pads touch-sensitive, a
+[`shift_random`](#shift_random) or [`sequencer`](#sequencer) programs
+accents, a [`clock`](#clock) at half speed into it is an every-other-hit
+ghost note. A voice-aware ``(V, F)`` source collapses to the **loudest
+voice at that sample** (idle slots read 0, so that is the key that was
+just struck), not the house sum — sixteen slots' velocities added
+together would be nonsense. On the kick, velocity is applied *before*
+``drive``: a soft hit stays clean and a hard one saturates, the way the
+circuit would.
+
+The kick also gains ``pitch_cv`` — the calibrated 1 V/oct bus, no depth
+knob, like every other pitched voice here — read at the edge and stacked
+on ``tune``, so a [`sequencer`](#sequencer) plays a tuned 808 line. The hat
+gains ``tone``: the base frequency of its metallic stack (400 Hz by
+default), the difference between a bright, thin hat and a dark, trashy
+one.
 """
 from __future__ import annotations
 
@@ -56,6 +77,9 @@ class KickDrum(Module):
 
     Ports:
         trigger (in, gate): hit on each rising edge.
+        vel (in, cv): level multiplier, read at the edge (before
+            ``drive``). Unpatched → 1.
+        pitch_cv (in, cv): 1 V/oct, read at the edge, stacked on ``tune``.
         out (out, audio): the kick.
     """
 
@@ -71,7 +95,11 @@ class KickDrum(Module):
         "tune": 0.0,
         "level": 0.7,
     }
-    INPUT_PORTS = [Port("trigger", "in", "gate")]
+    INPUT_PORTS = [
+        Port("trigger", "in", "gate"),
+        Port("vel", "in", "cv"),
+        Port("pitch_cv", "in", "cv"),
+    ]
     OUTPUT_PORTS = [Port("out", "out", "audio")]
 
 
@@ -88,6 +116,7 @@ class SnareDrum(Module):
 
     Ports:
         trigger (in, gate): hit on each rising edge.
+        vel (in, cv): level multiplier, read at the edge. Unpatched → 1.
         out (out, audio): the snare.
     """
 
@@ -100,8 +129,16 @@ class SnareDrum(Module):
         "tune": 0.0,
         "level": 0.7,
     }
-    INPUT_PORTS = [Port("trigger", "in", "gate")]
+    INPUT_PORTS = [
+        Port("trigger", "in", "gate"),
+        Port("vel", "in", "cv"),
+    ]
     OUTPUT_PORTS = [Port("out", "out", "audio")]
+
+
+#: Hat metallic-stack base frequency range, Hz. 400 is the classic.
+HAT_TONE_MIN = 200.0
+HAT_TONE_MAX = 1600.0
 
 
 @register_module_type
@@ -111,12 +148,16 @@ class HatDrum(Module):
     Parameters:
         decay_closed: Closed-hit t60 in ms, 10..300. Default 60.
         decay_open: Open-hit t60 in ms, 50..1500. Default 400.
+        tone: Base frequency of the square stack in Hz, 200..1600.
+            Default 400 — lower is darker and trashier, higher thinner.
         tune: Semitone shift, ±12. Default 0.
         level: Output level. Default 0.6.
 
     Ports:
         closed_trigger (in, gate): tight hit; chokes a ringing open hit.
         open_trigger (in, gate): ringing hit.
+        vel (in, cv): level multiplier, read at whichever edge fired.
+            Unpatched → 1.
         out (out, audio): the hat.
     """
 
@@ -125,11 +166,13 @@ class HatDrum(Module):
     DEFAULT_PARAMS = {
         "decay_closed": 60.0,
         "decay_open": 400.0,
+        "tone": 400.0,
         "tune": 0.0,
         "level": 0.6,
     }
     INPUT_PORTS = [
         Port("closed_trigger", "in", "gate"),
         Port("open_trigger", "in", "gate"),
+        Port("vel", "in", "cv"),
     ]
     OUTPUT_PORTS = [Port("out", "out", "audio")]

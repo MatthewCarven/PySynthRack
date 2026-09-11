@@ -52,6 +52,7 @@ from ..modules.organ import (
     PERC_DECAYS,
     PERC_MODES,
 )
+from ..modules.drums import HAT_TONE_MAX, HAT_TONE_MIN
 from ..modules.sequencer import MAX_STEPS as SEQ_MAX_STEPS
 from ..modules.sampler import (
     ROOT_MAX_NOTE as SAMPLER_ROOT_MAX,
@@ -2761,6 +2762,17 @@ class App:
                     label=param_name, default_value=float(current), speed=2.0,
                     min_value=20.0, max_value=1500.0, format="%.0f ms",
                     width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "tone":
+                # Hat stack base frequency. Bounded to the module's own
+                # range -- the other `tone` branches above belong to other
+                # TYPE blocks and never reach a drum.
+                dpg.add_drag_float(
+                    label="tone (stack base)", default_value=float(current),
+                    speed=2.0, min_value=HAT_TONE_MIN, max_value=HAT_TONE_MAX,
+                    format="%.0f Hz", width=140,
+                    callback=self._on_param_changed, user_data=user_data,
                 )
                 return
             if param_name == "tune":

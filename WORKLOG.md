@@ -35,6 +35,12 @@ already three light before slice 2 added one -- count with
 > the sampler node's new waveform face, and a real MIDI keyboard into
 > `midi_input.velocity_cv → sampler.vel`. Matthew's steer: **modules
 > for a while** — next picks come off the build queue in TODO.
+>
+> Later the same day: **drums love pass shipped** — `vel` on all three,
+> kick `pitch_cv`, hat `tone`. Suite **3046**. 111 examples
+> (`drum_dynamics.json`, wants ears — banked with the sampler ones;
+> Matthew is somewhere noisy). Remaining love candidates in the
+> 2026-09-11 drums entry below.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -84,6 +90,71 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-11 (later) — drums love: velocity, a tuned kick, a hat with a tone knob
+
+Matthew banked the sampler ears pass ("where I am is noisy") and asked
+for "modules that need some love". I walked every `Later:` note on a
+shipped module and offered seven; recommended the drums because
+`midi_input.velocity_cv` had just been born and the trio had no way to
+hear it. "Drums please Claude :-{D".
+
+**What landed.** `vel` on kick, snare and hat; `pitch_cv` on the kick;
+`tone` on the hat. 18 tests, suite **3046**. Example `drum_dynamics.json`.
+
+**The calls:**
+
+* *`vel` is the sampler's edge-latch idiom, verbatim.* Read at the
+  trigger edge, latched into the hit, unpatched = 1. The whole-hit
+  buffer design made it trivial: the buffer is synthesized at the edge,
+  so "latched" is free — multiply once and it is a property of that hit
+  forever. Pinned: unpatched is `array_equal` with the pre-change render
+  (every jack, every drum), what the CV does after the edge changes
+  nothing, negative is silence.
+* *A `(V, F)` velocity bus collapses to the MAX at the edge sample, not
+  the house sum.* The house rule sums voice rows for mono consumers,
+  which is right for audio and wrong for velocity — sixteen slots'
+  velocities added together is nonsense, and idle slots carry 0, so the
+  max is precisely the key that was just struck. One helper
+  (`_drum_edge_value`) does it for both `vel` and `pitch_cv`. Pinned
+  with a 4-row bus (0, 0, 0.6, 0.3) → the 0.6 hit.
+* *Kick velocity goes in BEFORE the drive.* `tanh(g·vel·body)/tanh(g)`:
+  a soft hit stays clean, a hard one saturates — the way the circuit
+  would. Pinned as a ratio: clean scales linearly (allclose), driven
+  half-velocity RMS sits between 0.5 and 0.95 of full. At `vel` 1.0 the
+  multiply is skipped entirely so the closed-form pin is untouched.
+* *Kick `pitch_cv` is the calibrated bus*, no depth knob — the
+  oscillator/pluck/fm_op/sampler convention, and the CV-depth table says
+  so. Stacked on `tune` as `tune + 12·cv`, latched per hit. Pinned: +1 V
+  and `tune` 12 are the same hit to 1e-6, and a hit keeps its pitch while
+  the CV moves an octave underneath it (the second hit takes the new
+  pitch; compared past the 2 ms retrigger fade, which was the first
+  draft's mistake — I'd written the expectation as a plain sum).
+* *Hat `tone` is the stack base, 200..1600.* The HP at 7 kHz is fixed, so
+  what changes is the DENSITY of partials above it — and that showed up
+  in the test: the spectral **centroid** barely moves (12.54 kHz vs
+  12.57 kHz between 400 and 200 Hz; the band is the band) and my first
+  draft asserted the wrong direction. Spectral **flatness** above 7 kHz
+  is the right observable — 0.49 / 0.41 / 0.36 / 0.20 for 200 / 400 /
+  800 / 1600 Hz, monotone — and that is what the docs now say the knob
+  does: trashy vs thin, not dark vs bright. **Measure the observable the
+  mechanism actually moves** — [[dsp-test-design-lessons]] again.
+* *No per-drum `gain_cv`.* The old note listed it; `vel` covers accents
+  and a VCA covers continuous level. Two multipliers on one drum would
+  be a trap. Noted in TODO rather than built.
+
+**Love candidates still on the list** (from the 2026-09-11 sweep of
+`Later:` notes): **modal** (strike-position macro, stereo mode spread,
+pitch-tracking excite filter — Matthew flagged it twice for a revisit);
+**clockwork** (`euclidean.fills_cv`, `burst.count_cv`, `clock_divider`);
+**function generator** (`curve_rise`/`curve_fall`, separate rise/fall
+CVs, `out_inv`); **pitch_shifter** (feedback shimmer, harmonizer /
+stereo spread); **chord/arp** (`inversion`, `changed` re-strum, arp
+internal clock); **slew v2** (`rise_cv`/`fall_cv` + clock sync).
+
+**Wants ears:** `drum_dynamics.json` — banked with the sampler patches.
 
 ---
 
