@@ -206,7 +206,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`noise`](#noise) | Sources | — → `out` (audio), `cv` (cv) |
 | [`fm_op`](#fm_op) | Sources | `pitch_cv`,`amp_cv`,`index_cv` (cv), `pm` (audio) → `out` (audio) |
 | [`pluck`](#pluck) | Sources | `pitch_cv` (cv), `trigger` (gate) → `out` (audio) |
-| [`modal`](#modal) | Sources | `excite` (audio), `pitch_cv` (cv) → `out` (audio) |
+| [`modal`](#modal) | Sources | `excite` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`kick_drum`](#kick_drum) | Sources | `trigger` (gate), `vel`, `pitch_cv` (cv) → `out` (audio) |
 | [`snare_drum`](#snare_drum) | Sources | `trigger` (gate), `vel` (cv) → `out` (audio) |
 | [`hat_drum`](#hat_drum) | Sources | `closed_trigger`,`open_trigger` (gate), `vel` (cv) → `out` (audio) |
@@ -905,13 +905,46 @@ per-voice pitches; voices sharing a pitch share coefficients and are
 the same as one); rung-out voices early-out. Numpy backend only; silent
 stub under pyo. See `examples/modal_bells.json`.
 
+**Where, with what, and in stereo (2026-09-11).** Three knobs, all 0 by
+default so the shipped sound is untouched:
+
+* **`position`** — *where* you strike. A body struck at a node of some
+  mode doesn't excite that mode; struck near the edge it is bright and
+  thin. Each mode's gain is combed by `|sin(π · ratio · position)|` — the
+  [`pluck`](#pluck)'s pick-position comb, moved from the exciter to the
+  mode gains — then the gains are renormalized so the level holds
+  (striking near the edge is *thin*, not quiet). 0 is off. Just off zero
+  the comb is ∝ ratio, a bright tilt; 0.5 on a `string` cancels every
+  even harmonic (the hollow strike), and the same 0.5 on a `bell` nulls
+  its prime and nominal. A position that would null *every* mode (1.0 on
+  a harmonic string) falls back to off rather than dividing into silence.
+* **`mallet`** — *what* you strike with. 0 is hard: the excite goes in
+  raw. Up from there a one-pole low-pass on the strike **tracks the
+  pitch** — cutoff `f0 · 2^(6·(1 − mallet))`, six octaves above the
+  fundamental down to the fundamental itself at 1 — so a felt mallet
+  reads as the same softness across the keyboard, where a fixed-Hz
+  filter would leave the top notes duller than the bottom. Per voice,
+  state carried (block-size independent at constant pitch).
+* **`spread`** — stereo. `out` stays the mono sum; `out_l` / `out_r`
+  place each mode in the field by a fixed, evenly-scattered pattern
+  (golden-ratio by mode index, so neighbours land on different sides
+  without an odd-left / even-right lattice), scaled by `spread`.
+  Equal-power pans normalized so at 0 the two outs *are* `out`
+  (bit-identical) and a fully-panned mode is √2 louder in its channel.
+  Real bells radiate their modes in different directions; this is that,
+  stylized. See `examples/modal_mallets.json`.
+
+Cost with all three on: 16 voices × 24 modes at 16 distinct pitches went
+from 31.4% to 39.4% of a block's budget.
+
 **Ports**
 
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `excite` | in | audio | The strike/breath. Unpatched → silence. |
 | `pitch_cv` | in | cv | 1 V/oct, C4 = 0 V. Unpatched → C4. |
-| `out` | out | audio | The ringing body. |
+| `out` | out | audio | The ringing body, mono. |
+| `out_l` / `out_r` | out | audio | The body with its modes spread; equal to `out` at `spread` 0. |
 
 **Parameters**
 
@@ -924,6 +957,9 @@ stub under pyo. See `examples/modal_bells.json`.
 | `brightness` | `0.5` | 0 … 1 | Mode-gain tilt, dark → bright. |
 | `inharm` | `0.0` | 0 … 1 | Ratio stretch. |
 | `level` | `0.5` | 0 … 1 | Output level. |
+| `position` | `0.0` | 0 … 1 | Strike-position comb on the mode gains, renormalized. 0 = off. |
+| `mallet` | `0.0` | 0 … 1 | Pitch-tracking strike low-pass: 0 hard (raw) … 1 soft (cut at the fundamental). |
+| `spread` | `0.0` | 0 … 1 | Stereo mode spread on `out_l`/`out_r`. 0 = the outs equal `out`. |
 
 #### `kick_drum`
 
@@ -3705,6 +3741,10 @@ loads in the app. Notable ones referenced above:
   `python examples/samples/generate_samples.py` first to create the
   loop — until you do, the patch loads and plays silently rather than
   failing, because an unreadable path is silence by contract.
+- `modal_mallets.json` — a stereo marimba: keys → a [`modal`](#modal) `bar`
+  with `position` 0.28, `mallet` 0.55 and `spread` 0.8, `out_l`/`out_r`
+  to the speakers with a [`reverb`](#reverb) off the mono `out` mixed in
+  behind, and an xy [`scope`](#scope) across L/R so the spread is visible.
 - `drum_dynamics.json` — the drums with feel: a [`shift_random`](#shift_random)
   (+0.3 via [`cv_offset`](#cv_offset)) into the hat's `vel` for accents and
   ghost notes, a 4-step [`sequencer`](#sequencer) into the kick's `pitch_cv`

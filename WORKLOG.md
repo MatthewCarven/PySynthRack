@@ -41,6 +41,11 @@ already three light before slice 2 added one -- count with
 > (`drum_dynamics.json`, wants ears — banked with the sampler ones;
 > Matthew is somewhere noisy). Remaining love candidates in the
 > 2026-09-11 drums entry below.
+>
+> And then **modal love pass shipped** — `position`, `mallet`, `spread`
+> (+ `out_l`/`out_r`). Suite **3065**. 112 examples (`modal_mallets.json`,
+> banked). Next love candidates: clockwork CVs + `clock_divider`,
+> function-generator follow-ons, pitch_shifter, chord/arp, slew v2.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -90,6 +95,64 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-11 (later still) — modal love: where, with what, and in stereo
+
+Matthew's pick after the drums — the module he had flagged twice for a
+longer revisit. The three `Later:` items from the 2026-08-03 ship note,
+each a knob that is OFF at 0:
+
+* **`position`** — the strike-position comb. The pluck already had this
+  idea as a delay-and-subtract on its exciter; on a resonator bank the
+  same physics lands on the mode gains directly: `|sin(π·ratio·pos)|`,
+  a mode silent when the strike sits on its node. Renormalized after,
+  so striking near the edge is *thin*, not *quiet* — a slider end that
+  went silent would be a trap (the sampler's inverted-loop lesson). For
+  a harmonic string it is the textbook plucked-string spectrum (0.5
+  kills every even harmonic, pinned >30 dB); for bar/bell/membrane the
+  ratio stands in for the mode's spatial period, which is a stylization
+  and documented as one. A position that nulls everything (1.0 on a
+  string) falls back to off rather than dividing by zero.
+* **`mallet`** — the pitch-tracking excite filter. One-pole low-pass on
+  the strike at `f0 · 2^(6·(1−m))`: six octaves above the fundamental
+  at a nudge, the fundamental itself at 1. Tracking is the point: a felt
+  mallet should read as the same softness across the keyboard, and a
+  fixed-Hz filter leaves the top notes duller. Pinned as exactly that
+  claim — the same rolloff between harmonic 1 and 4 an octave apart,
+  within 3 dB (the first draft measured 5.4 dB apart and I nearly
+  loosened the tolerance; the culprit was the *noise burst's* own
+  spectral ripple at the different measurement frequencies, not the
+  filter — an impulse strike has a flat spectrum and the claim holds at
+  well under 3 dB. Measure the mechanism, not the stimulus.)
+* **`spread`** — stereo. `out` is untouched (still the mono sum, still
+  the array the tests pin); `out_l`/`out_r` accumulate a second pair of
+  sums with per-mode equal-power pans. Two calls worth keeping: pans
+  follow a golden-ratio scatter by mode index rather than odd-left /
+  even-right (which is a lattice you can hear), and the gains carry a
+  √2 so a centred mode contributes 1.0 to each side — at spread 0 the
+  outs ARE `out`, bit-identical, the chorus/resampler contract. Pinned:
+  L²+R² = 2·mono² per mode, and each mode's side follows its pan.
+
+**The verification that matters:** before touching anything I rendered
+four materials and a voiced case with the shipped code and saved them;
+after, the default render is `array_equal` to every one. The knobs at 0
+skip their code paths entirely — no "multiply by 1.0", no "add zeros".
+
+**One bite.** The mallet one-pole broke block-size independence on the
+first run: I carried lfilter's `zf` as the state and rebuilt `zi` as
+`(1−coef)·state` next block — but `zf` already *is* `(1−coef)·y_last`,
+so the factor was applied twice. The octaver's idiom is to carry the
+last OUTPUT and rebuild `zi` from it, which also survives a coefficient
+change between blocks (a pitch glide) without kicking the filter. Same
+shape as [[dsp-test-design-lessons]]'s "know what the state variable IS".
+
+**Cost:** 16 voices × 24 modes at 16 distinct pitches, 31.4% of budget
+before, 39.4% with all three on (the spread's two extra multiply-adds
+per mode are most of it). 17 tests; suite **3065**. Example
+`modal_mallets.json` — a stereo marimba with an xy scope across L/R so
+the spread is something you can *see*: banked with the other ears items.
 
 ---
 

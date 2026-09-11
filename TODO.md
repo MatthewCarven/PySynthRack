@@ -211,9 +211,11 @@ once the board cleared.
       real keyboard on `velocity_cv → vel`. The sampler is
       feature-complete against its spec.
 - [ ] **EARS (meatthread0, banked 2026-09-11): `sampler_scrub.json` +
-      `sampler_mellotron.json` + `drum_dynamics.json`** — Matthew: "bank
-      sampler_scrub.json in my todo for now, and I'll test when I can do
-      it properly, where I am is noisy." All three unheard. Run `python examples/samples/generate_samples.py`
+      `sampler_mellotron.json` + `drum_dynamics.json` +
+      `modal_mallets.json`** — Matthew: "bank sampler_scrub.json in my
+      todo for now, and I'll test when I can do it properly, where I am
+      is noisy." All four unheard (the modal one also wants eyes on its
+      xy scope — the spread should draw a cloud, not a line). Run `python examples/samples/generate_samples.py`
       first. While there: eyes on the sampler node's waveform face and the
       new `reverse` / `antialias` tickboxes, and `gated` in the mode
       dropdown (never once selectable before 08-30). Unblocks nothing —
@@ -552,6 +554,27 @@ same session.
       (flagged for a longer revisit — Matthew's coming back to it).
       Later: strike-position macro (per-mode gain comb), stereo mode
       spread, `pitch_cv`-tracking excite filter.
+- [x] **Modal love pass** — SHIPPED 2026-09-11 (Matthew's pick after the
+      drums; he had flagged modal twice for a revisit). All three
+      `Later:` items, every one OFF by default and **verified
+      bit-identical to renders captured from the pre-change code** (four
+      materials + a voiced case): **`position`** — the pluck's
+      pick-position comb moved to the mode gains, `|sin(π·ratio·pos)|`,
+      renormalized (edge = thin, not quiet; pinned: even harmonics >30 dB
+      down at 0.5 on a string, level within 2x across positions, a
+      null-everything position falls back to off); **`mallet`** —
+      one-pole strike low-pass at `f0·2^(6(1−m))`, per-voice state
+      (pinned: the same rolloff at the same harmonic numbers an octave
+      apart, within 3 dB — a fixed-Hz filter would not; block-size
+      independent); **`spread`** — `out_l`/`out_r` with per-mode
+      golden-ratio pans, equal-power ×√2 so spread 0 outs ARE `out`
+      (array_equal), L²+R² = 2·mono² per mode (pinned). One bite: the
+      one-pole must carry the last OUTPUT and rebuild zi from it each
+      block (the octaver's idiom) — carrying lfilter's zf double-applied
+      (1−coef) and broke block-size independence. Cost 16v × 24 modes ×
+      16 pitches: 31.4% → 39.4% all on. 17 tests; suite **3065**.
+      Example `modal_mallets.json` (stereo marimba + xy scope). **Wants
+      ears + eyes on the xy scope** — banked with the others.
 - [x] **Drum voices `kick_drum` / `snare_drum` / `hat_drum`** — ALL
       SHIPPED 2026-08-03 (12e57ed, same commit — one shared engine:
       whole-hit buffers at the edge, seeded per hit, 2 ms retrigger

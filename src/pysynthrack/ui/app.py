@@ -2823,6 +2823,22 @@ class App:
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
+            # The love-pass trio, all 0..1 with 0 = off: ``position`` is
+            # the strike-position comb, ``mallet`` the pitch-tracking
+            # strike low-pass (0 hard .. 1 soft), ``spread`` the stereo
+            # mode spread on out_l/out_r.
+            if param_name in ("position", "mallet", "spread"):
+                labels = {
+                    "position": "position (strike, 0 = off)",
+                    "mallet": "mallet (0 hard .. 1 soft)",
+                    "spread": "spread (stereo, out_l/r)",
+                }
+                dpg.add_slider_float(
+                    label=labels[param_name], default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
 
         if module.TYPE == "pluck":
             # Karplus–Strong string. ``decay`` is a real t60 in seconds

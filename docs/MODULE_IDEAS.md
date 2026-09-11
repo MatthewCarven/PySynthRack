@@ -442,7 +442,7 @@ strings for free.
 - Tests: pitch accuracy ±5 ct across range (interp verified); t60 within 10%;
   damping monotone; retrigger while ringing declicks; 8-voice example.
 
-### `modal` (M–L) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
+### `modal` (M–L) — **SHIPPED 2026-08-03**; love pass 2026-09-11 (`position` / `mallet` / `spread` + `out_l`/`out_r`) (see TODO.md / WORKLOG.md)
 
 Struck/blown resonator bank (bars, bells, membranes) — feed it `burst`,
 noise, or anything.

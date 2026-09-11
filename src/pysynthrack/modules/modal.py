@@ -34,10 +34,39 @@ pattern); silent, rung-out voices early-out. Pitch is read per block
 would land above ~0.45·sr are dropped, not aliased. Numpy backend only;
 silent stub under pyo.
 
+**The 2026-09-11 love pass** added three knobs, all off by default so the
+shipped sound is untouched:
+
+  * ``position`` — *where* you strike. A body struck at a node of some
+    mode doesn't excite that mode; struck near the edge it is bright and
+    thin. Each mode's gain is combed by ``|sin(π · ratio · position)|``
+    (the pluck's pick-position comb, moved from the exciter to the mode
+    gains), then the gains are renormalized so the level holds. 0 is off
+    — struck everywhere at once, the old sound. Nudging it just off zero
+    tilts the bank bright (the comb is ∝ ratio there); 0.5 on a
+    ``string`` cancels every even harmonic (the hollow, clarinet-ish
+    strike); the same 0.5 on a ``bell`` nulls its prime and nominal.
+  * ``mallet`` — *what* you strike with. 0 is a hard mallet: the excite
+    goes in raw. Up from there the strike is low-passed by a one-pole
+    whose cutoff **tracks the pitch** — ``f0 · 2^(6·(1 − mallet))``, from
+    six octaves above the fundamental down to the fundamental itself at
+    1 — so a felt mallet reads as the same softness across the whole
+    keyboard, where a fixed-Hz filter would make the top notes duller
+    than the bottom ones. Per voice, state carried, so a held pitch is
+    block-size independent.
+  * ``spread`` — stereo. ``out`` stays the mono sum; ``out_l`` / ``out_r``
+    place each mode somewhere in the field (a fixed, evenly-scattered
+    pattern by mode index, so it doesn't flip odd-left/even-right), with
+    ``spread`` scaling how far. Equal-power pans normalized so at 0 the
+    two outs ARE ``out`` (bit-identical) and a fully-panned mode is √2
+    louder in its channel. Modes of a real bell radiate in different
+    directions; this is that, stylized.
+
 Ports:
   * ``excite`` (audio): the strike/breath. Unpatched → silence.
   * ``pitch_cv`` (cv): 1 V/oct, C4 = 0 V. Unpatched → C4.
-  * ``out`` (audio): the ringing body.
+  * ``out`` (audio): the ringing body, mono.
+  * ``out_l`` / ``out_r`` (audio): the body with its modes spread.
 
 Params:
   * ``material``: ``bar`` | ``bell`` | ``membrane`` | ``string``.
@@ -47,6 +76,9 @@ Params:
   * ``brightness``: mode-gain tilt, 0 dark .. 1 bright. Default 0.5.
   * ``inharm``: ratio stretch, 0..1. Default 0.
   * ``level``: output level. Default 0.5.
+  * ``position``: strike-position comb on the mode gains, 0 off .. 1.
+  * ``mallet``: pitch-tracking low-pass on the strike, 0 hard .. 1 soft.
+  * ``spread``: stereo mode spread on ``out_l``/``out_r``, 0..1.
 """
 from __future__ import annotations
 
@@ -60,6 +92,46 @@ from ..core.port import Port
 MODAL_MATERIALS = ("bar", "bell", "membrane", "string")
 
 MODAL_MAX_MODES = 24
+
+#: ``mallet`` 1.0 puts the strike low-pass AT the fundamental; 0 (hard)
+#: bypasses it. In between the cutoff is ``f0 · 2**(MALLET_OCTAVES·(1−m))``.
+MALLET_OCTAVES = 6.0
+
+
+def strike_comb(ratios, position: float):
+    """Per-mode gain comb for a strike at ``position`` (0..1 along the body).
+
+    ``|sin(π · ratio · position)|`` — a mode is silent when the strike
+    lands on one of its nodes, and the body is bright and thin when
+    struck near the edge (every factor small, ∝ ratio). For a harmonic
+    ``string`` this is the textbook plucked-string spectrum; for the
+    other materials the ratio stands in for the mode's spatial period.
+    ``position`` ≤ 0 returns all ones (off), and a comb that nulls
+    *everything* (position exactly 1) falls back to ones too rather than
+    dividing the bank into silence. Pure; numpy-only.
+    """
+    r = np.asarray(ratios, dtype=np.float64)
+    if position <= 0.0:
+        return np.ones_like(r)
+    comb = np.abs(np.sin(np.pi * r * float(position)))
+    if float(comb.sum()) < 1e-9:
+        return np.ones_like(r)
+    return comb
+
+
+def mode_pans(count: int, spread: float):
+    """Per-mode stereo positions in −1..1 (left..right) for ``spread``.
+
+    A fixed, evenly-scattered pattern by mode index — the golden-ratio
+    sequence ``2·frac(i·φ) − 1`` — so neighbouring modes land on
+    different sides without the odd-left/even-right lattice that a
+    simple alternation gives. ``spread`` scales the whole pattern; 0 is
+    everything centred.
+    """
+    i = np.arange(int(count), dtype=np.float64)
+    phi = (np.sqrt(5.0) - 1.0) / 2.0
+    pattern = 2.0 * np.mod(i * phi, 1.0) - 1.0
+    return float(spread) * pattern
 
 # Free-free bar: the first β_k·L solutions of cos(βL)·cosh(βL) = 1;
 # asymptotically (k + 1.5)π. Mode frequencies scale as β².
@@ -121,11 +193,18 @@ class Modal(Module):
         brightness: Mode-gain tilt, 0 dark .. 1 bright. Default 0.5.
         inharm: Ratio stretch, 0..1. Default 0.
         level: Output level. Default 0.5.
+        position: Strike-position comb on the mode gains, 0 (off) .. 1.
+            Default 0.
+        mallet: Pitch-tracking low-pass on the strike, 0 (hard, raw) ..
+            1 (soft, cut at the fundamental). Default 0.
+        spread: How far the modes are spread across ``out_l``/``out_r``,
+            0..1. Default 0 — the outs equal ``out``.
 
     Ports:
         excite (in, audio): the strike. Unpatched → silence.
         pitch_cv (in, cv): 1 V/oct, C4 = 0 V. Unpatched → C4.
-        out (out, audio): the ringing body.
+        out (out, audio): the ringing body, mono.
+        out_l / out_r (out, audio): the body, modes spread.
     """
 
     TYPE = "modal"
@@ -138,9 +217,16 @@ class Modal(Module):
         "brightness": 0.5,
         "inharm": 0.0,
         "level": 0.5,
+        "position": 0.0,
+        "mallet": 0.0,
+        "spread": 0.0,
     }
     INPUT_PORTS = [
         Port("excite", "in", "audio"),
         Port("pitch_cv", "in", "cv"),
     ]
-    OUTPUT_PORTS = [Port("out", "out", "audio")]
+    OUTPUT_PORTS = [
+        Port("out", "out", "audio"),
+        Port("out_l", "out", "audio"),
+        Port("out_r", "out", "audio"),
+    ]

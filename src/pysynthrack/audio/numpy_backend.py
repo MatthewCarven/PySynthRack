@@ -14476,15 +14476,26 @@ class NumpyBackend(AudioBackend):
         constant pitch. Quiet voices (silent excite + decayed state)
         early-out; modes past ``modes`` have their state zeroed so a
         live mode-count change can't resurrect stale ring-outs.
+
+        Three things from the 2026-09-11 love pass, each skipped entirely
+        at its default so the shipped render is untouched: ``position``
+        combs the mode gains (``strike_comb``, renormalized); ``mallet``
+        one-poles the excite per pitch group at ``f0·2^(6(1−m))`` with
+        per-voice state (``lp``); ``spread`` accumulates a second pair of
+        per-mode-panned sums for ``out_l``/``out_r`` (``mode_pans``,
+        equal-power, ×√2 so centre ≡ mono). Returns a port dict.
         """
-        from ..modules.modal import MODAL_MAX_MODES, modal_ratios
+        from ..modules.modal import (
+            MALLET_OCTAVES, MODAL_MAX_MODES, modal_ratios, mode_pans, strike_comb,
+        )
 
         excite = self._input_buffer(
             patch, buffers, module.id, "excite", collapse=False
         )
         if excite is None:
             self._state.pop(module.id, None)
-            return np.zeros(frames, dtype=np.float32)
+            z = np.zeros(frames, dtype=np.float32)
+            return {"out": z, "out_l": z, "out_r": z}
         pitch = self._input_buffer(
             patch, buffers, module.id, "pitch_cv", collapse=False
         )
@@ -14506,22 +14517,48 @@ class NumpyBackend(AudioBackend):
         bright = min(1.0, max(0.0, float(module.params.get("brightness", 0.5))))
         inharm = min(1.0, max(0.0, float(module.params.get("inharm", 0.0))))
         level = float(module.params.get("level", 0.5))
+
+        def _knob(name):
+            try:
+                return min(1.0, max(0.0, float(module.params.get(name, 0.0))))
+            except (TypeError, ValueError):
+                return 0.0
+
+        position = _knob("position")
+        mallet = _knob("mallet")
+        spread = _knob("spread")
         sr = float(self.sample_rate)
 
         st = self._state.setdefault(module.id, {})
         if st.get("V") != V:
             st.clear()
             st.update(
-                {"V": V, "zi": np.zeros((V, MODAL_MAX_MODES, 2), dtype=np.float64)}
+                {
+                    "V": V,
+                    "zi": np.zeros((V, MODAL_MAX_MODES, 2), dtype=np.float64),
+                    "lp": np.zeros(V, dtype=np.float64),
+                }
             )
         zi = st["zi"]
         zi[:, modes:, :] = 0.0  # stale modes stay dead
+        lp = st["lp"]
 
         ratios = np.array(modal_ratios(material, modes)) ** (1.0 + 0.3 * inharm)
         gains = ratios ** (2.0 * (bright - 0.5))
+        if position > 0.0:
+            # Where the strike lands: comb the gains, then renormalize so
+            # a strike near the edge is thin, not quiet.
+            gains = gains * strike_comb(ratios, position)
         gains = gains / gains.sum()
         t60 = np.maximum(0.01, decay / (1.0 + 3.0 * tilt * (ratios - 1.0)))
         r = 10.0 ** (-3.0 / (sr * t60))
+
+        # Stereo: per-mode equal-power pan gains, scaled so a centred mode
+        # contributes 1.0 to each side (the outs equal `out` at spread 0).
+        if spread > 0.0:
+            theta = (mode_pans(modes, spread) + 1.0) * (np.pi / 4.0)
+            gl = np.cos(theta) * np.sqrt(2.0)
+            gr = np.sin(theta) * np.sqrt(2.0)
 
         # Per-voice pitch (block mean) → group voices sharing a value.
         def cv_for(v: int) -> float:
@@ -14534,6 +14571,9 @@ class NumpyBackend(AudioBackend):
 
         x = excite if excite.ndim == 2 else excite[None, :]
         out = np.zeros((V, frames), dtype=np.float64)
+        if spread > 0.0:
+            out_l = np.zeros((V, frames), dtype=np.float64)
+            out_r = np.zeros((V, frames), dtype=np.float64)
         groups: dict[float, list[int]] = {}
         for v in range(V):
             xv = x[v] if v < x.shape[0] else x[0]
@@ -14551,7 +14591,26 @@ class NumpyBackend(AudioBackend):
             X = np.stack([x[v] if v < x.shape[0] else x[0] for v in rows]).astype(
                 np.float64
             )
+            if mallet > 0.0:
+                # The mallet: a one-pole low-pass on the strike whose
+                # cutoff tracks THIS group's pitch, so the same softness
+                # reads the same across the keyboard. State per voice.
+                fc = f0 * (2.0 ** (MALLET_OCTAVES * (1.0 - mallet)))
+                fc = min(self._MODAL_MAX_F_FRACTION * sr, fc)
+                coef = 1.0 - float(np.exp(-2.0 * np.pi * fc / sr))
+                X, _zf = lfilter(
+                    [coef], [1.0, coef - 1.0], X, axis=-1,
+                    zi=((1.0 - coef) * lp[rows])[:, None],
+                )
+                # Carry the last OUTPUT (the octaver's idiom): the zi
+                # above is rebuilt from it with the block's coefficient,
+                # which is what keeps a pitch change from kicking the
+                # filter -- lfilter's own zf already has (1-coef) in it.
+                lp[rows] = X[:, -1]
             acc = np.zeros_like(X)
+            if spread > 0.0:
+                acc_l = np.zeros_like(X)
+                acc_r = np.zeros_like(X)
             for i in range(modes):
                 if freqs[i] >= self._MODAL_MAX_F_FRACTION * sr:
                     zi[rows, i, :] = 0.0
@@ -14561,13 +14620,27 @@ class NumpyBackend(AudioBackend):
                 b = [gains[i] * np.sin(theta)]
                 y, zf = lfilter(b, a, X, axis=-1, zi=zi[rows, i, :])
                 acc += y
+                if spread > 0.0:
+                    acc_l += y * gl[i]
+                    acc_r += y * gr[i]
                 zi[rows, i, :] = zf
             for k, v in enumerate(rows):
                 out[v] = acc[k]
+                if spread > 0.0:
+                    out_l[v] = acc_l[k]
+                    out_r[v] = acc_r[k]
 
         out *= level
-        result = out if voiced else out[0]
-        return result.astype(np.float32)
+        mono = (out if voiced else out[0]).astype(np.float32)
+        if spread <= 0.0:
+            return {"out": mono, "out_l": mono, "out_r": mono}
+        out_l *= level
+        out_r *= level
+        return {
+            "out": mono,
+            "out_l": (out_l if voiced else out_l[0]).astype(np.float32),
+            "out_r": (out_r if voiced else out_r[0]).astype(np.float32),
+        }
 
     # ----- Scope rendering -------------------------------------------------
 
