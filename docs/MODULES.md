@@ -104,6 +104,8 @@ The full map:
 | `resampler.pitch_cv` | `12.0` | semitones | `st + d·cv` (semitone space) |
 | `sampler.start_cv` | `1.0` (`start_cv_depth`) | fraction of the file | `start + d·cv[edge]`, read at the gate edge and latched per hit; clamped 0…1 |
 | `kick_drum.pitch_cv` | — (calibrated) | 1 V/oct fixed | `tune + 12·cv[edge]`, read at the trigger edge and latched per hit — the pitch bus, like `oscillator.freq_cv` |
+| `euclidean.fills_cv` | `8.0` (`fills_cv_depth`) | fills (hits per loop) | `fills + round(d·cv[edge])`, read at each clock edge, clamped 0…steps |
+| `burst.count_cv` | `8.0` (`count_cv_depth`) | gates per burst | `count + round(d·cv[edge])`, read at the trigger edge and latched per burst, clamped 1…16 |
 | `sampler.vel` / `kick_drum.vel` / `snare_drum.vel` / `hat_drum.vel` | — (multiplier) | linear | `hit · max(0, cv[edge])`, read at the edge and latched; a `(V, F)` source collapses to the loudest voice at that sample |
 | `pitch_shifter.pitch_cv` | `12.0` | semitones | `st + d·mean cv` |
 | `delay.time_cv` | `50.0` | ms | `time + d·cv` |
@@ -253,9 +255,10 @@ signal-flow role (sources → processors → … → sinks).
 | [`shift_random`](#shift_random) | Modulation | `clock`,`write` (gate) → `cv` (cv), `gate` (gate) |
 | [`possibility_seq`](#possibility_seq) | Modulation | `clock`,`reset`,`reroll` (gate) → `gate` (gate) |
 | [`chaos`](#chaos) | Modulation | `reset` (gate) → `x`,`y`,`z` (cv), `gate` (gate) |
-| [`euclidean`](#euclidean) | Modulation | `clock`,`reset` (gate) → `gate`,`accent` (gate) |
-| [`burst`](#burst) | Modulation | `trigger`,`clock` (gate) → `gate` (gate), `env` (cv) |
+| [`euclidean`](#euclidean) | Modulation | `clock`,`reset` (gate), `fills_cv` (cv) → `gate`,`accent` (gate) |
+| [`burst`](#burst) | Modulation | `trigger`,`clock` (gate), `count_cv` (cv) → `gate` (gate), `env` (cv) |
 | [`bernoulli_gate`](#bernoulli_gate) | Modulation | `in` (gate), `p_cv` (cv) → `out_a`,`out_b` (gate) |
+| [`clock_divider`](#clock_divider) | Modulation | `clock`,`reset` (gate) → `div2`,`div4`,`div8`,`divn`,`mult` (gate) |
 | [`arpeggiator`](#arpeggiator) | Modulation | `pitch_cv` (cv), `gate`,`clock`,`reset` (gate) → `pitch_cv` (cv), `gate` (gate) |
 | [`logic`](#logic) | Modulation | `a`,`b` (gate) → `and`,`or`,`xor`,`nand`,`not_a` (gate) |
 | [`audio_to_cv`](#audio_to_cv) | CV & Utilities | `in` (audio) → `cv` (cv) |
@@ -2905,10 +2908,16 @@ until two edges have been seen it mirrors the clock's high time).
 `accent` is a second, sparser Euclidean layer (`accent_fills`)
 **intersected with the main pattern** — accents always land on hits;
 patch it to a VCA boost or a second envelope. Feed the drum voices:
-E(3,8) into a kick over a 16-step grid is instant Afro-Cuban. **Ports**:
-`clock`, `reset` (gate) → `gate`, `accent` (gate). **Params**: `steps`
-1..32 (16) · `fills` 0..steps (4) · `rotate` (0) · `accent_fills` (0) ·
-`gate_len` 0.05..1 step (0.5). See `examples/clockwork_groove.json`.
+E(3,8) into a kick over a 16-step grid is instant Afro-Cuban.
+`fills_cv` (2026-09-11) moves `fills` by `fills_cv_depth` per unit —
+read **at each clock edge**, rounded, clamped to 0..`steps`, and the
+pattern rebuilt there — so a slow [`lfo`](#lfo) breathes a rhythm from
+sparse to dense and back, and a [`sequencer`](#sequencer) writes the
+density per bar. **Ports**: `clock`, `reset` (gate), `fills_cv` (cv) →
+`gate`, `accent` (gate). **Params**: `steps` 1..32 (16) · `fills`
+0..steps (4) · `rotate` (0) · `accent_fills` (0) · `gate_len` 0.05..1
+step (0.5) · `fills_cv_depth` fills/unit (8). See
+`examples/clockwork_groove.json` and `examples/clock_divider_swing.json`.
 
 #### `burst`
 
@@ -2920,10 +2929,13 @@ clock's high time). `env` rides `(1−decay)^k` while gate k is high —
 patch it straight into a VCA for decaying drum ratchets, no envelope
 needed. A retrigger mid-burst restarts the burst. Bursts are scheduled
 whole at the trigger edge: deterministic, block-size independent.
-**Ports**: `trigger`, `clock` (gate) → `gate` (gate), `env` (cv).
-**Params**: `count` 1..16 (3) · `rate` 0.5..50 Hz (8) · `division` 1..8
-(1) · `decay` 0..1 (0.3) · `spread` ±1 (0). See
-`examples/clockwork_groove.json`.
+`count_cv` (2026-09-11) moves `count` by `count_cv_depth` per unit, read
+**at the trigger edge** and latched — the count is a property of that
+burst, so a sequencer step into it writes the ratchet count per hit.
+**Ports**: `trigger`, `clock` (gate), `count_cv` (cv) → `gate` (gate),
+`env` (cv). **Params**: `count` 1..16 (3) · `rate` 0.5..50 Hz (8) ·
+`division` 1..8 (1) · `decay` 0..1 (0.3) · `spread` ±1 (0) ·
+`count_cv_depth` gates/unit (8). See `examples/clockwork_groove.json`.
 
 #### `bernoulli_gate`
 
@@ -2939,6 +2951,48 @@ closed hat on A, open hat on B, probability low — a hi-hat line that
 breathes. **Ports**: `in` (gate), `p_cv` (cv) → `out_a`, `out_b`
 (gate). **Params**: `probability` 0..1 (0.5) · `mode` (independent) ·
 `seed` (1). See `examples/clockwork_groove.json`.
+
+#### `clock_divider`
+
+The clockwork family's fourth member (2026-09-11): one clock in, five
+gates out. `div2` / `div4` / `div8` are the fixed divisions; `divn` is
+yours (`n` 1..32) and carries **swing** — every second `divn` gate is
+delayed by `swing` of its period (0.33 is the triplet feel, 0.5 a
+dotted shuffle; up to 0.75); `mult` emits `m` gates per incoming period
+(2..4), the extra ones scheduled from the last measured interval, so
+multiplication is **approximate for exactly one period after a tempo
+change** (pending gates are dropped when the next real edge arrives).
+Edges since the last `reset` are counted and edge *i* fires each
+division when `i mod k = 0`, so the first edge after a reset is the
+downbeat on **every** output at once. Gates are pulses of `pw` × *that
+output's* period (so `div8`'s gates are four times longer than `div2`'s
+at the same `pw`); before an interval has been measured — the very
+first edge — they mirror the clock's own high time, the
+[`euclidean`](#euclidean)'s rule. Absolute-sample scheduling: exact
+division counts over a thousand edges, block-size independent. The
+patch: sixteenths in, `div4` to a kick, `divn` at `n` 1 with `swing`
+0.33 to closed hats — swung hats from a straight clock — `div8` to open
+hats, and `mult` clocking a [`burst`](#burst) for triplet ratchets. See
+`examples/clock_divider_swing.json`.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `clock` | in | gate | The clock to divide. Unpatched → silence. |
+| `reset` | in | gate | Rising edge: the next clock edge is the downbeat on every output. |
+| `div2` / `div4` / `div8` | out | gate | Fixed divisions. |
+| `divn` | out | gate | Division by `n`, with `swing`. |
+| `mult` | out | gate | `m` gates per incoming period. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `n` | `3` | 1 … 32 | `divn`'s division. |
+| `m` | `2` | 2 … 4 | `mult`'s gates per period. |
+| `swing` | `0.0` | 0 … 0.75 | Delay on every second `divn` gate, as a fraction of its period. |
+| `pw` | `0.5` | 0.05 … 0.95 | Gate width as a fraction of each output's period. |
 
 #### `arpeggiator`
 
@@ -3741,6 +3795,12 @@ loads in the app. Notable ones referenced above:
   `python examples/samples/generate_samples.py` first to create the
   loop — until you do, the patch loads and plays silently rather than
   failing, because an unreadable path is silence by contract.
+- `clock_divider_swing.json` — swung hats from a straight clock: sixteenths
+  into a [`clock_divider`](#clock_divider) (`div4` kick, `divn` 1 +
+  `swing` 0.33 closed hats, `div8` open hats, `mult` 3 clocking a
+  [`burst`](#burst) into a rimshot with `env → vel`), plus a slow
+  [`lfo`](#lfo) into the snare [`euclidean`](#euclidean)'s `fills_cv`
+  so the backbeat breathes from 2 fills to 6 and back.
 - `modal_mallets.json` — a stereo marimba: keys → a [`modal`](#modal) `bar`
   with `position` 0.28, `mallet` 0.55 and `spread` 0.8, `out_l`/`out_r`
   to the speakers with a [`reverb`](#reverb) off the mono `out` mixed in

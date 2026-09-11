@@ -282,6 +282,7 @@ class PyoBackend(AudioBackend):
             "euclidean",
             "burst",
             "bernoulli_gate",
+            "clock_divider",
             "possibility_seq",
             "arpeggiator",
             "chord",

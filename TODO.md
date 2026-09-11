@@ -212,10 +212,11 @@ once the board cleared.
       feature-complete against its spec.
 - [ ] **EARS (meatthread0, banked 2026-09-11): `sampler_scrub.json` +
       `sampler_mellotron.json` + `drum_dynamics.json` +
-      `modal_mallets.json`** — Matthew: "bank sampler_scrub.json in my
-      todo for now, and I'll test when I can do it properly, where I am
-      is noisy." All four unheard (the modal one also wants eyes on its
-      xy scope — the spread should draw a cloud, not a line). Run `python examples/samples/generate_samples.py`
+      `modal_mallets.json` + `clock_divider_swing.json`** — Matthew:
+      "bank sampler_scrub.json in my todo for now, and I'll test when I
+      can do it properly, where I am is noisy." All five unheard (the
+      modal one also wants eyes on its xy scope — the spread should draw
+      a cloud, not a line). Run `python examples/samples/generate_samples.py`
       first. While there: eyes on the sampler node's waveform face and the
       new `reverse` / `antialias` tickboxes, and `gated` in the mode
       dropdown (never once selectable before 08-30). Unblocks nothing —
@@ -543,6 +544,26 @@ same session.
       Later: euclidean `fills_cv`; burst `count_cv`;
       bernoulli 3+-way sibling (`sequential_switch` is on the quick-hit
       list); a `clock_divider` to round out the clockwork family.
+- [x] **Clockwork love pass** — SHIPPED 2026-09-11 (Matthew's pick after
+      modal). **`euclidean.fills_cv`** (+ `fills_cv_depth`, 8 fills/unit)
+      read at EACH clock edge, rounded, clamped 0..steps, pattern rebuilt
+      at the tick (pinned: 3 + 8x0.25 = E(5,8); a mid-loop CV step
+      switches patterns at the tick; clamps both ways). **`burst.count_cv`**
+      (+ `count_cv_depth`, 8 gates/unit) read at the trigger edge and
+      latched per burst (pinned: latched even when the CV drops after
+      the edge; clamped 1..16). Both unpatched = unchanged (pinned
+      array_equal). **`clock_divider`** — the 90th module, built to the
+      MODULE_IDEAS spec verbatim: `div2`/`div4`/`div8`/`divn`(n)/`mult`(m),
+      `swing` on divn (fraction of its period, 0.33 = triplet), `pw` as
+      a fraction of each output's period, absolute-sample scheduling
+      (burst precedent). Pinned: division counts exact over 1000 edges,
+      every output on the downbeat, reset realigns all counters, swing
+      timing to the sample, mult midpoints, mult re-tracks a halved
+      tempo within one period, first gate mirrors the clock, block-size
+      independent. 21 tests; suite **3088**. Example
+      `clock_divider_swing.json` (swung hats + breathing backbeat +
+      triplet ratchet rim). **Wants ears** — banked. Still on the
+      clockwork list: bernoulli 3+-way sibling, `rotate_cv`.
 - [x] **`modal` — struck resonator bank** — SHIPPED 2026-08-03 (13ef181,
       same day part five). bar/bell/membrane(Bessel-zeros)/string tables,
       modes 4..24, t60 decay + tilt, brightness, inharm stretch;

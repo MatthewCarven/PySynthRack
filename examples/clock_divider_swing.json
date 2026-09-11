@@ -1,0 +1,229 @@
+{
+  "version": 1,
+  "next_id": 12,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "master - sixteenths at 96",
+      "params": {
+        "bpm": 96.0,
+        "division": 4.0,
+        "pulse_width": 0.3
+      }
+    },
+    {
+      "id": 2,
+      "type": "clock_divider",
+      "name": "DIVIDER - div4 kick, div8 open hat, divn(1)+swing closed hats, mult(3) ratchet",
+      "params": {
+        "n": 1,
+        "m": 3,
+        "swing": 0.33,
+        "pw": 0.4
+      }
+    },
+    {
+      "id": 3,
+      "type": "euclidean",
+      "name": "snare - 2 in 16 rotated 4 (the backbeat); LFO breathes fills_cv",
+      "params": {
+        "steps": 16,
+        "fills": 2,
+        "rotate": 4,
+        "gate_len": 0.4,
+        "fills_cv_depth": 4.0
+      }
+    },
+    {
+      "id": 4,
+      "type": "lfo",
+      "name": "very slow - fills 2 -> 6 and back over ~30 s",
+      "params": {
+        "rate": 0.033,
+        "waveform": "triangle",
+        "depth": 1.0,
+        "bipolar": false
+      }
+    },
+    {
+      "id": 5,
+      "type": "kick_drum",
+      "name": "KICK on div4",
+      "params": {
+        "freq_start": 170.0,
+        "freq_end": 48.0,
+        "bend": 40.0,
+        "decay": 380.0,
+        "click": 0.3,
+        "drive": 0.2,
+        "level": 0.65
+      }
+    },
+    {
+      "id": 6,
+      "type": "snare_drum",
+      "name": "SNARE",
+      "params": {
+        "tone_decay": 110.0,
+        "noise_decay": 190.0,
+        "snappy": 0.6,
+        "level": 0.55
+      }
+    },
+    {
+      "id": 7,
+      "type": "hat_drum",
+      "name": "HATS - closed on the swung divn, open on div8",
+      "params": {
+        "decay_closed": 50.0,
+        "decay_open": 350.0,
+        "tone": 400.0,
+        "level": 0.35
+      }
+    },
+    {
+      "id": 8,
+      "type": "burst",
+      "name": "ratchet - triggered every 2 beats (div8), clocked by mult(3): triplets",
+      "params": {
+        "count": 3,
+        "rate": 12.0,
+        "division": 1,
+        "decay": 0.4,
+        "spread": 0.0
+      }
+    },
+    {
+      "id": 9,
+      "type": "mixer",
+      "name": "drum bus",
+      "params": {
+        "gain1": 1.0,
+        "gain2": 1.0,
+        "gain3": 1.0,
+        "master": 0.9,
+        "gain4": 1.0
+      }
+    },
+    {
+      "id": 10,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {
+        "gain": 0.9
+      }
+    },
+    {
+      "id": 11,
+      "type": "snare_drum",
+      "name": "RIM - ratcheted by the burst; env -> vel so the ratchet decays",
+      "params": {
+        "tone_decay": 40.0,
+        "noise_decay": 60.0,
+        "snappy": 0.3,
+        "tune": 7.0,
+        "level": 0.5
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "fills_cv"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "div4",
+      "dst_module_id": 5,
+      "dst_port": "trigger"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "gate",
+      "dst_module_id": 6,
+      "dst_port": "trigger"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "divn",
+      "dst_module_id": 7,
+      "dst_port": "closed_trigger"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "div8",
+      "dst_module_id": 7,
+      "dst_port": "open_trigger"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out",
+      "dst_module_id": 9,
+      "dst_port": "in1"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "out",
+      "dst_module_id": 9,
+      "dst_port": "in2"
+    },
+    {
+      "src_module_id": 7,
+      "src_port": "out",
+      "dst_module_id": 9,
+      "dst_port": "in3"
+    },
+    {
+      "src_module_id": 9,
+      "src_port": "out",
+      "dst_module_id": 10,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "div8",
+      "dst_module_id": 8,
+      "dst_port": "trigger"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "mult",
+      "dst_module_id": 8,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 8,
+      "src_port": "gate",
+      "dst_module_id": 11,
+      "dst_port": "trigger"
+    },
+    {
+      "src_module_id": 8,
+      "src_port": "env",
+      "dst_module_id": 11,
+      "dst_port": "vel"
+    },
+    {
+      "src_module_id": 11,
+      "src_port": "out",
+      "dst_module_id": 9,
+      "dst_port": "in4"
+    }
+  ],
+  "ui": {}
+}

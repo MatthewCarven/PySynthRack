@@ -286,7 +286,7 @@ Looping shift-register random CV — the generative classic.
 - Tests: canonical patterns verbatim (E(3,8) tresillo = 10010010, E(5,8),
   E(4,16)); rotation; reset phase; gate length across block joins.
 
-### `clock_divider` (S)
+### `clock_divider` (S) — **SHIPPED 2026-09-11** (see TODO.md / WORKLOG.md)
 
 - Ports: `clock` in; `reset` in; outs `div2` `div4` `div8` + `divn` (param n)
   + `mult` (×m, period-estimate based — document as approximate during tempo
@@ -295,6 +295,8 @@ Looping shift-register random CV — the generative classic.
   2nd emitted gate) · `pw` gate width fraction.
 - Tests: division counts exact over 1000 edges; swing timing; mult tracks a
   tempo ramp within one period; reset realigns all counters.
+- Built to the spec verbatim; `swing` is a fraction of the divn period
+  (0.33 = triplet), `pw` a fraction of each output's own period.
 
 ### `bernoulli_gate` (S) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 

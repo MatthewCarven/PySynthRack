@@ -1,4 +1,4 @@
-"""Clockwork trio — euclidean, burst and bernoulli_gate.
+"""Clockwork — euclidean, burst, bernoulli_gate and clock_divider.
 
 Three small gate processors that make the clock → sequencer chain
 *surprise* you: together with the drum voices they turn the rack into a
@@ -35,6 +35,24 @@ is ``probability`` plus the ``p_cv`` value at the edge, clamped 0..1.
 ``mode`` ``independent`` = fresh coin per gate; ``toggle`` = the coin
 decides whether to *switch* outputs (p = 1 alternates A/B/A/B). Seeded:
 one rng draw per gate, block-size independent by construction.
+
+``clock_divider`` (added 2026-09-11) — the family's fourth member: one
+clock in, ``div2`` / ``div4`` / ``div8`` out, a ``divn`` you set (``n``
+1..32) with **swing** (every second ``divn`` gate is delayed by ``swing``
+of its period — 0.33 is the triplet feel), and a ``mult`` that emits
+``m`` gates per incoming period from the last measured interval (so it
+is approximate for exactly one period after a tempo change). Every
+output fires together on the first edge after ``reset`` — the downbeat —
+and ``pw`` sets each gate's width as a fraction of *that output's*
+period. Until an interval has been measured, gates simply mirror the
+clock's own high time.
+
+**CV on the counts (2026-09-11):** ``euclidean.fills_cv`` and
+``burst.count_cv`` move ``fills`` / ``count`` by ``*_cv_depth`` per unit
+(default 8 — 0..1 V sweeps eight), read at the clock / trigger edge and
+rounded, so a slow LFO into ``fills_cv`` breathes a pattern from sparse
+to dense and a sequencer into ``count_cv`` writes the ratchet count per
+step. Unpatched, nothing changes.
 """
 from __future__ import annotations
 
@@ -75,10 +93,13 @@ class Euclidean(Module):
             (intersected with the main pattern). Default 0.
         gate_len: Hit length as a fraction of one step, 0.05..1.
             Default 0.5.
+        fills_cv_depth: Fills per unit of ``fills_cv``. Default 8.
 
     Ports:
         clock (in, gate): advance one step per rising edge.
         reset (in, gate): rising edge realigns to step 1.
+        fills_cv (in, cv): moves ``fills`` by ``fills_cv_depth`` per unit,
+            read at each clock edge and rounded.
         gate (out, gate): the pattern.
         accent (out, gate): the accent layer (subset of hits).
     """
@@ -91,10 +112,12 @@ class Euclidean(Module):
         "rotate": 0,
         "accent_fills": 0,
         "gate_len": 0.5,
+        "fills_cv_depth": 8.0,
     }
     INPUT_PORTS = [
         Port("clock", "in", "gate"),
         Port("reset", "in", "gate"),
+        Port("fills_cv", "in", "cv"),
     ]
     OUTPUT_PORTS = [
         Port("gate", "out", "gate"),
@@ -117,10 +140,13 @@ class Burst(Module):
             ``(1 − decay)^k``. 0 = flat. Default 0.3.
         spread: Grid warp, −1 (accelerando) .. +1 (ritardando).
             Default 0.
+        count_cv_depth: Gates per unit of ``count_cv``. Default 8.
 
     Ports:
         trigger (in, gate): start (or restart) a burst per rising edge.
         clock (in, gate): optional — gates land on clock edges instead.
+        count_cv (in, cv): moves ``count`` by ``count_cv_depth`` per unit,
+            read at the trigger edge and rounded.
         gate (out, gate): the ratchet gates.
         env (out, cv): ``(1−decay)^k`` while gate k is high, else 0.
     """
@@ -133,10 +159,12 @@ class Burst(Module):
         "division": 1,
         "decay": 0.3,
         "spread": 0.0,
+        "count_cv_depth": 8.0,
     }
     INPUT_PORTS = [
         Port("trigger", "in", "gate"),
         Port("clock", "in", "gate"),
+        Port("count_cv", "in", "cv"),
     ]
     OUTPUT_PORTS = [
         Port("gate", "out", "gate"),
@@ -177,4 +205,53 @@ class BernoulliGate(Module):
     OUTPUT_PORTS = [
         Port("out_a", "out", "gate"),
         Port("out_b", "out", "gate"),
+    ]
+
+
+DIVIDER_MAX_N = 32
+DIVIDER_MAX_M = 4
+DIVIDER_MAX_SWING = 0.75
+
+
+@register_module_type
+class ClockDivider(Module):
+    """Clock divider / multiplier with swing on the custom division.
+
+    Parameters:
+        n: Custom division for ``divn``, 1..32. Default 3.
+        m: Multiplier for ``mult`` (gates per incoming period), 2..4.
+            Default 2.
+        swing: Every second ``divn`` gate is delayed by this fraction of
+            the ``divn`` period, 0..0.75. Default 0 (straight); 0.33 is
+            the triplet feel.
+        pw: Gate width as a fraction of each output's own period,
+            0.05..0.95. Default 0.5.
+
+    Ports:
+        clock (in, gate): the clock to divide.
+        reset (in, gate): rising edge — the next clock edge is the
+            downbeat and every output fires on it.
+        div2 / div4 / div8 (out, gate): fixed divisions.
+        divn (out, gate): ``n``-division, with ``swing``.
+        mult (out, gate): ``m`` gates per incoming period.
+    """
+
+    TYPE = "clock_divider"
+    CATEGORY = "Modulation"
+    DEFAULT_PARAMS = {
+        "n": 3,
+        "m": 2,
+        "swing": 0.0,
+        "pw": 0.5,
+    }
+    INPUT_PORTS = [
+        Port("clock", "in", "gate"),
+        Port("reset", "in", "gate"),
+    ]
+    OUTPUT_PORTS = [
+        Port("div2", "out", "gate"),
+        Port("div4", "out", "gate"),
+        Port("div8", "out", "gate"),
+        Port("divn", "out", "gate"),
+        Port("mult", "out", "gate"),
     ]

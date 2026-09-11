@@ -15,8 +15,9 @@ Running log of decisions and progress. Newest first.
 A marker for whoever picks this up next — the entries below are the record,
 this is just the state they add up to.
 
-**Rack:** 89 module types across seven categories. Suite **2984 passed, 1
-skipped** (~90 s). 109 example patches, all of which load, compile and
+**Rack:** 90 module types across seven categories (89 until
+`clock_divider` on 2026-09-11). Suite **2984 passed, 1
+skipped** (~90 s) at this snapshot; see the dated updates below. 109 example patches, all of which load, compile and
 render under the examples sweep. (The 2026-08-29 snapshot said 105; it was
 already three light before slice 2 added one -- count with
 `ls examples/*.json | wc -l` rather than trusting the line above.)
@@ -44,8 +45,13 @@ already three light before slice 2 added one -- count with
 >
 > And then **modal love pass shipped** — `position`, `mallet`, `spread`
 > (+ `out_l`/`out_r`). Suite **3065**. 112 examples (`modal_mallets.json`,
-> banked). Next love candidates: clockwork CVs + `clock_divider`,
-> function-generator follow-ons, pitch_shifter, chord/arp, slew v2.
+> banked).
+>
+> And **clockwork love pass shipped** — `euclidean.fills_cv`,
+> `burst.count_cv`, and **`clock_divider`, module #90**. Suite **3088**.
+> 113 examples (`clock_divider_swing.json`, banked). Next love
+> candidates: function-generator follow-ons, pitch_shifter
+> shimmer/harmonizer, chord/arp extras, slew v2.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -95,6 +101,58 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-11 (fourth pass) — clockwork love: two CV jacks and the divider
+
+Matthew's pick after modal. Two of the three `Later:` items were CV
+inputs on shipped modules; the third was a module that had been sitting
+in MODULE_IDEAS with a full spec since 2026-08-04.
+
+**`euclidean.fills_cv` / `burst.count_cv`** — the edge-latch idiom, a
+fourth and fifth time. Both carry a `*_cv_depth` per the house rule
+(8 per unit, so 0..1 V sweeps eight). The euclidean reads its CV at
+*each clock edge* and rebuilds the pattern there when the count
+changed — so the step that fires is decided by the fill count the CV
+had when the clock ticked, and a slow LFO into it breathes a rhythm
+from sparse to dense. The burst reads at the *trigger* edge and latches
+for the burst: the count is a property of the ratchet. Unpatched, both
+render `array_equal` to before.
+
+**`clock_divider`** — module #90, built to the spec verbatim:
+`div2`/`div4`/`div8`, a `divn` with `swing`, a `mult` with `m`. The
+design calls: (1) edges since reset are *counted* and edge `i` fires
+division `k` when `i mod k = 0`, so the first edge after a reset is the
+downbeat on every output at once — the way a hardware divider's reset
+works; (2) gates are pulses of `pw × that output's period`, scheduled
+at absolute sample positions from the last measured interval (the
+burst's precedent), which is what makes "division counts exact over
+1000 edges" an exact integer assertion and block-size independence an
+`array_equal`; (3) before an interval exists — the very first edge —
+every output mirrors the clock's own high time, the euclidean's rule,
+so there is no silent first beat; (4) `swing` is a fraction of the
+`divn` period applied to every second emitted gate (0.33 = triplet,
+0.5 = dotted), scheduled rather than mirrored since it no longer sits on
+an edge; (5) `mult` fires on the edge and schedules `m − 1` more at
+`interval·k/m`, and any still pending are *dropped* when the next real
+edge arrives — a tempo change costs exactly one period of stale
+subdivisions, as the spec asked for and the test pins (halve the
+tempo: two fast edges later the midpoints are on the new grid).
+
+**The example is the reason to build it:** `clock_divider_swing.json`
+takes a straight sixteenth clock and gets swung closed hats out of
+`divn(1)` + `swing 0.33`, the kick off `div4`, open hats off `div8`,
+and a triplet ratchet on a rimshot from `mult(3)` clocking a `burst`
+whose `env` feeds the rim's new `vel`. Plus a 30-second LFO into the
+snare euclidean's `fills_cv`, 2 fills up to 6 and back.
+
+21 tests, all green first run (the divider's scheduling is the burst's,
+already debugged). Suite **3088**. Wants ears — banked.
+
+**Still on the clockwork list:** a 3+-way bernoulli sibling
+(`sequential_switch` is on the quick-hit list) and a `rotate_cv` for the
+euclidean, which would be the same edge-latch shape again.
 
 ---
 

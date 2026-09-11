@@ -2608,6 +2608,8 @@ class NumpyBackend(AudioBackend):
             return self._render_burst(module, frames, buffers, patch)
         if module.TYPE == "bernoulli_gate":
             return self._render_bernoulli(module, frames, buffers, patch)
+        if module.TYPE == "clock_divider":
+            return self._render_clock_divider(module, frames, buffers, patch)
         if module.TYPE == "arpeggiator":
             return self._render_arpeggiator(module, frames, buffers, patch)
         if module.TYPE == "chord":
@@ -13208,11 +13210,15 @@ class NumpyBackend(AudioBackend):
         clock's own high time. ``accent`` is the ``accent_fills`` layer
         intersected with the main pattern (accents always land on hits).
         A reset rising edge realigns so the next clock plays step 1.
+        ``fills_cv`` is read AT each clock edge (rounded, clamped to
+        0..steps) and the pattern is rebuilt there — the step that fires
+        is decided by the fill count the CV had when it ticked.
         """
         from ..modules.clockwork import euclidean_pattern
 
         clock = self._input_buffer(patch, buffers, module.id, "clock")
         reset = self._input_buffer(patch, buffers, module.id, "reset")
+        fills_cv = self._input_buffer(patch, buffers, module.id, "fills_cv")
 
         steps = int(module.params.get("steps", 16))
         fills = int(module.params.get("fills", 4))
@@ -13223,10 +13229,16 @@ class NumpyBackend(AudioBackend):
         except (TypeError, ValueError):
             gate_len = 0.5
         gate_len = min(1.0, max(0.05, gate_len))
+        try:
+            fills_depth = float(module.params.get("fills_cv_depth", 8.0))
+        except (TypeError, ValueError):
+            fills_depth = 8.0
 
         pattern = euclidean_pattern(steps, fills, rotate)
         acc_layer = euclidean_pattern(steps, accent_fills, rotate)
         n_steps = len(pattern)
+        cv_row = fills_cv.tolist() if fills_cv is not None else None
+        cur_fills = fills
 
         st = self._state.setdefault(
             module.id,
@@ -13269,6 +13281,12 @@ class NumpyBackend(AudioBackend):
                     interval = now - last_edge
                 last_edge = now
                 idx = (idx + 1) % n_steps
+                if cv_row is not None:
+                    want = fills + int(round(fills_depth * cv_row[n]))
+                    want = max(0, min(n_steps, want))
+                    if want != cur_fills:
+                        cur_fills = want
+                        pattern = euclidean_pattern(steps, cur_fills, rotate)
                 if pattern[idx]:
                     if interval > 0:
                         gate_rem = max(1, int(round(gate_len * interval)))
@@ -13321,8 +13339,15 @@ class NumpyBackend(AudioBackend):
         """
         trig = self._input_buffer(patch, buffers, module.id, "trigger")
         clock = self._input_buffer(patch, buffers, module.id, "clock")
+        count_cv = self._input_buffer(patch, buffers, module.id, "count_cv")
 
-        count = max(1, min(16, int(module.params.get("count", 3))))
+        count_knob = max(1, min(16, int(module.params.get("count", 3))))
+        try:
+            count_depth = float(module.params.get("count_cv_depth", 8.0))
+        except (TypeError, ValueError):
+            count_depth = 8.0
+        cv_row = count_cv.tolist() if count_cv is not None else None
+        count = count_knob
         try:
             rate = float(module.params.get("rate", 8.0))
         except (TypeError, ValueError):
@@ -13361,6 +13386,10 @@ class NumpyBackend(AudioBackend):
             now = base + n
             if t and not prev_t:
                 events.clear()
+                if cv_row is not None:
+                    # `count` is a property of THIS burst: read at the
+                    # trigger edge, rounded, clamped like the knob.
+                    count = max(1, min(16, count_knob + int(round(count_depth * cv_row[n]))))
                 if clocked:
                     st["pending_clock"] = count
                     st["edges_seen"] = 0
@@ -13407,6 +13436,142 @@ class NumpyBackend(AudioBackend):
             "gate": np.array(gate, dtype=np.float32),
             "env": np.array(env, dtype=np.float32),
         }
+
+    def _render_clock_divider(self, module, frames: int, buffers, patch) -> dict:
+        """Clock divider / multiplier (see modules/clockwork.py).
+
+        Per-sample edge loop on tolist()'d rows with an absolute sample
+        counter (the burst precedent), so every gate is placed at an
+        exact sample and the result is block-size independent. Edges
+        since the last reset are counted; edge ``i`` fires ``div2`` /
+        ``div4`` / ``div8`` / ``divn`` when ``i % k == 0``, so the first
+        edge after a reset is the downbeat on every output. Gates are
+        pulses of ``pw × (that output's period)``, scheduled as
+        ``[start, length]`` events from the last measured input interval;
+        before an interval exists (the very first edge) they mirror the
+        clock's high time instead, the euclidean's rule.
+
+        ``swing`` delays every second ``divn`` gate by ``swing × n ×
+        interval`` — scheduled, since it no longer sits on an edge.
+        ``mult`` fires on each edge and schedules ``m − 1`` more at
+        ``interval × k / m``; the pending ones are dropped when the next
+        real edge arrives early (a tempo change), so multiplication is
+        approximate for exactly one period.
+        """
+        clock = self._input_buffer(patch, buffers, module.id, "clock")
+        reset = self._input_buffer(patch, buffers, module.id, "reset")
+
+        def _int(name, default, lo, hi):
+            try:
+                return max(lo, min(hi, int(module.params.get(name, default))))
+            except (TypeError, ValueError):
+                return default
+
+        def _flt(name, default, lo, hi):
+            try:
+                return max(lo, min(hi, float(module.params.get(name, default))))
+            except (TypeError, ValueError):
+                return default
+
+        n_div = _int("n", 3, 1, 32)
+        m_mult = _int("m", 2, 2, 4)
+        swing = _flt("swing", 0.0, 0.0, 0.75)
+        pw = _flt("pw", 0.5, 0.05, 0.95)
+
+        names = ("div2", "div4", "div8", "divn", "mult")
+        divisors = {"div2": 2, "div4": 4, "div8": 8, "divn": n_div, "mult": 1}
+
+        st = self._state.setdefault(
+            module.id,
+            {
+                "samples": 0, "prev_clock": False, "prev_reset": False,
+                "count": 0, "last_edge": -1, "interval": 0, "divn_emitted": 0,
+                "events": {k: [] for k in names},
+                "mirror": {k: False for k in names},
+            },
+        )
+        base = int(st["samples"])
+        prev_c = bool(st["prev_clock"])
+        prev_r = bool(st["prev_reset"])
+        count = int(st["count"])
+        last_edge = int(st["last_edge"])
+        interval = int(st["interval"])
+        divn_emitted = int(st["divn_emitted"])
+        events = st["events"]
+        mirror = st["mirror"]
+
+        thresh = self._GATE_HIGH
+        c_row = (clock > thresh).tolist() if clock is not None else [False] * frames
+        r_row = (reset > thresh).tolist() if reset is not None else [False] * frames
+        outs = {k: [0.0] * frames for k in names}
+
+        def pulse(name, start, period):
+            """Schedule a gate of pw x period at `start` (absolute)."""
+            events[name].append([start, max(1, int(round(pw * period)))])
+
+        for n in range(frames):
+            c = c_row[n]
+            r = r_row[n]
+            now = base + n
+            if r and not prev_r:
+                count = 0
+                divn_emitted = 0
+                for k in names:
+                    events[k].clear()
+            prev_r = r
+            if c and not prev_c:
+                if last_edge >= 0:
+                    interval = now - last_edge
+                last_edge = now
+                known = interval > 0
+                for name in ("div2", "div4", "div8"):
+                    if count % divisors[name] == 0:
+                        if known:
+                            pulse(name, now, divisors[name] * interval)
+                        else:
+                            mirror[name] = True
+                if count % n_div == 0:
+                    period = n_div * interval
+                    late = (divn_emitted % 2 == 1) and swing > 0.0 and known
+                    if late:
+                        pulse("divn", now + int(round(swing * period)), period)
+                    elif known:
+                        pulse("divn", now, period)
+                    else:
+                        mirror["divn"] = True
+                    divn_emitted += 1
+                # mult: this edge, plus m-1 scheduled from the last
+                # interval; anything still pending from the previous
+                # period is dropped (the edge came early or late).
+                events["mult"] = [ev for ev in events["mult"] if ev[0] <= now]
+                if known:
+                    sub = interval / m_mult
+                    for k in range(m_mult):
+                        pulse("mult", now + int(round(k * sub)), sub)
+                else:
+                    mirror["mult"] = True
+                count += 1
+            prev_c = c
+            for name in names:
+                if mirror[name]:
+                    if c:
+                        outs[name][n] = 1.0
+                    else:
+                        mirror[name] = False
+                for ev in events[name]:
+                    if ev[0] <= now < ev[0] + ev[1]:
+                        outs[name][n] = 1.0
+                        break
+
+        end = base + frames
+        for name in names:
+            events[name] = [ev for ev in events[name] if ev[0] + ev[1] > end]
+        st.update(
+            samples=end, prev_clock=prev_c, prev_reset=prev_r, count=count,
+            last_edge=last_edge, interval=interval, divn_emitted=divn_emitted,
+            events=events, mirror=mirror,
+        )
+        return {k: np.array(v, dtype=np.float32) for k, v in outs.items()}
 
     def _render_bernoulli(self, module, frames: int, buffers, patch) -> dict:
         """Probability gate router (see modules/clockwork.py).

@@ -16,7 +16,7 @@ from .chaos import Chaos
 from .chord import Chord
 from .chorus import Chorus
 from .clock import Clock
-from .clockwork import BernoulliGate, Burst, Euclidean
+from .clockwork import BernoulliGate, Burst, ClockDivider, Euclidean
 from .combiner import Combiner
 from .compressor import Compressor
 from .constant import Constant
@@ -108,6 +108,7 @@ __all__ = [
     "Chord",
     "Chorus",
     "Clock",
+    "ClockDivider",
     "Combiner",
     "Compressor",
     "Constant",

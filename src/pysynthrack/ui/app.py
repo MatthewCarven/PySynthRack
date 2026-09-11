@@ -52,6 +52,7 @@ from ..modules.organ import (
     PERC_DECAYS,
     PERC_MODES,
 )
+from ..modules.clockwork import DIVIDER_MAX_M, DIVIDER_MAX_N, DIVIDER_MAX_SWING
 from ..modules.drums import HAT_TONE_MAX, HAT_TONE_MIN
 from ..modules.sequencer import MAX_STEPS as SEQ_MAX_STEPS
 from ..modules.sampler import (
@@ -2558,6 +2559,49 @@ class App:
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
+            if param_name == "fills_cv_depth":
+                dpg.add_slider_float(
+                    label="fills_cv_depth (fills/unit)",
+                    default_value=float(current),
+                    min_value=0.0, max_value=32.0, format="%.1f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "clock_divider":
+            # Divider: n is the custom division, m the multiplier, swing
+            # delays every second divn gate by that fraction of its
+            # period, pw is the gate width as a fraction of each output's
+            # period.
+            if param_name == "n":
+                dpg.add_slider_int(
+                    label="n (divn)", default_value=int(current),
+                    min_value=1, max_value=DIVIDER_MAX_N,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "m":
+                dpg.add_slider_int(
+                    label="m (mult)", default_value=int(current),
+                    min_value=2, max_value=DIVIDER_MAX_M,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "swing":
+                dpg.add_slider_float(
+                    label="swing (divn, 0.33 = triplet)",
+                    default_value=float(current),
+                    min_value=0.0, max_value=DIVIDER_MAX_SWING, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "pw":
+                dpg.add_slider_float(
+                    label="pw (of period)", default_value=float(current),
+                    min_value=0.05, max_value=0.95, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
 
         if module.TYPE == "burst":
             # Ratchet generator: count gates per trigger; rate spans the
@@ -2596,6 +2640,14 @@ class App:
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
                     min_value=-1.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "count_cv_depth":
+                dpg.add_slider_float(
+                    label="count_cv_depth (gates/unit)",
+                    default_value=float(current),
+                    min_value=0.0, max_value=16.0, format="%.1f",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
