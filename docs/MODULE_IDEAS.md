@@ -574,6 +574,15 @@ hard part is already shipped somewhere in the rack.
   (`*_wt` infra) for alias-free pitch-up; `start_cv` (+ depth per
   conventions); velocity in scaling level; `reverse` tickbox; a
   waveform face with region markers (scope-face precedent).
+- **Status:** all three slices SHIPPED (1: 2026-08-22, 2: 2026-08-30,
+  3: 2026-09-11). Slice 3 deviations: `antialias` is a tickbox
+  defaulting OFF (the crunch stayed the default; the chain is
+  octave-decimated with a crossfade between levels, so it is
+  attenuation between octaves rather than removal); velocity arrived
+  as a `vel` cv input plus a new `velocity_cv` OUT on `midi_input` —
+  nothing in the rack emitted velocity before; `start_cv` is read at
+  the gate edge and latched per hit rather than block-mean. See
+  WORKLOG 2026-09-11.
 
 ### `organ` (S–M) — "Sources" (added 2026-08-04)
 

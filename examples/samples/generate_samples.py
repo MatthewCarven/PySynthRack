@@ -18,9 +18,11 @@ region controls line up with musically useful slices:
 
 `examples/sampler_breaks.json` points three samplers at three of those
 quarters and triggers each from its own euclidean - a breaks machine built
-entirely out of `start`/`end`. Until you run this script the patch still
-loads and plays silently (an unreadable path is silence by contract), so
-nothing breaks; it just has nothing to play.
+entirely out of `start`/`end`. `examples/sampler_scrub.json` uses the same
+loop the other way round: one sampler, and a `shift_random` into its
+`start_cv` re-cuts the bar on every sixteenth. Until you run this script
+either patch still loads and plays silently (an unreadable path is silence
+by contract), so nothing breaks; it just has nothing to play.
 
 Also writes **marimba_c4.wav**: a single struck-bar note at C4 (261.63 Hz),
 the pitched counterpart - point a keyboard at a Sampler with `root` = C4

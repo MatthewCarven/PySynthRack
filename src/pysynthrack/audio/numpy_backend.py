@@ -984,22 +984,87 @@ class _SampleLoader:
     IEEE arithmetic — so a mono source survives the load bit-for-bit,
     which is what lets the module's unity read be bit-exact rather than
     merely close.
+
+    Slice 3 adds three things, all built here so the audio thread never
+    pays for them:
+
+    * ``chains`` — the read banks. One chain per channel the renderer
+      reads: ``[mono]`` when the file's two rows are identical (every mono
+      file, and any stereo file that happens to be dual-mono), else
+      ``[left, right]``. Each chain is a list of mip levels: level 0 is
+      the float64 original, level ``k`` is level ``k-1`` half-band
+      lowpassed (``firwin``, Blackman, ``halfband_taps`` taps, centred)
+      and decimated 2:1, kept as float32 — it is a filtered copy and makes
+      no exactness claims, so it need not cost double. Level ``k`` sample
+      ``j`` sits exactly on original position ``j * 2**k``, which is what
+      lets a read at rate ``2**k`` be that level verbatim. The chain stops
+      at ``mip_levels`` or when a level would drop below ``mip_min``
+      samples. Memory for the chain is under half the original again
+      (``1/2 + 1/4 + ...`` at half the width).
+    * ``stereo`` — True when ``chains`` holds two channels.
+    * ``overview`` — ``(cols, 2)`` float32 column min/max of the mono, for
+      the node's waveform face (the scope's envelope-polyline shape).
     """
 
-    def __init__(self, path, target_sr, decode_fn, max_seconds) -> None:
+    def __init__(self, path, target_sr, decode_fn, max_seconds,
+                 mip_levels=0, mip_min=16, halfband_taps=63,
+                 overview_cols=200) -> None:
         self.path = str(path)
         self.target_sr = int(target_sr)
         self.max_seconds = float(max_seconds)
         self._decode_fn = decode_fn
+        self.mip_levels = int(mip_levels)
+        self.mip_min = int(mip_min)
+        self.halfband_taps = int(halfband_taps) | 1   # odd, so it is centred
+        self.overview_cols = int(overview_cols)
         self.ready = False
         self.failed = False
         self.done = False
         self.truncated = False
         self.samples = None      # (N,) float64, mono
+        self.chains = None       # [[level0, level1, ...], ...] per channel
+        self.stereo = False
+        self.overview = None     # (cols, 2) float32 min/max
         self._thread = threading.Thread(
             target=self._work, daemon=True, name="SampleLoad"
         )
         self._thread.start()
+
+    @staticmethod
+    def _cap(row, cap, sr):
+        """Truncate to ``cap`` samples with a short fade so the cut is quiet."""
+        row = np.array(row[:cap])
+        fade = min(int(0.010 * sr), cap)
+        if fade > 1:
+            row[-fade:] *= np.linspace(1.0, 0.0, fade)
+        return row
+
+    def _mip_chain(self, level0):
+        """Level 0 plus up to ``mip_levels`` half-band-decimated octaves."""
+        chain = [np.ascontiguousarray(level0, dtype=np.float64)]
+        if self.mip_levels <= 0:
+            return chain
+        taps = firwin(self.halfband_taps, 0.5, window="blackman")
+        half = self.halfband_taps // 2
+        cur = chain[0]
+        for _ in range(self.mip_levels):
+            if cur.shape[0] // 2 < self.mip_min:
+                break
+            # Zero-pad by half the kernel and convolve "valid": exactly N
+            # out for N in, centred. (mode="same" would hand back the
+            # KERNEL's length for a file shorter than the kernel.)
+            cur = np.convolve(np.pad(cur, half), taps, mode="valid")[::2]
+            chain.append(np.ascontiguousarray(cur, dtype=np.float32))
+        return chain
+
+    def _build_overview(self, mono):
+        n = int(mono.shape[0])
+        cols = max(1, min(self.overview_cols, n))
+        bounds = np.linspace(0, n, cols + 1).astype(np.int64)
+        starts = bounds[:-1]
+        lo = np.minimum.reduceat(mono, starts)
+        hi = np.maximum.reduceat(mono, starts)
+        return np.stack([lo, hi], axis=1).astype(np.float32)
 
     def _work(self) -> None:
         try:
@@ -1007,18 +1072,24 @@ class _SampleLoader:
             if stereo is None or stereo.shape[1] == 0:
                 self.failed = True
                 return
-            mono = 0.5 * (
-                np.asarray(stereo[0], dtype=np.float64)
-                + np.asarray(stereo[1], dtype=np.float64)
-            )
+            left = np.asarray(stereo[0], dtype=np.float64)
+            right = np.asarray(stereo[1], dtype=np.float64)
             cap = int(self.max_seconds * self.target_sr)
-            if cap > 0 and mono.shape[0] > cap:
-                mono = np.array(mono[:cap])
-                fade = min(int(0.010 * self.target_sr), cap)
-                if fade > 1:
-                    mono[-fade:] *= np.linspace(1.0, 0.0, fade)
+            if cap > 0 and left.shape[0] > cap:
+                left = self._cap(left, cap, self.target_sr)
+                right = self._cap(right, cap, self.target_sr)
                 self.truncated = True
+            mono = 0.5 * (left + right)
             self.samples = np.ascontiguousarray(mono, dtype=np.float64)
+            self.overview = self._build_overview(self.samples)
+            if np.array_equal(left, right):
+                # A mono recording (or dual-mono): one chain, and the
+                # mono sum IS the file, bit-for-bit.
+                self.chains = [self._mip_chain(self.samples)]
+                self.stereo = False
+            else:
+                self.chains = [self._mip_chain(left), self._mip_chain(right)]
+                self.stereo = True
             self.ready = True
         except Exception as exc:  # pragma: no cover - filesystem/codec-specific
             print(f"[Sampler] sample load failed for {self.path}: {exc}")
@@ -4559,6 +4630,10 @@ class NumpyBackend(AudioBackend):
         pitch_cv = np.full(
             (self._MAX_VOICES, frames), pitch_cv_value, dtype=np.float32
         )
+        # Per-slot velocity, block-constant, 0 for an empty slot. Always
+        # the real velocity: `velocity_sensitive` is about the built-in
+        # tone, and a consumer that wants it flat can leave this unpatched.
+        velocity_cv = np.zeros((self._MAX_VOICES, frames), dtype=np.float32)
 
         for i, slot in enumerate(slots):
             note = int(slot["note"])
@@ -4628,6 +4703,7 @@ class NumpyBackend(AudioBackend):
             # Velocity gain. Always present in slot state; the
             # velocity_sensitive param decides whether to apply it.
             gain = float(slot["velocity"]) if velocity_sensitive else 1.0
+            velocity_cv[i] = float(slot["velocity"])
 
             audio[i] = (wave * env_ramp * gain).astype(np.float32)
 
@@ -4650,6 +4726,7 @@ class NumpyBackend(AudioBackend):
             "pitch_cv": pitch_cv,
             "mod_cv": mod_cv,
             "pressure_cv": pressure_cv,
+            "velocity_cv": velocity_cv,
         }
 
     # ----- filter rendering ----------------------------------------------
@@ -12326,8 +12403,40 @@ class NumpyBackend(AudioBackend):
             t,
         )
 
+    @staticmethod
+    def _sampler_reader(chain, rate, antialias):
+        """Which mip levels a read at ``rate`` takes: ``[(buf, scale, w)]``.
+
+        ``scale`` maps a position in the original to one in that level
+        (``2**-k``, exact in float), ``w`` its weight. Without ``antialias``
+        — or at and below unity, whatever the setting — it is level 0
+        alone at scale 1, i.e. the original read, untouched: that is what
+        keeps the neutral bit-exact with the chain switched on.
+        """
+        if not antialias or len(chain) < 2:
+            return [(chain[0], 1.0, 1.0)]
+        from ..modules.sampler import mip_blend
+
+        k0, k1, frac = mip_blend(rate, len(chain) - 1)
+        if frac <= 0.0:
+            return [(chain[k0], 2.0 ** -k0, 1.0)]
+        return [(chain[k0], 2.0 ** -k0, 1.0 - frac), (chain[k1], 2.0 ** -k1, frac)]
+
+    def _sampler_read_mix(self, reader, positions):
+        """``_sampler_read`` through a mip reader (one or two levels)."""
+        if len(reader) == 1 and reader[0][1] == 1.0:
+            return self._sampler_read(reader[0][0], positions)
+        out = None
+        for buf, scale, w in reader:
+            part = self._sampler_read(buf, positions * scale)
+            if w != 1.0:
+                part = part * w
+            out = part if out is None else out + part
+        return out
+
     def _new_sampler_state(self) -> dict:
         return {"path": None, "loaded_path": None, "samples": None,
+                "chains": None, "overview": None,
                 "pending": None, "V": 0, "voices": []}
 
     @staticmethod
@@ -12335,7 +12444,9 @@ class NumpyBackend(AudioBackend):
         return {
             "active": False,       # a playhead is running
             "pos": 0.0,            # playhead, in samples into the file
-            "rate": 1.0,           # samples advanced per output sample
+            "rate": 1.0,           # samples advanced per output sample (signed)
+            "start": 0.0,          # this voice's region start (start_cv latched)
+            "gain": 1.0,           # `vel` latched at the edge
             "releasing": False,    # gated fall -> ramping out
             "rel_left": 0,         # release samples still to serve
             "rel_total": 0,
@@ -12345,39 +12456,54 @@ class NumpyBackend(AudioBackend):
             "xf_total": 0,
             "xf_pos": 0.0,         # the abandoned playhead
             "xf_rate": 1.0,
+            "xf_start": 0.0,
+            "xf_gain": 1.0,
             "prev_gate": False,
         }
 
     @staticmethod
-    def _sampler_advance(pos, rate, count, end_sample, loop):
+    def _sampler_advance(pos, rate, count, region, loop):
         """Where the playhead reads, where it ends up, and how much counts.
 
         Returns ``(positions, next_pos, live)``. Without a ``loop`` the
         playhead is affine — ``pos + rate·arange(count)`` — and eventually
-        walks off the end of the region; because the rate is positive that
-        is always a *prefix*, so ``searchsorted`` finds the cut exactly and
-        ``live`` says how much of the segment is still inside.
+        walks off the region ``(lo, hi)``: forward off ``hi`` (positions
+        ``< hi`` play), in reverse off ``lo`` (positions ``>= lo`` play).
+        Either way the inside part is a *prefix*, so ``live`` says how much
+        of the segment is still in the region.
 
-        With a loop it wraps ``loop_end`` back to ``loop_start`` instead,
-        and so never leaves the region at all (``live`` is the whole
-        segment — that is what looping means). The wrap is one modulo on
-        the same affine array, which keeps it a single vectorized
-        expression *and* keeps it exact on integers: a unity-rate loop of
-        an integer-bounded region is a bit-exact tiling of the file, not an
-        approximation of one.
+        With a loop it wraps ``loop_end`` back to ``loop_start`` instead
+        (or the other way round in reverse) and so never leaves the region
+        at all (``live`` is the whole segment — that is what looping
+        means). The wrap is one modulo on the same affine array, which
+        keeps it a single vectorized expression *and* keeps it exact on
+        integers: a unity-rate loop of an integer-bounded region is a
+        bit-exact tiling of the file, not an approximation of one — and a
+        reversed one is a bit-exact tiling of the region mirrored.
         """
         raw = pos + rate * np.arange(count, dtype=np.float64)
         end_raw = float(pos + rate * count)
+        forward = rate >= 0.0
         if loop is None:
-            return raw, end_raw, int(np.searchsorted(raw, float(end_sample)))
+            if forward:
+                live = int(np.searchsorted(raw, float(region[1])))
+            else:
+                live = int(np.count_nonzero(raw >= float(region[0])))
+            return raw, end_raw, live
         lo, hi, length = loop[0], loop[1], loop[2]
-        over = raw - hi
-        positions = np.where(over < 0.0, raw, lo + np.mod(over, length))
-        if end_raw >= hi:
-            end_raw = float(lo + np.mod(end_raw - hi, length))
+        if forward:
+            over = raw - hi
+            positions = np.where(over < 0.0, raw, lo + np.mod(over, length))
+            if end_raw >= hi:
+                end_raw = float(lo + np.mod(end_raw - hi, length))
+        else:
+            under = raw - lo
+            positions = np.where(under >= 0.0, raw, lo + np.mod(under, length))
+            if end_raw < lo:
+                end_raw = float(lo + np.mod(end_raw - lo, length))
         return positions, end_raw, count
 
-    def _sampler_seam(self, block, samples, positions, loop):
+    def _sampler_seam(self, block, reader, positions, loop, forward=True):
         """Crossfade the loop's tail into the lap before it, in place.
 
         Over the last ``xfade`` of the loop the read is mixed with
@@ -12386,7 +12512,9 @@ class NumpyBackend(AudioBackend):
         exactly as the playhead reaches ``loop_end``, so the wrap lands on
         what was already sounding and the seam is continuous instead of a
         step (the resampler's seam-declick lesson: fade between two reads,
-        never cut).
+        never cut). In reverse the roles mirror: the fade sits just above
+        ``loop_start`` and reads one lap *later*, which is what runs into
+        ``loop_end`` from above.
 
         A ``loop_start`` at the very beginning of the file has no previous
         lap; the read clamps to the file's first sample, which is exactly
@@ -12396,40 +12524,54 @@ class NumpyBackend(AudioBackend):
         single read it already had, which is what leaves ``xfade`` 0
         bit-exact rather than merely close.
         """
-        _lo, hi, length, xfade = loop
+        lo, hi, length, xfade = loop
         if xfade <= 0.0:
             return
-        weight = (positions - (hi - xfade)) / xfade
+        if forward:
+            weight = (positions - (hi - xfade)) / xfade
+        else:
+            weight = ((lo + xfade) - positions) / xfade
         idx = np.flatnonzero(weight > 0.0)
         if idx.size == 0:
             return
         w = weight[idx]
-        prev = self._sampler_read(samples, positions[idx] - length)
+        lap = positions[idx] - length if forward else positions[idx] + length
+        prev = self._sampler_read_mix(reader, lap)
         block[idx] = block[idx] * (1.0 - w) + prev * w
 
-    def _sampler_segment(self, voice, samples, count, end_sample, loop=None):
+    def _sampler_segment(self, voice, chains, count, end_sample, loop_for,
+                         antialias):
         """Render ``count`` samples of one voice and advance its playhead.
 
         Everything vectorizes because the playhead is affine within a
         segment: ``pos + rate·arange(n)``. Segments are cut at gate edges
         by the caller, which is the only place ``rate``/state can change.
-        ``loop`` is ``(start, end, length, xfade)`` in sample units, or
-        None for the modes that don't loop.
-        Returns the (count,) float64 block.
+        ``chains`` is one mip chain per output channel (one for a mono
+        file, two for stereo) and the result is ``(C, count)`` float64 —
+        the same positions read through each. ``loop_for(start)`` gives
+        the loop ``(lo, hi, length, xfade)`` in sample units for a voice
+        that began at ``start``, or None for the modes that don't loop.
         """
-        out = np.zeros(count, dtype=np.float64)
+        C = len(chains)
+        out = np.zeros((C, count), dtype=np.float64)
         if count <= 0:
             return out
 
         if voice["active"]:
             rate = voice["rate"]
+            forward = rate >= 0.0
+            loop = loop_for(voice["start"])
             positions, next_pos, live = self._sampler_advance(
-                voice["pos"], rate, count, end_sample, loop
+                voice["pos"], rate, count, (voice["start"], end_sample), loop
             )
             if live > 0:
-                out[:live] = self._sampler_read(samples, positions[:live])
-                if loop is not None:
-                    self._sampler_seam(out, samples, positions, loop)
+                for c, chain in enumerate(chains):
+                    reader = self._sampler_reader(chain, rate, antialias)
+                    out[c, :live] = self._sampler_read_mix(reader, positions[:live])
+                    if loop is not None:
+                        self._sampler_seam(out[c], reader, positions, loop, forward)
+                if voice["gain"] != 1.0:
+                    out[:, :live] *= voice["gain"]
             voice["pos"] = next_pos
             if live < count:
                 # Ran off the end of the region: silent from here, and the
@@ -12444,7 +12586,7 @@ class NumpyBackend(AudioBackend):
                 n = min(count, voice["atk_left"])
                 total = float(voice["atk_total"])
                 done = total - voice["atk_left"]
-                out[:n] *= (done + 1.0 + np.arange(n, dtype=np.float64)) / total
+                out[:, :n] *= (done + 1.0 + np.arange(n, dtype=np.float64)) / total
                 voice["atk_left"] -= n
 
             # Gated release: a linear ramp out, then the voice is done.
@@ -12452,9 +12594,9 @@ class NumpyBackend(AudioBackend):
                 n = min(count, voice["rel_left"])
                 total = float(voice["rel_total"])
                 done = total - voice["rel_left"]
-                out[:n] *= 1.0 - (done + 1.0 + np.arange(n, dtype=np.float64)) / total
+                out[:, :n] *= 1.0 - (done + 1.0 + np.arange(n, dtype=np.float64)) / total
                 if n < count:
-                    out[n:] = 0.0
+                    out[:, n:] = 0.0
                 voice["rel_left"] -= n
                 if voice["rel_left"] <= 0:
                     voice["active"] = False
@@ -12466,19 +12608,26 @@ class NumpyBackend(AudioBackend):
         if voice["xf_left"] > 0:
             n = min(count, voice["xf_left"])
             rate = voice["xf_rate"]
+            forward = rate >= 0.0
             # The abandoned playhead keeps doing what the voice was doing,
-            # loop and all, so a retrigger near the seam doesn't drop out.
+            # loop, region and all, so a retrigger near the seam doesn't
+            # drop out.
+            loop = loop_for(voice["xf_start"])
             positions, next_xf, live = self._sampler_advance(
-                voice["xf_pos"], rate, n, end_sample, loop
+                voice["xf_pos"], rate, n, (voice["xf_start"], end_sample), loop
             )
             if live > 0:
                 total = float(voice["xf_total"])
                 done = total - voice["xf_left"]
-                tail = self._sampler_read(samples, positions[:live])
-                if loop is not None:
-                    self._sampler_seam(tail, samples, positions[:live], loop)
                 ramp = 1.0 - (done + 1.0 + np.arange(live, dtype=np.float64)) / total
-                out[:live] += tail * ramp
+                if voice["xf_gain"] != 1.0:
+                    ramp = ramp * voice["xf_gain"]
+                for c, chain in enumerate(chains):
+                    reader = self._sampler_reader(chain, rate, antialias)
+                    tail = self._sampler_read_mix(reader, positions[:live])
+                    if loop is not None:
+                        self._sampler_seam(tail, reader, positions[:live], loop, forward)
+                    out[c, :live] += tail * ramp
             voice["xf_pos"] = next_xf
             voice["xf_left"] -= n
         return out
@@ -12493,42 +12642,55 @@ class NumpyBackend(AudioBackend):
         dropout. Each voice owns a float64 playhead; a block is cut into
         segments at that voice's gate edges, and within a segment the
         playhead is affine, so the whole segment is one vectorized cubic
-        read (``_sampler_read``).
+        read (``_sampler_read``) per output channel.
 
         Rate comes from ``playback_rate`` in the module file — one
         definition of what ``root`` means, shared with the tests. Pitch is
         read per block (mean), the ``pluck`` precedent, so glides and
-        vibrato track at block rate.
+        vibrato track at block rate. ``reverse`` is the same rate with its
+        sign flipped, and the playhead starts at the region's end.
 
         ``loop`` mode is ``gated`` plus a wrapped playhead: the loop
-        region is resolved here, once per block, into absolute sample
-        positions (``loop_start``/``loop_end`` are fractions **of the
-        region**, so moving ``start``/``end`` carries the loop with them)
-        and handed to the segment renderer, which does the wrapping and
-        the seam crossfade. A collapsed or inverted loop region resolves to
-        ``None`` and the voice simply plays as ``gated`` — kinder than
-        silence for something you drag with a slider.
+        region is resolved per voice into absolute sample positions
+        (``loop_start``/``loop_end`` are fractions **of the region**, so
+        moving ``start``/``end`` — or a ``start_cv`` hit — carries the
+        loop with them) and handed to the segment renderer, which does
+        the wrapping and the seam crossfade. A collapsed or inverted loop
+        region resolves to ``None`` and the voice simply plays as
+        ``gated`` — kinder than silence for something you drag with a
+        slider.
+
+        ``start_cv`` and ``vel`` are read **at the edge sample** and
+        latched into the voice: each hit lands where the CV said at the
+        moment it fired, which is what a sequencer-driven slicer needs.
+
+        Outputs: ``out`` (mono), ``out_l`` / ``out_r``. A mono file is one
+        read feeding all three; a stereo file reads both channels and
+        ``out`` is their half-sum.
 
         Neutral: root pitch, ``start`` 0, ``end`` 1, ``attack`` 0,
         ``level`` 1 makes the rate exactly 1.0, every read position an
-        integer, and the output the decoded buffer **bit-exact**. Nothing
-        is faded at the region end for the same reason — a sample that
-        stops abruptly is the file's business, and ``end`` plus a gated
-        ``release`` are the tools for trimming it. A unity-rate loop with
-        ``loop_xfade`` 0 keeps that property: it is a bit-exact *tiling*
-        of the file.
+        integer, and the output the decoded buffer **bit-exact** — with or
+        without ``antialias``, which only ever changes a read *above*
+        unity. Nothing is faded at the region end for the same reason — a
+        sample that stops abruptly is the file's business, and ``end``
+        plus a gated ``release`` are the tools for trimming it. A
+        unity-rate loop with ``loop_xfade`` 0 keeps that property: it is a
+        bit-exact *tiling* of the file.
         """
-        from ..modules.sampler import (
-            MAX_SECONDS as _SAMPLER_MAX_SECONDS,
-            SAMPLER_MODES,
-            playback_rate,
-        )
+        from ..modules.sampler import SAMPLER_MODES, playback_rate
 
         pitch = self._input_buffer(
             patch, buffers, module.id, "pitch_cv", collapse=False
         )
         gate = self._input_buffer(
             patch, buffers, module.id, "gate", collapse=False
+        )
+        start_cv = self._input_buffer(
+            patch, buffers, module.id, "start_cv", collapse=False
+        )
+        vel = self._input_buffer(
+            patch, buffers, module.id, "vel", collapse=False
         )
 
         state = self._state.setdefault(module.id, self._new_sampler_state())
@@ -12538,6 +12700,8 @@ class NumpyBackend(AudioBackend):
         if path == "":
             if state.get("samples") is not None or state.get("loaded_path"):
                 state["samples"] = None
+                state["chains"] = None
+                state["overview"] = None
                 state["loaded_path"] = None
             pend = state.get("pending")
             if pend is not None:
@@ -12560,23 +12724,32 @@ class NumpyBackend(AudioBackend):
                 # Failure is remembered as "this path yields silence" rather
                 # than retried every block — a missing file must not spin a
                 # decode thread per block.
-                state["samples"] = loader.samples if loader.ready else None
+                ok = loader.ready
+                state["samples"] = loader.samples if ok else None
+                state["chains"] = loader.chains if ok else None
+                state["overview"] = loader.overview if ok else None
                 state["loaded_path"] = pend["path"]
                 state["pending"] = None
 
         samples = state.get("samples")
+        chains = state.get("chains")
+
+        def silence(shape):
+            z = np.zeros(shape, dtype=np.float32)
+            return {"out": z, "out_l": z, "out_r": z}
 
         # No gate cable means nothing can ever start: silence, and drop the
         # voice bank so a reconnect starts clean.
-        if gate is None or samples is None or samples.shape[0] < 1:
+        if gate is None or samples is None or samples.shape[0] < 1 or not chains:
             state["voices"] = []
             state["V"] = 0
-            return np.zeros(frames, dtype=np.float32)
+            return silence(frames)
 
-        voiced = (pitch is not None and pitch.ndim == 2) or gate.ndim == 2
+        voiced = gate.ndim == 2
         V = 1
-        for sig in (pitch, gate):
+        for sig in (pitch, gate, start_cv, vel):
             if sig is not None and sig.ndim == 2:
+                voiced = True
                 V = max(V, sig.shape[0])
 
         def row(sig, v):
@@ -12605,6 +12778,9 @@ class NumpyBackend(AudioBackend):
         loop_xfade_ms = _f("loop_xfade", 10.0, 0.0, 100.0)
         attack_ms = _f("attack", 0.0, 0.0, 500.0)
         release_ms = _f("release", 10.0, 1.0, 2000.0)
+        start_depth = _f("start_cv_depth", 1.0, -1.0, 1.0)
+        reverse = bool(module.params.get("reverse", False))
+        antialias = bool(module.params.get("antialias", False))
         mode = str(module.params.get("mode", "one_shot"))
         if mode not in SAMPLER_MODES:
             mode = "one_shot"
@@ -12615,34 +12791,34 @@ class NumpyBackend(AudioBackend):
         if end_sample <= start_sample:
             # A collapsed or inverted region plays nothing rather than
             # running backwards off the front of the buffer.
-            return np.zeros((V, frames), dtype=np.float32) if voiced else \
-                np.zeros(frames, dtype=np.float32)
+            return silence((V, frames) if voiced else frames)
 
         sr = float(self.sample_rate)
         attack_n = int(round(attack_ms * 1e-3 * sr))
         release_n = max(1, int(round(release_ms * 1e-3 * sr)))
         xfade_n = max(1, int(round(self._SAMPLER_XFADE_MS * 1e-3 * sr)))
+        seam_n = float(int(round(loop_xfade_ms * 1e-3 * sr)))
 
-        # The loop region, in absolute samples. `loop_start`/`loop_end` are
-        # fractions OF THE REGION, not of the file, so dragging
-        # `start`/`end` carries the loop along instead of stranding it.
-        # None means "don't loop", which is also what a collapsed or
-        # inverted loop region gets: play as `gated` rather than fall
-        # silent, because this is a thing you drag with a slider.
-        loop = None
-        if mode == "loop":
-            span = end_sample - start_sample
-            loop_lo = start_sample + loop_start_frac * span
-            loop_hi = start_sample + loop_end_frac * span
+        # The loop region, in absolute samples, for a voice that began at
+        # `vstart`. `loop_start`/`loop_end` are fractions OF THE REGION,
+        # not of the file, so dragging `start`/`end` (or a start_cv hit)
+        # carries the loop along instead of stranding it. None means
+        # "don't loop", which is also what a collapsed or inverted loop
+        # region gets: play as `gated` rather than fall silent, because
+        # this is a thing you drag with a slider.
+        def loop_for(vstart):
+            if mode != "loop":
+                return None
+            span = end_sample - vstart
+            loop_lo = vstart + loop_start_frac * span
+            loop_hi = vstart + loop_end_frac * span
             loop_len = loop_hi - loop_lo
-            if loop_len > 0.0:
-                # Measured on the sample (so it covers the same slice of
-                # waveform whatever the pitch) and clamped to the loop:
-                # there is only one lap to fade into.
-                seam_n = min(
-                    float(int(round(loop_xfade_ms * 1e-3 * sr))), loop_len
-                )
-                loop = (loop_lo, loop_hi, loop_len, seam_n)
+            if loop_len <= 0.0:
+                return None
+            # Measured on the sample (so it covers the same slice of
+            # waveform whatever the pitch) and clamped to the loop: there
+            # is only one lap to fade into.
+            return (loop_lo, loop_hi, loop_len, min(seam_n, loop_len))
 
         voices = state.get("voices") or []
         if state.get("V") != V or len(voices) != V:
@@ -12651,7 +12827,8 @@ class NumpyBackend(AudioBackend):
             state["voices"] = voices
 
         gate_high = self._GATE_HIGH
-        out = np.zeros((V, frames), dtype=np.float64)
+        C = len(chains)
+        out = np.zeros((C, V, frames), dtype=np.float64)
 
         for v in range(V):
             voice = voices[v]
@@ -12659,6 +12836,10 @@ class NumpyBackend(AudioBackend):
             pv = row(pitch, v)
             cv = float(np.mean(pv)) if pv is not None else 0.0
             rate = playback_rate(cv, root, tune, fine)
+            if reverse:
+                rate = -rate
+            sc = row(start_cv, v)
+            vl = row(vel, v)
 
             prev = voice["prev_gate"]
             shifted = np.empty(frames, dtype=bool)
@@ -12675,28 +12856,49 @@ class NumpyBackend(AudioBackend):
                 [(int(i), "on") for i in rising] + [(int(i), "off") for i in falling]
             )
 
-            row_out = out[v]
+            row_out = out[:, v, :]
             cursor = 0
             for at, kind in events:
                 if at > cursor:
-                    row_out[cursor:at] = self._sampler_segment(
-                        voice, samples, at - cursor, end_sample, loop
+                    row_out[:, cursor:at] = self._sampler_segment(
+                        voice, chains, at - cursor, end_sample, loop_for, antialias
                     )
                     cursor = at
                 if kind == "on":
+                    # Where this hit starts: `start`, moved by start_cv AT
+                    # THE EDGE SAMPLE (a slicer wants the value the
+                    # sequencer had when it fired, not the block's mean).
+                    sfrac = start_frac
+                    if sc is not None:
+                        sfrac = min(1.0, max(0.0, sfrac + start_depth * float(sc[at])))
+                    vstart = sfrac * n_samples
+                    if vstart >= end_sample:
+                        # Pushed past the end: nothing to play. The hit is
+                        # dropped rather than run backwards, and whatever
+                        # was sounding is left alone.
+                        continue
+                    gain = 1.0
+                    if vl is not None:
+                        gain = max(0.0, float(vl[at]))
                     if voice["active"]:
                         # Hand the sounding playhead to the crossfade tail
                         # before the new one takes over.
                         voice["xf_pos"] = voice["pos"]
                         voice["xf_rate"] = voice["rate"]
+                        voice["xf_start"] = voice["start"]
+                        voice["xf_gain"] = voice["gain"]
                         voice["xf_left"] = xfade_n
                         voice["xf_total"] = xfade_n
                         ramp_in = max(attack_n, xfade_n)
                     else:
                         ramp_in = attack_n
                     voice["active"] = True
-                    voice["pos"] = start_sample
+                    voice["start"] = vstart
+                    # Reverse begins one sample inside the region's end, so
+                    # a unity read is the forward read mirrored exactly.
+                    voice["pos"] = (end_sample - 1.0) if reverse else vstart
                     voice["rate"] = rate
+                    voice["gain"] = gain
                     voice["releasing"] = False
                     voice["rel_left"] = 0
                     voice["atk_left"] = ramp_in
@@ -12707,8 +12909,8 @@ class NumpyBackend(AudioBackend):
                         voice["rel_left"] = release_n
                         voice["rel_total"] = release_n
             if cursor < frames:
-                row_out[cursor:] = self._sampler_segment(
-                    voice, samples, frames - cursor, end_sample, loop
+                row_out[:, cursor:] = self._sampler_segment(
+                    voice, chains, frames - cursor, end_sample, loop_for, antialias
                 )
             # A held voice tracks pitch between triggers (block-rate glide);
             # the retrigger above locks the rate at the edge sample.
@@ -12716,15 +12918,51 @@ class NumpyBackend(AudioBackend):
                 voice["rate"] = rate
 
         out *= level
+        if C == 1:
+            mono = out[0].astype(np.float32)
+            if not voiced:
+                mono = mono[0]
+            return {"out": mono, "out_l": mono.copy(), "out_r": mono.copy()}
+        left = out[0]
+        right = out[1]
+        mono = 0.5 * (left + right)
         if voiced:
-            return out.astype(np.float32)
-        return out[0].astype(np.float32)
+            return {
+                "out": mono.astype(np.float32),
+                "out_l": left.astype(np.float32),
+                "out_r": right.astype(np.float32),
+            }
+        return {
+            "out": mono[0].astype(np.float32),
+            "out_l": left[0].astype(np.float32),
+            "out_r": right[0].astype(np.float32),
+        }
 
     def _start_sample_loader(self, path):
-        """Spawn a background whole-file decode for ``path``."""
-        from ..modules.sampler import MAX_SECONDS
+        """Spawn a background whole-file decode (plus mip chain) for ``path``."""
+        from ..modules.sampler import (
+            HALFBAND_TAPS, MAX_SECONDS, MIP_LEVELS, MIP_MIN_SAMPLES, OVERVIEW_COLS,
+        )
 
-        return _SampleLoader(path, self.sample_rate, self._decode_audio, MAX_SECONDS)
+        return _SampleLoader(
+            path, self.sample_rate, self._decode_audio, MAX_SECONDS,
+            mip_levels=MIP_LEVELS, mip_min=MIP_MIN_SAMPLES,
+            halfband_taps=HALFBAND_TAPS, overview_cols=OVERVIEW_COLS,
+        )
+
+    def sampler_overview(self, module_id: int):
+        """(GUI hook) The loaded sample's waveform overview for the face.
+
+        Returns ``(overview, loaded_path)`` — a ``(cols, 2)`` float32
+        column min/max array built by the loader, and the path it belongs
+        to (the face uses it as its "already painted?" key) — or
+        ``(None, None)`` while nothing is loaded. GUI thread only; a
+        couple of dict reads.
+        """
+        st = self._state.get(module_id)
+        if not isinstance(st, dict):
+            return None, None
+        return st.get("overview"), st.get("loaded_path")
 
     def wait_for_sample_loads(self, timeout: float = 10.0) -> bool:
         """Block until every sampler's pending load finishes. Tests only.

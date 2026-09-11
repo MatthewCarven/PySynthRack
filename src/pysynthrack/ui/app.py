@@ -303,6 +303,10 @@ class App:
         # repainted each frame from the backend's scope_window hook via
         # ui/scope_math (meter-display lifecycle: pruned on delete/load).
         self._scope_displays: dict[int, dict] = {}
+        # Sampler waveform faces: module id -> drawlist item tags plus the
+        # (path, region) key last painted, so _update_sampler_faces only
+        # redraws when the file or a marker actually moved.
+        self._sampler_faces: dict[int, dict] = {}
         self._meter_bounds: dict[tuple[int, str], list[float]] = {}
         # FilePlayer playhead readouts. Maps module_id -> the dpg text
         # tag showing 'elapsed / total'; refreshed each frame in
@@ -383,6 +387,7 @@ class App:
                 self._update_cv_meters()
                 self._update_audio_meters()
                 self._update_scopes()
+                self._update_sampler_faces()
                 self._update_dsp_load()
                 self._update_sink_buffers()
                 self._update_file_positions()
@@ -874,6 +879,45 @@ class App:
                         )
                     self._scope_displays[module.id] = {
                         "dl": dl, "p1": p1, "p2": p2, "p2_shown": False,
+                    }
+
+            # Sampler: the waveform face -- the loaded file's min/max
+            # envelope (built once by the loader) with the playback region
+            # and loop markers drawn over it, repainted by
+            # _update_sampler_faces only when the file or a marker moves.
+            if module.TYPE == "sampler":
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                    w, h = self._SFACE_W, self._SFACE_H
+                    with dpg.drawlist(width=w, height=h) as dl:
+                        dpg.draw_rectangle(
+                            (0, 0), (w - 1, h - 1),
+                            fill=(16, 20, 16, 255), color=(70, 78, 70, 255),
+                        )
+                        dpg.draw_line(
+                            (0, h / 2), (w - 1, h / 2), color=(50, 60, 50, 255),
+                        )
+                        wave = dpg.draw_polyline(
+                            [(0, h / 2), (w - 1, h / 2)],
+                            color=self._SFACE_DIM, thickness=1,
+                        )
+                        markers = {}
+                        for name, colour in (
+                            ("start", self._SFACE_REGION),
+                            ("end", self._SFACE_REGION),
+                            ("loop_start", self._SFACE_LOOP),
+                            ("loop_end", self._SFACE_LOOP),
+                        ):
+                            markers[name] = dpg.draw_line(
+                                (0, 0), (0, h - 1), color=colour, thickness=1,
+                                show=False,
+                            )
+                        caption = dpg.draw_text(
+                            (4, 2), "no sample", color=(140, 140, 140, 255),
+                            size=12,
+                        )
+                    self._sampler_faces[module.id] = {
+                        "dl": dl, "wave": wave, "markers": markers,
+                        "caption": caption, "key": None,
                     }
 
             # Meter: one dBFS level display (-90..0) per channel, driven
@@ -3064,6 +3108,20 @@ class App:
                     user_data=user_data,
                 )
                 return
+            if param_name == "start_cv_depth":
+                # How far `start_cv` moves the slice point, as a fraction of
+                # the file per CV unit: 1.0 means 0..1 V sweeps the whole
+                # file. Bipolar so a CV can pull the start back as well.
+                dpg.add_slider_float(
+                    label="start_cv_depth (file/unit)",
+                    default_value=float(current),
+                    min_value=-1.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+            # (`reverse` / `antialias` are plain bools and take the generic
+            # checkbox below.)
 
         # Integer octave selector — keep before the generic int/float case
         # so it isn't treated as a free-range float.
@@ -4564,6 +4622,7 @@ class App:
             # the CV bar + auto-range maps are keyed by (id, port).)
             self._audio_meter_bars.pop(module_id, None)
             self._scope_displays.pop(module_id, None)
+            self._sampler_faces.pop(module_id, None)
             for _mk in [k for k in self._cv_meter_bars if k[0] == module_id]:
                 self._cv_meter_bars.pop(_mk, None)
             for _mk in [k for k in self._meter_bounds if k[0] == module_id]:
@@ -5069,6 +5128,7 @@ class App:
         self._meter_bounds.clear()
         self._audio_meter_bars.clear()
         self._scope_displays.clear()
+        self._sampler_faces.clear()
         self._file_pos_labels.clear()
         self._file_seek_sliders.clear()
         self._file_seek_active.clear()
@@ -5295,6 +5355,15 @@ class App:
     _SCOPE_H = 110
     _SCOPE_COLS = 200
 
+    # Sampler face geometry: the loaded file's min/max envelope with the
+    # region (start/end) and loop (loop_start/loop_end) markers over it.
+    _SFACE_W = 220
+    _SFACE_H = 64
+    _SFACE_REGION = (120, 200, 255, 255)
+    _SFACE_LOOP = (255, 200, 90, 255)
+    _SFACE_WAVE = (120, 230, 130, 255)
+    _SFACE_DIM = (60, 70, 60, 255)
+
     # Meter display geometry (pixels inside each channel drawlist).
     _AMETER_BAR_W = 146.0
     _AMETER_H = 16.0
@@ -5476,6 +5545,89 @@ class App:
                 if want2 != bundle.get("p2_shown", False):
                     dpg.configure_item(bundle["p2"], show=want2)
                     bundle["p2_shown"] = want2
+            except Exception:
+                continue  # self-heal next frame
+
+    def _update_sampler_faces(self) -> None:
+        """Repaint a Sampler node's waveform face when something moved.
+
+        Per frame and per sampler: ask the backend for the loaded file's
+        overview (sampler_overview hook, numpy backend only) and compare
+        a (path, region, loop, mode) key against what was last painted.
+        Nothing changed -> nothing drawn; this is a static picture, not a
+        scope. Otherwise: the envelope polyline (ui/scope_math, the
+        scope's own shape), the start/end markers, and the loop markers in
+        `loop` mode -- placed inside the region, because that is what the
+        fractions mean. Wrapped per-face in try/except so a mid-delete
+        widget self-heals next frame (scope precedent).
+        """
+        if not self._sampler_faces:
+            return
+        hook = getattr(self.backend, "sampler_overview", None)
+        if hook is None:
+            return
+        w, h = float(self._SFACE_W), float(self._SFACE_H)
+        for module_id, bundle in list(self._sampler_faces.items()):
+            module = self.patch.modules.get(module_id)
+            if module is None:
+                continue
+            try:
+                overview, loaded = hook(module_id)
+                prm = module.params
+
+                def frac(name, default):
+                    try:
+                        return min(1.0, max(0.0, float(prm.get(name, default))))
+                    except (TypeError, ValueError):
+                        return default
+
+                start = frac("start", 0.0)
+                end = frac("end", 1.0)
+                l_start = frac("loop_start", 0.0)
+                l_end = frac("loop_end", 1.0)
+                looping = str(prm.get("mode", "one_shot")) == "loop"
+                reverse = bool(prm.get("reverse", False))
+                key = (loaded, overview is not None, start, end,
+                       l_start, l_end, looping, reverse)
+                if key == bundle.get("key"):
+                    continue
+                bundle["key"] = key
+
+                if overview is None:
+                    dpg.configure_item(
+                        bundle["wave"], points=[(0, h / 2), (w - 1, h / 2)],
+                        color=self._SFACE_DIM,
+                    )
+                    dpg.configure_item(
+                        bundle["caption"], text="no sample", show=True,
+                    )
+                    for item in bundle["markers"].values():
+                        dpg.configure_item(item, show=False)
+                    continue
+
+                pts = scope_math.envelope_polyline(overview, w, h, 1.0)
+                if len(pts) >= 2:
+                    dpg.configure_item(
+                        bundle["wave"], points=pts, color=self._SFACE_WAVE,
+                    )
+                caption = "<< reverse" if reverse else ""
+                dpg.configure_item(
+                    bundle["caption"], text=caption, show=bool(caption),
+                )
+
+                def place(name, fraction, show=True):
+                    x = min(w - 1.0, max(0.0, fraction * (w - 1.0)))
+                    dpg.configure_item(
+                        bundle["markers"][name], p1=(x, 0), p2=(x, h - 1),
+                        show=show,
+                    )
+
+                place("start", start)
+                place("end", end)
+                span = end - start
+                show_loop = looping and span > 0.0 and l_end > l_start
+                place("loop_start", start + l_start * span, show_loop)
+                place("loop_end", start + l_end * span, show_loop)
             except Exception:
                 continue  # self-heal next frame
 

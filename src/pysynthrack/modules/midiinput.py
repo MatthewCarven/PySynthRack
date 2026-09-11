@@ -214,6 +214,11 @@ class MIDIInput(Module):
         Port("pitch_cv", "out", "cv"),
         Port("mod_cv", "out", "cv"),
         Port("pressure_cv", "out", "cv"),
+        # Per-voice note-on velocity (0..1, after the calibration curve),
+        # held for the life of the slot. Added 2026-09-11 so a sampler's
+        # `vel` (or any level-shaped input) can hear how hard the key was
+        # hit -- the built-in tone applied velocity but never emitted it.
+        Port("velocity_cv", "out", "cv"),
     ]
 
     def __init__(self, *args, **kwargs) -> None:

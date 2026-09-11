@@ -1,0 +1,164 @@
+{
+  "version": 1,
+  "next_id": 9,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "120 BPM, sixteenths (run generate_samples.py first)",
+      "params": {
+        "bpm": 120.0,
+        "division": 4.0,
+        "pulse_width": 0.3
+      }
+    },
+    {
+      "id": 2,
+      "type": "shift_random",
+      "name": "the slice picker - a looping byte, 0..1 V, mutating 15%",
+      "params": {
+        "probability": 0.15,
+        "length": 8,
+        "range": 1.0,
+        "bipolar": false,
+        "seed": 7
+      }
+    },
+    {
+      "id": 3,
+      "type": "euclidean",
+      "name": "every sixteenth - the scrub",
+      "params": {
+        "steps": 16,
+        "fills": 16,
+        "rotate": 0,
+        "gate_len": 0.4
+      }
+    },
+    {
+      "id": 4,
+      "type": "euclidean",
+      "name": "3 in 16 - the reversed stabs",
+      "params": {
+        "steps": 16,
+        "fills": 3,
+        "rotate": 1,
+        "gate_len": 0.4
+      }
+    },
+    {
+      "id": 5,
+      "type": "sampler",
+      "name": "SCRUB - start_cv re-slices the bar on every hit",
+      "params": {
+        "path": "examples/samples/breaks.wav",
+        "root": 60.0,
+        "tune": 0.0,
+        "mode": "one_shot",
+        "start": 0.0,
+        "end": 1.0,
+        "start_cv_depth": 0.75,
+        "antialias": true,
+        "level": 0.9
+      }
+    },
+    {
+      "id": 6,
+      "type": "sampler",
+      "name": "STAB - the same slice, backwards and a fifth up, clean",
+      "params": {
+        "path": "examples/samples/breaks.wav",
+        "root": 60.0,
+        "tune": 7.0,
+        "mode": "one_shot",
+        "start": 0.0,
+        "end": 0.5,
+        "start_cv_depth": 0.4,
+        "reverse": true,
+        "antialias": true,
+        "level": 0.5
+      }
+    },
+    {
+      "id": 7,
+      "type": "mixer",
+      "name": "the kit",
+      "params": {
+        "gain1": 1.0,
+        "gain2": 1.0,
+        "master": 0.8
+      }
+    },
+    {
+      "id": 8,
+      "type": "speaker_output",
+      "name": "out",
+      "params": {
+        "gain": 0.9
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "gate",
+      "dst_module_id": 5,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "cv",
+      "dst_module_id": 5,
+      "dst_port": "start_cv"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "gate",
+      "dst_module_id": 6,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "cv",
+      "dst_module_id": 6,
+      "dst_port": "start_cv"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out",
+      "dst_module_id": 7,
+      "dst_port": "in1"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "out",
+      "dst_module_id": 7,
+      "dst_port": "in2"
+    },
+    {
+      "src_module_id": 7,
+      "src_port": "out",
+      "dst_module_id": 8,
+      "dst_port": "in"
+    }
+  ],
+  "ui": {}
+}

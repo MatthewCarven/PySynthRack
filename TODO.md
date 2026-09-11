@@ -189,12 +189,27 @@ once the board cleared.
       `tests/test_mode_combos.py` walks the registry and asserts every
       module's `mode` dropdown offers that module's own default — verified
       to fail on the pre-fix code. **Wants eyes** on the dropdown.
-- [ ] **Slice 3 — the stretch menu** — stereo `out_l`/`out_r`; an on-load
-      halfband mip chain (`*_wt` infra) for alias-free pitch-**up** (down
-      is already clean); `start_cv` + depth per conventions — the one
-      that makes a real breaks machine, CV-scrubbing the slice point;
-      `reverse`; velocity into level; a waveform face with region markers
-      (scope-face precedent).
+- [x] **Slice 3 — the stretch menu** — SHIPPED 2026-09-11, all six:
+      `out_l`/`out_r` (per-channel passthrough bit-exact; a mono file is
+      one read feeding all three outs); an on-load **mip chain** behind an
+      `antialias` tickbox (default OFF — the crunch stayed the sound;
+      2:1-decimated half-band levels, float32 above level 0, crossfaded
+      between octaves so a glide never steps bandwidth — the fold is gone
+      at an exact octave, ~8 dB down at a fifth, pinned as A/Bs; the
+      neutral stays bit-exact with the box ticked); **`start_cv`** +
+      `start_cv_depth` (−1…1, file/unit), read AT THE GATE EDGE and
+      latched per hit, loop rides along per voice, a start past `end`
+      drops the hit and leaves the sounding voice alone; **`reverse`**
+      (starts at `end − 1`, unity is `data[::-1]` bit-exact, reversed loop
+      tiles the region backwards, seam mirrors into the lap after);
+      **`vel`** (latched at the edge, the retrigger tail keeps the old
+      gain) plus a new **`velocity_cv` OUT on `midi_input`** so it has a
+      source; a **waveform face** on the node (loader-built 200-column
+      overview via a `sampler_overview` hook, start/end + loop markers,
+      repaints only on change). Example `sampler_scrub.json`. 37 tests;
+      suite **3027**. **Wants ears** (scrub), **eyes** (the face), and a
+      real keyboard on `velocity_cv → vel`. The sampler is
+      feature-complete against its spec.
 
 ## The function generator (opened 2026-08-23)
 

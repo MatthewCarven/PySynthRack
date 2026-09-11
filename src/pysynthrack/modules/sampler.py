@@ -51,11 +51,32 @@ A collapsed or inverted loop region (``loop_end`` at or below
 ``loop_start``) is not an error and not silence — it simply doesn't loop,
 and the voice plays as ``gated``.
 
-**Pitch-up aliases, deliberately.** Reading faster than 1.0 shifts the whole
-spectrum up and anything that was near Nyquist folds. That crunch is the
-sound of every classic sampler and it is left in; a mip-chain for clean
-pitch-up is a later slice. Pitch *down* is clean — the 4-tap cubic read is
+**Pitch-up aliases, deliberately — unless you ask it not to.** Reading
+faster than 1.0 shifts the whole spectrum up and anything that was near
+Nyquist folds. That crunch is the sound of every classic sampler and it is
+the default. Tick ``antialias`` and the read comes from an on-load
+**mip chain** instead: the loader keeps half-band-filtered, 2:1-decimated
+copies of the sample, one per octave, and a read above unity rate takes
+the copy whose bandwidth fits the rate (crossfading between the two
+nearest octaves so nothing steps as a note slides). At the root and below
+it still reads the untouched original, so the neutral stays bit-exact
+either way. Pitch *down* is clean in both cases — the 4-tap cubic read is
 the resampler's, so non-integer rates stay smooth rather than gritty.
+
+``start_cv`` is what makes a breaks machine. It moves ``start`` by
+``start_cv_depth`` of the file per volt, sampled **at the gate edge** —
+each hit lands wherever the CV says, so a sequencer or a
+[`shift_random`](#shift_random) into it re-slices a loop on every trigger.
+The loop region rides along (it is measured from wherever this voice
+started), and a start pushed past ``end`` fires nothing rather than
+running backwards.
+
+``reverse`` plays the same region backwards: the playhead starts at ``end``
+and runs down to ``start``, and a loop wraps the other way. At unity rate
+it is an exact mirror of the forward read. ``vel`` is a level multiplier
+sampled at the gate edge — patch [`midi_input`](#midi_input)'s
+``velocity_cv`` for velocity, or any stepped CV for accents; unpatched it
+is 1.
 
 **``attack``/``release`` are declick ramps, not an envelope.** They exist so
 a region boundary that lands mid-waveform doesn't click. For real shaping
@@ -66,10 +87,12 @@ Loading happens on a background thread (the convolver's ``_IRLoader``
 precedent), so a fresh or changed ``path`` never blocks the audio thread:
 the module is simply silent until the sample is ready, and a missing or
 unreadable file stays silent rather than raising — saved patches always
-load, whatever became of the audio on disk. Multi-channel files are summed
-to mono on load (stereo out is a later slice). Long files are capped (see
-``MAX_SECONDS``): the limit is RAM, not DSP — a minute of mono at 48 kHz is
-about 11 MB.
+load, whatever became of the audio on disk. ``out`` is the mono sum;
+``out_l`` / ``out_r`` carry a stereo file's channels (a mono file feeds
+all three identically, so patching only ``out`` costs one read). Long
+files are capped (see ``MAX_SECONDS``): the limit is RAM, not DSP — a
+minute of mono at 48 kHz is about 11 MB, plus half as much again for the
+mip chain and a stereo file's second channel.
 
 Voice-awareness: shape follows the inputs — mono ``(F,)`` in gives mono out,
 ``(V, F)`` gives per-voice playheads with no crosstalk, and a finished voice
@@ -80,7 +103,11 @@ precedent. Numpy backend only; silent stub under pyo.
 Ports:
   * ``pitch_cv`` (cv): 1 V/oct, C4 = 0 V. Unpatched → C4 → the root note.
   * ``gate`` (gate): rising edge starts playback from ``start``.
-  * ``out`` (audio): the voice.
+  * ``start_cv`` (cv): moves ``start`` by ``start_cv_depth`` per unit,
+    sampled at the gate edge.
+  * ``vel`` (cv): level multiplier, sampled at the gate edge. Unpatched → 1.
+  * ``out`` (audio): the voice, mono.
+  * ``out_l`` / ``out_r`` (audio): the voice's stereo channels.
 
 Params:
   * ``path``: the sample file. Browse, or type a path.
@@ -93,8 +120,13 @@ Params:
   * ``loop_xfade``: seam crossfade in ms (0 = a hard seam).
   * ``attack`` / ``release``: declick ramps in ms.
   * ``level``: output level.
+  * ``start_cv_depth``: fraction of the file per CV unit on ``start_cv``.
+  * ``reverse``: play the region backwards.
+  * ``antialias``: read pitch-up from the mip chain instead of aliasing.
 """
 from __future__ import annotations
+
+import math
 
 from ..core.module import Module, register_module_type
 from ..core.port import Port
@@ -115,6 +147,20 @@ MAX_SECONDS = 120.0
 ROOT_MIN_NOTE = 12
 ROOT_MAX_NOTE = 108
 
+#: Mip chain (``antialias``): how many 2:1 octaves the loader builds above
+#: the original. Six covers a rate of 64x — five octaves of pitch CV plus
+#: the tune knob — and the chain stops early on a short file (a level
+#: with fewer than ``MIP_MIN_SAMPLES`` samples is not worth reading).
+MIP_LEVELS = 6
+MIP_MIN_SAMPLES = 16
+#: Taps in the half-band lowpass each level is filtered with before it is
+#: decimated. Odd, so the filter is centred and level ``k`` sample ``j``
+#: sits exactly on original position ``j * 2**k``.
+HALFBAND_TAPS = 63
+
+#: Columns in the waveform overview the loader builds for the node face.
+OVERVIEW_COLS = 200
+
 
 def playback_rate(cv: float, root_note: float, tune: float,
                   fine: float) -> float:
@@ -134,6 +180,32 @@ def playback_rate(cv: float, root_note: float, tune: float,
         + float(tune) + float(fine) / 100.0
     )
     return 2.0 ** (semitones / 12.0)
+
+
+def mip_blend(rate: float, levels: int) -> tuple[int, int, float]:
+    """Which mip levels a read at ``rate`` takes, and how they are mixed.
+
+    Returns ``(k0, k1, frac)``: the read is ``(1 - frac)`` of level ``k0``
+    plus ``frac`` of level ``k1``, where level ``k`` is the original
+    half-band-filtered and decimated ``k`` times. Level ``k`` holds
+    everything below ``Nyquist / 2**k``, so a read at rate ``2**k`` from it
+    is alias-free; in between octaves the two nearest levels crossfade by
+    the fractional octave so a glide never steps between bandwidths (the
+    wavetable_morph rule). At or below unity — and with no chain at all —
+    it is level 0 alone: the original, untouched, which is what keeps the
+    neutral bit-exact with ``antialias`` on.
+    """
+    rate = abs(float(rate))
+    if rate <= 1.0 or levels <= 0:
+        return 0, 0, 0.0
+    octaves = math.log2(rate)
+    k0 = int(math.floor(octaves))
+    if k0 >= levels:
+        return levels, levels, 0.0
+    frac = octaves - k0
+    if frac <= 0.0:
+        return k0, k0, 0.0
+    return k0, k0 + 1, frac
 
 
 @register_module_type
@@ -162,11 +234,19 @@ class Sampler(Module):
         attack: Declick ramp in at the start, ms. Default 0.
         release: Declick ramp out on a gated release, ms. Default 10.
         level: Output level. Default 0.8.
+        start_cv_depth: Fraction of the file ``start`` moves per unit of
+            ``start_cv``. Default 1.0 (0 V = ``start``, 1 V = the end).
+        reverse: Play the region backwards. Default False.
+        antialias: Read pitch-up from the on-load mip chain instead of
+            letting it alias. Default False — the classic crunch.
 
     Ports:
         pitch_cv (in, cv): 1 V/oct, C4 = 0 V. Unpatched → C4.
         gate (in, gate): rising edge starts playback (per voice).
-        out (out, audio): the voice.
+        start_cv (in, cv): offsets ``start``, sampled at the gate edge.
+        vel (in, cv): level multiplier, sampled at the gate edge.
+        out (out, audio): the voice, mono.
+        out_l / out_r (out, audio): the voice's stereo channels.
     """
 
     TYPE = "sampler"
@@ -185,9 +265,18 @@ class Sampler(Module):
         "attack": 0.0,
         "release": 10.0,
         "level": 0.8,
+        "start_cv_depth": 1.0,
+        "reverse": False,
+        "antialias": False,
     }
     INPUT_PORTS = [
         Port("pitch_cv", "in", "cv"),
         Port("gate", "in", "gate"),
+        Port("start_cv", "in", "cv"),
+        Port("vel", "in", "cv"),
     ]
-    OUTPUT_PORTS = [Port("out", "out", "audio")]
+    OUTPUT_PORTS = [
+        Port("out", "out", "audio"),
+        Port("out_l", "out", "audio"),
+        Port("out_r", "out", "audio"),
+    ]

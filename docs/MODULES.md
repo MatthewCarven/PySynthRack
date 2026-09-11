@@ -102,6 +102,7 @@ The full map:
 | `ring_mod.freq_cv` | `1.0` (`freq_cv_depth`) | octaves | `freq · 2^(freq_cv_depth·cv[n])`, per-sample (internal carrier; bypassed when `carrier` patched) |
 | `freq_shifter.shift_cv` | `200.0` (`shift_cv_depth`) | Hz (linear, additive) | `shift + shift_cv_depth·cv[n]`, per-sample; a shift adds Hz, not V/oct; clamped ±Nyquist |
 | `resampler.pitch_cv` | `12.0` | semitones | `st + d·cv` (semitone space) |
+| `sampler.start_cv` | `1.0` (`start_cv_depth`) | fraction of the file | `start + d·cv[edge]`, read at the gate edge and latched per hit; clamped 0…1 |
 | `pitch_shifter.pitch_cv` | `12.0` | semitones | `st + d·mean cv` |
 | `delay.time_cv` | `50.0` | ms | `time + d·cv` |
 | `loudness.level_cv` | `1.0` | level (0…1) | `level + d·mean cv` |
@@ -195,9 +196,9 @@ signal-flow role (sources → processors → … → sinks).
 | [`cv_keyboard`](#cv_keyboard) | Sources | — → `pitch_cv` (cv), `gate`, `key_c`…`key_b` (gate) |
 | [`cv_gates`](#cv_gates) | Sources | — → `c4`…`e5` (cv, one enveloped gate per key) |
 | [`key_trigger`](#key_trigger) | Sources | — → `out` (gate) |
-| [`midi_input`](#midi_input) | Sources | — → `out` (audio), `gate`, `pitch_cv`, `mod_cv`, `pressure_cv` |
+| [`midi_input`](#midi_input) | Sources | — → `out` (audio), `gate`, `pitch_cv`, `mod_cv`, `pressure_cv`, `velocity_cv` |
 | [`file_player`](#file_player) | Sources | — → `left`,`right` (audio) |
-| [`sampler`](#sampler) | Sources | `pitch_cv` (cv), `gate` (gate) → `out` (audio) |
+| [`sampler`](#sampler) | Sources | `pitch_cv` (cv), `gate` (gate), `start_cv` (cv), `vel` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`mic_input`](#mic_input) | Sources | — → `left`,`right` (audio) |
 | [`cv_to_frequency`](#cv_to_frequency) | Sources | `cv` (cv) → `out` (audio) |
 | [`noise`](#noise) | Sources | — → `out` (audio), `cv` (cv) |
@@ -439,6 +440,7 @@ and All Notes Off (CC 123).
 | `pitch_cv` | out | cv | Pitch-wheel deflection as 1V/oct CV (`bend * bend_range / 12`). |
 | `mod_cv` | out | cv | Mod wheel (CC 1), `[0, 1] * mod_scale`. |
 | `pressure_cv` | out | cv | Channel aftertouch, `[0, 1] * pressure_scale`. |
+| `velocity_cv` | out | cv | Per-voice note-on velocity, `[0, 1]` after the calibration curve, held for the life of the slot (0 where nothing plays). Always the real velocity — `velocity_sensitive` only governs the built-in tone. Patch into a [`sampler`](#sampler)'s `vel`. |
 
 **Parameters**
 
@@ -718,19 +720,64 @@ faded at the region end for the same reason — a sample that stops abruptly
 is the file's business, and `end` plus a gated `release` are the tools for
 trimming it.
 
-**Pitch-up aliases, deliberately.** Reading faster than 1.0 shifts the
-spectrum up and anything near Nyquist folds. That crunch is the sound of
-every classic sampler and it is left in (the [`bitcrusher`](#bitcrusher)
-precedent — some grit is the point). Pitch *down* is clean. Alias-free
-pitch-up via a mip chain is a later slice.
+**Pitch-up aliases, deliberately — unless you tick `antialias`.** Reading
+faster than 1.0 shifts the spectrum up and anything near Nyquist folds.
+That crunch is the sound of every classic sampler and it is the default
+(the [`bitcrusher`](#bitcrusher) precedent — some grit is the point). With
+`antialias` on, the read comes from an on-load **mip chain** instead: the
+loader keeps half-band-filtered, 2:1-decimated copies of the sample, one
+per octave (six of them, or fewer for a short file), and a read above
+unity takes the copy whose bandwidth fits the rate — an exact octave reads
+one level verbatim, and in between the two nearest levels crossfade by the
+fractional octave so a glide never steps between bandwidths (the
+[`wavetable_morph`](#wavetable_morph) rule). At the root and below it still
+reads the untouched original, so the neutral is bit-exact whichever way the
+box is set. Being a mip blend it is honest rather than perfect: at an exact
+octave the fold is gone (>40 dB down on the shipped test tone); halfway
+between octaves it is attenuated by the lower level's weight (~8 dB at a
+fifth), not removed. Pitch *down* is clean either way.
+
+**`start_cv` is what makes a breaks machine.** It moves `start` by
+`start_cv_depth` of the file per volt, read **at the gate edge** and
+latched into that hit — a sequencer step and the gate that fires it land
+together, and the slice point is what the CV said at that sample, not the
+block's mean. A [`shift_random`](#shift_random) into it re-slices a loop on
+every trigger; a [`sequencer`](#sequencer) programs the slices. The loop
+region rides along (it is measured from wherever *this hit* started), and a
+start pushed past `end` fires nothing rather than running backwards — and
+leaves whatever was sounding alone. See `examples/sampler_scrub.json`.
+
+**`reverse`** plays the same region backwards: the playhead starts one
+sample inside `end` and runs down to `start`, a loop wraps the other way
+(`loop_start` back up to `loop_end`) and the seam crossfade mirrors —
+fading just above `loop_start` into the lap *after*, which is what runs
+into `loop_end` from above. At unity rate it is a bit-exact mirror of the
+forward read; a reversed loop is a bit-exact tiling of the region backwards.
+
+**`vel`** is a level multiplier sampled at the gate edge (the velocity
+idiom: a property of the hit, not a tremolo — what the CV does afterwards
+changes nothing). Patch [`midi_input`](#midi_input)'s `velocity_cv` for
+real velocity, or any stepped CV for accents. Unpatched it is 1; a negative
+value is silence. The 2 ms retrigger tail keeps the *old* hit's gain, so a
+quiet note under a loud one doesn't step the tail.
+
+**Stereo.** `out` is the mono voice; `out_l` / `out_r` carry a stereo
+file's channels, each read through the same playhead and each bit-exact at
+the neutral. A mono file (or a dual-mono one) feeds all three identically
+from a single read, so patching only `out` costs what it always did. The
+node also wears a **waveform face**: the loaded file's envelope with the
+`start`/`end` markers over it and, in `loop` mode, the loop markers placed
+inside the region (they are fractions of it), repainted only when
+something moves.
 
 Loading runs on a background thread, so a fresh or changed `path` never
 blocks audio — the module is simply silent until the sample is ready, and a
 missing or unreadable file *stays* silent rather than raising, so a saved
-patch always loads whatever became of the audio on disk. Multi-channel files
-are summed to mono on load; files longer than 120 s are truncated (the limit
-is RAM, not DSP). Retriggering a voice that is still sounding crossfades the
-old playhead out over ~2 ms rather than cutting to the new one.
+patch always loads whatever became of the audio on disk. Files longer than
+120 s are truncated (the limit is RAM, not DSP — the mip chain adds under
+half the original again, a stereo file its second channel). Retriggering a
+voice that is still sounding crossfades the old playhead out over ~2 ms
+rather than cutting to the new one.
 
 **Ports**
 
@@ -738,7 +785,10 @@ old playhead out over ~2 ms rather than cutting to the new one.
 |------|-----|------|-------------|
 | `pitch_cv` | in | cv | 1 V/oct, C4 = 0 V. Unpatched → C4 → the root note. Read per block (mean), so glides track at block rate. |
 | `gate` | in | gate | Rising edge starts playback from `start`. No cable → silence. |
-| `out` | out | audio | The voice. Voice-aware: `(V, F)` in gives per-voice playheads. |
+| `start_cv` | in | cv | Moves `start` by `start_cv_depth` per unit, read at the gate edge and latched per hit. Voice-aware. |
+| `vel` | in | cv | Level multiplier, read at the gate edge and latched per hit. Unpatched → 1. Voice-aware. |
+| `out` | out | audio | The voice, mono. Voice-aware: `(V, F)` in gives per-voice playheads. |
+| `out_l` / `out_r` | out | audio | The voice's stereo channels; identical to `out` for a mono file. |
 
 **Parameters**
 
@@ -757,6 +807,9 @@ old playhead out over ~2 ms rather than cutting to the new one.
 | `attack` | `0` | 0…500 ms | Declick ramp in. |
 | `release` | `10` | 1…2000 ms | Declick ramp out on a `gated` release. |
 | `level` | `0.8` | 0…1 | Output level. |
+| `start_cv_depth` | `1.0` | −1…1 | Fraction of the file `start` moves per unit of `start_cv` (1.0: 0..1 V sweeps the whole file). |
+| `reverse` | `false` | bool | Play the region backwards, from `end` down to `start`. |
+| `antialias` | `false` | bool | Read pitch-up from the on-load mip chain instead of letting it fold. Never touches a read at or below unity. |
 
 **Patching.** `euclidean.gate → sampler.gate` for a drum voice;
 `cv_keyboard.pitch_cv → sampler.pitch_cv` plus its `gate` for a played
@@ -772,8 +825,12 @@ three seconds of pad indefinitely. Percussive samples have nothing to loop
 (they are over before you let go of the key); `loop` wants material that
 sustains.
 
-*(Stereo output, alias-free pitch-up via a mip chain, and `start_cv` for
-CV-scrubbing the slice point are a later slice; see TODO.)*
+For the slicer: a [`clock`](#clock) into an every-step [`euclidean`](#euclidean)
+firing the gate, and the same clock into a [`shift_random`](#shift_random)
+whose `cv` goes to `start_cv` — every sixteenth lands on a fresh slice of
+the bar, and the next hit cuts it off. `examples/sampler_scrub.json` does
+that with `antialias` on, plus a sparse reversed stab a fifth up off the
+same CV.
 
 #### `pluck`
 
@@ -3619,6 +3676,10 @@ loads in the app. Notable ones referenced above:
   `python examples/samples/generate_samples.py` first to create the
   loop — until you do, the patch loads and plays silently rather than
   failing, because an unreadable path is silence by contract.
+- `sampler_scrub.json` — the slicer: a [`shift_random`](#shift_random)
+  into a [`sampler`](#sampler)'s `start_cv` re-cuts the same drum loop on
+  every sixteenth (`antialias` on), with a sparse `reverse` stab a fifth
+  up off the same CV. Needs `generate_samples.py` like `sampler_breaks`.
 - `organ_feedback_drone.json` — the drone machine: a slow Cm7 on the
   [`organ`](#organ) into the [`matrix_mixer`](#matrix_mixer)'s
   regenerating loop (via a 700 ms [`delay`](#delay)), with the

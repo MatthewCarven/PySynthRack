@@ -27,6 +27,14 @@ already three light before slice 2 added one -- count with
 > unreachable from the GUI. New tripwire `tests/test_mode_combos.py`.
 > **Two things want a human:** ears on `sampler_mellotron.json`, and a
 > look at the sampler's mode dropdown now that it lists its own modes.
+>
+> Updated 2026-09-11: **sampler slice 3 shipped** — the sampler is
+> feature-complete against its spec. Suite **3027 passed, 1 skipped**
+> (~108 s). 110 examples. Three more things want a human: ears on
+> `sampler_scrub.json` (the slicer — `start_cv` was the prize), eyes on
+> the sampler node's new waveform face, and a real MIDI keyboard into
+> `midi_input.velocity_cv → sampler.vel`. Matthew's steer: **modules
+> for a while** — next picks come off the build queue in TODO.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -71,10 +79,121 @@ code: `tests/test_ui_glyphs.py` (nothing non-ASCII reaches a screen),
 the `backend.set_param` call-site count in `tests/test_param_writes.py`,
 and the docs-coverage sweep that has been there longer.
 
-**Next up, in the order most likely to be picked:** sampler slice 2 (loop
-mode + region UI), sampler slice 3 (`start_cv` is the real prize),
-`rotary` (the organ's partner), the feedback-door generalization. Full
-menu in TODO.md and docs/MODULE_IDEAS.md.
+**Next up, in the order most likely to be picked:** `rotary` (the organ's
+partner), granular (three pre-sliced pieces), `clock_divider`, the
+possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
+for a while (2026-09-11). The feedback-door generalization waits for its
+own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-11 — sampler slice 3: the stretch menu, all of it
+
+Matthew: "can we run sampler slice 3 then I want to focus on the modules
+for a while". Slice 3 was the spec's stretch menu — six items — and all
+six shipped in one commit, the way slice 2 did. The sampler is now
+feature-complete against `docs/MODULE_IDEAS.md`.
+
+**What landed.** `out_l`/`out_r` beside `out`; an on-load mip chain
+behind an `antialias` tickbox; `start_cv` (+ `start_cv_depth`); `reverse`;
+`vel`; and a waveform face on the node. Plus one port on a neighbour:
+`midi_input` grew a `velocity_cv` out, because nothing in the rack had
+ever *emitted* velocity — the MIDI module applied it to its own tone and
+kept it to itself — and a `vel` input with nothing to patch into it would
+have been a dead jack. Example `sampler_scrub.json`: a `shift_random` into
+`start_cv` re-cuts `breaks.wav` on every sixteenth, plus a sparse reversed
+stab a fifth up off the same CV. 36 new sampler tests + 1 on midi_input;
+suite **3027**.
+
+**The design calls, and why:**
+
+* *`antialias` defaults OFF.* Slice 1 documented the crunch as the sound
+  and the ears passed on it; a tickbox keeps the shipped sound and adds
+  the clean one. Same reasoning as leaving the region end unfaded.
+* *The chain is decimated, not just filtered.* A first draft kept
+  full-length lowpassed copies — simplest to read (same positions) but 6
+  copies × 46 MB for a 120 s file. Decimating 2:1 per level costs under
+  half the original in total AND gives the exactness back: level `k`
+  sample `j` sits on original position `j·2^k`, so a read at rate `2^k`
+  from level `k` is that level verbatim (pinned: octave-up with the chain
+  on is `chains[0][1]` array_equal). Levels above 0 are float32 — they
+  are filtered copies and make no exactness claim, so they need not cost
+  double. Level 0 stays the float64 original, which is why the neutral
+  is bit-exact with the box ticked (pinned).
+* *Between octaves it crossfades two levels* (the wavetable_morph rule)
+  rather than snapping to the conservative one — the oscillator's
+  ceil-pick would halve the bandwidth the moment a note went one cent
+  above the root, which is fine for a saw table and awful for a
+  recording. The cost is honesty: at an exact octave the fold is gone
+  (>40 dB on the test tone), at a fifth it is attenuated by level 0's
+  weight (~8 dB) and no more. Both are pinned as two-render A/Bs, and a
+  third A/B pins that the wanted tone keeps its frequency and level
+  (within 1 dB) — the two levels are read in phase because the half-band
+  FIR is centred, so their crossfade sums to unity in the passband.
+  Documented as "honest rather than perfect".
+* *`start_cv` is read AT THE EDGE SAMPLE and latched*, not block-mean. A
+  sequencer step and the gate it fires land on the same sample; the
+  slice point has to be what the CV said *then*. Pinned with a CV that
+  steps at the hit and moves again mid-hit. A start pushed past `end`
+  drops the hit and leaves the sounding voice alone (pinned) — a slicer
+  that went quiet on a bad CV value would be a trap.
+* *The loop rides along with `start_cv`.* Slice 2 made the loop a
+  fraction of the region; slice 3 makes the region per voice (each hit
+  has its own `start`), so the loop is resolved per voice per block from
+  that voice's start. Live drags of `loop_start` still move a held note,
+  and a scrubbed loop tiles the file from where *that hit* began
+  (pinned: `tile(data[n//2:], 3)`).
+* *Reverse starts one sample inside `end`.* `end` is exclusive going
+  forward (positions `< end` play), so `end − 1` is the mirror of
+  `start`, and a unity reverse is `data[::-1]` bit-exact (pinned), a
+  reversed region is the region mirrored, a reversed loop is a
+  bit-exact tiling of the region backwards, and reverse-an-octave-up is
+  `data[::-1][::2]`. The loop wrap is the same modulo on the affine
+  array: `lo + mod(raw − lo, L)` for positions below `lo`. The seam
+  crossfade mirrors — fade zone just above `loop_start`, reading one lap
+  LATER (`pos + L`), which is what runs into `loop_end` from above.
+  Pinned with the ramp A/B mirrored: hard step >0.9, faded <1/50 of it.
+* *`vel` is latched at the edge and the retrigger tail keeps the OLD
+  gain.* Velocity is a property of the hit. The 2 ms crossfade tail of a
+  re-struck voice now carries `xf_gain` (and `xf_start`, so it keeps its
+  own region and loop too) — a quiet note under a loud one must not step
+  the tail (pinned: max sample delta in the tail < 0.05).
+* *Stereo: `out` is still the mono sum, read once for a mono file.* The
+  loader keeps one chain when the file's two rows are identical (every
+  mono file, and a dual-mono one) and two otherwise; a stereo file reads
+  both and `out` is their half-sum. Per-channel passthrough is bit-exact
+  (pinned). Copies rather than the same array for `out_l`/`out_r`, the
+  precedent elsewhere in the backend.
+* *The face repaints only on change.* It is a picture of a file, not a
+  scope: `_update_sampler_faces` keys on (path, region, loop, mode,
+  reverse) and does nothing when the key matches (pinned: second call
+  makes no `configure_item`). The overview (200 min/max columns) is built
+  by the loader, off-thread, and handed over through a
+  `sampler_overview(id)` hook — the scope_window shape.
+
+**Two things that bit.**
+
+* `np.convolve(x, taps, mode="same")` returns the *kernel's* length when
+  the signal is shorter than the kernel — a 40-sample file came back 63
+  long, misaligned. Fixed with zero-pad-by-half + `mode="valid"`, which
+  is exactly N out for N in, centred. The short-file test caught it.
+* The MagicMock-distinct-ids lesson, again: `dpg.draw_line` returns the
+  same mock for every call, so four markers collapsed into one dict key
+  and the face test read the wrong line. `side_effect = itertools.count`
+  on the draw_* calls. (Third time this has bitten a widget test — it
+  is in the memory file and it still cost a cycle.)
+
+**Cost.** At 16 voices, 512-sample blocks: mono naive 9.6% of budget
+(unchanged), mono `antialias` between octaves 17.5%, stereo naive 17.4%,
+stereo `antialias` between octaves 31.3% — the worst case is the
+two-reads-per-channel one and still sits below the supersaw's 45.6%.
+
+**Wants a human:** ears on `sampler_scrub.json` (run
+`generate_samples.py`; the same breaks.wav); eyes on the sampler node's
+waveform face (markers should sit at start/end, loop markers appear only
+in `loop` mode and inside the region, "<< reverse" caption when ticked);
+and `midi_input.velocity_cv → sampler.vel` with a real keyboard, which
+the tests can't do.
 
 ---
 

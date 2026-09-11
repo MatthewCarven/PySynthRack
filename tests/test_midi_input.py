@@ -66,6 +66,7 @@ class TestMIDIInputMetadata:
             ("pitch_cv", "cv"),
             ("mod_cv", "cv"),
             ("pressure_cv", "cv"),
+            ("velocity_cv", "cv"),
         ]
 
     def test_default_bend_range(self):
@@ -786,6 +787,25 @@ class TestRendering:
         assert "pressure_cv" in result
         assert result["pressure_cv"].shape == (512,)
         assert float(np.max(np.abs(result["pressure_cv"]))) == 0.0
+
+    def test_velocity_cv_carries_each_slot_velocity(self):
+        """One row per slot, the note-on velocity held for its life, zero
+        where nothing plays -- and unaffected by `velocity_sensitive`,
+        which is about the built-in tone."""
+        _, midi = _build_simple_patch()
+        midi.params["velocity_sensitive"] = False
+        midi.note_on(60, 0.25)
+        midi.note_on(64, 1.0)
+        backend = NumpyBackend(sample_rate=44100, block_size=512)
+        result = backend._render_midi_input(midi, 512)
+        vel = result["velocity_cv"]
+        assert vel.shape == (backend._MAX_VOICES, 512)
+        slots = midi.snapshot_voice_slots()
+        by_note = {int(s["note"]): i for i, s in enumerate(slots) if s["note"] != -1}
+        assert abs(float(vel[by_note[60], 0]) - 0.25) < 1e-6
+        assert abs(float(vel[by_note[64], -1]) - 1.0) < 1e-6
+        idle = [i for i in range(backend._MAX_VOICES) if i not in by_note.values()]
+        assert all(float(np.max(np.abs(vel[i]))) == 0.0 for i in idle)
 
     def test_pressure_cv_matches_pressure_scale(self):
         _, midi = _build_simple_patch()
