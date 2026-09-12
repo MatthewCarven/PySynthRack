@@ -2994,6 +2994,15 @@ class App:
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
+            if param_name in ("curve_rise", "curve_fall"):
+                # One knob per slope: an offset added to ``curve`` for
+                # that slope only, the sum clamped to +/-1.
+                dpg.add_slider_float(
+                    label=f"{param_name} (+ curve)", default_value=float(current),
+                    min_value=-1.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
 
         if param_name == "speed":
             # Transient shaper follower-pair responsiveness: fast (tight

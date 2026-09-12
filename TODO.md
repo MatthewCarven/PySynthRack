@@ -274,9 +274,27 @@ same session.
       so it wants its own tests and its own ears. Until then `loop` mode
       is the supported route and both the module docstring and
       MODULES.md say so plainly.
-- [ ] **Follow-ons, if the ears like it** — a per-slope `curve_rise` /
-      `curve_fall` pair (Maths has one knob per slope); a `both`-style
-      second CV in for `rise` and `fall` separately; an `out_inv` jack;
+- [x] **Follow-on 1: per-slope `curve_rise` / `curve_fall`** — SHIPPED
+      2026-09-12 (Matthew's pick, the ears having liked it 08-29).
+      Offsets ADDED to the shared `curve` for their slope, summed and
+      clamped to ±1 — `curve` stays the "both" knob, the pair skews it,
+      and both default 0 so the shipped render is untouched (verified
+      array_equal against renders captured from the pre-change code:
+      trigger/gate/loop, four curve settings). The kernel carries a
+      `(rise, fall)` exponent pair and every backward solve on a stage
+      entry uses the exponent of the stage being ENTERED. Pinned: rise
+      midpoint = 0.5^k(curve+curve_rise) with the fall sample-for-sample
+      unchanged (and vice versa); clamping matches the shared knob's;
+      pluck-then-linger is not its own mirror; loop period unchanged;
+      voice ≡ mono. "Click-free with different exponents" is measured
+      honestly: the worst step in an interrupted render is no worse than
+      the same curves' worst step UNINTERRUPTED — a k = 1/4 logarithmic
+      slope has a genuine cliff at its end (0 → 0.12 in one sample at
+      4800 samples), and that is the shape, not a discontinuity; the
+      gentle case pins the step at the retrigger sample itself. 12
+      tests; suite **3102**. No example needed.
+- [ ] **Follow-ons 2..4** — a `both`-style second CV in for `rise` and
+      `fall` separately (`rise_cv` / `fall_cv`); an `out_inv` jack;
       `eor`-into-`trig` as a rise-only retrigger once feedback closes.
 
 ## Media paths (2026-08-29)

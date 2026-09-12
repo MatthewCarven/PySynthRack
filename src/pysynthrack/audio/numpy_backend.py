@@ -5604,10 +5604,17 @@ class NumpyBackend(AudioBackend):
             fall_s = float(module.params.get("fall", 0.5))
         except (TypeError, ValueError):
             fall_s = 0.5
-        try:
-            curve = float(module.params.get("curve", 0.0))
-        except (TypeError, ValueError):
-            curve = 0.0
+        def _curve(name):
+            try:
+                return float(module.params.get(name, 0.0))
+            except (TypeError, ValueError):
+                return 0.0
+
+        curve = _curve("curve")
+        # Per-slope knobs are OFFSETS on the shared one, summed and
+        # clamped inside _fg_exponent: at 0 they change nothing.
+        curve_rise = curve + _curve("curve_rise")
+        curve_fall = curve + _curve("curve_fall")
         rise_s = min(10.0, max(0.0, rise_s))
         fall_s = min(10.0, max(0.0, fall_s))
 
@@ -5620,8 +5627,8 @@ class NumpyBackend(AudioBackend):
             rise_s *= scale
             fall_s *= scale
 
-        k = self._fg_exponent(curve)
-        inv_k = 1.0 / k
+        k = (self._fg_exponent(curve_rise), self._fg_exponent(curve_fall))
+        inv_k = (1.0 / k[0], 1.0 / k[1])
         rise_len = max(1, int(round(rise_s * sr)))
         fall_len = max(1, int(round(fall_s * sr)))
         # Pulse width: 2 ms, but never more than a quarter of the cycle
@@ -5647,6 +5654,12 @@ class NumpyBackend(AudioBackend):
         voice row is bit-identical to the mono result by construction
         rather than by assertion.
 
+        ``k`` / ``inv_k`` are ``(rise, fall)`` pairs: each slope has its
+        own exponent (``curve`` plus that slope's ``curve_rise`` /
+        ``curve_fall``), and every backward solve on a stage entry uses
+        the exponent of the stage being ENTERED, so a retrigger or a
+        release stays click-free when the two differ.
+
         Scalars rather than numpy-over-(V,) is the slew lesson applied:
         at a block's worth of samples a numpy op is overhead, not
         arithmetic. The vectorized-across-voices draft of this cost
@@ -5665,13 +5678,15 @@ class NumpyBackend(AudioBackend):
         rise_next = self._FG_HOLD if gating else self._FG_FALL
         fall_next = self._FG_RISE if looping else self._FG_IDLE
         high = self._GATE_HIGH
+        k_rise, k_fall = k
+        inv_rise, inv_fall = inv_k
 
         # A loop-mode generator never waits to be asked: kick it out of
         # idle so a freshly placed module (or one just switched to loop)
         # starts cycling on its first block, the way ``clock`` does.
         if looping and phase == self._FG_IDLE:
             phase = self._FG_RISE
-            cnt = int(round(rise_len * (level ** inv_k))) if level > 0.0 else 0
+            cnt = int(round(rise_len * (level ** inv_rise))) if level > 0.0 else 0
 
         for n in range(frames):
             g = bool(gate_row[n] > high) if gate_row is not None else False
@@ -5681,11 +5696,11 @@ class NumpyBackend(AudioBackend):
             if rising:
                 # Every mode restarts the rise from the CURRENT level; in
                 # loop mode that is what makes ``trig`` a click-free sync.
-                cnt = int(round(rise_len * (level ** inv_k))) if level > 0.0 else 0
+                cnt = int(round(rise_len * (level ** inv_rise))) if level > 0.0 else 0
                 phase = self._FG_RISE
             elif gating and not g and (phase == self._FG_RISE or phase == self._FG_HOLD):
                 # Gate released: fall from wherever the rise got to.
-                pos = level ** inv_k if level > 0.0 else 0.0
+                pos = level ** inv_fall if level > 0.0 else 0.0
                 cnt = int(round(fall_len * (1.0 - pos)))
                 phase = self._FG_FALL
 
@@ -5697,7 +5712,7 @@ class NumpyBackend(AudioBackend):
                     phase = rise_next
                     eor_left = pulse_len
                 else:
-                    level = (cnt / rise_len) ** k
+                    level = (cnt / rise_len) ** k_rise
             elif phase == self._FG_HOLD:
                 level = 1.0
             elif phase == self._FG_FALL:
@@ -5708,7 +5723,7 @@ class NumpyBackend(AudioBackend):
                     phase = fall_next
                     eoc_left = pulse_len
                 else:
-                    level = (1.0 - cnt / fall_len) ** k
+                    level = (1.0 - cnt / fall_len) ** k_fall
             else:  # idle: parked at 0 until the next trigger
                 level = 0.0
 

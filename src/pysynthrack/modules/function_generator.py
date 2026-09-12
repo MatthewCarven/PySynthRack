@@ -49,6 +49,16 @@ That is the natural, percussive, plucked shape; +1 is dramatic. Negative is
 **logarithmic** — a rise that leaps then eases into the top, and a fall that
 lingers before dropping out. That is the swelling, orchestral shape.
 
+``curve_rise`` and ``curve_fall`` (added 2026-09-12) are one knob per slope
+on top of that: each is added to ``curve`` for its own slope and the sum
+clamped to ±1, so ``curve`` stays the "both" knob and the pair skews it —
+the way you'd set a Maths channel and then want the attack snappier
+than the decay. Both 0 by default, so nothing moves until you move them.
+An exponential rise into a logarithmic fall (``curve_rise`` +, ``curve_fall``
+−) is the classic pluck-then-linger; the reverse is a swell that drops
+out. When the two effective exponents differ the fall is no longer the
+rise mirrored — by design.
+
 ``rate_cv`` scales both times together at **1 V/oct on the rate**: +1 makes
 the whole function twice as fast, −1 half as fast, clamped to ±5 octaves
 (×32 / ÷32). One knob's worth of CV over the whole shape, which is what you
@@ -76,6 +86,8 @@ Params:
   * ``fall``: seconds, 0…10. 0 = instant. Default 0.5.
   * ``curve``: −1 (logarithmic) … 0 (linear) … +1 (exponential).
     Default 0.
+  * ``curve_rise`` / ``curve_fall``: per-slope offsets on ``curve``, ±1,
+    summed and clamped. Default 0.
 
 Ports:
   * ``trig`` (in, gate): start / sustain / sync, depending on ``mode``.
@@ -107,6 +119,10 @@ class FunctionGenerator(Module):
         fall: Fall time in seconds, 0…10. 0 = instant. Default 0.5.
         curve: Slope shape, −1 (logarithmic) … 0 (linear) … +1
             (exponential). Bends both slopes. Default 0.
+        curve_rise: Added to ``curve`` for the rise only, ±1 (the sum
+            is clamped to ±1). Default 0.
+        curve_fall: Added to ``curve`` for the fall only, likewise.
+            Default 0.
 
     Ports:
         trig (in, gate): start / sustain / sync — see ``mode``.
@@ -123,6 +139,8 @@ class FunctionGenerator(Module):
         "rise": 0.05,
         "fall": 0.5,
         "curve": 0.0,
+        "curve_rise": 0.0,
+        "curve_fall": 0.0,
     }
     INPUT_PORTS = [
         Port("trig", "in", "gate"),

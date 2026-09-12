@@ -49,8 +49,11 @@ already three light before slice 2 added one -- count with
 >
 > And **clockwork love pass shipped** — `euclidean.fills_cv`,
 > `burst.count_cv`, and **`clock_divider`, module #90**. Suite **3088**.
-> 113 examples (`clock_divider_swing.json`, banked). Next love
-> candidates: function-generator follow-ons, pitch_shifter
+> 113 examples (`clock_divider_swing.json`, banked).
+>
+> 2026-09-12: **function generator `curve_rise` / `curve_fall`
+> shipped** (follow-on 1 of 4). Suite **3102**. Next: fgen follow-ons
+> 2..4 (`rise_cv`/`fall_cv`, `out_inv`), pitch_shifter
 > shimmer/harmonizer, chord/arp extras, slew v2.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
@@ -101,6 +104,57 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-12 — function generator: one curve knob per slope
+
+Matthew: "function generator follow-ons — curve_rise/curve_fall (one
+knob per slope, like Maths) please". The first of the four follow-ons
+queued when the module shipped.
+
+**The call: offsets, not replacements.** `curve` must survive — a saved
+patch with an unknown param name raises at load (`Module.__init__` is
+strict; `clock_divider_swing.json` reminded me the same day when I gave
+an `lfo` an `amp` it never had). So `curve_rise` / `curve_fall` are
+*added* to `curve` for their slope and the sum clamped to ±1: `curve`
+stays the "both" knob, the pair skews it. Both default 0 → the kernel
+sees the same exponent on both slopes → the render is `array_equal` to
+references captured from the shipped code before I touched anything
+(trigger / gate / loop, four curve settings, all three jacks). The
+love-pass recipe, third time.
+
+**The kernel change is small and exactly where it should be:** `k` and
+`inv_k` became `(rise, fall)` pairs, and every backward solve on a
+stage entry uses the exponent of the stage being *entered* — the rise's
+when a trigger restarts the rise, the fall's when a gate releases.
+That is what keeps it click-free when the two slopes disagree.
+
+**What "click-free" honestly means here, and a test that nearly lied.**
+My first draft asserted `max |diff| < 0.01` on a release with
+`curve_rise` +1 into `curve_fall` −1 and got 0.012; then 0.058 on a
+retrigger into a k = 1/4 logarithmic rise. Neither is a discontinuity
+in the *solve* — a logarithmic slope at k = 1/4 over 4800 samples
+genuinely goes 0 → 0.12 in its first sample (`(1/4800)^0.25`), and
+lands at 0.12 → 0 in its last. Any level below 0.12 maps to counter 0,
+so the next sample *is* 0.12: that is the shape. The honest claim is
+"the interrupted render's worst step is no worse than the same curves'
+worst step uninterrupted" (counting the leap from rest), plus a gentle
+case (±0.5) that pins the step at the retrigger sample itself under
+0.005. Pinned that way. The general lesson — decide what the claim IS
+before writing the number — is [[dsp-test-design-lessons]] again.
+
+12 tests, suite **3102**. No example — the pair is a refinement, and
+`krell_machine.json` already shows the module. Follow-ons 2..4 remain:
+`rise_cv` / `fall_cv`, `out_inv`, and `eor → trig` once the feedback
+door generalizes.
+
+**Environment note, not code:** numpy refused to import this session —
+`OpenBLAS error: Memory allocation still failed after 10 retries` —
+with ~960 MB physical free and Matthew's own `syncplay` and `densitas`
+processes resident. `OPENBLAS_NUM_THREADS=1` in the shell fixed it for
+every run here (fewer per-thread buffers). Nothing in the repo changed
+for it; worth remembering if a future session sees the same wall.
 
 ---
 

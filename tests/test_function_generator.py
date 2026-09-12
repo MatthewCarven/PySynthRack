@@ -101,6 +101,7 @@ class TestModel:
         assert isinstance(fg, FunctionGenerator)
         assert fg.params == {
             "mode": "trigger", "rise": 0.05, "fall": 0.5, "curve": 0.0,
+            "curve_rise": 0.0, "curve_fall": 0.0,
         }
 
     def test_ports_and_signal_kinds(self):
@@ -519,3 +520,162 @@ class TestKrellExample:
         # ...and the pace actually varies (rate_cv is doing something).
         gaps = np.diff(starts) / 44100.0
         assert gaps.max() > gaps.min() * 1.3, "the pace never breathes"
+
+
+# ----- Per-slope curves (2026-09-12) ------------------------------------------
+
+
+class TestPerSlopeCurves:
+    def test_defaults_are_off(self):
+        fg = Patch().add_module("function_generator")
+        assert fg.params["curve_rise"] == 0.0
+        assert fg.params["curve_fall"] == 0.0
+
+    def test_zero_offsets_change_nothing(self):
+        """Explicit zeros render exactly as their absence -- the shared
+        knob still rules when the pair is centred."""
+        g = np.zeros(4096, np.float32)
+        g[10:900] = 1.0
+        g[2000:2100] = 1.0
+        for mode, curve in (("trigger", 0.7), ("gate", -0.6), ("loop", 0.4)):
+            patch, src, fg, b = _rig(mode=mode, rise=0.02, fall=0.05, curve=curve)
+            plain = _drive(b, patch, src, fg, g)
+            patch, src, fg, b = _rig(mode=mode, rise=0.02, fall=0.05, curve=curve,
+                                     curve_rise=0.0, curve_fall=0.0)
+            explicit = _drive(b, patch, src, fg, g)
+            for key in ("out", "eor", "eoc"):
+                assert np.array_equal(plain[key], explicit[key]), (mode, key)
+
+    @pytest.mark.parametrize("curve,offset", [(0.0, 0.5), (0.3, -0.8), (-0.5, 1.0)])
+    def test_curve_rise_bends_only_the_rise(self, curve, offset):
+        """The rise follows k(curve + curve_rise) at its midpoint; the fall
+        is sample-for-sample what it was with the offset at 0."""
+        n = 480
+        patch, src, fg, b = _rig(mode="trigger", rise=n / SR, fall=n / SR,
+                                 curve=curve, curve_rise=offset)
+        out = _drive(b, patch, src, fg, _pulse(2 * n))["out"]
+        k = NumpyBackend._fg_exponent(curve + offset)
+        assert float(out[n // 2 - 1]) == pytest.approx(0.5 ** k, abs=1e-6)
+        patch, src, fg, b = _rig(mode="trigger", rise=n / SR, fall=n / SR, curve=curve)
+        plain = _drive(b, patch, src, fg, _pulse(2 * n))["out"]
+        assert np.array_equal(out[n:], plain[n:])
+        if k != NumpyBackend._fg_exponent(curve):
+            assert not np.array_equal(out[:n], plain[:n])
+
+    @pytest.mark.parametrize("curve,offset", [(0.0, 0.5), (0.3, -0.8), (-0.5, 1.0)])
+    def test_curve_fall_bends_only_the_fall(self, curve, offset):
+        n = 480
+        patch, src, fg, b = _rig(mode="trigger", rise=n / SR, fall=n / SR,
+                                 curve=curve, curve_fall=offset)
+        out = _drive(b, patch, src, fg, _pulse(2 * n))["out"]
+        k = NumpyBackend._fg_exponent(curve + offset)
+        # fall sample n + m carries counter m + 1: at m + 1 = n/2 the level
+        # is (1 - 1/2) ** k
+        assert float(out[n + n // 2 - 1]) == pytest.approx(0.5 ** k, abs=1e-6)
+        patch, src, fg, b = _rig(mode="trigger", rise=n / SR, fall=n / SR, curve=curve)
+        plain = _drive(b, patch, src, fg, _pulse(2 * n))["out"]
+        assert np.array_equal(out[:n], plain[:n])
+
+    def test_offsets_are_clamped_with_the_shared_knob(self):
+        """curve 1 + curve_rise 1 is still the steepest exponential, not
+        beyond it: the sum clamps to +/-1 exactly as the shared knob does."""
+        n = 480
+        patch, src, fg, b = _rig(mode="trigger", rise=n / SR, fall=n / SR,
+                                 curve=1.0, curve_rise=1.0, curve_fall=-3.0)
+        out = _drive(b, patch, src, fg, _pulse(2 * n))["out"]
+        patch, src, fg, b = _rig(mode="trigger", rise=n / SR, fall=n / SR,
+                                 curve=1.0, curve_fall=-2.0)
+        ref = _drive(b, patch, src, fg, _pulse(2 * n))["out"]
+        assert np.array_equal(out, ref)
+
+    def test_pluck_then_linger_is_not_its_own_mirror(self):
+        """An exponential rise into a logarithmic fall: the shapes differ,
+        by design -- the mirror property holds only when the effective
+        exponents match."""
+        n = 480
+        patch, src, fg, b = _rig(mode="trigger", rise=n / SR, fall=n / SR,
+                                 curve=0.0, curve_rise=0.8, curve_fall=-0.8)
+        out = _drive(b, patch, src, fg, _pulse(2 * n))["out"]
+        rise, fall = out[:n], out[n:2 * n]
+        assert float(np.max(np.abs(rise[:-1] - fall[::-1][1:]))) > 0.2
+        # rise: slow start (below linear); fall: lingers (above linear-mirror)
+        assert float(rise[n // 2 - 1]) < 0.5
+        assert float(fall[n // 2 - 1]) > 0.5
+
+    def _worst_step(self, out):
+        """Worst sample-to-sample step, counting the first sample's step
+        up from rest (a logarithmic rise leaps on its very first sample,
+        and that leap is part of the shape)."""
+        x = np.concatenate([[0.0], np.asarray(out, dtype=np.float64)])
+        return float(np.max(np.abs(np.diff(x))))
+
+    def test_release_mid_rise_stays_click_free_with_different_exponents(self):
+        """The backward solve on the fall entry uses the FALL's exponent,
+        so a gate released mid-rise picks up at the current level even
+        when the two slopes disagree. "Click-free" measured honestly: the
+        worst step in the interrupted render is no worse than the worst
+        step the same curves take UNINTERRUPTED -- a logarithmic slope at
+        k = 1/4 has a genuine cliff at its ends, and that is the shape,
+        not a discontinuity."""
+        n = 4800
+        params = dict(mode="gate", rise=n / SR, fall=n / SR,
+                      curve=0.0, curve_rise=1.0, curve_fall=-1.0)
+        patch, src, fg, b = _rig(**params)
+        g = np.zeros(3 * n, np.float32)
+        g[:n // 3] = 1.0
+        cut = _drive(b, patch, src, fg, g)["out"]
+        patch, src, fg, b = _rig(**params)
+        g = np.zeros(3 * n, np.float32)
+        g[:n + 10] = 1.0
+        whole = _drive(b, patch, src, fg, g)["out"]
+        assert self._worst_step(cut) <= self._worst_step(whole) + 1e-9
+        top = float(cut[n // 3 - 1])
+        assert 0.0 < top < 1.0
+        assert float(cut[n // 3]) <= top
+
+    def test_retrigger_mid_fall_stays_click_free_with_different_exponents(self):
+        n = 4800
+        params = dict(mode="trigger", rise=n / SR, fall=n / SR,
+                      curve=0.0, curve_rise=-1.0, curve_fall=1.0)
+        patch, src, fg, b = _rig(**params)
+        g = np.zeros(3 * n, np.float32)
+        g[0] = 1.0
+        g[n + n // 2] = 1.0             # deep in the fall
+        cut = _drive(b, patch, src, fg, g)["out"]
+        patch, src, fg, b = _rig(**params)
+        g = np.zeros(3 * n, np.float32)
+        g[0] = 1.0
+        whole = _drive(b, patch, src, fg, g)["out"]
+        assert self._worst_step(cut) <= self._worst_step(whole) + 1e-9
+        # and with gentler curves the retrigger really is seamless
+        params = dict(mode="trigger", rise=n / SR, fall=n / SR,
+                      curve=0.0, curve_rise=-0.5, curve_fall=0.5)
+        patch, src, fg, b = _rig(**params)
+        g = np.zeros(3 * n, np.float32)
+        g[0] = 1.0
+        g[n + n // 2] = 1.0
+        cut = _drive(b, patch, src, fg, g)["out"].astype(np.float64)
+        at = n + n // 2
+        assert abs(float(cut[at] - cut[at - 1])) < 0.005
+        assert abs(float(cut[at + 1] - cut[at])) < 0.005
+
+    def test_loop_period_is_unchanged_by_the_pair(self):
+        """Curves shape the stages; they never change their length."""
+        patch, _src, fg, b = _rig(mode="loop", rise=480 / SR, fall=480 / SR,
+                                  curve=0.2, curve_rise=0.9, curve_fall=-0.7)
+        r = _free(fg, b, patch, 512, blocks=20)
+        edges = _rising(r["eoc"])
+        assert set(np.diff(edges).tolist()) == {960}
+
+    def test_voice_rows_match_mono_with_the_pair(self):
+        n = 480
+        params = dict(mode="trigger", rise=n / SR, fall=n / SR,
+                      curve=0.1, curve_rise=0.6, curve_fall=-0.4)
+        patch, src, fg, b = _rig(**params)
+        mono = _drive(b, patch, src, fg, _pulse(2 * n))["out"]
+        patch, src, fg, b = _rig(**params)
+        g = np.zeros((3, 2 * n), np.float32)
+        g[1, 0] = 1.0
+        voiced = _drive(b, patch, src, fg, g)["out"]
+        assert np.array_equal(voiced[1], mono)
+        assert np.all(voiced[0] == 0.0) and np.all(voiced[2] == 0.0)
