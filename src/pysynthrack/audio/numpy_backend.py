@@ -6865,6 +6865,9 @@ class NumpyBackend(AudioBackend):
     # wall-clock at equal rise/fall settings (only the curve differs).
     _LN100 = 4.605170185988092
 
+    # slew: clock-sync period measured from the last two clock edges.
+    _SLEW_MAX_OCT = 5.0
+
     def _render_slew(self, module, frames: int, buffers, patch) -> np.ndarray:
         """Slew-limit ``in`` toward its target with independent rise/fall times.
 
@@ -6875,7 +6878,8 @@ class NumpyBackend(AudioBackend):
           * SYMMETRIC exponential (rise == fall) is a plain LTI one-pole, so
             it runs as a single ``scipy.signal.lfilter`` over the whole block
             and every voice at once (C speed) -- the cheap common case,
-            including one-time-knob glide.
+            including one-time-knob glide. With per-voice times (a ``(V, F)``
+            ``rise_cv``/``fall_cv``) it is one lfilter per row instead.
           * everything else (linear; asymmetric exponential) is the genuine
             scan, run in pure-Python scalar math per voice row. The earlier
             numpy-per-sample form paid a ufunc dispatch per sample (~20% of a
@@ -6899,6 +6903,20 @@ class NumpyBackend(AudioBackend):
             depends on whether the target is above or below the current value,
             which is why it can't collapse to a single LTI ``lfilter`` call.
         A non-positive time means instant on that side.
+
+        v2 (2026-09-14), everything OFF when unpatched so the shipped render
+        is untouched:
+          * ``clock`` (gate): while patched, the two times are read as
+            MULTIPLES OF THE CLOCK PERIOD (1.0 = one beat of whatever is
+            cabled) instead of seconds -- tempo-relative glide. The period
+            is the distance between the last two rising edges, carried
+            across blocks (the euclidean convention); until two edges have
+            been seen the times fall back to seconds.
+          * ``rise_cv`` / ``fall_cv`` (cv): 1 V/oct on the RATE, the
+            function generator's law -- +1 halves the time, -1 doubles it,
+            clamped to +-5 octaves, block-mean. Per voice when the CV is
+            ``(V, F)`` against a ``(V, F)`` input (velocity -> glide time);
+            otherwise one law for every row.
         """
         cv_in = self._input_buffer(
             patch, buffers, module.id, "in", collapse=False
@@ -6906,6 +6924,13 @@ class NumpyBackend(AudioBackend):
         if cv_in is None:
             self._state.pop(module.id, None)
             return np.zeros(frames, dtype=np.float32)
+        rise_cv = self._input_buffer(
+            patch, buffers, module.id, "rise_cv", collapse=False
+        )
+        fall_cv = self._input_buffer(
+            patch, buffers, module.id, "fall_cv", collapse=False
+        )
+        clock = self._input_buffer(patch, buffers, module.id, "clock")
 
         voiced = cv_in.ndim == 2
         x = (cv_in if voiced else cv_in[None, :]).astype(np.float64)  # (V, F)
@@ -6930,16 +6955,75 @@ class NumpyBackend(AudioBackend):
         rise = max(0.0, rise)
         fall = max(0.0, fall)
 
+        # --- clock sync: times become multiples of the measured period ----
+        base = int(state.get("samples", 0))
+        state["samples"] = base + frames
+        if clock is not None:
+            hi = clock > self._GATE_HIGH
+            prev_c = bool(state.get("prev_clock", False))
+            lag = np.empty(frames, dtype=bool)
+            lag[0] = prev_c
+            lag[1:] = hi[:-1]
+            edges = np.flatnonzero(hi & ~lag)
+            last_edge = int(state.get("last_edge", -1))
+            interval = int(state.get("interval", 0))
+            for n in edges.tolist():
+                now = base + n
+                if last_edge >= 0:
+                    interval = now - last_edge
+                last_edge = now
+            state["prev_clock"] = bool(hi[-1])
+            state["last_edge"] = last_edge
+            state["interval"] = interval
+            if interval > 0:
+                period_s = interval / float(sr)
+                rise *= period_s
+                fall *= period_s
+        else:
+            state["prev_clock"] = False
+            state["last_edge"] = -1
+            state["interval"] = 0
+
+        # --- rise_cv / fall_cv: 1 V/oct on the rate, per voice if (V, F) ---
+        def _oct(cv):
+            """Per-row octaves (V,) -- one shared value unless the CV is
+            (V, F) against a (V, F) input. None when unpatched."""
+            if cv is None or cv.size == 0:
+                return None
+            if cv.ndim == 2 and voiced and cv.shape[0] == V:
+                # One 1-D mean per row -- the same reduction the mono
+                # path runs, so a voice row fed a constant is bit-equal
+                # to the mono render fed that constant.
+                o = np.array([float(np.mean(row)) for row in cv], dtype=np.float64)
+            else:
+                o = np.full(V, float(np.mean(cv.sum(axis=0) if cv.ndim == 2 else cv)))
+            return np.clip(o, -self._SLEW_MAX_OCT, self._SLEW_MAX_OCT)
+
+        r_oct = _oct(rise_cv)
+        f_oct = _oct(fall_cv)
+        rise_v = np.full(V, rise) if r_oct is None else rise / (2.0 ** r_oct)
+        fall_v = np.full(V, fall) if f_oct is None else fall / (2.0 ** f_oct)
+        uniform = bool(np.all(rise_v == rise_v[0]) and np.all(fall_v == fall_v[0]))
+
         # Fast path: a SYMMETRIC exponential (rise == fall) is a plain LTI
         # one-pole, so the whole block -- every voice at once -- is a single
         # scipy.signal.lfilter call (C speed, GIL-releasing), with per-row zi
         # carrying the running value across blocks. zi = a*cur reproduces the
         # scalar recurrence's first sample exactly, so it stays bit-parity
-        # with the loop below (which the asymmetric case still uses).
-        if shape == "exponential" and rise == fall:
-            a = 0.0 if rise <= 0.0 else float(np.exp(-self._LN100 / (rise * sr)))
-            zi = (a * cur)[:, None]
-            y, _zf = lfilter([1.0 - a], [1.0, -a], x, axis=-1, zi=zi)
+        # with the loop below (which the asymmetric case still uses). With
+        # per-voice times it is one call per row -- still C speed.
+        if shape == "exponential" and bool(np.all(rise_v == fall_v)):
+            if uniform:
+                t = float(rise_v[0])
+                a = 0.0 if t <= 0.0 else float(np.exp(-self._LN100 / (t * sr)))
+                zi = (a * cur)[:, None]
+                y, _zf = lfilter([1.0 - a], [1.0, -a], x, axis=-1, zi=zi)
+            else:
+                y = np.empty((V, frames), dtype=np.float64)
+                for v in range(V):
+                    t = float(rise_v[v])
+                    a = 0.0 if t <= 0.0 else float(np.exp(-self._LN100 / (t * sr)))
+                    y[v], _zf = lfilter([1.0 - a], [1.0, -a], x[v], zi=[a * cur[v]])
             state["cur"] = y[:, -1].copy()
             out = y if voiced else y[0]
             return out.astype(np.float32)
@@ -6951,9 +7035,11 @@ class NumpyBackend(AudioBackend):
         # arithmetic); scalar float math on a .tolist()'d row is ~15x cheaper.
         y = np.empty((V, frames), dtype=np.float64)
         if shape == "exponential":
-            a_rise = 0.0 if rise <= 0.0 else float(np.exp(-self._LN100 / (rise * sr)))
-            a_fall = 0.0 if fall <= 0.0 else float(np.exp(-self._LN100 / (fall * sr)))
             for v in range(V):
+                rv = float(rise_v[v])
+                fv = float(fall_v[v])
+                a_rise = 0.0 if rv <= 0.0 else float(np.exp(-self._LN100 / (rv * sr)))
+                a_fall = 0.0 if fv <= 0.0 else float(np.exp(-self._LN100 / (fv * sr)))
                 xv = x[v].tolist()
                 c = float(cur[v])
                 row = [0.0] * frames
@@ -6966,9 +7052,11 @@ class NumpyBackend(AudioBackend):
                 cur[v] = c
         else:
             # Linear: max step per sample = 1/(t*sr); t<=0 -> instant (jump).
-            up = float("inf") if rise <= 0.0 else 1.0 / (rise * sr)
-            dn = float("inf") if fall <= 0.0 else 1.0 / (fall * sr)
             for v in range(V):
+                rv = float(rise_v[v])
+                fv = float(fall_v[v])
+                up = float("inf") if rv <= 0.0 else 1.0 / (rv * sr)
+                dn = float("inf") if fv <= 0.0 else 1.0 / (fv * sr)
                 xv = x[v].tolist()
                 c = float(cur[v])
                 row = [0.0] * frames

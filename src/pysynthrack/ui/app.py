@@ -3016,9 +3016,11 @@ class App:
                 )
                 return
             if param_name in ("rise_time", "fall_time"):
+                # Seconds -- or multiples of the clock period while a
+                # clock is cabled (v2 sync); rise_cv / fall_cv scale them.
                 dpg.add_drag_float(
-                    label=param_name, default_value=float(current), speed=0.005,
-                    min_value=0.0, max_value=10.0, format="%.3f s",
+                    label=f"{param_name} (s | x clock)", default_value=float(current),
+                    speed=0.005, min_value=0.0, max_value=10.0, format="%.3f",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "next_id": 10,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "tempo - change me, the glide follows", "params": { "bpm": 110.0, "division": 2.0, "pulse_width": 0.6 } },
+    { "id": 2, "type": "sequencer", "name": "8-step line", "params": { "steps": 8, "step1_pitch": 0.0, "step2_pitch": 7.0, "step3_pitch": 3.0, "step4_pitch": 12.0, "step5_pitch": 5.0, "step6_pitch": -2.0, "step7_pitch": 10.0, "step8_pitch": 2.0 } },
+    { "id": 3, "type": "lfo", "name": "glide-speed breath into rise_cv (+-1 oct)", "params": { "waveform": "triangle", "rate": 0.07, "depth": 1.0, "bipolar": true, "cv_depth": 1.0 } },
+    { "id": 4, "type": "slew", "name": "SLEW v2 - times are x CLOCK PERIOD here (0.6 = most of a step)", "params": { "shape": "exponential", "rise_time": 0.6, "fall_time": 0.6 } },
+    { "id": 5, "type": "oscillator", "name": "saw voice", "params": { "waveform": "saw_blep", "freq": 261.6256, "amp": 0.5 } },
+    { "id": 6, "type": "adsr", "name": "amp env", "params": { "attack": 0.005, "decay": 0.1, "sustain": 0.8, "release": 0.15 } },
+    { "id": 7, "type": "vca", "name": "amp VCA", "params": { "gain": 1.0 } },
+    { "id": 8, "type": "filter", "name": "tone", "params": { "cutoff": 1800.0, "resonance": 0.3 } },
+    { "id": 9, "type": "speaker_output", "name": "Output", "params": { "gain": 0.8 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 4, "dst_port": "clock" },
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 6, "dst_port": "gate" },
+    { "src_module_id": 2, "src_port": "cv", "dst_module_id": 4, "dst_port": "in" },
+    { "src_module_id": 3, "src_port": "cv", "dst_module_id": 4, "dst_port": "rise_cv" },
+    { "src_module_id": 4, "src_port": "out", "dst_module_id": 5, "dst_port": "freq_cv" },
+    { "src_module_id": 5, "src_port": "out", "dst_module_id": 8, "dst_port": "in" },
+    { "src_module_id": 8, "src_port": "out", "dst_module_id": 7, "dst_port": "audio" },
+    { "src_module_id": 6, "src_port": "cv", "dst_module_id": 7, "dst_port": "cv" },
+    { "src_module_id": 7, "src_port": "out", "dst_module_id": 9, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 140], "2": [300, 140], "3": [300, 420], "4": [580, 140], "5": [900, 140],
+      "6": [900, 420], "7": [1400, 140], "8": [1150, 140], "9": [1650, 140]
+    }
+  }
+}

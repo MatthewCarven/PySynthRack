@@ -227,7 +227,9 @@ once the board cleared.
       the hard pan feel wide or just split?). Same session, same bank.
       And `chord_legato_inversions.json` (does the one-sample gate drop
       on `retrig` read as a clean re-articulation through the ADSR, or
-      does it want a longer gap?).
+      does it want a longer gap?). And `slew_clocked_glide.json` — change
+      the clock's BPM while it plays; the glide should keep its fraction
+      of a step.
 
 ## The function generator (opened 2026-08-23)
 
@@ -843,9 +845,31 @@ same session.
       vectorised `lfilter` (near-free, all voices); linear + asymmetric exp →
       pure-Python scalars. Mono linear 19.8% → 0.5%; 16-voice sym-exp → 0.5%;
       16-voice linear 7.4% (the remaining scan — analytic/JIT candidate).
-      **Still pending (meatthread0):** re-play the glide now CPU's clear — tune
-      rise/fall by ear, A/B the shapes. Later: v2 `rise_cv`/`fall_cv` +
-      clock-sync; v3 a `moving`/EOC gate out. See WORKLOG 2026-07-18.
+      The glide re-play was covered by the 2026-08-21 GUI sweep.
+- [x] **Slew v2 — SHIPPED 2026-09-14** (the last item on the love list):
+      `rise_cv` / `fall_cv` (1 V/oct on that side's rate, ±5 oct,
+      block-mean; PER VOICE when `(V, F)` against a `(V, F)` input via one
+      1-D `np.mean` per row so a voice row fed a constant is bit-equal to
+      the mono render — the first draft used `.mean(axis=1)` and differed
+      by an ulp; one law for every row otherwise) and `clock` (gate in:
+      while patched the two times are MULTIPLES OF THE CLOCK PERIOD, the
+      period being the gap between the last two rising edges on an
+      absolute counter carried across blocks; seconds until two edges,
+      seconds again when unpatched with the old period forgotten). The
+      symmetric-exponential lfilter fast path survives per-voice times as
+      one lfilter per row (parity with the scalar recurrence pinned);
+      everything else stays the scalar scan with per-row coefficients. 15
+      reference arrays captured pre-edit (5 settings × mono steps / mono
+      smooth / 4-voice) are array_equal with nothing patched. 16 tests
+      (16 → 32 in the file); suite **3195**. Perf: mono linear 0.67% →
+      0.90% with CV + clock; 16-voice with per-voice CVs ≈ +1 point over
+      the scalar path. Example `slew_clocked_glide.json` (banked): an
+      8-step line, exponential glide 0.6 × period, a slow bipolar LFO
+      into `rise_cv`; measured period 12027 at 110 BPM and 6014 at 220.
+      Test premise corrected on the way: `_reach` helpers measured the
+      99.9% point, but an exponential time MEANS the 99% point (the
+      rack's own `_LN100` convention); thresholds now 0.99 / 0.01.
+      Still later: v3 a `moving`/EOC gate out.
 - [x] **Bitcrusher CV (`bits_cv` + `rate_cv`)** — done 2026-07-17 (Matthew:
       "add a cv to the bit crusher"; picked both crush axes, sketched a 1V/bit
       scaler). Two CV inputs on `bitcrusher`, house `<param>_cv` naming

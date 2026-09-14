@@ -24,6 +24,19 @@ A non-positive time means *instant* on that side (no slew), so
 ``rise_time = 0`` with a slow ``fall_time`` gives an instant-attack,
 slow-release "peak follower", and vice versa.
 
+**v2 (2026-09-14) — the times can move.** ``rise_cv`` and ``fall_cv`` are
+1 V/oct on the *rate*, the [function_generator]'s law: +1 halves that
+side's time, −1 doubles it, ±5 octaves, block-mean. They go **per voice**
+when the CV arrives ``(V, F)`` alongside a ``(V, F)`` input — velocity into
+``fall_cv`` and hard-played notes glide differently from soft ones — and
+are one law for every voice otherwise. And ``clock`` makes the glide
+**tempo-relative**: while a clock is patched the two times are read as
+*multiples of its period* (1.0 = one beat of whatever is cabled, 0.25 = a
+sixteenth at quarter-note pulses) instead of seconds, so a portamento or a
+sequencer lag stays in time when the tempo moves. The period is the gap
+between the last two clock edges; until two have been seen the times are
+seconds, as before. Unpatch the clock and the knobs are seconds again.
+
 What it's for:
 
   * **Polyphonic portamento** — wire a keyboard / ``cv_keyboard`` pitch CV
@@ -43,6 +56,8 @@ Params:
     per 1.0 unit; exponential reads it as ~time-to-99%. 0 = instant up.
     Default 0.1.
   * ``fall_time``: the same for a DOWNWARD move. 0 = instant down. Default 0.1.
+  Both times are read as multiples of the clock period while ``clock`` is
+  patched.
 
 Voice-awareness:
   Shape-polymorphic, per the v0.4 convention. A mono ``(F,)`` CV in → ``(F,)``
@@ -55,6 +70,9 @@ Voice-awareness:
 
 Ports:
   * ``in`` (cv): the control signal to slew. Unpatched → 0 out.
+  * ``rise_cv`` / ``fall_cv`` (cv): 1 V/oct on that side's rate; +1 = half
+    the time. Per voice when ``(V, F)`` against a ``(V, F)`` input.
+  * ``clock`` (gate): patched, the times become multiples of its period.
   * ``out`` (cv): the time-limited signal.
 """
 from __future__ import annotations
@@ -78,9 +96,14 @@ class Slew(Module):
         rise_time: Seconds for an upward move — per 1.0 unit in ``linear``,
             ~time-to-99% in ``exponential``. 0 = instant. Default 0.1.
         fall_time: The same for a downward move. 0 = instant. Default 0.1.
+            Both are multiples of the clock period while ``clock`` is
+            patched.
 
     Ports:
         in (in, cv): the CV to slew. Unpatched is treated as 0.
+        rise_cv / fall_cv (in, cv): 1 V/oct on that side's rate (+1 =
+            half the time), ±5 oct; per voice when ``(V, F)``.
+        clock (in, gate): tempo-relative times while patched.
         out (out, cv): the time-limited CV.
     """
 
@@ -91,5 +114,10 @@ class Slew(Module):
         "rise_time": 0.1,
         "fall_time": 0.1,
     }
-    INPUT_PORTS = [Port("in", "in", "cv")]
+    INPUT_PORTS = [
+        Port("in", "in", "cv"),
+        Port("rise_cv", "in", "cv"),
+        Port("fall_cv", "in", "cv"),
+        Port("clock", "in", "gate"),
+    ]
     OUTPUT_PORTS = [Port("out", "out", "cv")]

@@ -62,8 +62,10 @@ already three light before slice 2 added one -- count with
 > spread shipped**. Suite **3152**, 115 examples (two new, banked for
 > ears). Pushed through 7de1be3. Then **chord/arp extras shipped**
 > (inversion, `changed` + `retrig`, arp internal clock). Suite
-> **3177**, 116 examples. Next: slew v2 — the last item on the love
-> list.
+> **3177**, 116 examples. Then **slew v2 shipped** (`rise_cv`/`fall_cv`
+> + clock sync) — the love list is EMPTY. Suite **3195**, 117 examples
+> (nine banked for ears). Next: the build queue — `rotary`, granular,
+> the feedback door, possibility follow-ons, the 2026-08-04 keep-list.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -113,6 +115,67 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-14 (late) — slew v2: rise_cv / fall_cv + clock sync
+
+Matthew: "slew v2 (rise_cv/fall_cv + clock sync) please Claude and
+thank you!" The last item on the love list, filed the day the module
+was born (2026-07-18).
+
+**`rise_cv` / `fall_cv`.** 1 V/oct on that side's rate — the function
+generator's law, so the two modules read the same way: +1 halves the
+time, −1 doubles it, ±5 octaves, block-mean. Per voice when the CV is
+`(V, F)` against a `(V, F)` input (velocity into `fall_cv`: hard notes
+glide differently from soft), one law for every row otherwise. The
+per-row octave is one 1-D `np.mean` per row, not `.mean(axis=1)` —
+the first draft used the axis form and a voice row fed a constant
+differed from the mono render by an ulp (different reduction order);
+one reduction per row is the same op the mono path runs, so the
+bit-equality is structural again.
+
+**Clock sync = tempo-relative times.** With a `clock` cabled, the two
+times are multiples of its period (1.0 = one pulse; 0.6 = most of a
+sequencer step) instead of seconds. The period is the gap between the
+last two rising edges on an absolute sample counter carried across
+blocks (the euclidean convention — a 150-sample period measured across
+64-sample blocks reads 150). Until two edges have been seen the times
+are seconds; unpatch the clock and they are seconds again, with the old
+period forgotten. Clock and CV compose: 0.5 × 200-sample period = 100,
+`rise_cv` +1 makes it 50. The other reading of "clock sync" — sample
+the input on clock edges, then glide — is `sample_hold → slew` already,
+so I didn't build it in.
+
+**Engines.** The symmetric-exponential lfilter fast path survives:
+uniform times → one call over every voice as before; per-voice times
+with rise == fall per row → one lfilter per row (still C speed; parity
+with the scalar recurrence pinned). Everything else is the scalar scan
+with per-row coefficients. With nothing patched the coefficient
+arithmetic is literally the old expressions on the old floats, and the
+15-array reference sweep is `array_equal`.
+
+**A test premise corrected.** My reach helpers looked for the 99.9%
+point and the exponential cases came out 1.5× long — because an
+exponential time in this module *means* the 99% point (`_LN100`). The
+helpers now use 0.99 / 0.01 and say why. Same lesson, third time
+today: know what the number means before writing the threshold.
+
+**Example `slew_clocked_glide.json`** (banked): an 8-step line through
+an exponential slew at 0.6 × period, the clock cabled, a slow bipolar
+LFO into `rise_cv` breathing the rise speed ±1 octave. Measured period
+12027 samples at 110 BPM and 6014 at 220 — the glide keeps its fraction
+of a step when the tempo moves, which is the whole point.
+
+**16 tests (16 → 32 in the file), suite 3195.** Perf: mono linear
+0.67% → 0.90% with CV + clock; 16-voice per-voice CVs about a point
+over the scalar path.
+
+**The love list is empty.** Six passes in one day: fgen ×3 (well, two
+today), pitch_shifter, chord/arp, slew. Nine examples in the ears
+bank. Next is the build queue.
+
+**Yours: 3 commits to push.**
 
 ---
 

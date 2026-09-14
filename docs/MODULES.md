@@ -272,7 +272,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`cv_scale`](#cv_scale) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`cv_offset`](#cv_offset) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`sample_hold`](#sample_hold) | CV & Utilities | `in` (cv), `trig` (gate) → `out` (cv) |
-| [`slew`](#slew) | CV & Utilities | `in` (cv) → `out` (cv) |
+| [`slew`](#slew) | CV & Utilities | `in`, `rise_cv`, `fall_cv` (cv), `clock` (gate) → `out` (cv) |
 | [`quantizer`](#quantizer) | CV & Utilities | `in` (cv), `gate` (gate) → `out` (cv), `changed` (gate) |
 | [`chord`](#chord) | CV & Utilities | `pitch_cv` (cv), `gate` (gate) → `pitch_cv` (cv), `gate` (gate, both (4, F)), `changed` (gate, mono) |
 | [`scope`](#scope) | CV & Utilities | `in`,`in_r` (audio), `cv` (cv), `trig` (gate) → `out`,`out_r` (audio) |
@@ -3283,9 +3283,29 @@ raw gate into a sloped poor-man's AR (instant rise + slow fall = peak
 follower), or adding physical inertia to a filter-cutoff sweep. The running
 value is carried across blocks (block-size independent) and **primed to the
 first input sample**, so the output starts at the signal rather than
-swooping up from zero; unpatched `in` emits 0. Params: `shape` (default
-`linear`), `rise_time` / `fall_time` (default 0.1 s). See
-`examples/slew_portamento.json`.
+swooping up from zero; unpatched `in` emits 0.
+
+**v2 (2026-09-14) — the times can move.** `rise_cv` / `fall_cv` are
+1 V/oct on that side's *rate*, the [function_generator](#function_generator)'s
+law: +1 halves the time, −1 doubles it, ±5 octaves, block-mean. They go
+**per voice** when the CV arrives `(V, F)` alongside a `(V, F)` input —
+`midi_input.velocity_cv → cv_scale → fall_cv` and hard-played notes glide
+differently from soft ones — and are one law for every voice otherwise
+(a voice row fed a constant is bit-equal to the mono render fed that
+constant). Patch a `clock` and the glide goes **tempo-relative**: while
+it is cabled the two times are read as *multiples of the clock period*
+(1.0 = one pulse of whatever is cabled; 0.6 = most of a sequencer step)
+instead of seconds, so a portamento or a sequencer lag stays in time when
+the tempo moves — the period is the gap between the last two rising
+edges, carried across blocks (the [euclidean](#euclidean) convention);
+until two have been seen the times are seconds, and unpatching the clock
+makes them seconds again. The two compose: clock sets the beat, CV bends
+it. Params: `shape` (default `linear`), `rise_time` / `fall_time`
+(default 0.1 — seconds, or × clock period while `clock` is patched). See
+`examples/slew_portamento.json` (free time) and
+`examples/slew_clocked_glide.json` (an 8-step line whose exponential glide
+is 0.6 of a step at any tempo — change the clock's BPM and the glide
+follows — with a slow LFO breathing the rise speed ±1 octave).
 
 #### `quantizer`
 
@@ -3851,6 +3871,10 @@ loads in the app. Notable ones referenced above:
   [`chord`](#chord)'s `retrig` re-strums a maj7 in first inversion 20 ms apart on
   every root step, and the [`arpeggiator`](#arpeggiator) below it runs on its
   internal 140 × 4 clock — no clock module cabled.
+- `slew_clocked_glide.json` — [`slew`](#slew) v2: a sequencer line glides 0.6 of a
+  clock period per step (the clock is cabled, so the times are tempo-relative —
+  change the BPM and the glide keeps its fraction) while a slow bipolar LFO into
+  `rise_cv` breathes the rise speed over ±1 octave.
 - `modal_mallets.json` — a stereo marimba: keys → a [`modal`](#modal) `bar`
   with `position` 0.28, `mallet` 0.55 and `spread` 0.8, `out_l`/`out_r`
   to the speakers with a [`reverb`](#reverb) off the mono `out` mixed in
