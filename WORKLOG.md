@@ -56,8 +56,9 @@ already three light before slice 2 added one -- count with
 >
 > 2026-09-14: **function generator `rise_cv` / `fall_cv` + `out_inv`
 > shipped** (follow-ons 2 and 3; 4 waits on the feedback door). Suite
-> **3119**. Next: pitch_shifter shimmer/harmonizer, chord/arp extras,
-> slew v2; and a new small one surfaced today, per-voice fgen rates.
+> **3119**. Pushed through 0eeedd9 the same day. Then **per-voice
+> rise/fall rates shipped** in a second pass. Suite **3130**. Next:
+> pitch_shifter shimmer/harmonizer, chord/arp extras, slew v2.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -107,6 +108,60 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-14 (later) — function generator: per-voice rise/fall rates
+
+Matthew: "per-voice fgen rates — execute please Claude." The caveat
+from the morning's pass, closed the same day. (He also pushed through
+0eeedd9 while I was capturing references — `git log origin/main..main`
+is empty as of this entry's commit going in.)
+
+**What changed, and what didn't.** `rise_cv` / `fall_cv` are now read
+with `collapse=False`. When one arrives `(V, F)` alongside a `(V, F)`
+trigger with the same V, each slot gets its own `(rise_len, fall_len,
+pulse_len)` from its own row's block-mean; `rate_cv` is still collapsed
+— "both" is one knob on the hardware and one tempo in the rack. The
+kernel is untouched: the stage lengths were already arguments, which is
+why this was small. The rate arithmetic (octave clamp, `1/2**oct`,
+integer lengths, pulse width) moved into one `_fg_lengths` helper that
+the mono law and the per-slot law both call — so "a voice row is
+bit-identical to the mono path fed that row's constant" is structural
+again, and the test pins it at three octave values on all four jacks.
+
+**Every other shape is the summed mono law from this morning.** A mono
+CV; a voice CV into a mono trigger (no voice functions to give rates
+to); a V that doesn't match. `_octaves` sums a 2D CV across slots
+before the mean, exactly as `_input_buffer`'s collapse did, and the
+432-array reference sweep is `array_equal` — nothing already cabled
+moved. Two of those fallbacks are pinned explicitly, because they are
+the kind of thing that silently changes when someone "tidies" later.
+
+**The parked-slot detail.** `velocity_cv` holds 0 on a slot with
+nothing playing. A 0 row solves to the shared law's lengths, so that
+row renders exactly as with no CV cabled, and the idle-skip in the
+voice path still applies — the test checks the slot's *state* is still
+`_FG_IDLE`, not just that its output is zeros.
+
+**One of yesterday's tests was rewritten, not deleted.** It pinned
+"a (V, F) rise_cv is summed to one rate" — true then, wrong now by
+design. It now pins the same claim for `rate_cv`, which is the jack
+that should stay that way, and says where the per-voice tests live.
+
+**Observation, not fixed:** in `loop` mode a voice slot that has never
+been triggered stays parked (the idle-skip runs before the kernel's
+"kick out of idle"), whereas the mono path free-runs unpatched. A poly
+keyboard into a loop-mode fgen only loops the slots that have been
+played once. Defensible — sixteen free-running kernels would cost the
+whole 35% whether or not anyone is playing — but it is an asymmetry
+worth knowing about. Noted in TODO as a question, not a defect.
+
+**11 tests (82 in the file), suite 3130.** Perf: 35.8% at 16 voices
+with a random per-voice `fall_cv`, 35.0% without — the sixteen
+`_fg_lengths` calls and one `mean(axis=1)` are noise.
+
+**Yours: 1 commit to push.**
 
 ---
 
@@ -179,7 +234,8 @@ new jack — it had a hard-coded three.
 fixed swing). Module docstring likewise. No example patch: the ducker
 is a one-cable idea and the existing krell example is unchanged.
 
-**Yours: 3 commits to push** (30b9384, 624a3ef and this one).
+**Yours: 3 commits to push** (30b9384, 624a3ef and this one). *Pushed
+the same day — 830ce19..0eeedd9.*
 
 ---
 

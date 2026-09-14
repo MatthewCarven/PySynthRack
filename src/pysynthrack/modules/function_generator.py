@@ -75,10 +75,14 @@ hardware arithmetic: ``rate_cv`` sets the tempo, ``rise_cv`` / ``fall_cv``
 skew it. Velocity into ``fall_cv`` (via [cv_scale]) is the classic — hard
 hits ring shorter or longer; an LFO into ``rise_cv`` alone makes a loop-mode
 clock whose *period* wanders while its EOC stays put relative to the fall.
-All three CVs are block-mean and collapsed to mono: one rate law for every
-voice, as the hardware jacks would be. (So the velocity trick is honest for
-one note at a time — a ``(V, F)`` source is *summed* across slots. Per-voice
-rates are a queued follow-on.)
+All three CVs are block-mean. ``rate_cv`` is always collapsed to mono — one
+tempo for the whole rack, as the hardware "both" jack is. ``rise_cv`` and
+``fall_cv`` go **per voice** (same day, second pass) when they arrive as
+``(V, F)`` alongside a ``(V, F)`` trigger: each slot gets its own stage
+lengths, so ``midi_input.velocity_cv → cv_scale → fall_cv`` gives every note
+in a chord its own ring. A mono CV, or a voice CV into a mono trigger, is one
+law for all (summed across slots, the way any mono module sees a voice
+source).
 
 ``out_inv`` (same day) is ``1 − out``: it sits at 1, dips to 0 at the end of
 the rise and climbs back to 1 by the end of the cycle. Into a VCA that is a
@@ -115,7 +119,8 @@ Ports:
   * ``trig`` (in, gate): start / sustain / sync, depending on ``mode``.
   * ``rate_cv`` (in, cv): 1 V/oct on the rate; scales rise and fall together.
   * ``rise_cv`` (in, cv): 1 V/oct on the rise rate only; sums with ``rate_cv``.
-  * ``fall_cv`` (in, cv): 1 V/oct on the fall rate only; sums with ``rate_cv``.
+    Per voice when ``(V, F)`` against a ``(V, F)`` trigger.
+  * ``fall_cv`` (in, cv): 1 V/oct on the fall rate only; likewise.
   * ``out`` (out, cv): the function, 0…1.
   * ``out_inv`` (out, cv): ``1 − out``, the same function upside down.
   * ``eor`` (out, gate): a short pulse the moment the rise completes.
@@ -152,8 +157,9 @@ class FunctionGenerator(Module):
     Ports:
         trig (in, gate): start / sustain / sync — see ``mode``.
         rate_cv (in, cv): 1 V/oct on the rate; +1 = twice as fast.
-        rise_cv (in, cv): 1 V/oct on the rise only, summed with ``rate_cv``.
-        fall_cv (in, cv): 1 V/oct on the fall only, summed with ``rate_cv``.
+        rise_cv (in, cv): 1 V/oct on the rise only, summed with ``rate_cv``;
+            per voice when ``(V, F)`` against a ``(V, F)`` trigger.
+        fall_cv (in, cv): 1 V/oct on the fall only, likewise.
         out (out, cv): the function, 0…1.
         out_inv (out, cv): ``1 − out``.
         eor (out, gate): pulse at end of rise.

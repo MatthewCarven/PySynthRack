@@ -23,7 +23,13 @@ Coverage:
   - rise_cv / fall_cv (2026-09-14): the same law on one slope each; the
     OTHER slope is sample-for-sample untouched; they sum in octaves with
     rate_cv and the per-slope total clamps at +-5; unpatched they render
-    array_equal to the rate_cv-only code; collapsed to mono.
+    array_equal to the rate_cv-only code.
+  - Per-voice rates (2026-09-14, second pass): a (V, F) rise_cv / fall_cv
+    against a (V, F) trigger gives each slot its own stage lengths --
+    each row bit-identical to the mono path fed that row's constant; a
+    0 row is untouched (velocity_cv on a parked slot); rate_cv stays one
+    tempo for all; a mono trigger or a mismatched V falls back to the
+    summed mono law; loop periods differ per voice and never drift.
   - out_inv (2026-09-14): 1 - out bit-exact on every sample, both shapes;
     a parked voice reads 1.0 (the ducker is open on a silent slot).
   - Voice DSP: a single-voice row is bit-identical to the mono path in
@@ -813,9 +819,10 @@ class TestPerSlopeCVs:
         assert len(edges) >= 10
         assert set(np.diff(edges).tolist()) == {240 + 960}
 
-    def test_voice_cv_is_collapsed_to_one_rate(self):
-        """A (V, F) rise_cv is summed to mono like rate_cv: every voice
-        gets the same rise length, and it is the sum's, not a row's."""
+    def test_voice_rate_cv_is_collapsed_to_one_tempo(self):
+        """rate_cv is the "both" knob: a (V, F) rate_cv is summed to mono
+        and every voice gets the same lengths -- the sum's, not a row's.
+        (rise_cv / fall_cv are the per-voice pair; see TestPerVoiceRates.)"""
         patch = Patch()
         src = patch.add_module("schmitt")
         fg = patch.add_module(
@@ -824,7 +831,7 @@ class TestPerSlopeCVs:
         )
         lfo = patch.add_module("lfo")
         patch.connect(src.id, "gate", fg.id, "trig")
-        patch.connect(lfo.id, "cv", fg.id, "rise_cv")
+        patch.connect(lfo.id, "cv", fg.id, "rate_cv")
         b = _backend()
         b.compile(patch)
         F = 4096
@@ -908,3 +915,203 @@ class TestOutInv:
         patch.connect(fg.id, "out_inv", vca.id, "cv")          # cv -> cv
         with pytest.raises(Exception):
             patch.connect(fg.id, "out_inv", spk.id, "in")      # cv -> audio
+
+
+# ----- Per-voice rates (2026-09-14, second pass) -----------------------------
+
+
+def _pv_rig(rise=480, fall=960, mode="trigger", rate=None, jacks=("rise_cv", "fall_cv")):
+    """schmitt -> trig, an lfo (a voice-capable cv source) into each of
+    `jacks`, and optionally a constant into rate_cv. Returns
+    (patch, src, fg, lfo, const, b); the caller supplies the buffers."""
+    patch = Patch()
+    src = patch.add_module("schmitt")
+    fg = patch.add_module(
+        "function_generator", params={"mode": mode, "rise": rise / SR, "fall": fall / SR}
+    )
+    lfo = patch.add_module("lfo")
+    patch.connect(src.id, "gate", fg.id, "trig")
+    for jack in jacks:
+        patch.connect(lfo.id, "cv", fg.id, jack)
+    const = None
+    if rate is not None:
+        const = patch.add_module("constant", params={"value": rate})
+        patch.connect(const.id, "out", fg.id, "rate_cv")
+    b = _backend()
+    b.compile(patch)
+    return patch, src, fg, lfo, const, b
+
+
+def _rows(F, values):
+    return np.stack([np.full(F, v, np.float32) for v in values])
+
+
+def _stage_lengths_row(r, v):
+    eor = _first_high(r["eor"][v])
+    eoc = _first_high(r["eoc"][v])
+    return eor + 1, eoc - eor
+
+
+class TestPerVoiceRates:
+    RISE = 480
+    FALL = 960
+
+    def test_each_voice_gets_its_own_rise(self):
+        patch, src, fg, lfo, _c, b = _pv_rig(jacks=("rise_cv",))
+        F = 8192
+        g = np.zeros((3, F), np.float32)
+        g[:, 0] = 1.0
+        cv = _rows(F, [1.0, 0.0, -1.0])
+        r = b._render_function_generator(
+            fg, F, {(src.id, "gate"): g, (lfo.id, "cv"): cv}, patch
+        )
+        assert [_stage_lengths_row(r, v) for v in range(3)] == [
+            (240, self.FALL), (480, self.FALL), (960, self.FALL),
+        ]
+
+    def test_each_voice_gets_its_own_fall(self):
+        patch, src, fg, lfo, _c, b = _pv_rig(jacks=("fall_cv",))
+        F = 8192
+        g = np.zeros((3, F), np.float32)
+        g[:, 0] = 1.0
+        cv = _rows(F, [2.0, 0.0, -1.0])
+        r = b._render_function_generator(
+            fg, F, {(src.id, "gate"): g, (lfo.id, "cv"): cv}, patch
+        )
+        assert [_stage_lengths_row(r, v) for v in range(3)] == [
+            (self.RISE, 240), (self.RISE, 960), (self.RISE, 1920),
+        ]
+
+    @pytest.mark.parametrize("octaves", [1.0, -0.5, 2.5])
+    def test_a_voice_row_is_bit_identical_to_mono_fed_that_constant(self, octaves):
+        """The per-voice law is the mono law applied per slot: row v with
+        CV c renders exactly what the mono path renders with c on a
+        constant into the same jacks (rate_cv too)."""
+        F = 8192
+        patch, src, fg, bufs, b = _cv_rig(
+            mode="trigger", rise=self.RISE / SR, fall=self.FALL / SR,
+            rate=0.25, rise_cv=octaves, fall_cv=octaves,
+        )
+        bufs = {k: v[:F] for k, v in bufs.items()}
+        mono = b._render_function_generator(
+            fg, F, {**bufs, (src.id, "gate"): _pulse(F)}, patch
+        )
+        patch, src, fg, lfo, const, b = _pv_rig(
+            rise=self.RISE, fall=self.FALL, rate=0.25
+        )
+        g = np.zeros((3, F), np.float32)
+        g[1, 0] = 1.0
+        cv = _rows(F, [0.7, octaves, -3.0])
+        r = b._render_function_generator(
+            fg, F, {
+                (src.id, "gate"): g, (lfo.id, "cv"): cv,
+                (const.id, "out"): np.full(F, 0.25, np.float32),
+            }, patch,
+        )
+        for key in ("out", "out_inv", "eor", "eoc"):
+            assert np.array_equal(r[key][1], mono[key]), key
+
+    def test_rate_cv_is_one_tempo_under_per_voice_slopes(self):
+        """rate_cv +1 on top of per-voice rise_cv rows [+1, 0]: rises of
+        120 and 240 (x4 and x2), falls both 480 (x2)."""
+        patch, src, fg, lfo, const, b = _pv_rig(rate=1.0, jacks=("rise_cv",))
+        F = 8192
+        g = np.zeros((2, F), np.float32)
+        g[:, 0] = 1.0
+        r = b._render_function_generator(
+            fg, F, {
+                (src.id, "gate"): g, (lfo.id, "cv"): _rows(F, [1.0, 0.0]),
+                (const.id, "out"): np.full(F, 1.0, np.float32),
+            }, patch,
+        )
+        assert _stage_lengths_row(r, 0) == (120, 480)
+        assert _stage_lengths_row(r, 1) == (240, 480)
+
+    def test_zero_row_is_the_knob_and_parked_slots_stay_parked(self):
+        """velocity_cv holds 0 on a slot with nothing playing: that row
+        renders exactly as with no CV cabled, and a parked slot is still
+        skipped (all zeros, no state churn)."""
+        F = 4096
+        patch, src, fg, b = _voice_rig(mode="trigger", rise=self.RISE / SR, fall=self.FALL / SR)
+        g = np.zeros((3, F), np.float32)
+        g[0, 0] = 1.0
+        plain = b._render_function_generator(fg, F, {(src.id, "gate"): g}, patch)
+        patch, src, fg, lfo, _c, b = _pv_rig(rise=self.RISE, fall=self.FALL)
+        cv = _rows(F, [0.0, 3.0, 0.0])
+        r = b._render_function_generator(
+            fg, F, {(src.id, "gate"): g, (lfo.id, "cv"): cv}, patch
+        )
+        for key in ("out", "out_inv", "eor", "eoc"):
+            assert np.array_equal(r[key], plain[key]), key
+        assert b._state[fg.id]["voices"][1]["phase"] == NumpyBackend._FG_IDLE
+
+    def test_loop_mode_periods_differ_per_voice_and_never_drift(self):
+        """Two voices synced once, then free-running with rise_cv rows
+        [+1, -1]: eoc periods of 240+480 and 960+480, every cycle."""
+        patch, src, fg, lfo, _c, b = _pv_rig(rise=480, fall=480, mode="loop", jacks=("rise_cv",))
+        F = 512
+        eoc = [[], []]
+        for blk in range(60):
+            g = np.zeros((2, F), np.float32)
+            if blk == 0:
+                g[:, 0] = 1.0
+            r = b._render_function_generator(
+                fg, F, {(src.id, "gate"): g, (lfo.id, "cv"): _rows(F, [1.0, -1.0])}, patch
+            )
+            for v in range(2):
+                eoc[v].append(np.asarray(r["eoc"][v]).copy())
+        periods = [set(np.diff(_rising(np.concatenate(eoc[v]))).tolist()) for v in range(2)]
+        assert periods == [{720}, {1440}]
+
+    def test_mono_trigger_with_a_voice_cv_uses_the_summed_law(self):
+        """No voice axis on the trigger means no per-voice functions to
+        give rates to: the (V, F) CV collapses by sum, as _input_buffer
+        would -- the 2026-09-14 mono law, unchanged."""
+        patch, src, fg, lfo, _c, b = _pv_rig(jacks=("rise_cv",))
+        F = 8192
+        cv = _rows(F, [0.5, 0.5])     # sums to +1 octave
+        r = b._render_function_generator(
+            fg, F, {(src.id, "gate"): _pulse(F), (lfo.id, "cv"): cv}, patch
+        )
+        assert r["out"].shape == (F,)
+        assert _stage_lengths(r) == (240, self.FALL)
+
+    def test_mismatched_voice_count_falls_back_to_the_summed_law(self):
+        patch, src, fg, lfo, _c, b = _pv_rig(jacks=("rise_cv",))
+        F = 8192
+        g = np.zeros((2, F), np.float32)
+        g[:, 0] = 1.0
+        cv = _rows(F, [1.0, 0.0, 0.0])   # 3 rows against 2 voices: sum = +1
+        r = b._render_function_generator(
+            fg, F, {(src.id, "gate"): g, (lfo.id, "cv"): cv}, patch
+        )
+        assert _stage_lengths_row(r, 0) == (240, self.FALL)
+        assert _stage_lengths_row(r, 1) == (240, self.FALL)
+
+    def test_only_one_jack_per_voice_the_other_shared(self):
+        """rise_cv per voice, fall_cv a mono constant: the fall is the
+        shared law on every slot while the rise is each row's own."""
+        patch = Patch()
+        src = patch.add_module("schmitt")
+        fg = patch.add_module(
+            "function_generator",
+            params={"mode": "trigger", "rise": self.RISE / SR, "fall": self.FALL / SR},
+        )
+        lfo = patch.add_module("lfo")
+        const = patch.add_module("constant", params={"value": 1.0})
+        patch.connect(src.id, "gate", fg.id, "trig")
+        patch.connect(lfo.id, "cv", fg.id, "rise_cv")
+        patch.connect(const.id, "out", fg.id, "fall_cv")
+        b = _backend()
+        b.compile(patch)
+        F = 8192
+        g = np.zeros((2, F), np.float32)
+        g[:, 0] = 1.0
+        r = b._render_function_generator(
+            fg, F, {
+                (src.id, "gate"): g, (lfo.id, "cv"): _rows(F, [1.0, -1.0]),
+                (const.id, "out"): np.full(F, 1.0, np.float32),
+            }, patch,
+        )
+        assert _stage_lengths_row(r, 0) == (240, 480)
+        assert _stage_lengths_row(r, 1) == (960, 480)

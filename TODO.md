@@ -313,13 +313,31 @@ same session.
       one-note-at-a-time trick until per-voice rates exist.
 - [ ] **Follow-on 4** — `eor`-into-`trig` as a rise-only retrigger once
       feedback closes (the compiler job).
-- [ ] **Per-voice rise/fall rates** — surfaced 2026-09-14 by the
-      velocity → `fall_cv` patch: a `(V, F)` CV is summed across slots,
-      so a chord shortens every voice's fall. The kernel already takes
-      `rise_len`/`fall_len` as arguments; the voice path could compute
-      them per slot when the CV is 2D (and `pulse_len` with them).
-      Keep `rate_cv` mono ("both" is one knob on the hardware); it is
-      the per-slope pair that wants to go per-voice.
+- [x] **Per-voice rise/fall rates** — SHIPPED 2026-09-14, same day it
+      was surfaced (Matthew: "execute"). A `(V, F)` `rise_cv` / `fall_cv`
+      against a `(V, F)` trigger with the same V gives each slot its own
+      `(rise_len, fall_len, pulse_len)` from its own row's block-mean;
+      `rate_cv` stays mono ("both" is one knob). The kernel is
+      untouched — the stage lengths were already arguments — and the
+      rate arithmetic moved into one `_fg_lengths` helper that both the
+      mono law and the per-slot law call, so a voice row is bit-identical
+      to the mono path fed that row's constant (pinned at three octave
+      values, all four jacks). Any other shape (mono CV, voice CV into a
+      mono trigger, mismatched V) is the summed mono law — pinned
+      explicitly — and the 432-array reference sweep is `array_equal`.
+      A 0 row renders as no CV, so `velocity_cv`'s parked slots stay
+      parked (state checked, not just output). Loop-mode periods per
+      voice (720 / 1440) driftless over 60 blocks. 11 tests (one of
+      yesterday's rewritten: it pinned the summed behaviour); suite
+      **3130**. Perf +0.8 points at 16 voices with a per-voice CV.
+- [ ] **Question, not a defect: loop-mode voice slots that were never
+      triggered stay parked** (noticed 2026-09-14). The voice path's
+      idle-skip runs before the kernel's "kick out of idle", so a poly
+      keyboard into a `loop`-mode fgen only loops the slots that have
+      been played once; the mono path free-runs unpatched. Defensible
+      (sixteen free-running kernels cost the full ~35% whether or not
+      anyone is playing). Decide whether that asymmetry should be
+      documented as-is or changed; do not change it silently.
 
 ## Media paths (2026-08-29)
 

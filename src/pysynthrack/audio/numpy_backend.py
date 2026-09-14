@@ -5583,9 +5583,18 @@ class NumpyBackend(AudioBackend):
         on all three jacks; a 2D ``(V, F)`` trigger runs V independent
         functions and emits ``(V, F)``. Both paths drive the SAME scalar
         kernel (:meth:`_fg_kernel`), so a voice row is bit-identical to
-        the mono result by construction. ``rate_cv`` / ``rise_cv`` /
-        ``fall_cv`` are collapsed to mono in both -- one rate law for
-        every voice, as the hardware jacks would be.
+        the mono result by construction.
+
+        Rates: ``rate_cv`` is always collapsed to mono -- "both" is one
+        knob on the hardware, one tempo for the rack. ``rise_cv`` /
+        ``fall_cv`` go PER VOICE when they arrive as ``(V, F)`` alongside
+        a ``(V, F)`` trigger with the same V: each slot gets its own
+        stage lengths (and its own pulse width), so velocity into
+        ``fall_cv`` gives every note its own ring. Any other shape --
+        a mono CV, a 2D CV into a mono trigger, a V that doesn't match
+        -- collapses the way ``_input_buffer`` would (sum across slots),
+        which is exactly the 2026-09-14 mono law, so nothing already
+        cabled moves.
 
         ``out_inv`` is ``1 - out`` computed on the finished block, not
         in the kernel: one numpy subtraction per block (or per (V, F)
@@ -5596,8 +5605,12 @@ class NumpyBackend(AudioBackend):
             patch, buffers, module.id, "trig", collapse=False
         )
         rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
-        rise_cv = self._input_buffer(patch, buffers, module.id, "rise_cv")
-        fall_cv = self._input_buffer(patch, buffers, module.id, "fall_cv")
+        rise_cv = self._input_buffer(
+            patch, buffers, module.id, "rise_cv", collapse=False
+        )
+        fall_cv = self._input_buffer(
+            patch, buffers, module.id, "fall_cv", collapse=False
+        )
 
         sr = float(self.sample_rate)
         mode = str(module.params.get("mode", "trigger"))
@@ -5629,38 +5642,87 @@ class NumpyBackend(AudioBackend):
         # like the LFO's. rise_cv / fall_cv are the same law on one slope
         # each and SUM with it in octaves -- Maths' per-channel jacks
         # next to its "both" -- and the per-slope total is clamped to
-        # +/-5 octaves so a runaway CV cannot ask for a sub-sample cycle
-        # or a half-hour one. An unpatched jack contributes 0.0, so the
-        # sum, the clamp and the scale are bit-identical to the
-        # rate_cv-only arithmetic this replaced.
+        # +/-5 octaves (inside _fg_lengths) so a runaway CV cannot ask
+        # for a sub-sample cycle or a half-hour one. An unpatched jack
+        # contributes 0.0, so the sum, the clamp and the scale are
+        # bit-identical to the rate_cv-only arithmetic this replaced.
+        voiced = gate_buf is not None and gate_buf.ndim == 2
+        V = gate_buf.shape[0] if voiced else 0
+
         def _octaves(cv):
-            if cv is not None and cv.size > 0:
-                return float(np.mean(cv))
-            return 0.0
+            # The mono law: a (V, F) CV is summed across slots first,
+            # exactly as _input_buffer's collapse would have done.
+            if cv is None or cv.size == 0:
+                return 0.0
+            if cv.ndim == 2:
+                cv = cv.sum(axis=0)
+            return float(np.mean(cv))
+
+        def _per_slot(cv):
+            # Per-voice octaves when the CV is (V, F) against a (V, F)
+            # trigger with the same V; None means "use the mono law".
+            if voiced and cv is not None and cv.ndim == 2 and cv.shape[0] == V:
+                return cv.mean(axis=1)
+            return None
 
         both = _octaves(rate_cv)
-        rise_oct = both + _octaves(rise_cv)
-        fall_oct = both + _octaves(fall_cv)
+        k = (self._fg_exponent(curve_rise), self._fg_exponent(curve_fall))
+        inv_k = (1.0 / k[0], 1.0 / k[1])
+
+        rise_rows = _per_slot(rise_cv)
+        fall_rows = _per_slot(fall_cv)
+        if rise_rows is None and fall_rows is None:
+            # One rate law for every voice.
+            lengths = self._fg_lengths(
+                rise_s, fall_s, both + _octaves(rise_cv), both + _octaves(fall_cv), sr
+            )
+            if voiced:
+                return self._render_fg_voice(
+                    module, gate_buf, frames, mode, k, inv_k, [lengths] * V
+                )
+            return self._render_fg_mono(module, gate_buf, frames, mode, k, inv_k, *lengths)
+
+        # Per-voice: a slot whose CV row is 0 gets the shared law's
+        # lengths, so a parked slot (velocity_cv holds 0 there) is
+        # untouched and the skip in _render_fg_voice still applies.
+        rise_oct = both + _octaves(rise_cv) if rise_rows is None else None
+        fall_oct = both + _octaves(fall_cv) if fall_rows is None else None
+        lengths = [
+            self._fg_lengths(
+                rise_s, fall_s,
+                rise_oct if rise_rows is None else both + float(rise_rows[v]),
+                fall_oct if fall_rows is None else both + float(fall_rows[v]),
+                sr,
+            )
+            for v in range(V)
+        ]
+        return self._render_fg_voice(module, gate_buf, frames, mode, k, inv_k, lengths)
+
+    @staticmethod
+    def _fg_lengths(rise_s, fall_s, rise_oct, fall_oct, sr):
+        """``(rise_len, fall_len, pulse_len)`` in samples for one rate law.
+
+        Each slope's octave total is clamped to +/-5 and applied as
+        ``1 / 2**oct``; ``x * 1.0 == x`` exactly, but a zero total skips
+        the multiply anyway. Pulse width: 2 ms, but never more than a
+        quarter of the cycle (so a 20 ms loop still emits a
+        distinguishable blip) and never less than one sample (so an
+        instant rise still announces itself).
+        """
         if rise_oct != 0.0:
             rise_s *= 1.0 / (2.0 ** min(5.0, max(-5.0, rise_oct)))
         if fall_oct != 0.0:
             fall_s *= 1.0 / (2.0 ** min(5.0, max(-5.0, fall_oct)))
-
-        k = (self._fg_exponent(curve_rise), self._fg_exponent(curve_fall))
-        inv_k = (1.0 / k[0], 1.0 / k[1])
         rise_len = max(1, int(round(rise_s * sr)))
         fall_len = max(1, int(round(fall_s * sr)))
-        # Pulse width: 2 ms, but never more than a quarter of the cycle
-        # (so a 20 ms loop still emits a distinguishable blip) and never
-        # less than one sample (so an instant rise still announces itself).
         pulse_len = max(
-            1, min(int(round(self._FG_PULSE_S * sr)), (rise_len + fall_len) // 4 or 1)
+            1,
+            min(
+                int(round(NumpyBackend._FG_PULSE_S * sr)),
+                (rise_len + fall_len) // 4 or 1,
+            ),
         )
-
-        args = (frames, mode, k, inv_k, rise_len, fall_len, pulse_len)
-        if gate_buf is not None and gate_buf.ndim == 2:
-            return self._render_fg_voice(module, gate_buf, *args)
-        return self._render_fg_mono(module, gate_buf, *args)
+        return rise_len, fall_len, pulse_len
 
     def _fg_kernel(
         self, frames, gate_row, mode, k, inv_k, rise_len, fall_len,
@@ -5774,8 +5836,12 @@ class NumpyBackend(AudioBackend):
         self._fg_kernel(frames, gate_buf, *args, state, out, eor, eoc)
         return {"out": out, "out_inv": 1.0 - out, "eor": eor, "eoc": eoc}
 
-    def _render_fg_voice(self, module, gate_buf, frames, mode, *args):
+    def _render_fg_voice(self, module, gate_buf, frames, mode, k, inv_k, lengths):
         """Voice path: V independent functions, ``(V, F)`` on each jack.
+
+        ``lengths`` is one ``(rise_len, fall_len, pulse_len)`` tuple per
+        slot -- V copies of the same tuple under the mono rate law, one
+        each when ``rise_cv`` / ``fall_cv`` arrived per voice.
 
         One scalar kernel run per slot. A slot whose trigger row is all
         low and whose function has already finished is skipped outright
@@ -5808,7 +5874,8 @@ class NumpyBackend(AudioBackend):
                 st["level"] = 0.0
                 continue
             self._fg_kernel(
-                frames, gate_buf[v], mode, *args, st, out[v], eor[v], eoc[v]
+                frames, gate_buf[v], mode, k, inv_k, *lengths[v],
+                st, out[v], eor[v], eoc[v],
             )
         # A parked slot's row is 0.0, so its inverse is 1.0 -- the ducker
         # is OPEN on a silent voice, which is what "1 - out" means.
