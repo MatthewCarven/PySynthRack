@@ -1300,6 +1300,37 @@ class App:
                     callback=self._on_param_changed, user_data=user_data,
                 )
                 return
+            # 2026-09-14 love pass: shimmer feedback, a second harmony
+            # voice with its own level, and a stereo spread between the
+            # two shifted voices on out_l / out_r.
+            if param_name == "feedback":
+                dpg.add_slider_float(
+                    label=f"{param_name} (shimmer)", default_value=float(current),
+                    min_value=0.0, max_value=0.9, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "harmony":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-24.0, max_value=24.0, format="%.2f st",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "harmony_level":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "spread":
+                dpg.add_slider_float(
+                    label=f"{param_name} (L main / R harmony)", default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
 
         if module.TYPE == "resampler":
             # Varispeed transpose controls. Pitch is set in semitones

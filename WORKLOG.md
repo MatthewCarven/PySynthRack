@@ -57,8 +57,10 @@ already three light before slice 2 added one -- count with
 > 2026-09-14: **function generator `rise_cv` / `fall_cv` + `out_inv`
 > shipped** (follow-ons 2 and 3; 4 waits on the feedback door). Suite
 > **3119**. Pushed through 0eeedd9 the same day. Then **per-voice
-> rise/fall rates shipped** in a second pass. Suite **3130**. Next:
-> pitch_shifter shimmer/harmonizer, chord/arp extras, slew v2.
+> rise/fall rates shipped** in a second pass. Suite **3130**. Pushed
+> through 91b8dfb. Then **pitch_shifter shimmer / harmonizer / stereo
+> spread shipped**. Suite **3152**, 115 examples (two new, banked for
+> ears). Next: chord/arp extras, slew v2.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -108,6 +110,77 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-14 (evening) — pitch_shifter: shimmer, harmonizer, stereo spread
+
+Matthew: "pitch_shifter shimmer/harmonizer please Claude." The
+2026-07-10 love directions, taken up at last. (He pushed 91b8dfb while
+I was reading the engine.)
+
+**Three knobs, all off by default, all on the same module.**
+
+* **`feedback`** — the shimmer. The previous block's main wet, damped
+  by a one-pole at 6 kHz and soft-ceilinged at the matrix knee, is added
+  to this block's engine input, so every lap is shifted again: at +12
+  an octave cascade. The loop is one block plus the engine's own
+  latency long (a grain or two), so this is the fast spectral bloom,
+  not the slow cathedral shimmer — `organ_shimmer.json` with its delay
+  in a matrix loop is still the route to that, and the docs say so. The
+  damping is the thing that makes it usable: undamped, laps sail past
+  Nyquist and come back as alias grit; damped, the climb dies against
+  the top of hearing. `_PS_FB_LP_HZ` is a constant, like the matrix
+  knee — a `damp` knob is a follow-on if the ears want it.
+* **`harmony` / `harmony_level`** — a second `_GrainShifter` per voice
+  at `harmony` semitones, mixed at the level. It hears the *raw* input,
+  not the loop, so it stays a clean interval over whatever the shimmer
+  is doing. Same `pitch_cv`, so the chord transposes as one. Built
+  lazily the first block the level rises and torn down at 0, so a
+  patch that never turns it on never pays for it.
+* **`spread` + `out_l` / `out_r`** — with a harmony present, the main
+  leans left and the harmony right (the far channel fades by `spread`);
+  the dry stays centred. Without a harmony both jacks *are* `out` — the
+  resampler's "wired stereo plays mono" convention. I chose the pan over
+  the resampler's ±cents detune meaning of `spread` deliberately: the
+  pan costs nothing and is what a harmonizer's stereo field is; a
+  detune spread would be two more engines for a chorus the [chorus]
+  already does.
+
+**The refactor underneath.** The per-engine "detect period → regrain
+→ process → equal-power splice" block became `_ps_shift(state, sfx,
+…)`, and the re-colour + level valve became `_ps_recolor`; main and
+harmony both call them with their own state keys. The main path's
+operations are unchanged — 72 reference arrays (six settings including
+formant on, tone/bass/noise, cv on/off, mono and voice, 40 blocks
+each) captured before the first edit are `array_equal` after. The
+renderer now returns `{"out", "out_l", "out_r"}` like the resampler;
+eleven direct calls in the test file grew a `["out"]`.
+
+**A test that measured the wrong thing, caught before it lied.** "The
+harmony does not hear the loop" — my first draft asserted that the
++7-over-the-first-lap partial (659 Hz) was not raised by feedback, and
+it failed: −82 dB → −52 dB. But −52 dB against peaks at +70 dB is the
+shimmer's own noise floor, and it is there with no harmony at all. The
+honest claim is that a harmony fed the loop *would* put a real partial
+there (~+60 dB), so the test now asserts the lap-fifth sits ≥ 60 dB
+under the harmony's own partial. Same lesson as the fgen curves: know
+what the number means before you write it.
+
+**Two examples, both banked for ears.** `pitch_shifter_shimmer.json`
+— a slow pluck dropped to C3 (a constant −1 V into its `pitch_cv`; at
+C4 the laps ran out of room) into +12 at `feedback` 0.75, through a
+hall to L/R: laps at 1046/2093/4186 Hz measure +9/+9/+22 dB over the
+same patch with feedback 0. `pitch_shifter_harmonizer.json` — a saw at
+E3, +4 / +7 at level 0.9, `spread` 1: root 73.5 dB in both channels,
+third 69 dB left vs −19 right, fifth the reverse. A stereo major triad
+from one module.
+
+**18 tests (44 → 62 in the file); suite 3152.** Cost, mono at 512: +7 st 2.4% → shimmer 3.0% → harmony 4.2% →
+all + spread 4.7% → all + formant 8.4%. Four voices: 8.7% → 18.2%
+(32.9% with formant).
+
+**Yours: 1 commit to push.**
 
 ---
 

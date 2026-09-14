@@ -224,7 +224,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`vca`](#vca) | Routing & VCA | `audio` (audio), `cv` (cv) → `out` (audio) |
 | [`matrix_mixer`](#matrix_mixer) | Routing & VCA | `in_1`…`in_4` (audio), `cv_1`…`cv_4` (cv) → `out_1`…`out_4` (audio) |
 | [`resampler`](#resampler) | Effects | `in` (audio), `pitch_cv` (cv), `brake` (gate) → `out`, `out_l`, `out_r` (audio) |
-| [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out` (audio) |
+| [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv) → `out` (audio) |
 | [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`compressor`](#compressor) | Effects | `in`,`sidechain` (audio), `threshold_cv` (cv) → `out` (audio), `gr` (cv) |
@@ -1473,8 +1473,9 @@ without it getting faster or slower.
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to transpose. Unpatched → silence. |
-| `pitch_cv` | in | cv | Added to the transpose, scaled by `cv_depth` (summed in semitone space, sampled per block). |
-| `out` | out | audio | The pitch-shifted signal. |
+| `pitch_cv` | in | cv | Added to the transpose, scaled by `cv_depth` (summed in semitone space, sampled per block). Moves the `harmony` voice too, so a chord transposes as one. |
+| `out` | out | audio | The pitch-shifted signal — main + harmony, mono sum. |
+| `out_l` / `out_r` | out | audio | (2026-09-14) The stereo pair: with a harmony present, `spread` leans the main shift left and the harmony right; the dry stays centred. Identical to `out` when there is no harmony or `spread` is 0, so a patch wired stereo plays mono rather than falling silent. |
 
 **Parameters**
 
@@ -1487,6 +1488,10 @@ without it getting faster or slower.
 | `grain_size` | `50.0` | 10 … 200 ms | Grain length — longer = smoother on sustained/low material, shorter = sharper transients. |
 | `overlap` | `2` | 2 … 4 | Number of overlapping grains — higher = smoother/denser at more CPU. |
 | `formant_preserve` | `False` | bool | Keep the spectral envelope (timbre) in place while pitch moves — LPC whiten → shift residual → re-color. Off = classic chipmunk/giant coloration. |
+| `feedback` | `0.0` | 0 … 0.9 | (2026-09-14) **Shimmer.** Recirculates the shifted output into the input, so every lap is shifted *again* — at +12, an octave cascade that blooms away from the note. Short loop (one block plus the engine's latency, a grain or two): the fast, spectral kind; for the slow cathedral kind put the shifter in a [matrix_mixer](#matrix_mixer) loop with a [delay](#delay) (`organ_shimmer.json`). Damped above ~6 kHz so the climb dies at the top of hearing instead of aliasing, soft-ceilinged at the matrix knee, and the dry side of `mix` always hears the *original*. |
+| `harmony` | `0.0` | −24 … +24 st | (2026-09-14) **Harmonizer.** Semitones for a second shifted voice, on top of `semitones`. `semitones` +4 and `harmony` +7 over the dry is a major triad from one module; +7 / +12 a power chord; −12 / +12 an octave stack. Hears the raw input, not the feedback loop. |
+| `harmony_level` | `0.0` | 0 … 1 | Level of the harmony voice. 0 = off, and no second engine is built until it rises (it costs one more grain engine per voice — about +1.8 points of a block per mono voice). |
+| `spread` | `0.0` | 0 … 1 | With a harmony present, pans the main shift toward `out_l` and the harmony toward `out_r` — the far channel fades by `spread`, the dry stays centred. Nothing to pan without a harmony. |
 
 **How it works.** It uses **WSOLA** (waveform-similarity overlap-add):
 the audio is sliced into short overlapping grains and overlapped back
@@ -1513,7 +1518,14 @@ thickening. For pitch shifting where speed *should* follow, use the
 **+12 inside a feedback loop** and you get shimmer — every lap returns
 an octave higher, stacking into a cloud that climbs away from the note
 that started it; see `examples/organ_shimmer.json`, where a dark delay
-in the same loop is what the climb finally dies against.
+in the same loop is what the climb finally dies against. Since
+2026-09-14 the loop is also built in: `feedback` 0.75 at +12 on a pluck
+is `examples/pitch_shifter_shimmer.json` — the fast bloom, each pluck
+into a cloud. For a **stereo triad from one module** see
+`examples/pitch_shifter_harmonizer.json`: a saw at E3, `semitones` +4,
+`harmony` +7 at `harmony_level` 0.9, `spread` 1 — root centred, third
+hard left, fifth hard right, `out_l`/`out_r` into the
+[left](#left_speaker_output)/[right](#right_speaker_output) speakers.
 
 **Accuracy & deep bass (2026-07-02).** The analysis clock runs on the
 ideal WSOLA grid (search excursions never accumulate into the input
@@ -3850,6 +3862,8 @@ loads in the app. Notable ones referenced above:
 - `resampler_tape_stop.json` — resampler `brake`: a slow clock gating a true tape stop and spin-up every four seconds.
 - `pitch_shifter_harmony.json` — time-preserving shift; +7 st at 50% mix = a fifth harmony.
 - `pitch_shifter_formant_vowel.json` — formant-preserving shift: synthetic vowel up a fourth, timbre intact.
+- `pitch_shifter_shimmer.json` — the built-in shimmer loop: a slow pluck at C3 into +12 with `feedback` 0.75, through a hall — each pluck blooms into an octave cloud.
+- `pitch_shifter_harmonizer.json` — a stereo major triad from one module: `semitones` +4, `harmony` +7, `spread` 1 → third left, fifth right, root centred.
 - `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `stereo_hard_pan.json` — left/right speaker sinks.

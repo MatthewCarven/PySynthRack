@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "next_id": 8,
+  "modules": [
+    {"id": 1, "type": "clock", "name": "clock 30 bpm", "params": {"bpm": 30.0, "division": 1.0, "pulse_width": 0.1}},
+    {"id": 2, "type": "pluck", "name": "pluck", "params": {"decay": 3.0, "damping": 0.4, "color": 0.6, "position": 0.25, "level": 0.6}},
+    {"id": 3, "type": "pitch_shifter", "name": "shimmer +12", "params": {"semitones": 12.0, "cents": 0.0, "cv_depth": 12.0, "mix": 0.5, "grain_size": 60.0, "overlap": 2, "formant_preserve": false, "feedback": 0.75, "harmony": 0.0, "harmony_level": 0.0, "spread": 0.0}},
+    {"id": 4, "type": "reverb", "name": "hall", "params": {"size": 0.85, "decay": 0.75, "damping": 0.35, "mix": 0.45, "cv_depth": 1.0}},
+    {"id": 5, "type": "left_speaker_output", "name": "Left", "params": {"gain": 0.8}},
+    {"id": 6, "type": "right_speaker_output", "name": "Right", "params": {"gain": 0.8}},
+    {"id": 7, "type": "constant", "name": "C3 (-1 V)", "params": {"value": -1.0}}
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "trigger"},
+    {"src_module_id": 2, "src_port": "out", "dst_module_id": 3, "dst_port": "in"},
+    {"src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "in"},
+    {"src_module_id": 4, "src_port": "out_l", "dst_module_id": 5, "dst_port": "in"},
+    {"src_module_id": 4, "src_port": "out_r", "dst_module_id": 6, "dst_port": "in"},
+    {"src_module_id": 7, "src_port": "out", "dst_module_id": 2, "dst_port": "pitch_cv"}
+  ],
+  "ui": {
+    "node_positions": {"1": [40, 140], "2": [300, 140], "3": [560, 140], "4": [860, 140], "5": [1160, 80], "6": [1160, 220], "7": [40, 300]}
+  }
+}

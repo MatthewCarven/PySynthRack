@@ -221,6 +221,10 @@ once the board cleared.
       new `reverse` / `antialias` tickboxes, and `gated` in the mode
       dropdown (never once selectable before 08-30). Unblocks nothing —
       the sampler is feature-complete; this is confirmation.
+      **Added 2026-09-14:** `pitch_shifter_shimmer.json` (the built-in
+      octave bloom — is the 6 kHz loop damping right, or does it want a
+      knob?) and `pitch_shifter_harmonizer.json` (stereo triad — does
+      the hard pan feel wide or just split?). Same session, same bank.
 
 ## The function generator (opened 2026-08-23)
 
@@ -1081,11 +1085,47 @@ same session.
         out-of-range values were only reachable via hand-edited JSON, and
         overlap=1 was a degenerate no-overlap path). `test_overlap_clamped_to_2_4`
         locks it (1 ≡ 2, 8 ≡ 4).
-  - [ ] pitch_shifter enhancement ideas (offered as "love" directions
-        2026-07-10, not started — the mix fix was chosen): a `feedback` path
-        for octave-cascade **shimmer** (freq_shifter-style block-safe
-        feedback); a **harmonizer** — multiple simultaneous shift intervals
-        and/or a stereo `out_l`/`out_r` detune spread.
+  - [x] pitch_shifter love pass — SHIPPED 2026-09-14 (Matthew's pick
+        off the love list): `feedback` shimmer (previous block's main wet,
+        one-pole damped at 6 kHz, soft-ceilinged at the matrix knee, added
+        to the engine input; the dry tap and the LPC estimate read the raw
+        `db` ring), `harmony` + `harmony_level` (a second `_GrainShifter`
+        per voice, built lazily on level > 0 and torn down at 0; hears the
+        raw input, not the loop; same `pitch_cv`; shares the whitening,
+        re-colours through its own state), `spread` + `out_l`/`out_r`
+        (main leans left, harmony right, dry centred; both jacks alias
+        `out` when nothing to pan — resampler convention). The
+        detect→regrain→process→splice block became `_ps_shift` and the
+        re-colour + level valve `_ps_recolor`, both called by main and
+        harmony; the renderer returns a dict now. 72 reference arrays
+        (6 settings × tone/bass/noise × cv on/off × mono/voice) captured
+        pre-edit are array_equal with all three knobs at default. Pinned:
+        explicit zeros ≡ absence (mono, voice, formant on/off, every
+        jack, and no `eng2` built); shimmer stacks 880/1760 Hz from 220
+        that feedback 0 does not (A/B, >12 dB), monotonic per lap; hot
+        loop bounded at the clamp; mix 0 with the loop running is
+        bit-exact the raw dry; the loop is wired at unison too; harmony
+        appears and scales 6.02 dB per halving; lazy build/teardown;
+        pitch_cv moves the chord; the harmony does NOT hear the loop (its
+        lap-fifth sits ≥60 dB under its own partial — first draft
+        measured against the shimmer's noise floor and had to be
+        rewritten honestly); spread 0 aliases, 1 hard-pans (>30 dB
+        separation, L+R ≈ out), 0.5 fades the far channel 6.02 dB, dry
+        identical in L and R; voice ≡ mono with everything on. 18 tests;
+        suite **3152** (+2 examples). Cost mono: +7 st 2.4%, shimmer
+        3.0%, harmony 4.2%, all + spread 4.7%, all + formant 8.4%. Two
+        examples: `pitch_shifter_shimmer.json` (pluck at C3 → +12 fb
+        0.75 → hall; laps at 1046/2093/4186 Hz measured +9/+9/+22 dB
+        over feedback 0) and `pitch_shifter_harmonizer.json` (E3 saw →
+        +4 / +7 spread 1 → L/R; third 69 dB L vs −19 dB R, fifth the
+        reverse). **Wants ears** — banked with the rest.
+        Not done, by choice: a stereo *detune* spread (the resampler's
+        meaning of `spread`) — `spread` here pans the two shifted voices,
+        which costs nothing and is the harmonizer's stereo field; a
+        block-size-independent loop delay (the freq_shifter runs fixed
+        chunks for this; the WSOLA engine's production timing depends on
+        F, so it would not be bit-exact anyway — documented as "one block
+        plus the engine's latency").
 - [x] **Error-handler integration** — done 2026-07-06/07. Upgraded the vendored
       `error_handler.py` to the upstream superset + vendored its 157-test suite;
       wired global crash logging (`_crash.install_crash_logging`: threading +

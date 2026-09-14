@@ -10409,6 +10409,15 @@ class NumpyBackend(AudioBackend):
     # Clamp the effective transpose so the playback ratio (and the stretch
     # ring sized from it) stays bounded. +/-36 st -> ratio in [1/8, 8].
     _PS_MAX_ST = 36.0
+    # Shimmer loop: feedback is clamped here (a bounded loop, like the
+    # freq_shifter's), and the recirculated block is damped by a one-pole
+    # lowpass at this corner before it re-enters -- every lap climbs an
+    # octave, so undamped laps sail past Nyquist and come back as alias
+    # grit; damping makes the climb die against the top of hearing
+    # instead. Then a soft ceiling (the matrix's knee) so a hot loop
+    # rounds off rather than runs away.
+    _PS_FB_MAX = 0.9
+    _PS_FB_LP_HZ = 6000.0
     # Formant preservation (LPC whiten -> shift residual -> re-color).
     _PS_LPC_ORDER = 24          # envelope detail; ~speech-codec order at 44.1k
     _PS_LPC_WIN = 1024          # raw samples per envelope estimate
@@ -10432,7 +10441,8 @@ class NumpyBackend(AudioBackend):
         """
         src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
         if src is None:
-            return np.zeros(frames, dtype=np.float32)
+            z = np.zeros(frames, dtype=np.float32)
+            return {"out": z, "out_l": z, "out_r": z}
         pitch_cv = self._input_buffer(
             patch, buffers, module.id, "pitch_cv", collapse=False
         )
@@ -10452,16 +10462,18 @@ class NumpyBackend(AudioBackend):
 
         if pitch_cv is not None and pitch_cv.ndim == 2:
             pitch_cv = pitch_cv.mean(axis=0)
-        out = self._pitch_shifter_core(
+        outs = self._pitch_shifter_core(
             module,
             frames,
             src[np.newaxis, :],
             None if pitch_cv is None else pitch_cv[np.newaxis, :],
         )
-        return out[0]
+        return {k: a[0] for k, a in outs.items()}
 
     def _pitch_shifter_core(self, module, frames, src, cv):
         """Shared ``(V, F)`` engine; mono runs with V=1 (bit-identical).
+
+        Returns ``{"out", "out_l", "out_r"}``, each ``(V, F)``.
 
         Per voice and per block: (1) every ``_PS_DETECT_EVERY`` input
         samples the input period is re-estimated and, when the current
@@ -10476,6 +10488,29 @@ class NumpyBackend(AudioBackend):
         envelope rides with the content it described). Coefficient sets
         change per block with lfilter zf-carry -- the standard adaptive-
         filter compromise, smooth because envelopes evolve slowly.
+
+        2026-09-14 love pass, all three OFF at their defaults so the
+        shipped render is untouched:
+
+        * ``feedback`` (shimmer): the previous block's main wet -- damped
+          by a one-pole at ``_PS_FB_LP_HZ``, soft-ceilinged at the
+          matrix knee -- is added to this block's engine input, so every
+          lap is shifted again (at +12, an octave cascade). The loop is
+          one block plus the engine's own latency long, so laps arrive
+          a grain or two apart: a fast bloom, not a slow reverb-shimmer
+          (for that, patch this into a delay in a matrix loop -- see
+          ``organ_shimmer.json``). The dry tap and the LPC estimate read
+          the RAW input via the ``db`` ring, never the recirculated one.
+        * ``harmony`` / ``harmony_level``: a second engine per voice at
+          ``harmony`` semitones (plus the same ``pitch_cv``, so the chord
+          transposes together), fed the raw input -- NOT the feedback --
+          and mixed at ``harmony_level``. Only built when the level is
+          above zero; it shares the whitening and re-colours through its
+          own synthesis state.
+        * ``spread``: with a harmony present, pans the main wet toward
+          ``out_l`` and the harmony toward ``out_r`` (the far channel
+          fades by ``spread``); the dry stays centred. Without a
+          harmony, or at 0, ``out_l`` and ``out_r`` are ``out``.
         """
         V = src.shape[0]
         sr = self.sample_rate
@@ -10487,6 +10522,18 @@ class NumpyBackend(AudioBackend):
         overlap = max(2, min(4, int(module.params.get("overlap", 2))))
         formant = bool(module.params.get("formant_preserve", False))
         Lg = max(8, int(round(grain_ms * 1e-3 * sr)))
+
+        def _f(name, lo, hi, default):
+            try:
+                return float(np.clip(float(module.params.get(name, default)), lo, hi))
+            except (TypeError, ValueError):
+                return default
+
+        feedback = _f("feedback", 0.0, self._PS_FB_MAX, 0.0)
+        harmony_st = _f("harmony", -24.0, 24.0, 0.0)
+        harmony_level = _f("harmony_level", 0.0, 1.0, 0.0)
+        spread = _f("spread", 0.0, 1.0, 0.0)
+        use_harm = harmony_level > 0.0
 
         head = max(16384, 16 * int(getattr(self, "block_size", 512)))
         state = self._state.setdefault(module.id, {})
@@ -10501,47 +10548,68 @@ class NumpyBackend(AudioBackend):
             state["lpc_zi_w"] = [None] * V     # whitening FIR state
             state["lpc_zi_s"] = [None] * V     # synthesis IIR state
             state["lpc_fifo"] = [[] for _ in range(V)]
-        engines = state["eng"]
+            state["fb"] = [None] * V           # last block's main wet (shimmer)
+            state["fb_lp"] = [0.0] * V         # one-pole state on the loop
+        if use_harm and "eng2" not in state:
+            # The harmony engine is built lazily, the first block the
+            # level is above zero, so a patch that never turns it on
+            # never pays for it.
+            state["eng2"] = [_GrainShifter(Lg, overlap, head) for _ in range(V)]
+            state["last_det2"] = [0] * V
+            state["regrains2"] = np.zeros(V, dtype=np.int64)
+            state["lpc_zi_s2"] = [None] * V
+        elif not use_harm and "eng2" in state:
+            for key in ("eng2", "last_det2", "regrains2", "lpc_zi_s2"):
+                state.pop(key, None)
 
         if frames == 0:
-            return np.empty((V, 0), dtype=np.float32)
+            z = np.empty((V, 0), dtype=np.float32)
+            return {"out": z, "out_l": z, "out_r": z}
+
+        # Feedback-path damping: one-pole lowpass coefficient.
+        fb_a = 0.0
+        if feedback > 0.0:
+            fb_a = float(np.exp(-2.0 * np.pi * self._PS_FB_LP_HZ / float(sr)))
 
         base_st = semis + cents / 100.0
         out = np.empty((V, frames), dtype=np.float32)
+        out_l = out
+        out_r = out
+        if use_harm and spread > 0.0:
+            out_l = np.empty((V, frames), dtype=np.float32)
+            out_r = np.empty((V, frames), dtype=np.float32)
         for v in range(V):
-            st = base_st if cv is None else base_st + cv_depth * float(np.mean(cv[v]))
+            cv_st = 0.0 if cv is None else cv_depth * float(np.mean(cv[v]))
+            st = base_st if cv is None else base_st + cv_st
             st = max(-self._PS_MAX_ST, min(self._PS_MAX_ST, st))
             r = 2.0 ** (st / 12.0)
-            eng = engines[v]
             x = src[v].astype(np.float64)
 
-            # --- pitch-synchronous grain sizing (deep bass) ---
-            old_eng = None
-            if eng.iw - state["last_det"][v] >= self._PS_DETECT_EVERY:
-                state["last_det"][v] = eng.iw
-                tail = eng.history(self._PS_DETECT_WIN)
-                period = _detect_period(tail, sr, fmin=self._PS_FMIN)
-                want = Lg
-                if period is not None:
-                    want = max(Lg, int(round(self._PS_SYNC_PERIODS * period)))
-                want = min(want, int(self._PS_MAX_GRAIN_SEC * sr))
-                cur = eng.Lg
-                if want > cur * 1.2 or (cur > Lg and want < cur * 0.8):
-                    new_eng = _GrainShifter(want, overlap, head)
-                    hist = eng.history(new_eng.Lin - frames - 8)
-                    hist_dry = None
-                    if eng.db is not None:
-                        hist_dry = eng.history(hist.shape[0], dry=True)
-                    if hist.shape[0]:
-                        new_eng.process(hist, r, x_dry=hist_dry)  # prime; output discarded
-                    old_eng = eng
-                    eng = new_eng
-                    engines[v] = eng
-                    state["regrains"][v] += 1
+            # --- shimmer: recirculate last block's main wet ---
+            x_in = x
+            if feedback > 0.0:
+                prev = state["fb"][v]
+                if prev is not None and prev.shape[0] != frames:
+                    # Block size moved under us: pad or trim, once.
+                    fix = np.zeros(frames)
+                    n = min(frames, prev.shape[0])
+                    fix[:n] = prev[:n]
+                    prev = fix
+                if prev is not None:
+                    damped, zf = lfilter(
+                        [1.0 - fb_a], [1.0, -fb_a], prev, zi=[state["fb_lp"][v]]
+                    )
+                    state["fb_lp"][v] = float(zf[0])
+                    x_in = x + feedback * self._ps_soft_ceiling(damped)
+            # The raw input rides the ``db`` ring whenever the engine is
+            # fed something else (whitened, or with the loop mixed in),
+            # so the dry tap and the LPC estimate stay true.
+            x_dry = x if (formant or feedback > 0.0) else None
 
+            eng = state["eng"][v]
             # --- formant preserve: whiten the engine input ---
             a_cur = None
-            xw = x
+            xw = x_in
             if formant:
                 raw_tail = eng.history(self._PS_LPC_WIN, dry=True) if eng.db is not None \
                     else eng.history(self._PS_LPC_WIN)
@@ -10550,22 +10618,16 @@ class NumpyBackend(AudioBackend):
                     zi = state["lpc_zi_w"][v]
                     if zi is None:
                         zi = np.zeros(self._PS_LPC_ORDER)
-                    xw, zf = lfilter(a_cur, [1.0], x, zi=zi)
+                    xw, zf = lfilter(a_cur, [1.0], x_in, zi=zi)
                     state["lpc_zi_w"][v] = zf
-            x_dry = x if formant else None
 
-            was_primed = eng.primed
-            wet = eng.process(xw, r, x_dry=x_dry)
-            if old_eng is not None:
-                # Equal-power splice from the outgoing engine's output.
-                wet_old = old_eng.process(
-                    xw, r, x_dry=x_dry if old_eng.db is not None else None
-                )
-                t = (np.arange(frames) + 1.0) / frames
-                wet = np.sin(0.5 * np.pi * t) * wet + np.cos(0.5 * np.pi * t) * wet_old
+            wet, eng, was_primed = self._ps_shift(
+                state, "", v, xw, x_dry, r, frames, Lg, overlap, head, sr
+            )
 
             # --- formant preserve: re-color with the envelope from ~one
             # grain ago (aligns the envelope with the content it described).
+            a_del = None
             if formant:
                 fifo = state["lpc_fifo"][v]
                 # Envelopes estimated before the wet path primed describe
@@ -10577,31 +10639,140 @@ class NumpyBackend(AudioBackend):
                     fifo.pop(0)
                 a_del = fifo[0]
                 if a_del is not None:
-                    zi = state["lpc_zi_s"][v]
-                    if zi is None:
-                        zi = np.zeros(self._PS_LPC_ORDER)
-                    wet, zf = lfilter([1.0], a_del, wet, zi=zi)
-                    state["lpc_zi_s"][v] = zf
-                    # Safety valve: a recolored block should sit near the
-                    # raw input's level (whiten -> shift -> re-color is
-                    # level-preserving by construction). An ill-conditioned
-                    # estimate (attack edges, near-silence) can't be ruled
-                    # out, so bound the block at 4x the raw RMS.
-                    raw_rms = float(np.sqrt((x ** 2).mean()))
-                    rec_rms = float(np.sqrt((wet ** 2).mean()))
-                    lim = 4.0 * max(raw_rms, 1e-4)
-                    if rec_rms > lim:
-                        wet = wet * (lim / rec_rms)
+                    wet = self._ps_recolor(state, "lpc_zi_s", v, wet, a_del, x)
+
+            if feedback > 0.0:
+                state["fb"][v] = wet
+
+            # --- harmonizer: a second engine on the raw (whitened) input ---
+            harm = None
+            if use_harm:
+                st2 = harmony_st + cv_st
+                st2 = max(-self._PS_MAX_ST, min(self._PS_MAX_ST, st2))
+                r2 = 2.0 ** (st2 / 12.0)
+                xw2 = xw
+                if feedback > 0.0:
+                    # The harmony hears the raw input, not the loop.
+                    xw2 = x
+                    if formant and a_cur is not None:
+                        # Whiten the raw input through the same envelope;
+                        # the loop's whitening state belongs to the main.
+                        zi2 = state.setdefault("lpc_zi_w2", [None] * V)[v]
+                        if zi2 is None:
+                            zi2 = np.zeros(self._PS_LPC_ORDER)
+                        xw2, zf2 = lfilter(a_cur, [1.0], x, zi=zi2)
+                        state["lpc_zi_w2"][v] = zf2
+                harm, eng2, _wp2 = self._ps_shift(
+                    state, "2", v, xw2, x if formant else None, r2, frames,
+                    Lg, overlap, head, sr,
+                )
+                if formant and a_del is not None:
+                    harm = self._ps_recolor(state, "lpc_zi_s2", v, harm, a_del, x)
+                harm = harmony_level * harm
 
             Dc = eng.latency(r)  # exact wet latency -> phase-coherent dry/wet mix
+            wet_sum = wet if harm is None else wet + harm
             if mix >= 1.0:
-                blk = wet
+                blk = wet_sum
+                dry = None
             elif mix <= 0.0:
                 blk = eng.dry_tap(frames, Dc)
+                dry = blk
             else:
-                blk = (1.0 - mix) * eng.dry_tap(frames, Dc) + mix * wet
+                dry = (1.0 - mix) * eng.dry_tap(frames, Dc)
+                blk = dry + mix * wet_sum
             out[v] = blk.astype(np.float32)
-        return out
+            if harm is not None and spread > 0.0:
+                # Main leans left, harmony leans right: the far channel
+                # fades by ``spread``; the dry stays put in both.
+                far = 1.0 - spread
+                lw = wet + far * harm
+                rw = far * wet + harm
+                if mix >= 1.0:
+                    out_l[v] = lw.astype(np.float32)
+                    out_r[v] = rw.astype(np.float32)
+                elif mix <= 0.0:
+                    out_l[v] = out[v]
+                    out_r[v] = out[v]
+                else:
+                    out_l[v] = (dry + mix * lw).astype(np.float32)
+                    out_r[v] = (dry + mix * rw).astype(np.float32)
+        return {"out": out, "out_l": out_l, "out_r": out_r}
+
+    def _ps_shift(self, state, sfx, v, xw, x_dry, r, frames, Lg, overlap, head, sr):
+        """One engine slot for one block: the deep-bass regrain check,
+        the shift itself, and the equal-power splice when the engine was
+        just rebuilt. ``sfx`` picks the state keys ("" main, "2"
+        harmony). Returns ``(wet, engine, was_primed)``."""
+        engines = state["eng" + sfx]
+        last_det = state["last_det" + sfx]
+        eng = engines[v]
+        old_eng = None
+        if eng.iw - last_det[v] >= self._PS_DETECT_EVERY:
+            last_det[v] = eng.iw
+            tail = eng.history(self._PS_DETECT_WIN)
+            period = _detect_period(tail, sr, fmin=self._PS_FMIN)
+            want = Lg
+            if period is not None:
+                want = max(Lg, int(round(self._PS_SYNC_PERIODS * period)))
+            want = min(want, int(self._PS_MAX_GRAIN_SEC * sr))
+            cur = eng.Lg
+            if want > cur * 1.2 or (cur > Lg and want < cur * 0.8):
+                new_eng = _GrainShifter(want, overlap, head)
+                hist = eng.history(new_eng.Lin - frames - 8)
+                hist_dry = None
+                if eng.db is not None:
+                    hist_dry = eng.history(hist.shape[0], dry=True)
+                if hist.shape[0]:
+                    new_eng.process(hist, r, x_dry=hist_dry)  # prime; output discarded
+                old_eng = eng
+                eng = new_eng
+                engines[v] = eng
+                state["regrains" + sfx][v] += 1
+
+        was_primed = eng.primed
+        wet = eng.process(xw, r, x_dry=x_dry)
+        if old_eng is not None:
+            # Equal-power splice from the outgoing engine's output.
+            wet_old = old_eng.process(
+                xw, r, x_dry=x_dry if old_eng.db is not None else None
+            )
+            t = (np.arange(frames) + 1.0) / frames
+            wet = np.sin(0.5 * np.pi * t) * wet + np.cos(0.5 * np.pi * t) * wet_old
+        return wet, eng, was_primed
+
+    def _ps_recolor(self, state, key, v, wet, a_del, x):
+        """Formant re-colour through ``1/A(z)`` with carried state under
+        ``state[key][v]``, plus the level safety valve: a recolored block
+        should sit near the raw input's level (whiten -> shift ->
+        re-color is level-preserving by construction), but an
+        ill-conditioned estimate (attack edges, near-silence) can't be
+        ruled out, so bound the block at 4x the raw RMS."""
+        zi = state[key][v]
+        if zi is None:
+            zi = np.zeros(self._PS_LPC_ORDER)
+        wet, zf = lfilter([1.0], a_del, wet, zi=zi)
+        state[key][v] = zf
+        raw_rms = float(np.sqrt((x ** 2).mean()))
+        rec_rms = float(np.sqrt((wet ** 2).mean()))
+        lim = 4.0 * max(raw_rms, 1e-4)
+        if rec_rms > lim:
+            wet = wet * (lim / rec_rms)
+        return wet
+
+    @staticmethod
+    def _ps_soft_ceiling(x):
+        """The matrix mixer's soft ceiling: identity below the knee, a
+        tanh round-off above it, so a hot shimmer loop bends rather than
+        blows up."""
+        from ..modules.matrix_mixer import MATRIX_CLIP_KNEE
+        knee = MATRIX_CLIP_KNEE
+        mag = np.abs(x)
+        over = mag > knee
+        if not over.any():
+            return x
+        limited = knee + (1.0 - knee) * np.tanh((mag - knee) / (1.0 - knee))
+        return np.where(over, np.sign(x) * limited, x)
 
     def _render_mic_input(self, module, frames: int, buffers=None, patch=None):
         """Publish the latest captured input block as stereo audio.

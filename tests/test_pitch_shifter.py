@@ -28,6 +28,17 @@ Coverage:
     formant centroid (off, the centroid migrates up); mix=0 dry stays
     the raw input bit-exactly; white noise stays bounded; LPC recovers
     a known AR(2); voice row == mono through the formant path.
+  - 2026-09-14 love pass (feedback shimmer / harmonizer / stereo
+    spread), every knob OFF by default: explicit zeros render
+    array_equal to their absence (mono + voice, formant on and off);
+    shimmer at +12 stacks octaves that feedback=0 does not have (A/B
+    spectral), stays bounded at the clamp on hot input, and leaves the
+    dry side of `mix` bit-exact; the harmonizer adds a second interval
+    that pitch_cv moves with the main, at a level that scales, and is
+    not built until the level rises; spread 0 aliases out_l/out_r to
+    out, spread 1 hard-pans main left and harmony right with the dry
+    centred; voice rows == mono with all three on; type walls on the
+    new jacks.
 
 """
 from __future__ import annotations
@@ -70,7 +81,7 @@ def _run(b, patch, src, ps, signal, cvsrc=None, cv=None, block=F):
         bufs = {(src.id, "out"): signal[..., sl].astype(np.float32)}
         if cvsrc is not None and cv is not None:
             bufs[(cvsrc.id, "cv")] = cv[..., sl].astype(np.float32)
-        outs.append(b._render_pitch_shifter(ps, block, bufs, patch))
+        outs.append(b._render_pitch_shifter(ps, block, bufs, patch)["out"])
     return np.concatenate(outs, axis=-1)
 
 
@@ -101,6 +112,10 @@ class TestModel:
             "grain_size": 50.0,
             "overlap": 2,
             "formant_preserve": False,
+            "feedback": 0.0,
+            "harmony": 0.0,
+            "harmony_level": 0.0,
+            "spread": 0.0,
         }
 
     def test_ports_and_signal_kinds(self):
@@ -109,7 +124,9 @@ class TestModel:
             ("in", "audio"),
             ("pitch_cv", "cv"),
         ]
-        assert [(p.name, p.signal_kind) for p in ps.output_ports] == [("out", "audio")]
+        assert [(p.name, p.signal_kind) for p in ps.output_ports] == [
+            ("out", "audio"), ("out_l", "audio"), ("out_r", "audio"),
+        ]
 
     def test_json_round_trip(self):
         patch = Patch()
@@ -167,7 +184,7 @@ class TestMonoDSP:
         ps = patch.add_module("pitch_shifter")
         b = _backend()
         b.compile(patch)
-        out = b._render_pitch_shifter(ps, 256, {}, patch)
+        out = b._render_pitch_shifter(ps, 256, {}, patch)["out"]
         assert out.shape == (256,)
         assert not out.any()
 
@@ -245,7 +262,7 @@ class TestMonoDSP:
             rng = np.random.RandomState(2)
             for _ in range(120):
                 blk = (rng.randn(F) * 0.3).astype(np.float32)
-                out = b._render_pitch_shifter(ps, F, {(src.id, "out"): blk}, patch)
+                out = b._render_pitch_shifter(ps, F, {(src.id, "out"): blk}, patch)["out"]
                 assert np.all(np.isfinite(out))
                 assert np.abs(out).max() <= 2.0
 
@@ -280,10 +297,10 @@ class TestVoiceDSP:
     def test_single_voice_matches_mono(self):
         blocks = [np.random.RandomState(i).randn(F).astype(np.float32) for i in range(14)]
         p1, s1, r1, _, b1 = _rig({"semitones": 5.0})
-        mono = [b1._render_pitch_shifter(r1, F, {(s1.id, "out"): x}, p1) for x in blocks]
+        mono = [b1._render_pitch_shifter(r1, F, {(s1.id, "out"): x}, p1)["out"] for x in blocks]
         p2, s2, r2, _, b2 = _rig({"semitones": 5.0})
         voice = [
-            b2._render_pitch_shifter(r2, F, {(s2.id, "out"): np.tile(x, (2, 1))}, p2)
+            b2._render_pitch_shifter(r2, F, {(s2.id, "out"): np.tile(x, (2, 1))}, p2)["out"]
             for x in blocks
         ]
         assert voice[-1].shape == (2, F)
@@ -303,7 +320,7 @@ class TestVoiceDSP:
             cv[0, :] = 1.0   # +12 st
             cv[1, :] = -1.0  # -12 st
             outs.append(
-                b._render_pitch_shifter(r, F, {(s.id, "out"): audio, (c.id, "cv"): cv}, p)
+                b._render_pitch_shifter(r, F, {(s.id, "out"): audio, (c.id, "cv"): cv}, p)["out"]
             )
         y = np.concatenate(outs, axis=-1)
         assert _dominant_hz(y[0]) == pytest.approx(880.0, rel=0.04)
@@ -313,9 +330,9 @@ class TestVoiceDSP:
         patch, src, ps, _, b = _rig({"semitones": 3.0})
         mono_x = np.random.RandomState(5).randn(F).astype(np.float32)
         voice_x = np.tile(mono_x, (4, 1))
-        o1 = b._render_pitch_shifter(ps, F, {(src.id, "out"): mono_x}, patch)
-        ov = b._render_pitch_shifter(ps, F, {(src.id, "out"): voice_x}, patch)
-        o2 = b._render_pitch_shifter(ps, F, {(src.id, "out"): mono_x}, patch)
+        o1 = b._render_pitch_shifter(ps, F, {(src.id, "out"): mono_x}, patch)["out"]
+        ov = b._render_pitch_shifter(ps, F, {(src.id, "out"): voice_x}, patch)["out"]
+        o2 = b._render_pitch_shifter(ps, F, {(src.id, "out"): mono_x}, patch)["out"]
         assert o1.shape == (F,)
         assert ov.shape == (4, F)
         assert o2.shape == (F,)
@@ -567,3 +584,259 @@ class TestIntegration:
             assert block is not None and np.all(np.isfinite(block))
             peak = max(peak, float(np.abs(block).max()))
         assert peak > 0.0
+
+
+# ----- 2026-09-14 love pass: shimmer / harmonizer / stereo -------------------
+
+
+def _run_all(b, patch, src, ps, signal, cvsrc=None, cv=None, block=F):
+    """Like _run but keeps every jack: {"out", "out_l", "out_r"}."""
+    n = (signal.shape[-1] // block) * block
+    outs = {"out": [], "out_l": [], "out_r": []}
+    for k in range(n // block):
+        sl = slice(k * block, (k + 1) * block)
+        bufs = {(src.id, "out"): signal[..., sl].astype(np.float32)}
+        if cvsrc is not None and cv is not None:
+            bufs[(cvsrc.id, "cv")] = cv[..., sl].astype(np.float32)
+        r = b._render_pitch_shifter(ps, block, bufs, patch)
+        for key in outs:
+            outs[key].append(np.asarray(r[key]).copy())
+    return {k: np.concatenate(v, axis=-1) for k, v in outs.items()}
+
+
+def _band_db(y, hz, lo=0.5, hi=0.92, half=12.0):
+    """Peak magnitude (dB) within +-half Hz of `hz` in the settled window."""
+    yp = y[int(len(y) * lo):int(len(y) * hi)]
+    spec = np.abs(np.fft.rfft(yp * np.hanning(len(yp))))
+    fr = np.fft.rfftfreq(len(yp), 1.0 / SR)
+    sel = (fr >= hz - half) & (fr <= hz + half)
+    return 20.0 * np.log10(float(spec[sel].max()) + 1e-12)
+
+
+class TestLovePassDefaultsAreOff:
+    @pytest.mark.parametrize("formant", [False, True])
+    def test_explicit_zeros_render_as_their_absence(self, formant):
+        """The three knobs at 0 must be indistinguishable from a patch
+        that predates them -- mono and a two-voice render, every jack."""
+        rng = np.random.RandomState(9)
+        sig = (0.4 * rng.randn(F * 24)).astype(np.float32)
+        base = {"semitones": 7.0, "mix": 0.6, "formant_preserve": formant}
+        p1, s1, r1, _, b1 = _rig(base)
+        plain = _run_all(b1, p1, s1, r1, sig)
+        p2, s2, r2, _, b2 = _rig({**base, "feedback": 0.0, "harmony": 5.0,
+                                  "harmony_level": 0.0, "spread": 0.7})
+        explicit = _run_all(b2, p2, s2, r2, sig)
+        for key in ("out", "out_l", "out_r"):
+            assert np.array_equal(plain[key], explicit[key]), key
+        # And the harmony engine was never built.
+        assert "eng2" not in b2._state[r2.id]
+        # Voice path.
+        v = np.stack([sig, sig[::-1]])
+        p1, s1, r1, _, b1 = _rig(base)
+        plain = _run_all(b1, p1, s1, r1, v)
+        p2, s2, r2, _, b2 = _rig({**base, "feedback": 0.0, "harmony": 5.0,
+                                  "harmony_level": 0.0, "spread": 0.7})
+        explicit = _run_all(b2, p2, s2, r2, v)
+        for key in ("out", "out_l", "out_r"):
+            assert np.array_equal(plain[key], explicit[key]), key
+
+    def test_out_l_and_out_r_are_out_without_a_harmony(self):
+        sig = _tone(330.0, 0.5)
+        p, s, r, _, b = _rig({"semitones": 12.0, "spread": 1.0})
+        o = _run_all(b, p, s, r, sig)
+        assert np.array_equal(o["out_l"], o["out"])
+        assert np.array_equal(o["out_r"], o["out"])
+        p, s, r, _, b = _rig({"semitones": 12.0, "feedback": 0.5, "spread": 1.0})
+        o = _run_all(b, p, s, r, sig)
+        assert np.array_equal(o["out_l"], o["out"])
+        assert np.array_equal(o["out_r"], o["out"])
+
+    def test_type_walls_on_the_new_jacks(self):
+        patch = Patch()
+        ps = patch.add_module("pitch_shifter")
+        spk_l = patch.add_module("left_speaker_output")
+        vca = patch.add_module("vca")
+        patch.connect(ps.id, "out_l", spk_l.id, "in")       # audio -> audio
+        with pytest.raises(Exception):
+            patch.connect(ps.id, "out_r", vca.id, "cv")    # audio -> cv
+
+
+class TestShimmer:
+    def test_octaves_stack_that_feedback_zero_does_not_have(self):
+        """+12 with feedback: the 220 Hz tone comes back at 440, and the
+        440 goes round again to 880 and 1760. Without feedback there is
+        exactly one octave. A two-render A/B, per the DSP test lesson."""
+        sig = _tone(220.0, 2.0) * 0.5
+        p, s, r, _, b = _rig({"semitones": 12.0})
+        dry_loop = _run(b, p, s, r, sig)
+        p, s, r, _, b = _rig({"semitones": 12.0, "feedback": 0.7})
+        shimmer = _run(b, p, s, r, sig)
+        for hz in (880.0, 1760.0):
+            gain = _band_db(shimmer, hz) - _band_db(dry_loop, hz)
+            assert gain > 12.0, (hz, gain)
+        # The first octave is still the loudest partial of the cloud.
+        assert _band_db(shimmer, 440.0) > _band_db(shimmer, 880.0)
+        assert _band_db(shimmer, 880.0) > _band_db(shimmer, 1760.0)
+
+    def test_hot_loop_stays_bounded(self):
+        """feedback at the clamp on full-scale noise for 3 s: finite, and
+        the soft ceiling + damping keep it near unity, not climbing."""
+        rng = np.random.RandomState(3)
+        sig = np.clip(rng.randn(int(3.0 * SR)), -1, 1).astype(np.float32)
+        p, s, r, _, b = _rig({"semitones": 12.0, "feedback": 2.0})   # clamps to 0.9
+        y = _run(b, p, s, r, sig)
+        assert np.all(np.isfinite(y))
+        assert np.abs(y).max() < 4.0
+        first = np.sqrt(np.mean(y[SR // 2:SR] ** 2))
+        last = np.sqrt(np.mean(y[-SR // 2:] ** 2))
+        assert last < 2.0 * first + 0.1
+
+    def test_dry_side_of_mix_is_the_raw_input_bit_exact(self):
+        """mix=0 with the loop running is the delay-matched ORIGINAL --
+        the dry tap reads the raw ring, never the recirculated one."""
+        sig = _tone(300.0, 0.6)
+        p, s, r, _, b = _rig({"semitones": 12.0, "mix": 0.0})
+        plain = _run(b, p, s, r, sig)
+        p, s, r, _, b = _rig({"semitones": 12.0, "mix": 0.0, "feedback": 0.8})
+        looped = _run(b, p, s, r, sig)
+        assert np.array_equal(plain, looped)
+
+    def test_feedback_moves_the_sound_at_unison_too(self):
+        """At 0 st the loop is a short comb/echo -- it must still DO
+        something, i.e. the knob is wired (guards against a refactor
+        that drops the recirculation on the r == 1 path)."""
+        sig = _tone(440.0, 0.6)
+        p, s, r, _, b = _rig({"semitones": 0.0})
+        plain = _run(b, p, s, r, sig)
+        p, s, r, _, b = _rig({"semitones": 0.0, "feedback": 0.6})
+        looped = _run(b, p, s, r, sig)
+        assert not np.array_equal(plain, looped)
+        assert np.all(np.isfinite(looped))
+
+    def test_voice_row_matches_mono_with_feedback(self):
+        blocks = [np.random.RandomState(i).randn(F).astype(np.float32) * 0.4 for i in range(16)]
+        p1, s1, r1, _, b1 = _rig({"semitones": 12.0, "feedback": 0.6, "mix": 0.7})
+        mono = [b1._render_pitch_shifter(r1, F, {(s1.id, "out"): x}, p1)["out"] for x in blocks]
+        p2, s2, r2, _, b2 = _rig({"semitones": 12.0, "feedback": 0.6, "mix": 0.7})
+        for k, x in enumerate(blocks):
+            v = b2._render_pitch_shifter(r2, F, {(s2.id, "out"): np.tile(x, (2, 1))}, p2)["out"]
+            assert np.array_equal(v[1], mono[k]), k
+
+
+class TestHarmonizer:
+    def test_second_interval_appears_and_scales_with_level(self):
+        """main +0 (unity), harmony +7 on a 220 Hz tone: 329.6 Hz shows
+        up; at level 0.5 it is ~6 dB below level 1; at level 0 absent."""
+        sig = _tone(220.0, 1.5) * 0.5
+        fifth = 220.0 * 2 ** (7 / 12)
+        levels = {}
+        for lvl in (0.0, 0.5, 1.0):
+            p, s, r, _, b = _rig({"semitones": 0.0, "harmony": 7.0, "harmony_level": lvl})
+            y = _run(b, p, s, r, sig)
+            levels[lvl] = _band_db(y, fifth)
+        assert levels[1.0] - levels[0.0] > 30.0
+        assert levels[1.0] - levels[0.5] == pytest.approx(6.02, abs=0.6)
+
+    def test_harmony_engine_is_built_lazily_and_torn_down(self):
+        p, s, r, _, b = _rig({"harmony": 7.0})
+        x = np.random.RandomState(1).randn(F).astype(np.float32)
+        b._render_pitch_shifter(r, F, {(s.id, "out"): x}, p)
+        assert "eng2" not in b._state[r.id]
+        r.set_param("harmony_level", 0.8)
+        b._render_pitch_shifter(r, F, {(s.id, "out"): x}, p)
+        assert "eng2" in b._state[r.id]
+        r.set_param("harmony_level", 0.0)
+        b._render_pitch_shifter(r, F, {(s.id, "out"): x}, p)
+        assert "eng2" not in b._state[r.id]
+
+    def test_pitch_cv_transposes_the_chord_together(self):
+        """main +4, harmony +7, pitch_cv +1 (one octave): both partials
+        land an octave above where they sat without CV."""
+        sig = _tone(220.0, 1.5) * 0.5
+        third = 220.0 * 2 ** (4 / 12)
+        fifth = 220.0 * 2 ** (7 / 12)
+        p, s, r, c, b = _rig({"semitones": 4.0, "harmony": 7.0, "harmony_level": 1.0}, with_cv=True)
+        cv = np.ones_like(sig)
+        y = _run(b, p, s, r, sig, cvsrc=c, cv=cv)
+        for hz in (third, fifth):
+            assert _band_db(y, 2 * hz) - _band_db(y, hz) > 20.0, hz
+
+    def test_harmony_hears_the_raw_input_not_the_loop(self):
+        """With shimmer running on the main (+12) and a harmony at +7,
+        the harmony's partial does not itself climb: 329.6 Hz is there
+        at the same level as without feedback, and a +7-over-the-first-
+        lap partial (440 * 2^(7/12) = 659 Hz) -- which a harmony fed
+        the loop WOULD put there at full level -- stays down at the
+        shimmer's own noise floor, >= 60 dB under the harmony."""
+        sig = _tone(220.0, 2.0) * 0.4
+        fifth = 220.0 * 2 ** (7 / 12)
+        lap_fifth = 440.0 * 2 ** (7 / 12)
+        p, s, r, _, b = _rig({"semitones": 12.0, "harmony": 7.0, "harmony_level": 1.0})
+        a = _run(b, p, s, r, sig)
+        p, s, r, _, b = _rig({"semitones": 12.0, "harmony": 7.0, "harmony_level": 1.0, "feedback": 0.7})
+        bb = _run(b, p, s, r, sig)
+        assert _band_db(bb, fifth) == pytest.approx(_band_db(a, fifth), abs=1.5)
+        assert _band_db(bb, fifth) - _band_db(bb, lap_fifth) > 60.0
+        # ...while the main's cascade is present.
+        assert _band_db(bb, 880.0) - _band_db(a, 880.0) > 12.0
+
+    def test_formant_path_survives_a_harmony(self):
+        sig = _tone(200.0, 1.0) * 0.5
+        p, s, r, _, b = _rig({"semitones": 5.0, "harmony": 9.0, "harmony_level": 0.8,
+                              "formant_preserve": True, "feedback": 0.3})
+        y = _run(b, p, s, r, sig)
+        assert np.all(np.isfinite(y))
+        assert np.abs(y).max() < 4.0
+        assert _band_db(y, 200.0 * 2 ** (9 / 12)) > -40.0
+
+    def test_voice_row_matches_mono_with_the_pair(self):
+        blocks = [np.random.RandomState(i).randn(F).astype(np.float32) * 0.4 for i in range(16)]
+        params = {"semitones": 4.0, "harmony": 7.0, "harmony_level": 0.8, "spread": 0.6, "mix": 0.7}
+        p1, s1, r1, _, b1 = _rig(params)
+        mono = [b1._render_pitch_shifter(r1, F, {(s1.id, "out"): x}, p1) for x in blocks]
+        p2, s2, r2, _, b2 = _rig(params)
+        for k, x in enumerate(blocks):
+            v = b2._render_pitch_shifter(r2, F, {(s2.id, "out"): np.tile(x, (2, 1))}, p2)
+            for key in ("out", "out_l", "out_r"):
+                assert np.array_equal(v[key][1], mono[k][key]), (k, key)
+
+
+class TestSpread:
+    def test_zero_aliases_and_one_hard_pans(self):
+        """spread 1, mix 1, main +4 / harmony +7: out_l carries the
+        third and none of the fifth, out_r the reverse; out is the sum."""
+        sig = _tone(220.0, 1.5) * 0.5
+        third = 220.0 * 2 ** (4 / 12)
+        fifth = 220.0 * 2 ** (7 / 12)
+        base = {"semitones": 4.0, "harmony": 7.0, "harmony_level": 1.0}
+        p, s, r, _, b = _rig({**base, "spread": 0.0})
+        o = _run_all(b, p, s, r, sig)
+        assert np.array_equal(o["out_l"], o["out"]) and np.array_equal(o["out_r"], o["out"])
+        p, s, r, _, b = _rig({**base, "spread": 1.0})
+        o = _run_all(b, p, s, r, sig)
+        assert _band_db(o["out_l"], third) - _band_db(o["out_l"], fifth) > 30.0
+        assert _band_db(o["out_r"], fifth) - _band_db(o["out_r"], third) > 30.0
+        assert np.allclose(o["out_l"] + o["out_r"], o["out"], atol=1e-4)
+
+    def test_half_spread_fades_the_far_channel_by_half(self):
+        sig = _tone(220.0, 1.5) * 0.5
+        fifth = 220.0 * 2 ** (7 / 12)
+        base = {"semitones": 4.0, "harmony": 7.0, "harmony_level": 1.0}
+        p, s, r, _, b = _rig({**base, "spread": 0.5})
+        o = _run_all(b, p, s, r, sig)
+        # fifth in L is the harmony at 0.5 -> ~6 dB under its R level
+        assert _band_db(o["out_r"], fifth) - _band_db(o["out_l"], fifth) == pytest.approx(6.02, abs=0.6)
+
+    def test_dry_stays_centred(self):
+        """mix 0.5, spread 1: the dry component is identical in L and R
+        (subtract the wet-only renders and compare)."""
+        sig = _tone(220.0, 1.0) * 0.5
+        base = {"semitones": 4.0, "harmony": 7.0, "harmony_level": 1.0, "spread": 1.0}
+        p, s, r, _, b = _rig({**base, "mix": 1.0})
+        wet = _run_all(b, p, s, r, sig)
+        p, s, r, _, b = _rig({**base, "mix": 0.5})
+        half = _run_all(b, p, s, r, sig)
+        dry_l = half["out_l"] - 0.5 * wet["out_l"]
+        dry_r = half["out_r"] - 0.5 * wet["out_r"]
+        assert np.allclose(dry_l, dry_r, atol=1e-5)
+        assert np.abs(dry_l).max() > 0.1

@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    { "id": 1, "type": "oscillator", "name": "saw E3", "params": { "waveform": "saw_blep", "freq": 164.81, "amp": 0.6 } },
+    { "id": 2, "type": "pitch_shifter", "name": "major triad, wide", "params": { "semitones": 4.0, "cents": 0.0, "cv_depth": 12.0, "mix": 0.4, "grain_size": 60.0, "overlap": 2, "formant_preserve": false, "feedback": 0.0, "harmony": 7.0, "harmony_level": 0.9, "spread": 1.0 } },
+    { "id": 3, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.8 } },
+    { "id": 4, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.8 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "in" },
+    { "src_module_id": 2, "src_port": "out_l", "dst_module_id": 3, "dst_port": "in" },
+    { "src_module_id": 2, "src_port": "out_r", "dst_module_id": 4, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": { "1": [40, 140], "2": [360, 140], "3": [720, 80], "4": [720, 220] }
+  }
+}
