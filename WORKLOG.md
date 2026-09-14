@@ -15,8 +15,8 @@ Running log of decisions and progress. Newest first.
 A marker for whoever picks this up next — the entries below are the record,
 this is just the state they add up to.
 
-**Rack:** 90 module types across seven categories (89 until
-`clock_divider` on 2026-09-11). Suite **2984 passed, 1
+**Rack:** 91 module types across seven categories (89 until
+`clock_divider` on 2026-09-11, 90 until `rotary` on 2026-09-14). Suite **2984 passed, 1
 skipped** (~90 s) at this snapshot; see the dated updates below. 109 example patches, all of which load, compile and
 render under the examples sweep. (The 2026-08-29 snapshot said 105; it was
 already three light before slice 2 added one -- count with
@@ -64,8 +64,10 @@ already three light before slice 2 added one -- count with
 > (inversion, `changed` + `retrig`, arp internal clock). Suite
 > **3177**, 116 examples. Then **slew v2 shipped** (`rise_cv`/`fall_cv`
 > + clock sync) — the love list is EMPTY. Suite **3195**, 117 examples
-> (nine banked for ears). Next: the build queue — `rotary`, granular,
-> the feedback door, possibility follow-ons, the 2026-08-04 keep-list.
+> (nine banked for ears). Then **`rotary` shipped — module #91**, the
+> Leslie, the organ's partner. Suite **3221**, 118 examples (ten
+> banked). Next: granular, the feedback door, possibility follow-ons,
+> the 2026-08-04 keep-list.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -115,6 +117,69 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-14 (last) — `rotary`: the Leslie, module #91
+
+Matthew: "rotary (the Leslie) please Claude :-{D" — the first pick off
+the build queue with the love list empty, and the one that has been
+"the organ's destined partner" in every note since 2026-08-05.
+
+**What it is.** A rotary cabinet, built as the thing rather than as a
+chorus with a story: an LR4 crossover (the crossover module's own
+coefficients, zf-carried); a horn band and a drum band each into a
+delay ring; per rotor and per mic, a **real Doppler** — the tap sits at
+`base − (r/c)·depth·cos θ` samples, the mouth's distance to the mic —
+and a **cos-of-angle amplitude** (the horn beams at 0.8, the drum
+baffle at 0.45). The numbers are physical: the horn mouth ~19 cm off
+axis gives a 0.55 ms swing, which at 6.7 Hz is ±2.3% of pitch, about
+40 cents — what a 122 does. Two virtual mics at ±`spread`·90°. `out`
+is `(L + R)/2` bit-exact; a `(V, F)` source is summed, because a
+cabinet is one physical thing.
+
+**The rotors are the point.** Each has an angle integrating a rate,
+and the rate approaches its target (slow / fast / 0) through a
+one-pole with separate up and down time constants — exponential, the
+way a belt-driven motor accelerates — run as an lfilter so the ramp is
+the exact per-sample recurrence and block-size independent. Horn: 1 s
+up, 1.5 s down. Drum: 4.5 s up, 6 s down, at 0.85× the horn's rate,
+and turning the other way. The horn already whirling while the bass is
+still gathering itself IS the Leslie, and `ramp` scales all four times
+if the ears want it tighter. `stop` coasts both to rest and freezes
+the image. A patched `fast` gate is the switch (block-majority level)
+and the combo is ignored while it is cabled.
+
+**Three measurement premises corrected before they became tests.**
+(1) The horn band's *Hilbert* envelope over a 3 s slice swung ±40%
+with the AM disabled — I nearly went hunting for a bug in the tap.
+Ten-millisecond peak envelopes were flat to 0.001; the swing was the
+Hilbert transform's own edge transients. Tests use peak envelopes for
+AM and 8-cycle-averaged zero-crossing periods for the Doppler, and one
+test now asserts the flat-under-pure-Doppler claim by name. (2)
+`stop` + `depth` 0 "is the input through a fixed delay" — false as a
+waveform: the LR4 low + high sum is an *allpass*, flat in magnitude
+and phase-rotated; correlation read 0.86. The test compares band
+energies (six bands, ±0.5 dB). (3) Block-size independence with the
+speed switch mid-run: the switch is a per-block level read, so it has
+to sit on a boundary both sizes share (512 × 94); then the physics
+matches to 1e-5.
+
+**A design tweak the tests forced:** the centre delay is an integer
+number of samples (ceil of 2 ms + the horn's swing) — the
+delay-matched dry read for `mix` < 1 is then exact, and `mix` 0
+renders the input shifted by that integer, bit-exact.
+
+**Example `organ_leslie.json`** (banked): a self-playing maj7 organ
+(clock → sequencer → quantizer → chord, first inversion → organ, 888 4)
+through the rotary to L/R, with a 5 BPM clock at 50% duty on `fast`
+flipping it every six seconds. The test drives it 12 s and asserts the
+horn rate went above 5 Hz and below 1.5 Hz — it went fast AND slow.
+
+**24 tests; suite 3221.** 118 examples, 91 modules. Cost ~2.3% of a
+block at 48 k / 512.
+
+**Yours: 4 commits to push.**
 
 ---
 

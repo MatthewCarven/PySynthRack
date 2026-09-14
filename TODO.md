@@ -229,7 +229,40 @@ once the board cleared.
       on `retrig` read as a clean re-articulation through the ADSR, or
       does it want a longer gap?). And `slew_clocked_glide.json` — change
       the clock's BPM while it plays; the glide should keep its fraction
-      of a step.
+      of a step. And `organ_leslie.json` (2026-09-14, module #91) — the
+      pairing: does the drum's lag behind the horn read as a Leslie, or
+      does it want the ramps trimmed? Is 0.7 depth / 0.8 spread the
+      right default feel?
+- [x] **`rotary` — the Leslie — SHIPPED 2026-09-14, module #91**
+      (Matthew's pick off the build queue, the organ's partner since
+      08-05). Effects: `in` (voice sources summed — one cabinet) + `fast`
+      (gate: the switch while patched, majority level per block) →
+      `out_l`/`out_r` + `out` (L+R)/2. LR4 crossover (the crossover
+      module's `_crossover_coeffs`, zf-carried) → horn band / drum band
+      → each into a delay ring read once per mic at
+      `base − (r/c)·depth·cos θ` (a real Doppler: horn r 19 cm → 0.55 ms
+      swing → ±2.3% at 6.7 Hz; drum 14 cm) and scaled by
+      `1 − am·depth·(1 − cos θ)/2` (horn 0.8, drum 0.45). Rotor rates
+      approach slow/fast/0 through a one-pole (lfilter, exact
+      recurrence) with separate up/down taus (horn 1/1.5 s, drum 4.5/6 s,
+      × `ramp`); the drum runs 0.85× and counter-rotates. Two mics at
+      ±`spread`·90°. Integer centre delay so the delay-matched dry read
+      is exact. 24 tests: model/walls; unpatched + silent; stop+depth 0
+      is a flat MAGNITUDE in six bands (the LR4 sum is an allpass — a
+      waveform correlation was the first, wrong, claim) with L == R;
+      spread 0 mono while spinning; out bit-exact (L+R)/2; horn AM rate
+      6.7 / 0.7 Hz via 10 ms peak envelopes, drum 0.85×, depth 0 flat,
+      trough/crest 0.2 at depth 1, L/R envelopes anticorrelated at
+      spread 1; Doppler swing ±2.3% by 8-cycle zero-crossing periods
+      with the AM switched off (class attr), none at depth 0, flat peak
+      envelope under pure Doppler (a 3 s Hilbert envelope showed ±40%
+      — its own edge transients; measured wrong once, recorded); horn
+      quick / drum lagging / ramp scales / stop coasts to rest / gate
+      overrides the combo at 40% vs 60% duty; balance isolates a band
+      >40 dB; crossover moves; mix 0 == input shifted by the integer
+      centre delay, bit-exact; block-size independent (switch on a
+      shared boundary); voice input sums; the example plays and goes
+      fast AND slow. Suite **3221**. Cost 2.3%.
 
 ## The function generator (opened 2026-08-23)
 
@@ -472,7 +505,7 @@ same session.
         stumbles), `cv_math` (S — logic-for-CVs, zero params),
         `cv_recorder` (M — the modulation looper; nothing else
         captures performance).
-      * Effects: `rotary` (M — Leslie, the organ's destined partner),
+      * Effects: ~~`rotary`~~ (SHIPPED 2026-09-14, module #91 — see below),
         `vowel` (S–M — formant filter bank, A–E–I–O–U morph),
         `freeze` (M — spectral freeze pad), `autopan` (S — the rack
         still has no dedicated panner).

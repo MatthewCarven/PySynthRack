@@ -89,6 +89,7 @@ from ..modules.function_generator import FUNCTION_GENERATOR_MODES
 from ..modules.modal import MODAL_MATERIALS
 from ..modules.scope import SCOPE_MODES, SCOPE_TRIGGER_MODES
 from ..modules.slew import SLEW_SHAPES
+from ..modules.rotary import ROTARY_SPEEDS
 from ..modules.sweep_eq import SWEEP_EQ_MODES
 from . import scope_math
 from ..modules.transient_shaper import TRANSIENT_SHAPER_SPEEDS
@@ -1611,6 +1612,62 @@ class App:
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
                     min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "rotary":
+            # Leslie: ``speed`` is the switch (slow / fast / stop; a
+            # patched ``fast`` gate overrides it); the rates are the
+            # horn's Hz per setting; ``ramp`` scales spin-up/coast-down;
+            # depth = tremolo + Doppler; spread = mic angle; balance =
+            # drum <-> horn; crossover Hz; mix dry/wet.
+            if param_name == "speed":
+                dpg.add_combo(
+                    label=f"{param_name} (or gate)", items=list(ROTARY_SPEEDS),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "slow_rate":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.01,
+                    min_value=0.1, max_value=3.0, format="%.2f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "fast_rate":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.05,
+                    min_value=2.0, max_value=12.0, format="%.2f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "ramp":
+                dpg.add_slider_float(
+                    label=f"{param_name} (x time)", default_value=float(current),
+                    min_value=0.25, max_value=4.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("depth", "spread", "mix"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "balance":
+                dpg.add_slider_float(
+                    label=f"{param_name} (drum < > horn)", default_value=float(current),
+                    min_value=-1.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "crossover":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=5.0,
+                    min_value=100.0, max_value=4000.0, format="%.0f Hz",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

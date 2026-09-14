@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "next_id": 10,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "chord clock - one chord per 2 s, held", "params": { "bpm": 30.0, "division": 1.0, "pulse_width": 0.9 } },
+    { "id": 2, "type": "sequencer", "name": "root walk", "params": { "steps": 4, "step1_pitch": 0.0, "step2_pitch": 5.0, "step3_pitch": 7.0, "step4_pitch": 3.0 } },
+    { "id": 3, "type": "quantizer", "name": "in-key roots", "params": { "root": "C", "scale": "major", "hysteresis": 0.0, "transpose": -12.0 } },
+    { "id": 4, "type": "chord", "name": "full organ stabs", "params": { "preset": "maj7", "strum": 0.0, "spread": false, "inversion": 1 } },
+    { "id": 5, "type": "organ", "name": "ORGAN - 888 000 000, the gospel setting", "params": { "bar1": 8, "bar2": 8, "bar3": 8, "bar4": 4, "bar5": 0, "bar6": 0, "bar7": 0, "bar8": 0, "bar9": 0, "click": 0.3 } },
+    { "id": 6, "type": "clock", "name": "LESLIE SWITCH - 6 s slow, 6 s fast", "params": { "bpm": 5.0, "division": 1.0, "pulse_width": 0.5 } },
+    { "id": 7, "type": "rotary", "name": "ROTARY - the Leslie (gate on 'fast' flips it)", "params": { "speed": "slow", "slow_rate": 0.7, "fast_rate": 6.7, "ramp": 1.0, "depth": 0.7, "spread": 0.8, "balance": 0.0, "crossover": 800.0, "mix": 1.0 } },
+    { "id": 8, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.5 } },
+    { "id": 9, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.5 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "cv", "dst_module_id": 3, "dst_port": "in" },
+    { "src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "pitch_cv" },
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 4, "dst_port": "gate" },
+    { "src_module_id": 4, "src_port": "pitch_cv", "dst_module_id": 5, "dst_port": "pitch_cv" },
+    { "src_module_id": 4, "src_port": "gate", "dst_module_id": 5, "dst_port": "gate" },
+    { "src_module_id": 5, "src_port": "out", "dst_module_id": 7, "dst_port": "in" },
+    { "src_module_id": 6, "src_port": "out", "dst_module_id": 7, "dst_port": "fast" },
+    { "src_module_id": 7, "src_port": "out_l", "dst_module_id": 8, "dst_port": "in" },
+    { "src_module_id": 7, "src_port": "out_r", "dst_module_id": 9, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 140], "2": [280, 140], "3": [520, 140], "4": [760, 140], "5": [1020, 140],
+      "6": [1020, 520], "7": [1320, 140], "8": [1640, 80], "9": [1640, 220]
+    }
+  }
+}

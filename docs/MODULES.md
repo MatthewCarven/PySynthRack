@@ -242,6 +242,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`vinyl`](#vinyl) | Effects | `in` (audio) → `out` (audio) |
 | [`convolver`](#convolver) | Effects | `in` (audio) → `out_l`,`out_r` (audio) |
 | [`chorus`](#chorus) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
+| [`rotary`](#rotary) | Effects | `in` (audio), `fast` (gate) → `out_l`,`out_r`,`out` (audio) |
 | [`flanger`](#flanger) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`phaser`](#phaser) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`vocoder`](#vocoder) | Effects | `mod`,`carrier` (audio) → `out` (audio) |
@@ -2428,6 +2429,75 @@ sibling the [`flanger`](#flanger) (feedback + a shorter delay).
 
 ---
 
+#### `rotary`
+
+The **Leslie** — a spinning horn and a spinning drum, in stereo. The
+[`organ`](#organ)'s destined partner, and the thing [`chorus`](#chorus)
+and [`phaser`](#phaser) are imitations of. The signal is split at a
+crossover; the treble goes to a **horn** spinning on a vertical axis,
+the bass to a **drum** (a rotating baffle around a fixed woofer), and
+two virtual mics hear three things from each rotor at once: a
+**tremolo** (loud when the mouth points at the mic, quiet when it points
+away), a **Doppler vibrato** (coming toward you, then going away — a
+real moving delay, not a pitch LFO), and a **stereo swirl** (the two mics
+hear those at different moments).
+
+The two rotors are not the same machine, and that is the sound. The horn
+is light and quick: ~0.7 Hz on `slow` (the *chorale*), ~6.7 Hz on `fast`
+(the *tremolo*), and about a second to get between them. The drum is
+heavy: it turns at 0.85× the horn, takes ~4.5 s to spin up and ~6 s to
+coast down, and spins the other way. Flip `speed` at the top of a phrase
+— or gate `fast` from a slow clock — and the horn is already whirling
+while the bass is still gathering itself. `stop` is the brake: both
+rotors coast to a halt wherever they are and the image freezes there.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | The signal. A `(V, F)` voice source is summed — a cabinet is one physical thing. Unpatched → silence. |
+| `fast` | in | gate | While patched it *is* the speed switch: high = fast, low = slow (the block's majority level), and `speed` is ignored. |
+| `out_l` / `out_r` | out | audio | The two mics, `spread` × 90° either side of the front. |
+| `out` | out | audio | `(L + R) / 2`, bit-exact. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `speed` | `slow` | `slow` / `fast` / `stop` | Chorale, tremolo, or the brake. Ignored while `fast` is patched. |
+| `slow_rate` / `fast_rate` | `0.7` / `6.7` | 0.1…3 / 2…12 Hz | The horn's rate on each setting; the drum runs at 0.85× either. |
+| `ramp` | `1.0` | 0.25 … 4 | Scales every spin-up / coast-down time (horn 1 s up, 1.5 s down; drum 4.5 s up, 6 s down). |
+| `depth` | `0.7` | 0 … 1 | Tremolo + Doppler intensity. 0 = the cabinet stands still. |
+| `spread` | `0.7` | 0 … 1 | Mic separation: 0 is mono (L == R), 1 is 180° apart, the widest swirl. |
+| `balance` | `0.0` | −1 … +1 | Drum ↔ horn tilt; −1 is drum only, +1 horn only. |
+| `crossover` | `800` | 100 … 4000 Hz | Horn/drum split. 800 Hz is the classic 122. |
+| `mix` | `1.0` | 0 … 1 | Dry/wet. The dry is delay-matched to the rotors' centre delay, so a blend thickens rather than combs. |
+
+**How it works.** A Linkwitz–Riley 4th-order crossover (the
+[`crossover`](#crossover) module's coefficients) splits the bands. Each
+rotor has an angle that integrates a rate; the rate approaches its
+target through a one-pole with separate up and down time constants, run
+as an exact per-sample recurrence, so the ramp is block-size independent
+and exponential (belt-driven motors accelerate that way). Per rotor and
+per mic, the band is read from a delay ring at `base − (r/c)·depth·cos θ`
+samples (the mouth's distance to the mic: the horn mouth is ~19 cm off
+axis, so its delay swings ~0.55 ms and at 6.7 Hz that is ±2.3% of pitch,
+~40 cents; the drum's 14 cm baffle less) and scaled by
+`1 − am·depth·(1 − cos θ)/2` (the horn beams at 0.8, the drum at 0.45).
+No feedback anywhere, so the render vectorizes and is block-size
+independent. Cost ~2.3% of a block.
+
+**Patching.** `organ → rotary`, `out_l`/`out_r` into the
+[`left`](#left_speaker_output)/[`right`](#right_speaker_output)
+speakers, and a slow [`clock`](#clock) (5 BPM, 50% duty) into `fast`
+so the rotors chase each other every six seconds — see
+`examples/organ_leslie.json`. Works on anything with harmonics:
+a [`supersaw`](#supersaw) pad through a slow rotary is a different
+kind of wide from the chorus. `depth` 0.3 with `spread` 0.4 is a subtle
+motion; `depth` 1, `spread` 1, `balance` +0.5 is the full gospel.
+
+---
+
 #### `flanger`
 
 A **swept, resonant comb** — the jet-plane whoosh. The input is mixed with
@@ -3919,5 +3989,6 @@ loads in the app. Notable ones referenced above:
 - `pitch_shifter_shimmer.json` — the built-in shimmer loop: a slow pluck at C3 into +12 with `feedback` 0.75, through a hall — each pluck blooms into an octave cloud.
 - `pitch_shifter_harmonizer.json` — a stereo major triad from one module: `semitones` +4, `harmony` +7, `spread` 1 → third left, fifth right, root centred.
 - `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.
+- `organ_leslie.json` — the pairing: a self-playing maj7 organ through the [`rotary`](#rotary), a 5 BPM clock on `fast` flipping the Leslie between chorale and tremolo every six seconds so the horn and drum chase each other.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `stereo_hard_pan.json` — left/right speaker sinks.

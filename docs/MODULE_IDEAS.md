@@ -642,8 +642,8 @@ panel is the `fader_seq` fader-bank idiom, and the sound is immediate.
   block-size independence (phase carry); perf at 16 voices × 9
   partials = 144 sines — measure and RECORD (modal/supersaw
   precedent).
-- Killer patches: keys → organ → `rotary` when that ships (the pairing
-  both specs deserve); until then keys → organ → chorus → reverb;
+- Killer patches: keys → organ → `rotary` (shipped 2026-09-14 — see
+  `organ_leslie.json`); keys → organ → chorus → reverb;
   `chord` in front for one-finger full-organ stabs.
 - Stretch: tonewheel foldback (top-octave repeat instead of mute);
   `leakage` (quiet all-wheels hum bed); vibrato/chorus scanner —
@@ -870,10 +870,10 @@ full specs above.
   the rack captures *performance*.
 
 **Effects**
-- `rotary` (M) — Leslie: crossover + Doppler fractional delay (the
-  chorus core) + slow/fast ramp between chorale and tremolo. Distinct
-  from chorus/phaser/flanger in a way people can hear instantly. The
-  `organ` module's destined partner.
+- ~~`rotary` (M)~~ — **SHIPPED 2026-09-14** as `rotary` (Effects):
+  LR4 crossover, per-rotor Doppler fractional delay + cos-of-angle AM,
+  counter-rotating horn and drum with their own exponential spin-up /
+  coast-down, two virtual mics, `fast` gate. `organ_leslie.json`.
 - `vowel` (S–M) — formant filter bank with an A–E–I–O–U morph knob.
   The vocoder's expressive little cousin; pairs beautifully with
   `supersaw`. (Cousin of `wavetable_morph`'s vowel *stack* — that one

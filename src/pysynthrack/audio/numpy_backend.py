@@ -2690,6 +2690,8 @@ class NumpyBackend(AudioBackend):
             return self._render_meter(module, frames, buffers, patch)
         if module.TYPE == "chorus":
             return self._render_chorus(module, frames, buffers, patch)
+        if module.TYPE == "rotary":
+            return self._render_rotary(module, frames, buffers, patch)
         if module.TYPE == "flanger":
             return self._render_flanger(module, frames, buffers, patch)
         if module.TYPE == "phaser":
@@ -9203,6 +9205,198 @@ class NumpyBackend(AudioBackend):
         out_l = (dry + mix * wet_l).astype(np.float32)
         out_r = (dry + mix * wet_r).astype(np.float32)
         return {"out_l": out_l, "out_r": out_r}
+
+    # ----- Rotary (Leslie) rendering ---------------------------------------
+
+    # Rotor geometry and motor character (see modules/rotary.py). Radii are
+    # the mouth's off-axis distance in metres; c is the speed of sound; the
+    # Doppler delay swing per rotor is r/c seconds at depth 1. AM depths
+    # are how far the level drops when the mouth faces away (the horn
+    # beams, the drum baffle less). Ramp times are seconds at ramp = 1:
+    # the horn is light, the drum is heavy and lags -- which IS the sound.
+    _ROT_C = 343.0
+    _ROT_HORN_R = 0.19
+    _ROT_DRUM_R = 0.14
+    _ROT_HORN_AM = 0.80
+    _ROT_DRUM_AM = 0.45
+    _ROT_DRUM_RATIO = 0.85          # drum rate / horn rate, both settings
+    _ROT_HORN_UP, _ROT_HORN_DOWN = 1.0, 1.5
+    _ROT_DRUM_UP, _ROT_DRUM_DOWN = 4.5, 6.0
+    _ROT_BASE_MS = 2.0              # centre delay above the Doppler swing
+
+    def _render_rotary(self, module, frames: int, buffers, patch) -> dict:
+        """Leslie rotary cabinet: mono in -> out_l / out_r (+ mono out).
+
+        Signal path: LR4 crossover (the crossover module's coefficients,
+        zf-carried) -> horn band and drum band -> each into its own delay
+        ring, read twice (one tap per mic) at a Doppler-modulated
+        fractional delay and scaled by a cos-of-angle amplitude -> summed
+        per mic. Every rotor has an angle that integrates a rate; the
+        rate approaches its target (slow / fast / 0) through a one-pole
+        with separate up and down time constants, run as an lfilter so
+        the ramp is the exact per-sample recurrence and block-size
+        independent. The horn turns positive, the drum negative (they
+        counter-rotate on the real cabinet).
+
+        Per mic ``c`` at angle ``mu_c`` and rotor angle ``th``:
+          ``cosang = cos(th - mu_c)``
+          ``gain   = 1 - am * depth * (1 - cosang) / 2``     (1 facing, 1-am away)
+          ``delay  = base - (r/c) * depth * cosang``  samples (nearer = shorter)
+        The delay's derivative is the Doppler: ``(r/c) * depth * 2*pi*f *
+        sin`` -- the horn at 6.7 Hz and depth 1 swings about +/-2.3%,
+        ~40 cents, which is what a 122 does.
+
+        No feedback anywhere, so every read this block lands on a sample
+        already written and the render is exactly block-size independent
+        (up to the angle wrap's rounding). The dry side of ``mix`` is the
+        raw input delayed by the rotors' centre delay so a blend
+        thickens instead of combing. A ``(V, F)`` input is summed -- a
+        cabinet is one physical thing.
+        """
+        from ..modules.rotary import ROTARY_SPEEDS
+
+        src = self._input_buffer(patch, buffers, module.id, "in")
+        if src is None:
+            z = np.zeros(frames, dtype=np.float32)
+            return {"out_l": z, "out_r": z, "out": z}
+        fast_gate = self._input_buffer(patch, buffers, module.id, "fast")
+
+        sr = float(self.sample_rate)
+
+        def _f(name, lo, hi, default):
+            try:
+                return float(np.clip(float(module.params.get(name, default)), lo, hi))
+            except (TypeError, ValueError):
+                return default
+
+        speed = str(module.params.get("speed", "slow"))
+        if speed not in ROTARY_SPEEDS:
+            speed = "slow"
+        if fast_gate is not None and fast_gate.size > 0:
+            # A level, read as the block's majority: a held gate is fast,
+            # a low one slow, and the combo has no say while it is cabled.
+            speed = "fast" if float(np.mean(fast_gate)) > 0.5 else "slow"
+        slow_rate = _f("slow_rate", 0.1, 3.0, 0.7)
+        fast_rate = _f("fast_rate", 2.0, 12.0, 6.7)
+        ramp = _f("ramp", 0.25, 4.0, 1.0)
+        depth = _f("depth", 0.0, 1.0, 0.7)
+        spread = _f("spread", 0.0, 1.0, 0.7)
+        balance = _f("balance", -1.0, 1.0, 0.0)
+        xover = _f("crossover", 100.0, 4000.0, 800.0)
+        mix = _f("mix", 0.0, 1.0, 1.0)
+
+        # Delay rings: centre + full swing, plus the block and a margin.
+        horn_swing = self._ROT_HORN_R / self._ROT_C * sr
+        drum_swing = self._ROT_DRUM_R / self._ROT_C * sr
+        # Centre delay: an INTEGER number of samples (>= 2 ms + the horn's
+        # full swing), so the delay-matched dry tap is an exact read.
+        base = float(int(np.ceil(self._ROT_BASE_MS * 1e-3 * sr + horn_swing)))
+        L = int(base + horn_swing) + frames + 8
+
+        state = self._state.setdefault(module.id, {})
+        if "L" not in state or state["L"] != L:
+            state.clear()
+            state["L"] = L
+            state["horn_buf"] = np.zeros(L, dtype=np.float64)
+            state["drum_buf"] = np.zeros(L, dtype=np.float64)
+            state["dry_buf"] = np.zeros(L, dtype=np.float64)
+            state["wp"] = 0
+            state["horn_th"] = 0.0
+            state["drum_th"] = 0.0
+            state["horn_f"] = 0.0
+            state["drum_f"] = 0.0
+            state["xo_zi"] = None
+        if frames == 0:
+            e = np.empty(0, dtype=np.float32)
+            return {"out_l": e, "out_r": e, "out": e}
+
+        x = src.astype(np.float64)
+
+        # --- crossover: LR4 = two cascaded Butterworth biquads per band ---
+        lp_b0, lp_b1, lp_b2, hp_b0, hp_b1, hp_b2, a1n, a2n = self._crossover_coeffs(xover)
+        a = np.array([1.0, a1n, a2n])
+        lp_b = np.array([lp_b0, lp_b1, lp_b2])
+        hp_b = np.array([hp_b0, hp_b1, hp_b2])
+        zi = state["xo_zi"]
+        if zi is None:
+            zi = [np.zeros(2) for _ in range(4)]
+        lp1, zi[0] = lfilter(lp_b, a, x, zi=zi[0])
+        low, zi[1] = lfilter(lp_b, a, lp1, zi=zi[1])
+        hp1, zi[2] = lfilter(hp_b, a, x, zi=zi[2])
+        high, zi[3] = lfilter(hp_b, a, hp1, zi=zi[3])
+        state["xo_zi"] = zi
+
+        # --- rotors: rate ramps toward its target, angle integrates it ---
+        if speed == "fast":
+            horn_t, drum_t = fast_rate, fast_rate * self._ROT_DRUM_RATIO
+        elif speed == "slow":
+            horn_t, drum_t = slow_rate, slow_rate * self._ROT_DRUM_RATIO
+        else:
+            horn_t = drum_t = 0.0
+
+        def _spin(f0, th0, target, t_up, t_down, sign):
+            tau = (t_up if target > f0 else t_down) * ramp
+            k = 1.0 - float(np.exp(-1.0 / (tau * sr)))
+            # y[n] = y[n-1] + k*(target - y[n-1])  ==  one-pole toward target
+            f, _zf = lfilter([k], [1.0, -(1.0 - k)], np.full(frames, target), zi=[(1.0 - k) * f0])
+            th = th0 + sign * 2.0 * np.pi * np.cumsum(f) / sr
+            return f, th
+
+        horn_f, horn_th = _spin(
+            float(state["horn_f"]), float(state["horn_th"]), horn_t,
+            self._ROT_HORN_UP, self._ROT_HORN_DOWN, +1.0,
+        )
+        drum_f, drum_th = _spin(
+            float(state["drum_f"]), float(state["drum_th"]), drum_t,
+            self._ROT_DRUM_UP, self._ROT_DRUM_DOWN, -1.0,
+        )
+        state["horn_f"] = float(horn_f[-1])
+        state["drum_f"] = float(drum_f[-1])
+        state["horn_th"] = float(horn_th[-1] % (2.0 * np.pi))
+        state["drum_th"] = float(drum_th[-1] % (2.0 * np.pi))
+
+        # --- write the bands, then read each rotor once per mic --------
+        wp = int(state["wp"])
+        absidx = wp + np.arange(frames)
+        slots = absidx % L
+        state["horn_buf"][slots] = high
+        state["drum_buf"][slots] = low
+        state["dry_buf"][slots] = x
+        state["wp"] = int((wp + frames) % L)
+
+        mu = spread * 0.5 * np.pi           # mic half-angle
+        mics = (+mu, -mu)                   # (left, right)
+
+        def _tap(buf, th, swing, am):
+            outs = []
+            for m in mics:
+                cosang = np.cos(th - m)
+                gain = 1.0 - am * depth * (1.0 - cosang) * 0.5
+                delay = base - swing * depth * cosang
+                rp = absidx - delay
+                i0 = np.floor(rp).astype(np.int64)
+                frac = rp - i0
+                tap = buf[i0 % L] * (1.0 - frac) + buf[(i0 + 1) % L] * frac
+                outs.append(gain * tap)
+            return outs
+
+        horn_l, horn_r = _tap(state["horn_buf"], horn_th, horn_swing, self._ROT_HORN_AM)
+        drum_l, drum_r = _tap(state["drum_buf"], drum_th, drum_swing, self._ROT_DRUM_AM)
+
+        horn_g = min(1.0, 1.0 + balance)
+        drum_g = min(1.0, 1.0 - balance)
+        wet_l = horn_g * horn_l + drum_g * drum_l
+        wet_r = horn_g * horn_r + drum_g * drum_r
+
+        if mix < 1.0:
+            # Dry, delay-matched to the rotors' (integer) centre delay.
+            dry = state["dry_buf"][(absidx - int(base)) % L]
+            wet_l = (1.0 - mix) * dry + mix * wet_l
+            wet_r = (1.0 - mix) * dry + mix * wet_r
+
+        out_l = wet_l.astype(np.float32)
+        out_r = wet_r.astype(np.float32)
+        return {"out_l": out_l, "out_r": out_r, "out": 0.5 * (out_l + out_r)}
 
     # ----- Flanger rendering ----------------------------------------------
 

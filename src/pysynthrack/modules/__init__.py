@@ -68,6 +68,7 @@ from .resampler import Resampler
 from .sampler import Sampler
 from .reverb import Reverb
 from .ring_mod import RingMod
+from .rotary import Rotary
 from .pitch_shifter import PitchShifter
 from .output import (
     BufferedSpecificSpeakerOutput,
@@ -163,6 +164,7 @@ __all__ = [
     "Sampler",
     "Reverb",
     "RingMod",
+    "Rotary",
     "PitchShifter",
     "RightSpeakerOutput",
     "SampleHold",
