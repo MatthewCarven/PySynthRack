@@ -179,7 +179,8 @@ horn rate went above 5 Hz and below 1.5 Hz — it went fast AND slow.
 **24 tests; suite 3221.** 118 examples, 91 modules. Cost ~2.3% of a
 block at 48 k / 512.
 
-**Yours: 4 commits to push.**
+**Yours: 1 commit to push** (origin moved to ab0bb26 while this was
+being built — the other three went up mid-session).
 
 ---
 
