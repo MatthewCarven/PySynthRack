@@ -293,9 +293,33 @@ same session.
       4800 samples), and that is the shape, not a discontinuity; the
       gentle case pins the step at the retrigger sample itself. 12
       tests; suite **3102**. No example needed.
-- [ ] **Follow-ons 2..4** — a `both`-style second CV in for `rise` and
-      `fall` separately (`rise_cv` / `fall_cv`); an `out_inv` jack;
-      `eor`-into-`trig` as a rise-only retrigger once feedback closes.
+- [x] **Follow-ons 2..3: `rise_cv` / `fall_cv` and `out_inv`** — SHIPPED
+      2026-09-14 (Matthew's pick). The per-slope CVs are the same 1 V/oct
+      law as `rate_cv` on one slope each; they SUM in octaves with
+      `rate_cv` (Maths' per-channel jacks next to its "both") and the
+      per-slope total is what clamps to ±5. An unpatched jack contributes
+      exactly 0.0, so a rate_cv-only patch is bit-identical (432 reference
+      arrays captured pre-edit: 3 modes × 4 curve settings × 4 rate_cv
+      states × mono/voice × all jacks, all array_equal after). `out_inv`
+      is `1 − out` on the finished block, outside the kernel — bit-exact,
+      1.0 at rest and on a parked voice, so it is a ducker into a `vca`
+      keyed off `trig`. Pinned: each CV moves only its own stage length
+      (the other slope sample-for-sample unchanged); the octave sum;
+      the ±5 clamp on the total; a loop period of rise/2 + fall·2
+      driftless; a (V, F) CV collapses to one rate; voice ≡ mono. 17
+      tests; suite **3119**. Perf unchanged (35% at 16 voices, 2.3%
+      mono). No example needed. Docs carry the honest caveat: the CVs
+      are collapsed to mono by SUM, so `velocity_cv → fall_cv` is a
+      one-note-at-a-time trick until per-voice rates exist.
+- [ ] **Follow-on 4** — `eor`-into-`trig` as a rise-only retrigger once
+      feedback closes (the compiler job).
+- [ ] **Per-voice rise/fall rates** — surfaced 2026-09-14 by the
+      velocity → `fall_cv` patch: a `(V, F)` CV is summed across slots,
+      so a chord shortens every voice's fall. The kernel already takes
+      `rise_len`/`fall_len` as arguments; the voice path could compute
+      them per slot when the CV is 2D (and `pulse_len` with them).
+      Keep `rate_cv` mono ("both" is one knob on the hardware); it is
+      the per-slope pair that wants to go per-voice.
 
 ## Media paths (2026-08-29)
 

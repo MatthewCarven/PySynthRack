@@ -5583,14 +5583,21 @@ class NumpyBackend(AudioBackend):
         on all three jacks; a 2D ``(V, F)`` trigger runs V independent
         functions and emits ``(V, F)``. Both paths drive the SAME scalar
         kernel (:meth:`_fg_kernel`), so a voice row is bit-identical to
-        the mono result by construction. ``rate_cv`` is collapsed to
-        mono in both -- one rate for every voice, as a hardware "both"
-        CV would be.
+        the mono result by construction. ``rate_cv`` / ``rise_cv`` /
+        ``fall_cv`` are collapsed to mono in both -- one rate law for
+        every voice, as the hardware jacks would be.
+
+        ``out_inv`` is ``1 - out`` computed on the finished block, not
+        in the kernel: one numpy subtraction per block (or per (V, F)
+        array) is nothing, and keeping it out of the scalar loop keeps
+        the loop -- and its bit-identity claims -- exactly as they were.
         """
         gate_buf = self._input_buffer(
             patch, buffers, module.id, "trig", collapse=False
         )
         rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
+        rise_cv = self._input_buffer(patch, buffers, module.id, "rise_cv")
+        fall_cv = self._input_buffer(patch, buffers, module.id, "fall_cv")
 
         sr = float(self.sample_rate)
         mode = str(module.params.get("mode", "trigger"))
@@ -5619,13 +5626,25 @@ class NumpyBackend(AudioBackend):
         fall_s = min(10.0, max(0.0, fall_s))
 
         # rate_cv is 1 V/oct on the RATE (+1 = twice as fast), block-mean
-        # like the LFO's, clamped to +/-5 octaves so a runaway CV cannot
-        # ask for a sub-sample cycle or a half-hour one.
-        if rate_cv is not None and rate_cv.size > 0:
-            octaves = min(5.0, max(-5.0, float(np.mean(rate_cv))))
-            scale = 1.0 / (2.0 ** octaves)
-            rise_s *= scale
-            fall_s *= scale
+        # like the LFO's. rise_cv / fall_cv are the same law on one slope
+        # each and SUM with it in octaves -- Maths' per-channel jacks
+        # next to its "both" -- and the per-slope total is clamped to
+        # +/-5 octaves so a runaway CV cannot ask for a sub-sample cycle
+        # or a half-hour one. An unpatched jack contributes 0.0, so the
+        # sum, the clamp and the scale are bit-identical to the
+        # rate_cv-only arithmetic this replaced.
+        def _octaves(cv):
+            if cv is not None and cv.size > 0:
+                return float(np.mean(cv))
+            return 0.0
+
+        both = _octaves(rate_cv)
+        rise_oct = both + _octaves(rise_cv)
+        fall_oct = both + _octaves(fall_cv)
+        if rise_oct != 0.0:
+            rise_s *= 1.0 / (2.0 ** min(5.0, max(-5.0, rise_oct)))
+        if fall_oct != 0.0:
+            fall_s *= 1.0 / (2.0 ** min(5.0, max(-5.0, fall_oct)))
 
         k = (self._fg_exponent(curve_rise), self._fg_exponent(curve_fall))
         inv_k = (1.0 / k[0], 1.0 / k[1])
@@ -5753,7 +5772,7 @@ class NumpyBackend(AudioBackend):
         eor = np.zeros(frames, dtype=np.float32)
         eoc = np.zeros(frames, dtype=np.float32)
         self._fg_kernel(frames, gate_buf, *args, state, out, eor, eoc)
-        return {"out": out, "eor": eor, "eoc": eoc}
+        return {"out": out, "out_inv": 1.0 - out, "eor": eor, "eoc": eoc}
 
     def _render_fg_voice(self, module, gate_buf, frames, mode, *args):
         """Voice path: V independent functions, ``(V, F)`` on each jack.
@@ -5791,7 +5810,9 @@ class NumpyBackend(AudioBackend):
             self._fg_kernel(
                 frames, gate_buf[v], mode, *args, st, out[v], eor[v], eoc[v]
             )
-        return {"out": out, "eor": eor, "eoc": eoc}
+        # A parked slot's row is 0.0, so its inverse is 1.0 -- the ducker
+        # is OPEN on a silent voice, which is what "1 - out" means.
+        return {"out": out, "out_inv": 1.0 - out, "eor": eor, "eoc": eoc}
 
     # ----- LFO rendering --------------------------------------------------
 

@@ -52,9 +52,12 @@ already three light before slice 2 added one -- count with
 > 113 examples (`clock_divider_swing.json`, banked).
 >
 > 2026-09-12: **function generator `curve_rise` / `curve_fall`
-> shipped** (follow-on 1 of 4). Suite **3102**. Next: fgen follow-ons
-> 2..4 (`rise_cv`/`fall_cv`, `out_inv`), pitch_shifter
-> shimmer/harmonizer, chord/arp extras, slew v2.
+> shipped** (follow-on 1 of 4). Suite **3102**.
+>
+> 2026-09-14: **function generator `rise_cv` / `fall_cv` + `out_inv`
+> shipped** (follow-ons 2 and 3; 4 waits on the feedback door). Suite
+> **3119**. Next: pitch_shifter shimmer/harmonizer, chord/arp extras,
+> slew v2; and a new small one surfaced today, per-voice fgen rates.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -104,6 +107,79 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-14 — function generator: per-slope CVs and the inverted out
+
+Matthew: "fgen follow-ons 2..4 — rise_cv/fall_cv as separate CVs (the
+'both' CV already exists as rate_cv), and an out_inv jack." Follow-on 4
+(`eor → trig`) is the compiler job and stays queued; 2 and 3 shipped.
+
+**Reference first, again.** 432 arrays captured from the shipped code
+before the first edit — three modes, four curve settings (including the
+per-slope pair), four `rate_cv` states (unpatched / 0 / +1 / −0.7), two
+consecutive blocks so state carries, mono and voice, every jack — and
+all 432 `array_equal` afterwards. Fourth outing for the recipe; it
+takes five minutes and it is the only thing that lets "nothing moved"
+be a statement rather than a hope.
+
+**The rate law.** `rise_cv` / `fall_cv` are `rate_cv`'s 1 V/oct on one
+slope each, and they **sum in octaves** with it — that is what Maths
+does with its per-channel jacks next to "both", and it is what makes
+the three compose: `rate_cv` sets the tempo, the pair skews it. The
+clamp moved from the "both" value to the per-slope *total*, which is
+where it has to be once there are two contributions; with the new jacks
+unpatched the total IS the old value, so the clamp, the scale and every
+downstream sample are bit-identical (the reference sweep proves it, and
+a test pins the cabled-at-zero case too). `rise_s *= 1/(2**oct)` runs
+only when the octave sum is non-zero — `x * 1.0 == x` exactly anyway,
+but there is no point doing it.
+
+**`out_inv` is outside the kernel.** `1 − out` on the finished block,
+one numpy subtraction per block or per `(V, F)` array. Keeping it out
+of the scalar loop means the loop, and its mono ≡ voice bit-identity
+claim, are untouched; the 16-voice cost measured 35.3% of a block
+(was 34.6%; noise), mono 2.3% (unchanged). A parked slot's row is 0.0
+so its inverse is 1.0 — the ducker is OPEN on a silent voice, which is
+what "1 − out" has to mean, and the test says so in words. Verified
+end to end through `render_block`: clock → `trig`, `out_inv → vca.cv`
+on an oscillator, LFO into `fall_cv` — a 13:1 duck that lands on the
+trigger sample and swells back over the fall.
+
+**The honest caveat, written into the docs rather than discovered by
+Matthew.** The obvious patch for `fall_cv` is velocity → longer ring.
+`midi_input.velocity_cv` is `(V, F)`, and these jacks collapse to mono
+the way `rate_cv` does — by `_input_buffer`'s **sum** across slots. One
+note at a time that is exactly the trick; a held chord sums the
+velocities and shortens *every* voice's fall by octaves. I kept the
+pair mono for this pass (it is the spec as given, and it is what
+"same law as `rate_cv`" means) and queued **per-voice rise/fall rates**
+in TODO as its own small item: the kernel already takes
+`rise_len`/`fall_len` as arguments, so the voice path can compute them
+per slot when the CV is 2D. `rate_cv` should stay mono — "both" is one
+knob on the hardware.
+
+**Tests: 17 new, 54 → 71 in the file, suite 3119.** Each CV moves only
+its own stage length with the other slope sample-for-sample unchanged;
+the octave sum (`rate_cv` +1 with `rise_cv` +1 is ×4 on the rise while
+`fall_cv` −1 cancels the fall back to the knob); the ±5 clamp on the
+*total* (+4 and +4 gives ÷32 not ÷256, −3 and −3 gives ×32); a
+loop-mode period of `rise/2 + fall·2` with zero drift over 40 blocks
+(the integer-counter claim survives the split); a `(V, F)` CV collapses
+to one rate for all voices; voice ≡ mono with all three CVs cabled;
+`out_inv` bit-exact against `float32(1) − out` in every mode, sums with
+`out` to exactly 1.0, hits 0.0 on the `eor` sample and 1.0 on the `eoc`
+sample, 1.0 at rest and on parked slots, and is a cv jack that reaches
+a `vca` and is refused by an audio sink. The `_free` helper grew the
+new jack — it had a hard-coded three.
+
+**Docs.** MODULES.md index row + port table + three patching recipes
+(ducker, velocity-dependent decay with the caveat, wandering clock with
+fixed swing). Module docstring likewise. No example patch: the ducker
+is a one-cable idea and the existing krell example is unchanged.
+
+**Yours: 3 commits to push** (30b9384, 624a3ef and this one).
 
 ---
 

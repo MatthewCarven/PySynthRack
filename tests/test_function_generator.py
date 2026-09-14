@@ -20,6 +20,12 @@ Coverage:
   - EOR/EOC: land on the exact sample the stage completes, are ~2 ms,
     and shrink rather than swamp a fast loop.
   - rate_cv: 1 V/oct on the rate -- +1 halves the cycle, -1 doubles it.
+  - rise_cv / fall_cv (2026-09-14): the same law on one slope each; the
+    OTHER slope is sample-for-sample untouched; they sum in octaves with
+    rate_cv and the per-slope total clamps at +-5; unpatched they render
+    array_equal to the rate_cv-only code; collapsed to mono.
+  - out_inv (2026-09-14): 1 - out bit-exact on every sample, both shapes;
+    a parked voice reads 1.0 (the ducker is open on a silent slot).
   - Voice DSP: a single-voice row is bit-identical to the mono path in
     every mode and at several curves; voices run independently; mono
     <-> voice state reinit.
@@ -67,7 +73,7 @@ def _drive(b, patch, src, fg, gate):
 
 def _free(fg, b, patch, frames, blocks=1):
     """Render an UNPATCHED generator (loop mode) for `blocks` blocks."""
-    outs = {"out": [], "eor": [], "eoc": []}
+    outs = {"out": [], "out_inv": [], "eor": [], "eoc": []}
     for _ in range(blocks):
         r = b._render_function_generator(fg, frames, {}, patch)
         for key in outs:
@@ -107,10 +113,10 @@ class TestModel:
     def test_ports_and_signal_kinds(self):
         fg = Patch().add_module("function_generator")
         assert [(p.name, p.signal_kind) for p in fg.input_ports] == [
-            ("trig", "gate"), ("rate_cv", "cv"),
+            ("trig", "gate"), ("rate_cv", "cv"), ("rise_cv", "cv"), ("fall_cv", "cv"),
         ]
         assert [(p.name, p.signal_kind) for p in fg.output_ports] == [
-            ("out", "cv"), ("eor", "gate"), ("eoc", "gate"),
+            ("out", "cv"), ("out_inv", "cv"), ("eor", "gate"), ("eoc", "gate"),
         ]
 
     def test_mode_list_matches_what_the_renderer_accepts(self):
@@ -434,7 +440,7 @@ class TestVoicePath:
         voice = bv._render_function_generator(
             fv, gate.shape[-1], {(sv.id, "gate"): stacked}, pv
         )
-        for jack in ("out", "eor", "eoc"):
+        for jack in ("out", "out_inv", "eor", "eoc"):
             assert voice[jack].shape == (2, gate.shape[-1])
             np.testing.assert_array_equal(voice[jack][0], mono[jack])
 
@@ -679,3 +685,226 @@ class TestPerSlopeCurves:
         voiced = _drive(b, patch, src, fg, g)["out"]
         assert np.array_equal(voiced[1], mono)
         assert np.all(voiced[0] == 0.0) and np.all(voiced[2] == 0.0)
+
+
+# ----- Per-slope CVs and the inverted out (2026-09-14) ----------------------
+
+
+def _cv_rig(rate=None, rise_cv=None, fall_cv=None, **params):
+    """schmitt -> trig, plus a constant into each requested CV jack.
+
+    Returns (patch, src, fg, buffers-with-the-CVs, backend); callers add
+    the gate row and render. The constants are real modules so the cables
+    exist and ``_input_buffer`` finds them the way it would live.
+    """
+    patch = Patch()
+    src = patch.add_module("schmitt")
+    fg = patch.add_module("function_generator", params=params)
+    patch.connect(src.id, "gate", fg.id, "trig")
+    bufs = {}
+    for jack, value in (("rate_cv", rate), ("rise_cv", rise_cv), ("fall_cv", fall_cv)):
+        if value is None:
+            continue
+        const = patch.add_module("constant", params={"value": value})
+        patch.connect(const.id, "out", fg.id, jack)
+        bufs[(const.id, "out")] = np.full(8192 * 8, value, np.float32)
+    b = _backend()
+    b.compile(patch)
+    return patch, src, fg, bufs, b
+
+
+def _stage_lengths(r):
+    """(rise samples, fall samples) from the eor / eoc pulse onsets of a
+    single trigger fired at sample 0."""
+    eor = _first_high(r["eor"])
+    eoc = _first_high(r["eoc"])
+    return eor + 1, eoc - eor
+
+
+class TestPerSlopeCVs:
+    RISE = 480
+    FALL = 960
+
+    def _render(self, F=8192, **kw):
+        patch, src, fg, bufs, b = _cv_rig(
+            mode="trigger", rise=self.RISE / SR, fall=self.FALL / SR, **kw
+        )
+        bufs = {k: v[:F] for k, v in bufs.items()}
+        bufs[(src.id, "gate")] = _pulse(F)
+        return b._render_function_generator(fg, F, bufs, patch)
+
+    def test_unpatched_is_array_equal_to_rate_cv_only(self):
+        """The new jacks contribute exactly 0.0 octaves when absent: with
+        only rate_cv cabled the render is bit-identical to a rig where
+        the pair is cabled and sitting at 0."""
+        for rate in (None, 0.0, 1.0, -0.7):
+            plain = self._render(rate=rate)
+            zeroed = self._render(rate=rate, rise_cv=0.0, fall_cv=0.0)
+            for key in ("out", "out_inv", "eor", "eoc"):
+                assert np.array_equal(plain[key], zeroed[key]), (rate, key)
+
+    @pytest.mark.parametrize("octaves,factor", [(1.0, 0.5), (-1.0, 2.0), (2.0, 0.25)])
+    def test_rise_cv_scales_only_the_rise(self, octaves, factor):
+        r = self._render(rise_cv=octaves)
+        rise_n, fall_n = _stage_lengths(r)
+        assert rise_n == int(round(self.RISE * factor))
+        assert fall_n == self.FALL
+        # And the fall is sample-for-sample the plain fall.
+        plain = self._render()
+        p_rise, _ = _stage_lengths(plain)
+        assert np.array_equal(
+            r["out"][rise_n:rise_n + self.FALL], plain["out"][p_rise:p_rise + self.FALL]
+        )
+
+    @pytest.mark.parametrize("octaves,factor", [(1.0, 0.5), (-1.0, 2.0), (2.0, 0.25)])
+    def test_fall_cv_scales_only_the_fall(self, octaves, factor):
+        r = self._render(fall_cv=octaves)
+        rise_n, fall_n = _stage_lengths(r)
+        assert rise_n == self.RISE
+        assert fall_n == int(round(self.FALL * factor))
+        plain = self._render()
+        assert np.array_equal(r["out"][:self.RISE], plain["out"][:self.RISE])
+
+    def test_they_sum_in_octaves_with_rate_cv(self):
+        """rate_cv +1 and rise_cv +1 is a rise four times as fast, and
+        fall_cv -1 on top of rate_cv +1 cancels back to the knob's own
+        fall -- the hardware arithmetic, both + per-slope."""
+        r = self._render(rate=1.0, rise_cv=1.0, fall_cv=-1.0)
+        rise_n, fall_n = _stage_lengths(r)
+        assert rise_n == self.RISE // 4
+        assert fall_n == self.FALL
+
+    def test_per_slope_total_is_clamped_at_five_octaves(self):
+        """rate_cv +4 and rise_cv +4 is clamped to +5 on the rise (x1/32),
+        while the fall, at +4, is honoured as asked (x1/16)."""
+        rise_n, fall_n = _stage_lengths(self._render(rate=4.0, rise_cv=4.0))
+        assert rise_n == max(1, int(round(self.RISE / 32)))
+        assert fall_n == int(round(self.FALL / 16))
+        # And downward: -3 and -3 clamps to -5 (x32), not x64.
+        rise_n, fall_n = _stage_lengths(
+            self._render(F=8192 * 8, rate=-3.0, fall_cv=-3.0)
+        )
+        assert rise_n == self.RISE * 8
+        assert fall_n == self.FALL * 32
+
+    def test_loop_period_follows_the_pair(self):
+        """In loop mode the eoc period is rise/2**a + fall/2**b, exact and
+        driftless -- the integer-counter claim survives the split."""
+        patch = Patch()
+        fg = patch.add_module(
+            "function_generator",
+            params={"mode": "loop", "rise": 480 / SR, "fall": 480 / SR},
+        )
+        c1 = patch.add_module("constant", params={"value": 1.0})
+        c2 = patch.add_module("constant", params={"value": -1.0})
+        patch.connect(c1.id, "out", fg.id, "rise_cv")
+        patch.connect(c2.id, "out", fg.id, "fall_cv")
+        b = _backend()
+        b.compile(patch)
+        bufs = {
+            (c1.id, "out"): np.full(512, 1.0, np.float32),
+            (c2.id, "out"): np.full(512, -1.0, np.float32),
+        }
+        eoc = np.concatenate([
+            np.asarray(b._render_function_generator(fg, 512, bufs, patch)["eoc"]).copy()
+            for _ in range(40)
+        ])
+        edges = _rising(eoc)
+        assert len(edges) >= 10
+        assert set(np.diff(edges).tolist()) == {240 + 960}
+
+    def test_voice_cv_is_collapsed_to_one_rate(self):
+        """A (V, F) rise_cv is summed to mono like rate_cv: every voice
+        gets the same rise length, and it is the sum's, not a row's."""
+        patch = Patch()
+        src = patch.add_module("schmitt")
+        fg = patch.add_module(
+            "function_generator",
+            params={"mode": "trigger", "rise": 480 / SR, "fall": 480 / SR},
+        )
+        lfo = patch.add_module("lfo")
+        patch.connect(src.id, "gate", fg.id, "trig")
+        patch.connect(lfo.id, "cv", fg.id, "rise_cv")
+        b = _backend()
+        b.compile(patch)
+        F = 4096
+        g = np.zeros((2, F), np.float32)
+        g[0, 0] = 1.0
+        g[1, 0] = 1.0
+        cv = np.zeros((2, F), np.float32)
+        cv[0] = 1.0   # rows sum to +1 octave: both voices rise in 240
+        r = b._render_function_generator(
+            fg, F, {(src.id, "gate"): g, (lfo.id, "cv"): cv}, patch
+        )
+        assert _first_high(r["eor"][0]) == 239
+        assert _first_high(r["eor"][1]) == 239
+        assert np.array_equal(r["out"][0], r["out"][1])
+
+    def test_voice_rows_match_mono_with_the_pair(self):
+        F = 4096
+        kw = dict(mode="trigger", rise=480 / SR, fall=960 / SR,
+                  rate=0.5, rise_cv=-0.5, fall_cv=1.5)
+        patch, src, fg, bufs, b = _cv_rig(**kw)
+        bufs = {k: v[:F] for k, v in bufs.items()}
+        mono = b._render_function_generator(
+            fg, F, {**bufs, (src.id, "gate"): _pulse(F)}, patch
+        )
+        patch, src, fg, bufs, b = _cv_rig(**kw)
+        bufs = {k: v[:F] for k, v in bufs.items()}
+        g = np.zeros((3, F), np.float32)
+        g[2, 0] = 1.0
+        voiced = b._render_function_generator(fg, F, {**bufs, (src.id, "gate"): g}, patch)
+        for key in ("out", "out_inv", "eor", "eoc"):
+            assert np.array_equal(voiced[key][2], mono[key]), key
+
+
+class TestOutInv:
+    def test_is_one_minus_out_bit_exact(self):
+        g = np.zeros(4096, np.float32)
+        g[10:900] = 1.0
+        g[2000:2100] = 1.0
+        for mode, curve in (("trigger", 0.7), ("gate", -0.6), ("loop", 0.3)):
+            patch, src, fg, b = _rig(mode=mode, rise=0.02, fall=0.05, curve=curve)
+            r = _drive(b, patch, src, fg, g)
+            assert r["out_inv"].dtype == np.float32
+            assert np.array_equal(r["out_inv"], np.float32(1.0) - r["out"]), mode
+            assert float(r["out_inv"].min()) >= 0.0 and float(r["out_inv"].max()) <= 1.0
+
+    def test_sits_at_one_dips_to_zero_at_eor_and_recovers_by_eoc(self):
+        n = 480
+        patch, src, fg, b = _rig(mode="trigger", rise=n / SR, fall=n / SR)
+        r = _drive(b, patch, src, fg, _pulse(4 * n))
+        eor = _first_high(r["eor"])
+        eoc = _first_high(r["eoc"])
+        assert float(r["out_inv"][eor]) == 0.0
+        assert float(r["out_inv"][eoc]) == 1.0
+        assert np.all(r["out_inv"][eoc:] == 1.0)
+        # Idle before a trigger is 1.0 too: the ducker is open at rest.
+        patch, src, fg, b = _rig(mode="trigger")
+        assert np.all(_drive(b, patch, src, fg, np.zeros(512, np.float32))["out_inv"] == 1.0)
+
+    def test_sums_with_out_to_exactly_one(self):
+        patch, src, fg, b = _rig(mode="loop", rise=0.01, fall=0.03, curve=0.8)
+        r = _free(fg, b, patch, 512, blocks=8)
+        assert np.all(r["out"] + r["out_inv"] == 1.0)
+
+    def test_voice_path_and_parked_slots(self):
+        patch, src, fg, b = _voice_rig(mode="trigger", rise=0.002, fall=0.01)
+        F = 2048
+        g = np.zeros((3, F), np.float32)
+        g[1, 0] = 1.0
+        r = b._render_function_generator(fg, F, {(src.id, "gate"): g}, patch)
+        assert r["out_inv"].shape == (3, F)
+        assert np.array_equal(r["out_inv"], np.float32(1.0) - r["out"])
+        # Parked slots read 1.0 -- a silent voice does not duck anything.
+        assert np.all(r["out_inv"][0] == 1.0) and np.all(r["out_inv"][2] == 1.0)
+        assert float(r["out_inv"][1].min()) == 0.0
+
+    def test_out_inv_is_a_cv_jack_that_reaches_a_vca(self):
+        patch = Patch()
+        fg = patch.add_module("function_generator")
+        vca = patch.add_module("vca")
+        spk = patch.add_module("speaker_output")
+        patch.connect(fg.id, "out_inv", vca.id, "cv")          # cv -> cv
+        with pytest.raises(Exception):
+            patch.connect(fg.id, "out_inv", spk.id, "in")      # cv -> audio

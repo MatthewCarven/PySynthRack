@@ -66,6 +66,28 @@ want for a krell patch — put a [shift_random] or an LFO into it and the
 machine breathes. For a shallower or offset sweep, put a [cv_scale] /
 [cv_offset] in front; there is deliberately no depth param here.
 
+``rise_cv`` and ``fall_cv`` (added 2026-09-14) are the same 1 V/oct law on
+one slope each — Maths has a CV jack per slope *and* a "both" jack, and
+these are the per-slope pair with ``rate_cv`` as the "both". They **sum in
+octaves** with ``rate_cv`` and the total is clamped to ±5, so a patch that
+uses only ``rate_cv`` is untouched, and one that uses all three gets the
+hardware arithmetic: ``rate_cv`` sets the tempo, ``rise_cv`` / ``fall_cv``
+skew it. Velocity into ``fall_cv`` (via [cv_scale]) is the classic — hard
+hits ring shorter or longer; an LFO into ``rise_cv`` alone makes a loop-mode
+clock whose *period* wanders while its EOC stays put relative to the fall.
+All three CVs are block-mean and collapsed to mono: one rate law for every
+voice, as the hardware jacks would be. (So the velocity trick is honest for
+one note at a time — a ``(V, F)`` source is *summed* across slots. Per-voice
+rates are a queued follow-on.)
+
+``out_inv`` (same day) is ``1 − out``: it sits at 1, dips to 0 at the end of
+the rise and climbs back to 1 by the end of the cycle. Into a VCA that is a
+**ducker** — sidechain compression without a compressor, keyed off whatever
+is patched into ``trig``; into a filter's cutoff it opens as the function
+closes. Bit-exact ``1 − out`` sample for sample, so ``out + out_inv`` is
+always 1.0 — ``out`` into one [vca] and ``out_inv`` into another, summed in
+a [mixer], is an equal-sum crossfade driven by the function.
+
 Retriggers are click-free everywhere, because every stage entry solves the
 curve *backwards* for the position that matches the current output level and
 starts from there. A retrigger deep in the fall climbs from where it was; a
@@ -92,7 +114,10 @@ Params:
 Ports:
   * ``trig`` (in, gate): start / sustain / sync, depending on ``mode``.
   * ``rate_cv`` (in, cv): 1 V/oct on the rate; scales rise and fall together.
+  * ``rise_cv`` (in, cv): 1 V/oct on the rise rate only; sums with ``rate_cv``.
+  * ``fall_cv`` (in, cv): 1 V/oct on the fall rate only; sums with ``rate_cv``.
   * ``out`` (out, cv): the function, 0…1.
+  * ``out_inv`` (out, cv): ``1 − out``, the same function upside down.
   * ``eor`` (out, gate): a short pulse the moment the rise completes.
   * ``eoc`` (out, gate): a short pulse the moment the fall completes.
 """
@@ -127,7 +152,10 @@ class FunctionGenerator(Module):
     Ports:
         trig (in, gate): start / sustain / sync — see ``mode``.
         rate_cv (in, cv): 1 V/oct on the rate; +1 = twice as fast.
+        rise_cv (in, cv): 1 V/oct on the rise only, summed with ``rate_cv``.
+        fall_cv (in, cv): 1 V/oct on the fall only, summed with ``rate_cv``.
         out (out, cv): the function, 0…1.
+        out_inv (out, cv): ``1 − out``.
         eor (out, gate): pulse at end of rise.
         eoc (out, gate): pulse at end of cycle.
     """
@@ -145,9 +173,12 @@ class FunctionGenerator(Module):
     INPUT_PORTS = [
         Port("trig", "in", "gate"),
         Port("rate_cv", "in", "cv"),
+        Port("rise_cv", "in", "cv"),
+        Port("fall_cv", "in", "cv"),
     ]
     OUTPUT_PORTS = [
         Port("out", "out", "cv"),
+        Port("out_inv", "out", "cv"),
         Port("eor", "out", "gate"),
         Port("eoc", "out", "gate"),
     ]
