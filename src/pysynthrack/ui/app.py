@@ -2729,6 +2729,22 @@ class App:
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
+            # Internal clock (used only with ``clock`` unpatched): the
+            # same bpm / pulses-per-beat pair as the clock module.
+            if param_name == "bpm":
+                dpg.add_slider_float(
+                    label=f"{param_name} (no clock)", default_value=float(current),
+                    min_value=20.0, max_value=300.0, format="%.1f BPM",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "division":
+                dpg.add_drag_float(
+                    label=f"{param_name} (no clock)", default_value=float(current), speed=0.25,
+                    min_value=0.25, max_value=16.0, format="%.2f /beat",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
 
         if module.TYPE == "chord":
             # Mono→poly chord: ``preset`` picks the interval table
@@ -2773,6 +2789,15 @@ class App:
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
+            if param_name == "inversion":
+                # 0 = root position; n = the n lowest notes up an octave.
+                dpg.add_slider_int(
+                    label=param_name, default_value=int(current),
+                    min_value=0, max_value=3,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            # ``retrig`` (generic checkbox): re-strum on ``changed``.
 
         if module.TYPE == "mid_side":
             # Stereo width: 0 mono, 1 unity (decode ≡ input), 2 extra

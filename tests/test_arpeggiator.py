@@ -12,6 +12,12 @@ runs the measured clock fraction (mirroring the clock before an
 interval exists), mono 1D inputs work as V = 1, an unpatched gate is
 silence, and everything is block-size independent.
 
+2026-09-14: the internal clock -- with ``clock`` unpatched the arp
+steps at bpm x division on an exact integer period (no drift), the
+gate runs gate_len of that period, ``reset`` re-phases it so the next
+sample is note 1, a patched clock makes bpm/division inert (bit-exact
+against the old render), and the free-run is block-size independent.
+
 Drives the renderer directly with hand-fed buffers (the clockwork-test
 harness pattern).
 """
@@ -397,3 +403,113 @@ def test_full_graph_render_with_downstream_voice():
     for _ in range(8):
         mix, _dev = b.render_block_multi(256)
         assert mix is not None and np.all(np.isfinite(mix))
+
+
+# ----- 2026-09-14: internal clock -------------------------------------------
+
+
+def _edges(x):
+    hi = np.asarray(x) > 0.5
+    return sorted(([0] if hi[0] else []) + (np.flatnonzero(hi[1:] & ~hi[:-1]) + 1).tolist())
+
+
+def test_internal_clock_defaults_and_period():
+    m = all_module_types()["arpeggiator"](1)
+    assert m.params["bpm"] == 120.0 and m.params["division"] == 4.0
+    # SR 1000: 120 bpm x 4 = 8 steps/s = period 125, half-high.
+    step = _driver()
+    frames = 1000
+    pitch, gate = _voices(frames, (0, 0, 0, frames), (1, 4, 0, frames), (2, 7, 0, frames))
+    out = step(pitch=pitch, gate=gate)          # no clock buffer at all
+    edges = _edges(out["gate"])
+    assert edges[:4] == [0, 125, 250, 375]
+    assert set(np.diff(edges).tolist()) == {125}
+    assert [round(float(out["pitch_cv"][e + 1]) * 12) for e in edges[:6]] == [0, 4, 7, 0, 4, 7]
+
+
+def test_internal_clock_gate_len_uses_the_measured_period():
+    step = _driver({"gate_len": 0.2})
+    frames = 1000
+    pitch, gate = _voices(frames, (0, 0, 0, frames))
+    out = step(pitch=pitch, gate=gate)
+    g = out["gate"]
+    # First step mirrors the half-period high (no interval yet): 62 samples.
+    assert g[:62].tolist() == [1.0] * 62 and g[62] == 0.0
+    # From the second edge: 0.2 x 125 = 25 samples.
+    assert g[125:150].tolist() == [1.0] * 25 and g[150] == 0.0
+
+
+def test_internal_clock_never_drifts():
+    """bpm 97 / division 3 at SR 1000 asks for 206.2 samples: the period
+    is round()ed once and every step is exactly that -- no fractional
+    accumulation (the fgen lesson)."""
+    step = _driver({"bpm": 97.0, "division": 3.0}, block=64)
+    frames = 64 * 80
+    pitch, gate = _voices(frames, (0, 0, 0, frames))
+    outs = [step(pitch=pitch[:, i:i + 64], gate=gate[:, i:i + 64]) for i in range(0, frames, 64)]
+    edges = _edges(np.concatenate([o["gate"] for o in outs]))
+    assert len(edges) > 20
+    assert set(np.diff(edges).tolist()) == {206}
+
+
+def test_reset_rephases_the_internal_clock_to_note_one():
+    # gate_len 0.2 so the step at 250 has released (275) before the reset
+    # at 300 -- with the default 0.5 the gate is still high there and the
+    # re-phased step shows only in the pitch, not as a fresh edge.
+    step = _driver({"gate_len": 0.2})
+    frames = 600
+    pitch, gate = _voices(frames, (0, 0, 0, frames), (1, 4, 0, frames), (2, 7, 0, frames))
+    reset = np.zeros(frames, np.float32)
+    reset[300:303] = 1.0             # between the edges at 250 and 375
+    out = step(pitch=pitch, gate=gate, reset=reset)
+    edges = _edges(out["gate"])
+    assert edges == [0, 125, 250, 300, 425, 550]
+    assert round(float(out["pitch_cv"][301]) * 12) == 0      # note 1 on the reset sample
+    assert round(float(out["pitch_cv"][426]) * 12) == 4
+
+
+def test_patched_clock_makes_bpm_and_division_inert():
+    frames = 400
+    pitch, gate = _voices(frames, (0, 0, 0, frames), (1, 4, 0, frames))
+    clock = _clock(frames // GAP)
+    a = _driver()(pitch=pitch, gate=gate, clock=clock)
+    b = _driver({"bpm": 33.0, "division": 0.5})(pitch=pitch, gate=gate, clock=clock)
+    assert np.array_equal(a["pitch_cv"], b["pitch_cv"])
+    assert np.array_equal(a["gate"], b["gate"])
+    assert set(np.diff(_edges(a["gate"])).tolist()) == {GAP}
+
+
+@pytest.mark.parametrize("block", [16, 64, 256])
+def test_internal_clock_is_block_size_independent(block):
+    frames = 1024
+    pitch, gate = _voices(frames, (0, 0, 0, frames), (1, 7, 100, frames))
+    reset = np.zeros(frames, np.float32)
+    reset[700] = 1.0
+    ref = _driver({"bpm": 150.0})(pitch=pitch, gate=gate, reset=reset)
+    step = _driver({"bpm": 150.0}, block=block)
+    outs = [
+        step(pitch=pitch[:, i:i + block], gate=gate[:, i:i + block], reset=reset[i:i + block])
+        for i in range(0, frames, block)
+    ]
+    for key in ("pitch_cv", "gate"):
+        assert np.array_equal(np.concatenate([o[key] for o in outs]), ref[key]), key
+
+
+def test_internal_clock_free_runs_in_a_real_patch():
+    """cv_keyboard -> arpeggiator (no clock) -> oscillator, compiled and
+    rendered: the arp steps without a clock module in the rack."""
+    patch = Patch()
+    kb = patch.add_module("cv_keyboard")
+    arp = patch.add_module("arpeggiator", params={"bpm": 240.0})
+    osc = patch.add_module("oscillator")
+    spk = patch.add_module("speaker_output")
+    patch.connect(kb.id, "pitch_cv", arp.id, "pitch_cv")
+    patch.connect(kb.id, "gate", arp.id, "gate")
+    patch.connect(arp.id, "pitch_cv", osc.id, "freq_cv")
+    patch.connect(osc.id, "out", spk.id, "in")
+    b = NumpyBackend(sample_rate=SR, block_size=64)
+    b.compile(patch)
+    for _ in range(4):
+        out = b.render_block(64)
+        assert out is None or np.all(np.isfinite(out))
+    assert b._state[arp.id]["int_phase"] == (4 * 64) % round(SR * 60 / (240 * 4))

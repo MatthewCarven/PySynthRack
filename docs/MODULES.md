@@ -259,7 +259,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`burst`](#burst) | Modulation | `trigger`,`clock` (gate), `count_cv` (cv) → `gate` (gate), `env` (cv) |
 | [`bernoulli_gate`](#bernoulli_gate) | Modulation | `in` (gate), `p_cv` (cv) → `out_a`,`out_b` (gate) |
 | [`clock_divider`](#clock_divider) | Modulation | `clock`,`reset` (gate) → `div2`,`div4`,`div8`,`divn`,`mult` (gate) |
-| [`arpeggiator`](#arpeggiator) | Modulation | `pitch_cv` (cv), `gate`,`clock`,`reset` (gate) → `pitch_cv` (cv), `gate` (gate) |
+| [`arpeggiator`](#arpeggiator) | Modulation | `pitch_cv` (cv), `gate`,`clock` (optional — internal bpm otherwise),`reset` (gate) → `pitch_cv` (cv), `gate` (gate) |
 | [`logic`](#logic) | Modulation | `a`,`b` (gate) → `and`,`or`,`xor`,`nand`,`not_a` (gate) |
 | [`audio_to_cv`](#audio_to_cv) | CV & Utilities | `in` (audio) → `cv` (cv) |
 | [`cv_to_audio`](#cv_to_audio) | CV & Utilities | `cv` (cv) → `out` (audio) |
@@ -274,7 +274,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`sample_hold`](#sample_hold) | CV & Utilities | `in` (cv), `trig` (gate) → `out` (cv) |
 | [`slew`](#slew) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`quantizer`](#quantizer) | CV & Utilities | `in` (cv), `gate` (gate) → `out` (cv), `changed` (gate) |
-| [`chord`](#chord) | CV & Utilities | `pitch_cv` (cv), `gate` (gate) → `pitch_cv` (cv), `gate` (gate, both (4, F)) |
+| [`chord`](#chord) | CV & Utilities | `pitch_cv` (cv), `gate` (gate) → `pitch_cv` (cv), `gate` (gate, both (4, F)), `changed` (gate, mono) |
 | [`scope`](#scope) | CV & Utilities | `in`,`in_r` (audio), `cv` (cv), `trig` (gate) → `out`,`out_r` (audio) |
 | [`meter`](#meter) | CV & Utilities | `in`, `in_r` (audio) → `out`, `out_r` (audio) |
 | [`speaker_output`](#speaker_output) | Outputs | `in` (audio) → — |
@@ -3033,10 +3033,18 @@ latch and starts a new chord (the performance latch). The gate runs
 `gate_len` of the measured clock period (mirroring the clock's high
 time until two edges have been seen — the [`euclidean`](#euclidean)
 convention). Mono inputs work too: one finger + `octaves` 2 is an
-instant octave arp. **Ports**: `pitch_cv` (cv), `gate`, `clock`,
-`reset` (gate) → `pitch_cv` (cv), `gate` (gate). **Params**: `mode`
-(up) · `octaves` 1..4 (1) · `gate_len` 0.05..0.95 step (0.5) · `hold`
-(off) · `seed` (1). See `examples/chord_arp_factory.json`.
+instant octave arp. **Internal clock** (2026-09-14): leave `clock`
+unpatched and the arp steps on its own at `bpm` × `division` per minute
+(120 × 4 = sixteenths) on an exact integer period — one module fewer
+for the common case; `reset` re-phases it so the very next sample is
+note 1 (by decree, since the internal line may already be high there).
+Patch a `clock` and both params are ignored — the cable wins, as it
+always did. **Ports**: `pitch_cv` (cv), `gate`, `clock`, `reset` (gate)
+→ `pitch_cv` (cv), `gate` (gate). **Params**: `mode` (up) · `octaves`
+1..4 (1) · `gate_len` 0.05..0.95 step (0.5) · `hold` (off) · `seed`
+(1) · `bpm` 20..300 (120) + `division` 0.25..16 /beat (4), the internal
+clock. See `examples/chord_arp_factory.json` (external clock) and
+`examples/chord_legato_inversions.json` (no clock cabled).
 
 #### `logic`
 
@@ -3345,12 +3353,30 @@ blocks), every row falls together, and a fall cancels unfired onsets.
 Pitch is continuous (`in + interval` every sample): glides chord along
 and release tails stay in tune. `spread` opens the voicing one octave,
 alternating (slot 2 +12, slot 3 −12) — `major` becomes the open
-(−5, 0, 12, 16). **Mind the sum**: four rows into a mono sink collapse
-to a 4× signal — trim the downstream VCA (0.25 each is unity).
-**Ports**: `pitch_cv` (cv), `gate` (gate) → `pitch_cv`, `gate`
-(both `(4, F)`). **Params**: `preset` (major) · `interval_1..4` −24..24
-st (0/4/7/12) + `enable_1..4` (on), read when custom · `strum` 0..200 ms
-(0) · `spread` (off). See `examples/chord_arp_factory.json`.
+(−5, 0, 12, 16). **`inversion`** (2026-09-14) turns the voicing over:
+1 sends the lowest sounding note up an octave (`major` → 12/4/7/12, E
+in the bass), 2 the two lowest (G in the bass), 3 the three lowest.
+Rows keep their slot identity — only a slot's pitch moves — so
+downstream per-voice state and the strum order are untouched.
+**`changed`** (gate out, same day) is the re-strum trigger: a ~2 ms
+pulse whenever the *sounding* chord changes under a held gate — the
+root jumping half a semitone or more between consecutive samples (a
+sequencer or quantizer step; a glide never counts) or the interval set
+changing (`preset`, `inversion`, `spread`, a slot edit). A fresh press
+is its own trigger and does not also pulse. Patch it into an envelope
+retrigger or a [`burst`](#burst) to re-articulate a legato root walk —
+or tick **`retrig`** and the chord does it itself: on a change the four
+gate rows drop for one sample and re-strum, a fresh rising edge for
+whatever they drive, no extra cable. **Mind the sum**: four rows into a
+mono sink collapse to a 4× signal — trim the downstream VCA (0.25 each
+is unity). **Ports**: `pitch_cv` (cv), `gate` (gate) → `pitch_cv`,
+`gate` (both `(4, F)`), `changed` (gate, mono). **Params**: `preset`
+(major) · `interval_1..4` −24..24 st (0/4/7/12) + `enable_1..4` (on),
+read when custom · `strum` 0..200 ms (0) · `spread` (off) · `inversion`
+0..3 (0) · `retrig` (off). See `examples/chord_arp_factory.json` and
+`examples/chord_legato_inversions.json` (a held gate, roots walking
+under it, `retrig` re-strumming a maj7 in first inversion; the arp on
+its internal clock).
 
 #### `scope`
 
@@ -3821,6 +3847,10 @@ loads in the app. Notable ones referenced above:
   [`burst`](#burst) into a rimshot with `env → vel`), plus a slow
   [`lfo`](#lfo) into the snare [`euclidean`](#euclidean)'s `fills_cv`
   so the backbeat breathes from 2 fills to 6 and back.
+- `chord_legato_inversions.json` — a held gate with roots walking under it: the
+  [`chord`](#chord)'s `retrig` re-strums a maj7 in first inversion 20 ms apart on
+  every root step, and the [`arpeggiator`](#arpeggiator) below it runs on its
+  internal 140 × 4 clock — no clock module cabled.
 - `modal_mallets.json` — a stereo marimba: keys → a [`modal`](#modal) `bar`
   with `position` 0.28, `mallet` 0.55 and `spread` 0.8, `out_l`/`out_r`
   to the speakers with a [`reverb`](#reverb) off the mono `out` mixed in

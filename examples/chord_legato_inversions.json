@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "next_id": 15,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "root clock - one root per pulse", "params": { "bpm": 60.0, "division": 1.0, "pulse_width": 0.5 } },
+    { "id": 2, "type": "clock", "name": "held gate - 24 s on, legato", "params": { "bpm": 2.4, "division": 1.0, "pulse_width": 0.98 } },
+    { "id": 3, "type": "sequencer", "name": "root walk", "params": { "steps": 8 } },
+    { "id": 4, "type": "quantizer", "name": "in-key roots", "params": { "root": "C", "scale": "major", "hysteresis": 0.0, "transpose": -12.0 } },
+    { "id": 5, "type": "chord", "name": "CHORD - maj7, 1st inversion, RETRIG re-strums each root", "params": { "preset": "maj7", "strum": 20.0, "spread": false, "inversion": 1, "retrig": true } },
+    { "id": 6, "type": "oscillator", "name": "pad voice x4", "params": { "waveform": "saw_blep", "freq": 261.6256, "amp": 0.5 } },
+    { "id": 7, "type": "adsr", "name": "pad env (re-fired by retrig)", "params": { "attack": 0.02, "decay": 0.3, "sustain": 0.5, "release": 0.4 } },
+    { "id": 8, "type": "vca", "name": "pad VCA", "params": { "gain": 0.25 } },
+    { "id": 9, "type": "arpeggiator", "name": "ARP - NO clock cabled: internal 140 BPM x 4", "params": { "mode": "up", "octaves": 2, "gate_len": 0.4, "bpm": 140.0, "division": 4.0 } },
+    { "id": 10, "type": "oscillator", "name": "arp voice", "params": { "waveform": "square_blep", "freq": 523.2511, "amp": 0.35 } },
+    { "id": 11, "type": "adsr", "name": "arp env", "params": { "attack": 0.003, "decay": 0.12, "sustain": 0.0, "release": 0.1 } },
+    { "id": 12, "type": "vca", "name": "arp VCA", "params": { "gain": 1.0 } },
+    { "id": 13, "type": "mixer", "name": "pad + arp", "params": { "gain1": 1.0, "gain2": 0.7 } },
+    { "id": 14, "type": "speaker_output", "name": "Output", "params": { "gain": 0.8 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 3, "dst_port": "clock" },
+    { "src_module_id": 3, "src_port": "cv", "dst_module_id": 4, "dst_port": "in" },
+    { "src_module_id": 4, "src_port": "out", "dst_module_id": 5, "dst_port": "pitch_cv" },
+    { "src_module_id": 2, "src_port": "out", "dst_module_id": 5, "dst_port": "gate" },
+    { "src_module_id": 5, "src_port": "pitch_cv", "dst_module_id": 6, "dst_port": "freq_cv" },
+    { "src_module_id": 5, "src_port": "gate", "dst_module_id": 7, "dst_port": "gate" },
+    { "src_module_id": 6, "src_port": "out", "dst_module_id": 8, "dst_port": "audio" },
+    { "src_module_id": 7, "src_port": "cv", "dst_module_id": 8, "dst_port": "cv" },
+    { "src_module_id": 5, "src_port": "pitch_cv", "dst_module_id": 9, "dst_port": "pitch_cv" },
+    { "src_module_id": 5, "src_port": "gate", "dst_module_id": 9, "dst_port": "gate" },
+    { "src_module_id": 9, "src_port": "pitch_cv", "dst_module_id": 10, "dst_port": "freq_cv" },
+    { "src_module_id": 9, "src_port": "gate", "dst_module_id": 11, "dst_port": "gate" },
+    { "src_module_id": 10, "src_port": "out", "dst_module_id": 12, "dst_port": "audio" },
+    { "src_module_id": 11, "src_port": "cv", "dst_module_id": 12, "dst_port": "cv" },
+    { "src_module_id": 8, "src_port": "out", "dst_module_id": 13, "dst_port": "in1" },
+    { "src_module_id": 12, "src_port": "out", "dst_module_id": 13, "dst_port": "in2" },
+    { "src_module_id": 13, "src_port": "out", "dst_module_id": 14, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 140], "2": [40, 420], "3": [280, 140], "4": [520, 140], "5": [780, 140],
+      "6": [1080, 60], "7": [1080, 320], "8": [1340, 60],
+      "9": [1080, 600], "10": [1340, 520], "11": [1340, 760], "12": [1600, 520],
+      "13": [1860, 300], "14": [2100, 300]
+    }
+  }
+}

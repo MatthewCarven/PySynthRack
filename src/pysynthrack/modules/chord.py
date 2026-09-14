@@ -27,6 +27,25 @@ so glides chord along and release tails stay in tune.
 slot 3 down 12, slots 1 and 4 unchanged — ``major`` becomes the open
 (−5, 0, 12, 16) voicing instead of a fist of close thirds.
 
+``inversion`` (added 2026-09-14) turns the voicing over: 1 sends the
+lowest sounding note up an octave (``major`` 0/4/7/12 → 12/4/7/12, E in
+the bass), 2 sends the two lowest up (G in the bass), 3 the three lowest
+(back to root position an octave higher). Rows keep their slot identity
+— only a slot's pitch moves — so downstream per-voice state and the
+strum order are untouched. Step it from a sequencer's ``changed`` and a
+chord progression stops jumping.
+
+``changed`` (gate out, same day) is the chord's re-strum trigger: a ~2 ms
+pulse whenever the *sounding* chord changes under a held gate — the root
+jumping half a semitone or more between consecutive samples (a
+sequencer or quantizer step; a glide never counts) or the interval set
+changing (``preset``, ``inversion``, ``spread``, a slot edit). A fresh
+press is its own trigger and does not also pulse here. Patch it into an
+envelope's retrigger, or a [burst], to re-articulate a legato root walk.
+``retrig`` makes the chord do that itself: on a change the four gate rows
+drop for one sample and re-strum, so whatever they drive gets a fresh
+rising edge with no extra cable.
+
 Mind the sum: four rows into a mono sink collapse to a 4× signal —
 keep the downstream VCA/mixer trimmed (0.25 each is unity).
 
@@ -37,6 +56,8 @@ Ports:
     the rise). Unpatched → all rows silent.
   * ``pitch_cv`` (cv, out): ``(4, F)`` per-row pitch, 1 V/oct.
   * ``gate`` (gate, out): ``(4, F)`` per-row gates.
+  * ``changed`` (gate, out): mono ~2 ms pulse when the sounding chord
+    changes under a held gate.
 
 Params:
   * ``preset``: chord table — ``major`` ``minor`` ``7`` ``m7``
@@ -48,6 +69,8 @@ Params:
     Default all on.
   * ``strum``: per-row onset stagger, 0..200 ms. Default 0.
   * ``spread``: alternate middle slots ±1 octave. Default off.
+  * ``inversion``: 0..3, the n lowest notes up an octave. Default 0.
+  * ``retrig``: re-strum the gate rows on ``changed``. Default off.
 """
 from __future__ import annotations
 
@@ -95,12 +118,18 @@ class Chord(Module):
         strum: Per-row gate-onset stagger in ms, 0..200. Default 0.
         spread: Open the voicing — slots 2/3 shifted ±1 octave.
             Default False.
+        inversion: 0..3 — the n lowest sounding notes go up an octave.
+            Default 0.
+        retrig: On ``changed``, drop the gate rows for one sample and
+            re-strum. Default False.
 
     Ports:
         pitch_cv (in, cv): mono root, 1 V/oct (unpatched → C4).
         gate (in, gate): mono gate for every row.
         pitch_cv (out, cv): (4, F) per-row pitch.
         gate (out, gate): (4, F) per-row gates.
+        changed (out, gate): mono pulse when the sounding chord changes
+            under a held gate.
     """
 
     TYPE = "chord"
@@ -117,6 +146,8 @@ class Chord(Module):
         "enable_4": True,
         "strum": 0.0,
         "spread": False,
+        "inversion": 0,
+        "retrig": False,
     }
     INPUT_PORTS = [
         Port("pitch_cv", "in", "cv"),
@@ -125,4 +156,5 @@ class Chord(Module):
     OUTPUT_PORTS = [
         Port("pitch_cv", "out", "cv"),
         Port("gate", "out", "gate"),
+        Port("changed", "out", "gate"),
     ]

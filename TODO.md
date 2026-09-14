@@ -225,6 +225,9 @@ once the board cleared.
       octave bloom — is the 6 kHz loop damping right, or does it want a
       knob?) and `pitch_shifter_harmonizer.json` (stereo triad — does
       the hard pan feel wide or just split?). Same session, same bank.
+      And `chord_legato_inversions.json` (does the one-sample gate drop
+      on `retrig` read as a clean re-articulation through the ADSR, or
+      does it want a longer gap?).
 
 ## The function generator (opened 2026-08-23)
 
@@ -591,9 +594,31 @@ same session.
       suite **2515**. Example `chord_arp_factory.json` — mono → poly →
       mono full circle, self-playing. **Ears PASSED 2026-08-05**
       ("works well, like a unique or random song"); chord slot-bank
-      GUI feel not separately exercised. Later: chord
-      `inversion` knob; chord `changed` re-strum trigger; arp internal
-      clock; swing lives in the future `clock_divider`.
+      GUI feel not separately exercised. Swing lives in `clock_divider`
+      (shipped 2026-09-11).
+- [x] **Chord/arp extras — SHIPPED 2026-09-14** (Matthew's pick off the
+      love list): chord `inversion` 0..3 (the n lowest sounding notes up
+      an octave, slot identity kept so downstream per-voice state and
+      the strum order are untouched; follows spread and skips disabled
+      slots), chord `changed` gate out (~2 ms pulse on a root jump of
+      ≥ half a semitone sample-to-sample or an interval-set edit, under
+      a held gate only — fresh presses, glides and silence don't fire;
+      carried across block joins), chord `retrig` (on `changed`, the
+      rows drop one sample and re-strum, staggered from the next
+      sample), arp internal clock (`bpm`/`division`, used only with
+      `clock` unpatched — integer period, half-period high, `reset`
+      re-phases it and forces a step by decree because the line may
+      already be high there; a cabled clock makes both params inert,
+      pinned array_equal). 52 reference arrays captured pre-edit: every
+      chord array and every clocked-arp array is array_equal; only the
+      unclocked-arp arrays differ, by design (an unclocked arp used to
+      be dead; no shipped example had one). 23 tests; suite **3177**.
+      Example `chord_legato_inversions.json` (banked for ears): a 24 s
+      held gate with roots stepping under it once a second, maj7 in
+      first inversion re-strummed 20 ms apart on every step, plus the
+      arp on its internal 140 × 4 clock — measured: re-strums at 1.0,
+      2.0, 3.0 s on all four rows 20 ms apart, arp period exactly 4725
+      samples.
 - [x] **Clockwork trio `euclidean` / `burst` / `bernoulli_gate`** — ALL
       SHIPPED 2026-08-03 (8aa49fb, the day's finale). Euclidean:
       arithmetic Bjorklund (tresillo verbatim, pinned), measured-step

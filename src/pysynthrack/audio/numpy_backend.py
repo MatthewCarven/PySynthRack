@@ -13934,6 +13934,14 @@ class NumpyBackend(AudioBackend):
         last release so downstream release tails stay in tune.
         ``random`` draws one seeded rng value per step (block-size
         independent; changing ``seed`` re-rolls live).
+
+        Internal clock (2026-09-14): with ``clock`` UNPATCHED the arp
+        free-runs at ``bpm`` x ``division`` steps per minute -- an
+        integer-period counter (the fgen lesson; never an accumulated
+        float step), half-period high so the first step's gate mirror
+        has a width. A ``reset`` rise re-phases it so the very next
+        sample is a step. A patched ``clock`` ignores both params, so
+        every existing patch is untouched.
         """
         pitch = self._input_buffer(
             patch, buffers, module.id, "pitch_cv", collapse=False
@@ -13945,6 +13953,16 @@ class NumpyBackend(AudioBackend):
         reset = self._input_buffer(patch, buffers, module.id, "reset")
 
         mode = str(module.params.get("mode", "up"))
+        try:
+            bpm = float(module.params.get("bpm", 120.0))
+        except (TypeError, ValueError):
+            bpm = 120.0
+        try:
+            division = float(module.params.get("division", 4.0))
+        except (TypeError, ValueError):
+            division = 4.0
+        bpm = min(300.0, max(20.0, bpm))
+        division = min(16.0, max(0.25, division))
         octaves = max(1, min(4, int(module.params.get("octaves", 1))))
         try:
             gate_len = float(module.params.get("gate_len", 0.5))
@@ -13966,6 +13984,7 @@ class NumpyBackend(AudioBackend):
                 "prev_gates": None, "prev_clock": False, "prev_reset": False,
                 "last_edge": -1, "interval": 0, "samples": 0,
                 "gate_rem": 0, "gate_mirror": False,
+                "int_phase": 0,  # internal clock: samples since its last edge
             },
         )
         if st.get("seed") != seed:
@@ -14044,8 +14063,38 @@ class NumpyBackend(AudioBackend):
             return seq
 
         thresh = self._GATE_HIGH
-        c_row = (clock > thresh).tolist() if clock is not None else [False] * frames
         r_row = (reset > thresh).tolist() if reset is not None else [False] * frames
+        forced: set[int] = set()   # internal-clock steps forced by a reset
+        if clock is not None:
+            c_row = (clock > thresh).tolist()
+        else:
+            # Internal clock: an integer-period counter, high for the
+            # first half of each period, re-phased to 0 at every reset
+            # rise so that sample IS a step (reset is handled before the
+            # clock inside the walk below, so it plays note 1).
+            period = max(1, int(round(self.sample_rate * 60.0 / (bpm * division))))
+            half = max(1, period // 2)
+            phase = int(st.get("int_phase", 0)) % period
+            c_bool = np.zeros(frames, dtype=bool)
+            r_edges = [
+                n for n in range(frames)
+                if r_row[n] and not (r_row[n - 1] if n > 0 else prev_r)
+            ]
+            seg_start = 0
+            for stop in r_edges + [frames]:
+                if stop > seg_start:
+                    idx = (phase + np.arange(stop - seg_start)) % period
+                    c_bool[seg_start:stop] = idx < half
+                    phase = (phase + (stop - seg_start)) % period
+                if stop < frames:
+                    phase = 0  # the reset sample starts a fresh period
+                seg_start = stop
+            st["int_phase"] = phase
+            c_row = c_bool.tolist()
+            # The line may already be high at the reset sample (each
+            # step holds half a period), so the re-phase is a step by
+            # decree, not by edge.
+            forced = set(r_edges)
         p_list = [0.0] * frames
         g_list = [0.0] * frames
 
@@ -14072,7 +14121,7 @@ class NumpyBackend(AudioBackend):
                 pos = -1
             prev_r = r
             c = c_row[n]
-            if c and not prev_c:
+            if (c and not prev_c) or n in forced:
                 now = base + n
                 if last_edge >= 0:
                     interval = now - last_edge
@@ -14114,6 +14163,11 @@ class NumpyBackend(AudioBackend):
     # (disabled slots stay gate-low) so downstream per-voice state never
     # re-shapes when a slot is toggled live.
     _CHORD_ROWS = 4
+    # ``changed``: a root jump this big (V) between consecutive samples
+    # counts as a new chord -- half a semitone, so any sequencer /
+    # quantizer step fires it and no glide ever does. Pulse ~2 ms.
+    _CHORD_CHANGE_V = 1.0 / 24.0
+    _CHORD_PULSE_S = 0.002
 
     def _render_chord(self, module, frames: int, buffers, patch) -> dict:
         """Mono→poly chord explorer (see modules/chord.py).
@@ -14126,6 +14180,18 @@ class NumpyBackend(AudioBackend):
         a fall drops every row together and cancels unfired onsets.
         Blocks with no edges and no pending onsets take the vectorized
         path — the per-sample scalar walk only runs around note events.
+
+        2026-09-14 love pass: ``inversion`` moves the lowest enabled
+        note up an octave, n times (rows keep their slot identity, so
+        downstream per-voice state and the strum order are untouched);
+        ``changed`` (gate out, mono) pulses ~2 ms when the sounding
+        chord changes under a held gate -- the root jumping half a
+        semitone or more between consecutive samples (a sequencer
+        step; glides don't count) or the interval set changing
+        (preset / inversion / spread / a slot edit) -- so a legato root
+        walk can re-fire an envelope; ``retrig`` makes the module do
+        that itself: the gate rows drop for one sample and re-strum.
+        Both off, the pitch and gate rows are what they were.
         """
         from ..modules.chord import (
             CHORD_ENABLE_KEYS,
@@ -14156,6 +14222,21 @@ class NumpyBackend(AudioBackend):
         if bool(module.params.get("spread", False)):
             semis = [s + o for s, o in zip(semis, CHORD_SPREAD_OFFSETS)]
         try:
+            inversion = int(module.params.get("inversion", 0))
+        except (TypeError, ValueError):
+            inversion = 0
+        for _ in range(min(3, max(0, inversion))):
+            # The lowest sounding note goes up an octave (ties: lowest
+            # slot). Slot identity is kept -- only its pitch moves.
+            low = None
+            for k in range(R):
+                if enabled[k] and (low is None or semis[k] < semis[low]):
+                    low = k
+            if low is None:
+                break
+            semis[low] += 12.0
+        retrig = bool(module.params.get("retrig", False))
+        try:
             strum = float(module.params.get("strum", 0.0))
         except (TypeError, ValueError):
             strum = 0.0
@@ -14174,40 +14255,84 @@ class NumpyBackend(AudioBackend):
         st = self._state.setdefault(
             module.id,
             {"prev_gate": False, "active": [False] * R, "pending": [],
-             "samples": 0},
+             "samples": 0, "prev_pitch": None, "prev_semis": None,
+             "chg_rem": 0},
         )
         base = int(st["samples"])
         st["samples"] = base + frames
         out_gate = np.zeros((R, frames), dtype=np.float32)
+        out_chg = np.zeros(frames, dtype=np.float32)
+
+        # --- ``changed``: the sounding chord moved under a held gate ------
+        # Root jumps (half a semitone or more sample-to-sample) and
+        # interval-set edits (which land at sample 0 of the block), masked
+        # to samples where the gate was ALREADY high -- a fresh press is
+        # its own trigger. The pulse is carried across blocks.
+        semis_key = tuple(semis) + tuple(enabled)
+        prev_semis = st["prev_semis"]
+        st["prev_semis"] = semis_key
+        chg_mask = np.zeros(frames, dtype=bool)
+        if pitch is not None:
+            p64 = pitch.astype(np.float64)
+            prev_p = st["prev_pitch"]
+            lag = np.empty(frames)
+            lag[0] = p64[0] if prev_p is None else prev_p
+            lag[1:] = p64[:-1]
+            chg_mask |= np.abs(p64 - lag) >= self._CHORD_CHANGE_V
+            st["prev_pitch"] = float(p64[-1])
+        else:
+            st["prev_pitch"] = None
+        if prev_semis is not None and semis_key != prev_semis:
+            chg_mask[0] = True
+        pulse = max(1, int(round(self._CHORD_PULSE_S * self.sample_rate)))
+        chg_rem = int(st["chg_rem"])
+        outs = {"pitch_cv": out_pitch, "gate": out_gate, "changed": out_chg}
+
         if gate is None:
             st["prev_gate"] = False
             st["active"] = [False] * R
             st["pending"] = []
-            return {"pitch_cv": out_pitch, "gate": out_gate}
+            st["chg_rem"] = 0
+            return outs
 
         g = gate > self._GATE_HIGH
         prev = bool(st["prev_gate"])
+        g_lag = np.empty(frames, dtype=bool)
+        g_lag[0] = prev
+        g_lag[1:] = g[:-1]
+        chg_mask &= g & g_lag
+        chg_at = np.flatnonzero(chg_mask).tolist()
+        if chg_at or chg_rem > 0:
+            for n in range(frames):
+                if chg_mask[n]:
+                    chg_rem = pulse
+                if chg_rem > 0:
+                    out_chg[n] = 1.0
+                    chg_rem -= 1
+        st["chg_rem"] = chg_rem
+        restrum = set(chg_at) if retrig else set()
+
         active: list[bool] = [a and e for a, e in zip(st["active"], enabled)]
         pending: list[list[int]] = st["pending"]  # [row, start_abs]
         rows_on = [k for k in range(R) if enabled[k]]
 
         changed = bool(g[0]) != prev or bool(np.any(g[1:] != g[:-1]))
-        if strum_samps == 0 and not pending:
+        if strum_samps == 0 and not pending and not restrum:
             # No stagger: enabled rows mirror the input gate verbatim.
             g_f32 = g.astype(np.float32)
             for k in rows_on:
                 out_gate[k] = g_f32
             st["prev_gate"] = bool(g[-1])
             st["active"] = [k in rows_on and bool(g[-1]) for k in range(R)]
-            return {"pitch_cv": out_pitch, "gate": out_gate}
-        if not changed and not pending:
+            return outs
+        if not changed and not pending and not restrum:
             # Steady block: rows hold their level.
             for k in range(R):
                 if active[k]:
                     out_gate[k, :] = 1.0
             st["prev_gate"] = bool(g[-1])
             st["active"] = active
-            return {"pitch_cv": out_pitch, "gate": out_gate}
+            return outs
 
         # Note-event block: scalar walk (rare — once per press/release).
         g_row = g.tolist()
@@ -14222,6 +14347,14 @@ class NumpyBackend(AudioBackend):
             elif prev and not gn:
                 active = [False] * R
                 pending = []
+            elif n in restrum:
+                # Re-strum: every row drops for this one sample and the
+                # stagger restarts from the next -- a fresh rising edge
+                # for whatever the rows drive.
+                active = [False] * R
+                pending = [
+                    [k, now + 1 + i * strum_samps] for i, k in enumerate(rows_on)
+                ]
             prev = gn
             if pending:
                 still = []
@@ -14239,7 +14372,7 @@ class NumpyBackend(AudioBackend):
         st["prev_gate"] = prev
         st["active"] = active
         st["pending"] = pending
-        return {"pitch_cv": out_pitch, "gate": out_gate}
+        return outs
 
     # ----- Session A utilities (logic / mid_side / octaver) ----------------
 

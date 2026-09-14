@@ -60,7 +60,10 @@ already three light before slice 2 added one -- count with
 > rise/fall rates shipped** in a second pass. Suite **3130**. Pushed
 > through 91b8dfb. Then **pitch_shifter shimmer / harmonizer / stereo
 > spread shipped**. Suite **3152**, 115 examples (two new, banked for
-> ears). Next: chord/arp extras, slew v2.
+> ears). Pushed through 7de1be3. Then **chord/arp extras shipped**
+> (inversion, `changed` + `retrig`, arp internal clock). Suite
+> **3177**, 116 examples. Next: slew v2 — the last item on the love
+> list.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -110,6 +113,79 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-14 (night) — chord/arp extras: inversion, changed + retrig, internal clock
+
+Matthew: "chord/arp extras (inversion, changed re-strum, arp internal
+clock) please Claude :-{D". The three "Later" notes from the day the
+pair shipped (2026-08-03), all at once.
+
+**Chord `inversion`.** 0..3: n times, the lowest *sounding* note goes
+up an octave (ties: lowest slot). `major` 0/4/7/12 → 12/4/7/12 (E in
+the bass, root doubled up top) → 12/16/7/12 (G in the bass) →
+12/16/19/12. It runs after spread and skips disabled slots, so a
+spread major inverts slot 3 (the −5) first and a `5` power chord
+inverts over three voices. **Rows keep their slot identity** — only a
+slot's pitch moves. That was the design call: re-sorting rows by pitch
+would have re-shaped downstream per-voice state on every inversion
+change and altered the strum order; keeping the slot means an
+inversion step is a pitch change and nothing else.
+
+**Chord `changed` + `retrig`.** The re-strum trigger. `changed` is a
+mono gate out that pulses ~2 ms when the sounding chord changes under
+a held gate: the root jumping ≥ half a semitone between consecutive
+samples (any sequencer/quantizer step; no glide ever — a one-octave
+glide over 100 ms at 48 k moves 0.0002 V a sample), or the interval
+set changing (preset, inversion, spread, a slot edit — lands at sample
+0 of the block it arrives in). Masked to samples where the gate was
+*already* high: a fresh press is its own trigger and doesn't double up.
+`retrig` makes the module act on it: every row drops for exactly that
+one sample and the strum stagger restarts from the next, so whatever
+the rows drive gets a fresh rising edge — a legato root walk becomes
+articulated with no extra cable. Both are carried across block joins
+(pulse remainder, pending onsets — the burst/strum machinery already
+there). With `retrig` off the fast paths (mirror / steady) are taken
+exactly as before; the `changed` jack is computed vectorised up front
+either way.
+
+**Arp internal clock.** `bpm` × `division` steps per minute (the
+`clock` module's pair), used only when `clock` is unpatched. Integer
+period — 97 bpm × 3 at SR 1000 asks for 206.2 samples, gets 206 every
+time, never 205/207 (the fgen lesson) — high for half a period so the
+first step's gate mirror has a width. `reset` re-phases the counter to
+0 at the reset sample, and that sample is a step **by decree**, not by
+edge: the test caught that the line was still high from the previous
+step (each step holds half a period), so a rising-edge detector saw
+nothing. The fix is a `forced` set of reset samples OR'd into the edge
+test. A cabled clock makes both params inert, pinned `array_equal`.
+
+**The one intended behaviour change.** An arpeggiator with nothing on
+`clock` used to be dead; now it free-runs at 120 × 4. The 52-array
+reference sweep shows exactly that split: every chord array and every
+clocked-arp array `array_equal`, the six unclocked-arp pairs different.
+No shipped example had an unclocked arp (checked all 115).
+
+**Two test premises corrected before they lied.** (1) My `_edges`
+helper appended the sample-0 edge at the *end* of the list. (2) The
+reset test expected a visible gate edge at the reset sample with
+`gate_len` 0.5 — the previous step's gate was still high there, so
+the re-phase showed in the pitch only; the test now uses 0.2 so the
+edge is observable, and the docstring says why.
+
+**Example `chord_legato_inversions.json`** (banked): a 24-second held
+gate (a 2.4 bpm clock at 98% duty) with a quantized root walk stepping
+under it once a second; the chord is maj7, first inversion, 20 ms
+strum, `retrig` on — measured re-strums at 1.0 / 2.0 / 3.0 s on all
+four rows 20 ms apart; the arp takes the same four rows on its internal
+140 × 4 clock — measured period 4725 samples exactly. The question for
+the ears is whether a one-sample gate drop reads as a clean
+re-articulation through the ADSR or wants a longer gap.
+
+**23 tests (chord 20 → 34, arp 28 → 37), suite 3177.**
+
+**Yours: 1 commit to push.**
 
 ---
 
@@ -180,7 +256,7 @@ from one module.
 all + spread 4.7% → all + formant 8.4%. Four voices: 8.7% → 18.2%
 (32.9% with formant).
 
-**Yours: 1 commit to push.**
+**Yours: 1 commit to push.** *Pushed the same day — 91b8dfb..7de1be3.*
 
 ---
 
