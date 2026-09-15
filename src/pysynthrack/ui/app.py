@@ -90,6 +90,7 @@ from ..modules.modal import MODAL_MATERIALS
 from ..modules.scope import SCOPE_MODES, SCOPE_TRIGGER_MODES
 from ..modules.slew import SLEW_SHAPES
 from ..modules.rotary import ROTARY_SPEEDS
+from ..modules.granular import GRANULAR_WINDOWS
 from ..modules.sweep_eq import SWEEP_EQ_MODES
 from . import scope_math
 from ..modules.transient_shaper import TRANSIENT_SHAPER_SPEEDS
@@ -1668,6 +1669,64 @@ class App:
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=5.0,
                     min_value=100.0, max_value=4000.0, format="%.0f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "granular":
+            # Grain cloud over a live ring buffer. ``buffer`` is the
+            # history length (s); ``density`` grains per second; ``size``
+            # the grain length (ms); ``pitch`` transposition (st);
+            # ``position`` how far back the grains read (0 = now, 1 =
+            # ``buffer`` s ago); ``window`` the grain shape; ``mix``
+            # dry/wet. Every knob reaches the NEXT grain, not the ones in
+            # flight.
+            if param_name == "window":
+                dpg.add_combo(
+                    label=param_name, items=list(GRANULAR_WINDOWS),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "buffer":
+                dpg.add_drag_float(
+                    label=f"{param_name} (history)", default_value=float(current),
+                    speed=0.05, min_value=0.5, max_value=10.0, format="%.2f s",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "density":
+                dpg.add_drag_float(
+                    label=f"{param_name} (grains/s)", default_value=float(current),
+                    speed=0.25, min_value=0.5, max_value=100.0, format="%.1f /s",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "size":
+                dpg.add_drag_float(
+                    label=f"{param_name} (grain)", default_value=float(current),
+                    speed=1.0, min_value=10.0, max_value=500.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "pitch":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-24.0, max_value=24.0, format="%.1f st",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "position":
+                dpg.add_slider_float(
+                    label=f"{param_name} (now < > past)", default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "mix":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

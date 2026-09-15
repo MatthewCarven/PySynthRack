@@ -232,7 +232,58 @@ once the board cleared.
       of a step. And `organ_leslie.json` (2026-09-14, module #91) — the
       pairing: does the drum's lag behind the horn read as a Leslie, or
       does it want the ramps trimmed? Is 0.7 depth / 0.8 spread the
-      right default feel?
+      right default feel? **Added 2026-09-15:** `granular_cloud.json`
+      (module #92, slice 1) — a pluck melody with an octave-up grain
+      cloud 300 ms behind it. The synchronous train puts a sideband
+      within ±30 Hz of the octave on held notes: does that read as "the
+      granular sound" or as out of tune? (Slice 2's spray smears it.)
+      And is `hann` at 25 × 80 ms — transparent — the right default,
+      or should a fresh node sound granular out of the box?
+- [x] **`granular` — grain cloud, SLICE 1 — SHIPPED 2026-09-15, module
+      #92** (Matthew: "granular slice 1 please" — the front of the build
+      queue). Effects: `in` (voice sources summed — one buffer) → `out`.
+      Params `buffer` 0.5..10 s (2) · `density` 0.5..100 /s (25) ·
+      `size` 10..500 ms (80, rounded even) · `pitch` ±24 st · `position`
+      0 (now)..1 (`buffer` s ago) · `window` hann|triangle|expo · `mix`.
+      Ring capture at ABSOLUTE indices; a synchronous scheduler fires a
+      grain every `sr/density` samples (float hop, carried exactly);
+      each grain is `(onset, start, rate, len, shape, amp)` FROZEN at
+      its onset so a knob reaches the next grain only; every grain in
+      flight rendered as one `(G, F)` matrix op (Hermite read × window,
+      masked, summed in spawn order — bit-exact block independence
+      falls out); head start `2 + (rate−1)(L−1)` floors `position`
+      (grain shortened if `buffer` is too short); level `1/max(1,
+      density·size·w_mean)`; dry read from the ring 2 samples late.
+      37 tests: model/walls; unpatched/silent/zero frames; **the
+      neutral is BIT-EXACT** (hann at 50% tiles to one: out == in
+      delayed 2); position 0.25 == 24000-sample delay bit-exact;
+      fractional position lands an impulse; mix 0 bit-exact dry; mix
+      0.5 the average; pitch exact INSIDE a grain (ZC period on the
+      onset grid, ±12/+7/−5, 0.1%) and within ±density Hz ACROSS grains
+      (the sideband, pinned as such); density counted as runs, size as
+      run length, hop 48000/17 carried across 64-vs-512 exactly, a
+      density rise lands within one new hop; dense hann/triangle on DC
+      == 1.0 exactly, expo within 1%, sparse at natural level; the
+      three window shapes; +24/500 ms causal (64 vs 512 bit-exact),
+      0.5 s buffer shortens the grain; a pitch change leaves both rates
+      in flight; a buffer resize keeps the history (the 48000-sample
+      identity holds after it); block-size bit-exact with fractional
+      everything + expo; voice sums; widgets (window combo = the
+      module's, every param its own widget); the example plays. Suite
+      **3260**. Cost ~1.5% at defaults, ~9% at 100/s × 500 ms.
+      **Test-construction lessons, all four first-run failures:** a run
+      detector is fooled by a tone's near-exact zeros (use the onset
+      grid); the first grain reads two unwritten zeros (skip hop 0); a
+      2× read has stride 2, so a one-sample impulse on the wrong parity
+      is never read (the sampler's `[::2]` property — use two samples);
+      check in-flight state a few blocks after a change, not at the end.
+      **Slice 2** (open): spray scheduler — `spray_pos`, `spray_pitch`,
+      `seed`, jittered onsets (per-grain `rate`/`start` are already
+      vectors; the window is evaluated per grain by shape already) +
+      stereo `width` with `out_l`/`out_r`. **Slice 3** (open): `freeze`
+      gate/toggle + `position_cv` + examples. `seed` deferred to slice
+      2: nothing in slice 1 is random (deviation from the MODULE_IDEAS
+      cut, noted).
 - [x] **`rotary` — the Leslie — SHIPPED 2026-09-14, module #91**
       (Matthew's pick off the build queue, the organ's partner since
       08-05). Effects: `in` (voice sources summed — one cabinet) + `fast`

@@ -225,6 +225,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`matrix_mixer`](#matrix_mixer) | Routing & VCA | `in_1`…`in_4` (audio), `cv_1`…`cv_4` (cv) → `out_1`…`out_4` (audio) |
 | [`resampler`](#resampler) | Effects | `in` (audio), `pitch_cv` (cv), `brake` (gate) → `out`, `out_l`, `out_r` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
+| [`granular`](#granular) | Effects | `in` (audio) → `out` (audio) |
 | [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv) → `out` (audio) |
 | [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`compressor`](#compressor) | Effects | `in`,`sidechain` (audio), `threshold_cv` (cv) → `out` (audio), `gr` (cv) |
@@ -2429,6 +2430,90 @@ sibling the [`flanger`](#flanger) (feedback + a shorter delay).
 
 ---
 
+#### `granular`
+
+A **grain cloud** over a live-captured buffer — the rack's other grain
+module, and the opposite temperament to the
+[`pitch_shifter`](#pitch_shifter). That one *hides* its grains (WSOLA
+picks their positions so the joins vanish and the result is the input,
+transposed). This one **exposes** them. The input is captured
+continuously into a ring `buffer` seconds long, and a scheduler fires
+**grains** — short windowed reads of that history, each played at its
+own rate — `density` times a second, `size` ms long, from `position`
+seconds ago, transposed by `pitch`. The output is every grain in flight,
+overlap-added.
+
+Where you park the knobs is the sound. The **neutral** is the defaults:
+`hann` grains at 50% overlap (`density` × `size` = 2) tile to exactly
+one, so at `pitch` 0 the output *is* the input, delayed by `position` —
+a grain delay you then bend. `pitch` up or down is a granular pitch
+shifter of the classic, un-hidden kind: exact inside every grain, but a
+synchronous grain train chops the phase at every hop, so on a held tone
+the energy sits on a sideband within ±`density` Hz of the target — a
+little metallic at high density, smeared at low, and *that* is the sound
+people patch these for. `density` down until the grains stop touching is
+a stutter / a tremolo at the grain rate; `size` short is a buzz at that
+rate; `position` up reads further into the past; `window` shapes each
+grain — `hann` (smooth), `triangle` (brighter joins), `expo` (a
+percussive attack-decay "expodec" grain that turns a pad into a rain of
+taps).
+
+**Slice 1 (2026-09-15):** capture + a synchronous, deterministic grain
+stream, mono. Slice 2 adds the spray scheduler (`spray_pos` /
+`spray_pitch` / `seed`, jittered onsets) and stereo (`width`,
+`out_l`/`out_r`); slice 3 adds `freeze` and `position_cv`.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | The signal captured into the buffer. A `(V, F)` voice source is summed — one buffer. Unpatched → silence. |
+| `out` | out | audio | The cloud, blended with the dry input by `mix`. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `buffer` | `2.0` | 0.5 … 10 s | Seconds of history the grains can read. Resizing keeps the history it can and drops the grains in flight (one grain's worth of dropout). |
+| `density` | `25.0` | 0.5 … 100 /s | Grains per second. |
+| `size` | `80.0` | 10 … 500 ms | Grain length (rounded to an even sample count so 50% overlap is exact). |
+| `pitch` | `0.0` | −24 … +24 st | Transposition, per grain. |
+| `position` | `0.0` | 0 … 1 | How far back the grains read: 0 = now, 1 = `buffer` seconds ago. |
+| `window` | `hann` | `hann` / `triangle` / `expo` | Grain shape. |
+| `mix` | `1.0` | 0 … 1 | Dry/wet. The dry is the input two samples late — the head start every read needs — so at the neutral dry and wet line up sample for sample. |
+
+**How it works.** Every block the input is written into the ring at
+*absolute* sample indices; reads are absolute too, modulo the ring, so
+nothing knows where block boundaries fall. A grain is a record of
+`(onset, read start, rate, length, window, level)` **frozen from the
+params at the moment it fires** — turning a knob reaches the *next*
+grain, never one in flight, which is why there is no zipper, no click,
+and the render is block-size independent to the bit. Every grain in
+flight is rendered as one `(G, F)` matrix op: `k = n − onset`, `pos =
+start + rate·k`, a 4-tap Hermite read of the ring at `pos` (the
+[`resampler`](#resampler)'s, exact at integer positions), times the
+window at `k`, masked to the grain's span, summed in spawn order.
+
+A grain reading faster than real time (`pitch` > 0) would overtake the
+write head, so `position` is floored at the head start it needs —
+`(rate − 1) × size` — and if `buffer` is shorter than that the grain is
+shortened to fit. Grains are scaled by `1 / max(1, density × size ×
+window mean)` so a dense cloud sits at about the input's level (a DC
+input through a dense hann or triangle cloud comes out at exactly 1.0);
+sparse grains play at their natural level. Cost: ~1.5% of realtime at
+the defaults, ~9% at the extreme (100 grains/s × 500 ms = 50 in flight).
+
+**Patching.** `pluck → granular → reverb`, `pitch` +12, `density` 30,
+`size` 120, `position` 0.15, `mix` 0.6 — every pluck gets an
+octave-up cloud trailing 300 ms behind it: `examples/granular_cloud.json`.
+The same patch at `pitch` 0, `density` 8, `size` 40 is a stutter; at
+`pitch` −12, `size` 400, `window` `expo` it is a rain of low taps; with
+a [`file_player`](#file_player) in front and `position` swept by hand it
+is a scrub through the last two seconds. For a transposition that
+*hides* the grains, use the [`pitch_shifter`](#pitch_shifter).
+
+---
+
 #### `rotary`
 
 The **Leslie** — a spinning horn and a spinning drum, in stereo. The
@@ -3990,5 +4075,6 @@ loads in the app. Notable ones referenced above:
 - `pitch_shifter_harmonizer.json` — a stereo major triad from one module: `semitones` +4, `harmony` +7, `spread` 1 → third left, fifth right, root centred.
 - `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.
 - `organ_leslie.json` — the pairing: a self-playing maj7 organ through the [`rotary`](#rotary), a 5 BPM clock on `fast` flipping the Leslie between chorale and tremolo every six seconds so the horn and drum chase each other.
+- `granular_cloud.json` — a shift-register pluck melody into the [`granular`](#granular) at `pitch` +12, `density` 30, `size` 120 ms, `position` 0.15: every pluck gets an octave-up grain cloud trailing 300 ms behind it, through a hall.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `stereo_hard_pan.json` — left/right speaker sinks.

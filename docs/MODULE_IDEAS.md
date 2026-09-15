@@ -463,7 +463,7 @@ noise, or anything.
   and record it (the new readout is the tool).
 - Gorgeous with cv_gates (17 enveloped strikes) and `burst`.
 
-### `granular` (L — slice it)
+### `granular` (L — slice it) — **slice 1 SHIPPED 2026-09-15** (Effects; capture + synchronous stream, mono — `granular_cloud.json`); slices 2 (spray scheduler + stereo) and 3 (freeze + position_cv) open
 
 Grain-cloud texture engine over a live-captured buffer.
 
@@ -476,8 +476,14 @@ Grain-cloud texture engine over a live-captured buffer.
   fractional resampling (pitch_shifter), seam-declick lessons, stereo outs
   (chorus/reverb precedent). Normalize by expected overlap (density×size) for
   headroom.
-- Slices: (1) capture + single-stream grains, mono, seeded + tested;
-  (2) density/spray scheduler + stereo; (3) freeze + position_cv + examples.
+- Slices: ~~(1) capture + single-stream grains, mono, seeded + tested~~ —
+  SHIPPED 2026-09-15 as a *synchronous, deterministic* stream: `buffer` /
+  `density` / `size` / `pitch` / `position` / `window` / `mix`, grains
+  frozen at their onset, bit-exact neutral (hann at 50% = the input),
+  bit-exact block independence; `seed` deferred to slice 2 since nothing
+  in slice 1 is random. (2) density/spray scheduler (`spray_pos`,
+  `spray_pitch`, `seed`, jittered onsets) + stereo (`width`,
+  `out_l`/`out_r`); (3) freeze + position_cv + examples.
 - Tests: seeded cloud reproducible; freeze truly static (repeated reads
   bit-identical); scheduler block-size independent (grain onsets carried
   across joins); mix=0 bit-exact dry.

@@ -70,6 +70,7 @@ from .reverb import Reverb
 from .ring_mod import RingMod
 from .rotary import Rotary
 from .pitch_shifter import PitchShifter
+from .granular import Granular
 from .output import (
     BufferedSpecificSpeakerOutput,
     LeftSpeakerOutput,
@@ -166,6 +167,7 @@ __all__ = [
     "RingMod",
     "Rotary",
     "PitchShifter",
+    "Granular",
     "RightSpeakerOutput",
     "SampleHold",
     "Schmitt",

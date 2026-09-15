@@ -66,8 +66,12 @@ already three light before slice 2 added one -- count with
 > + clock sync) — the love list is EMPTY. Suite **3195**, 117 examples
 > (nine banked for ears). Then **`rotary` shipped — module #91**, the
 > Leslie, the organ's partner. Suite **3221**, 118 examples (ten
-> banked). Next: granular, the feedback door, possibility follow-ons,
-> the 2026-08-04 keep-list.
+> banked).
+>
+> 2026-09-15: **`granular` slice 1 shipped — module #92.** Suite
+> **3260**, 119 examples (eleven banked). Next: granular slices 2 and
+> 3, the feedback door, possibility follow-ons, the 2026-08-04
+> keep-list.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -117,6 +121,113 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-15 — `granular` slice 1: the cloud, module #92
+
+Matthew: "granular slice 1 please Claude and thank you!" — the next
+item off the build queue, and the first of the three slices
+`docs/MODULE_IDEAS.md` had pre-cut. Proposed alone, built alone; slices
+2 and 3 are their own sessions.
+
+**What it is.** The rack's other grain module, with the opposite
+temperament to the pitch_shifter: that one hides its grains (WSOLA
+picks their positions so the joins vanish), this one exposes them. The
+input is captured into a ring `buffer` seconds long; a scheduler fires
+a grain every `sr / density` samples, `size` ms long, read from
+`position` seconds back at `2^(pitch/12)` times real speed, shaped by
+`window` (hann / triangle / expo); the output is every grain in flight
+overlap-added, blended with the dry by `mix`. Mono, `in` → `out`,
+Effects. Slice 2 adds the spray (`spray_pos` / `spray_pitch` / `seed`,
+jittered onsets) and stereo; slice 3 adds `freeze` and `position_cv`.
+
+**Three decisions that make it exact.** (1) *Absolute indexing*: the
+ring is written and read at absolute sample counts modulo its length,
+so no part of the renderer knows where a block boundary falls. (2)
+*Grains are frozen at their onset*: each is a record of `(onset, read
+start, rate, length, window, level)` taken from the params the moment
+it fires — a knob turn reaches the next grain, never one in flight.
+No zipper, no click, and block-size independence is structural rather
+than asserted: the 64-vs-512 test is `array_equal`, with fractional
+pitch, density, position and the expo window. (3) *One matrix op*:
+every grain in flight is rendered as a `(G, F)` array — `k = n −
+onset`, `pos = start + rate·k`, the resampler's 4-tap Hermite read of
+the ring, times the window at `k`, masked to the span, summed over G
+in spawn order. At the defaults G is 2–3 and it costs ~1.5% of
+realtime; at the extreme (100 grains/s × 500 ms = 50 in flight) ~9%.
+The per-grain Python loop I nearly wrote would have been ~3× that.
+
+**The neutral is bit-exact.** Periodic hann grains at 50% overlap tile
+to exactly one, so the defaults (25/s × 80 ms = 2.0 overlap, `pitch`
+0, `position` 0) render the input delayed by the two-sample head start
+— and after the float32 cast that is `array_equal`, not `allclose`.
+The window mean for the two COLA shapes is the closed-form 0.5 rather
+than a measured 0.49999…, and the overlap is computed as `density × L
+/ sr` with L an integer, so the normalizer at the defaults is exactly
+1.0 rather than 1 − 2 ulp. `position` 0.25 of the 2 s buffer is the
+input delayed by exactly 24000 samples; a dense hann or triangle cloud
+on DC is exactly 1.0. The `size` is rounded to an even sample count so
+"50% overlap" means it.
+
+**The head start.** A grain reading faster than real time would
+overtake the write head (at +24 st a 500 ms grain consumes 2 s of
+history in its 0.5 s of life), so `position` is floored at `2 + (rate
+− 1)(L − 1)` samples and, if the buffer is shorter than that, the
+grain is shortened to what the buffer can feed. The `2` is the
+Hermite's `+2` tap; the dry side of `mix` is the ring read back two
+samples late, so at the neutral dry and wet line up sample for sample
+and `mix` 0 is bit-exact. The causality test is the block-size test
+at +24 / 500 ms — if a read ever crossed the head, the 64- and
+512-block renders would see different unwritten data and diverge.
+
+**The finding worth an ear: the synchronous sideband.** Inside every
+grain the pitch is exact (zero-crossing period over the middle of
+isolated grains, ±12 / +7 / −5 st, within 0.1%). *Across* grains a
+synchronous train chops the tone's phase at every hop, so on a held
+440 Hz at +12 the spectral peak lands at ~890, not 880 — the energy
+sits on a sideband within ±`density` Hz of the target. That is the
+classic un-hidden granular pitch shifter and exactly what the
+pitch_shifter's WSOLA exists to remove; the test pins it *as* the
+mechanism (within ±density, and not on the source). Slice 2's spray
+will smear it. It is also the question banked for Matthew's ears: does
+it read as the granular sound, or as out of tune?
+
+**Four first-run test failures, none a renderer bug** — recorded
+because each is a reusable trap. A run detector (|y| > 1e-9) was
+fooled by the tone's own near-exact zeros (`sin(11πk)` ≈ 1e-16) and
+found no grain long enough — measure on the scheduler's onset grid
+instead. The very first grain reads two never-written zeros, so its
+run starts a sample late — skip hop 0 when checking the hop grid. A 2×
+read has an integer stride of 2, so a one-sample impulse on the wrong
+parity is never read at all — the sampler's `+12 ≡ buffer[::2]`
+property, seen from the other side; use a two-sample impulse. And
+"both rates in flight after a pitch change" has to be checked a dozen
+blocks after the change, not at the end of the render when the old
+grains have long expired.
+
+**Deviations from the MODULE_IDEAS cut, noted.** Category Effects, not
+Sources — it needs `in`. `seed` deferred to slice 2 — nothing in slice
+1 is random, and a knob that does nothing is worse than a knob that
+arrives with the thing it seeds. Default `density` 25 / `size` 80
+rather than 12 / 80 so the neutral IS the default (transparent until a
+knob moves) — the honest question of whether a fresh node should sound
+granular out of the box is in the ears bank.
+
+**Example `granular_cloud.json`** (banked): clock → shift_random →
+quantizer (C pentatonic minor) → pluck, into the granular at `pitch`
++12, `density` 30, `size` 120 ms, `position` 0.15 (300 ms back), `mix`
+0.6, through a hall to L/R. Every pluck gets an octave-up cloud
+trailing behind it. The doc's Patching paragraph names the stutter
+(`pitch` 0, `density` 8, `size` 40) and the rain-of-taps (`pitch` −12,
+`size` 400, `expo`) settings.
+
+**37 tests; suite 3260.** 119 examples, 92 modules. README's module
+counts brought up from a stale 88 while passing (Effects 23,
+Modulation 16).
+
+**Yours: 3 commits to push** (the two from the 14th are still local —
+`git log origin/main..main` says so, whatever this file says).
 
 ---
 

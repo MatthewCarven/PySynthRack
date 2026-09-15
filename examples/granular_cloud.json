@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "next_id": 9,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "tempo - one note per beat", "params": { "bpm": 84.0, "division": 1.0, "pulse_width": 0.3 } },
+    { "id": 2, "type": "shift_random", "name": "MELODY - probability 0 locks the loop", "params": { "probability": 0.12, "length": 8, "range": 2.0, "bipolar": false, "seed": 7 } },
+    { "id": 3, "type": "quantizer", "name": "in-tune", "params": { "root": "C", "scale": "pentatonic minor", "hysteresis": 10.0, "transpose": -12.0 } },
+    { "id": 4, "type": "pluck", "name": "STRING - the dry voice", "params": { "decay": 1.8, "damping": 0.45, "color": 0.75, "position": 0.2, "level": 0.9 } },
+    { "id": 5, "type": "granular", "name": "GRAINS - an octave up, 300 ms behind; try pitch, density, position", "params": { "buffer": 2.0, "density": 30.0, "size": 120.0, "pitch": 12.0, "position": 0.15, "window": "hann", "mix": 0.6 } },
+    { "id": 6, "type": "reverb", "name": "air", "params": { "size": 0.6, "decay": 0.5, "damping": 0.45, "mix": 0.3, "cv_depth": 1.0 } },
+    { "id": 7, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.9 } },
+    { "id": 8, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.9 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "cv", "dst_module_id": 3, "dst_port": "in" },
+    { "src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "pitch_cv" },
+    { "src_module_id": 2, "src_port": "gate", "dst_module_id": 4, "dst_port": "trigger" },
+    { "src_module_id": 4, "src_port": "out", "dst_module_id": 5, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "out", "dst_module_id": 6, "dst_port": "in" },
+    { "src_module_id": 6, "src_port": "out_l", "dst_module_id": 7, "dst_port": "in" },
+    { "src_module_id": 6, "src_port": "out_r", "dst_module_id": 8, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 140], "2": [280, 140], "3": [560, 140], "4": [800, 140],
+      "5": [1040, 140], "6": [1360, 140], "7": [1640, 80], "8": [1640, 220]
+    }
+  }
+}
