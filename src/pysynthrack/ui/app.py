@@ -1679,8 +1679,11 @@ class App:
             # the grain length (ms); ``pitch`` transposition (st);
             # ``position`` how far back the grains read (0 = now, 1 =
             # ``buffer`` s ago); ``window`` the grain shape; ``mix``
-            # dry/wet. Every knob reaches the NEXT grain, not the ones in
-            # flight.
+            # dry/wet. Slice 2: ``spray_time`` (onset jitter, 0 = sync),
+            # ``spray_pos`` (read-point scatter, position units),
+            # ``spray_pitch`` (cents), ``width`` (per-grain pan scatter
+            # on out_l/out_r), ``seed``. Every knob reaches the NEXT
+            # grain, not the ones in flight.
             if param_name == "window":
                 dpg.add_combo(
                     label=param_name, items=list(GRANULAR_WINDOWS),
@@ -1727,6 +1730,41 @@ class App:
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
                     min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "spray_time":
+                dpg.add_slider_float(
+                    label=f"{param_name} (sync < > async)", default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "spray_pos":
+                dpg.add_slider_float(
+                    label=f"{param_name} (+/-)", default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "spray_pitch":
+                dpg.add_drag_float(
+                    label=f"{param_name} (+/-)", default_value=float(current),
+                    speed=2.0, min_value=0.0, max_value=1200.0, format="%.0f ct",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "width":
+                dpg.add_slider_float(
+                    label=f"{param_name} (L/R scatter)", default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "seed":
+                dpg.add_drag_int(
+                    label=param_name, default_value=int(current), speed=1,
+                    min_value=0, max_value=999999,
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

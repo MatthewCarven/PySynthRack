@@ -69,9 +69,10 @@ already three light before slice 2 added one -- count with
 > banked).
 >
 > 2026-09-15: **`granular` slice 1 shipped — module #92.** Suite
-> **3260**, 119 examples (eleven banked). Next: granular slices 2 and
-> 3, the feedback door, possibility follow-ons, the 2026-08-04
-> keep-list.
+> **3260**, 119 examples (eleven banked). Then **slice 2 shipped** the
+> same day — sprays, `seed`, stereo. Suite **3275**, 120 examples
+> (twelve banked). Next: granular slice 3 (freeze + position_cv), the
+> feedback door, possibility follow-ons, the 2026-08-04 keep-list.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -121,6 +122,77 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-15 (later) — `granular` slice 2: the sprays, the seed, and stereo
+
+Matthew: "granular slice 2 please Claude" — within a message of slice
+1 landing, the same rhythm as the 14th.
+
+**What it adds.** The four sprays that turn a grain *stream* into a
+grain *cloud*, a `seed`, and `out_l` / `out_r`. Each spray is a random
+amount added per grain: `spray_time` scales each inter-onset interval
+by a factor in 1 ± s (0 = the synchronous stream with its sideband, 1
+= fully asynchronous, mean density preserved either way); `spray_pos`
+scatters the read point in `position` units; `spray_pitch` in cents;
+`width` pans each grain to a random spot within ±width. All four ship
+at zero.
+
+**The recipe held.** Reference renders captured from the shipped
+slice-1 code first — four param sets, two block sizes — and after the
+edit all eight are `array_equal`. That is not luck: while every spray
+and `width` is zero the renderer makes *no draws at all* and the
+scalar arithmetic is literally the slice-1 arithmetic (`st = pitch`,
+`p = position`, `interval = hop`), so the stream is the same stream.
+Every existing `granular_cloud.json` render is unchanged.
+
+**Randomness that survives blocking.** Grain *i* draws its four
+uniforms from `default_rng([seed, i])` — a fresh generator keyed by
+the absolute grain index, not a stream advanced per block — so the
+cloud is a pure function of (seed, index) and the sprayed 64-vs-512
+test is bit-exact on all three outs. The pending grain's draws are
+cached across blocks (`state["pend"]`), because its interval factor
+decides *when* it fires and a block boundary must not re-roll it. A
+`default_rng` per grain costs ~30 µs; at 100 grains/s that is 0.3% of
+realtime, which is why I did not build the chunked-table version.
+
+**Stereo without changing `out`.** The pan law is constant-peak —
+`gl = min(1, 1 − pan)`, `gr = min(1, 1 + pan)`, the rotary's `balance`
+law — so a centred grain is at unity in both channels and `width` 0
+leaves `out_l` and `out_r` bit-identical to `out` (the renderer skips
+the two extra sums and hands back the same array). `out` always hears
+every grain at unity, whatever `width` is; a test pins that `out` is
+`array_equal` with width 0 and width 1. The dry side of `mix` is
+centred.
+
+**Three first-run test failures, all constructions.** (1) A run
+detector cannot see an interval shorter than a grain — two overlapping
+DC grains merge into one run — so "full spray puts grains closer than
+a grain" is tested as *grains fired* (the state's `gi`) versus *runs
+seen*. (2) With 10 ms grains scattered over ±0.5 s an impulse is
+caught by a grain about 1% of the time; most seeds see zero copies.
+Five-hundred-millisecond grains catch it half the time. (3) The widget
+collector did not list `add_drag_int`, so the `seed` drag looked
+missing.
+
+**Example `granular_haze.json`** (banked): a D dorian pluck melody into
+`spray_time` 1, `spray_pos` 0.22, `spray_pitch` 25 ct, `width` 1,
+`position` 0.25, `mix` 0.7 straight to L/R — every note dissolves into
+a stereo wash a quarter-second behind itself. Banked questions: does
+the constant-peak law read as wide or lumpy; where does the sideband
+vanish as `spray_time` comes up; is a different `seed` audibly a
+different cloud.
+
+**Slice 3 is specced in TODO:** `freeze` (gate + toggle — stop
+writing, keep reading; `position` scrubs the held buffer) and
+`position_cv` (voice-summed, read per grain at its onset — the
+sampler's edge-latch rule).
+
+**13 new tests; 50 for the module; suite 3275.** 120 examples. Cost
+~2% sprayed, ~10% at the clumped extreme; `_GR_MAX_GRAINS` 64 → 96.
+
+**Yours: 4 commits to push.**
 
 ---
 

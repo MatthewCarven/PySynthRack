@@ -9405,7 +9405,8 @@ class NumpyBackend(AudioBackend):
     # Slice 1: capture + a synchronous, deterministic grain stream, mono.
     # See modules/granular.py for the knob semantics.
     _GR_HEAD = 2              # samples of head start a read needs (Hermite +2 tap)
-    _GR_MAX_GRAINS = 64       # in flight; 100/s x 0.5 s = 50 is the ranges' worst
+    _GR_MAX_GRAINS = 96       # in flight; 100/s x 0.5 s = 50 mean, spray_time clumps
+    _GR_SPRAY_ST_MAX = 36.0   # |pitch + spray| never past three octaves
     _GR_MIN_LEN = 16          # shortest grain, samples (also the shortened floor)
     _GR_EXPO_ATTACK = 0.1     # expo window: linear rise over this fraction ...
     _GR_EXPO_FLOOR = 1e-3     # ... then an exponential decay to this (-60 dB)
@@ -9446,43 +9447,56 @@ class NumpyBackend(AudioBackend):
             state[key] = float(np.mean(self._gr_window(kk, float(L), 2)))
         return state[key]
 
-    def _render_granular(self, module, frames: int, buffers, patch) -> np.ndarray:
-        """Grain cloud over a live ring buffer: mono in -> mono out.
+    def _render_granular(self, module, frames: int, buffers, patch) -> dict:
+        """Grain cloud over a live ring buffer: mono in -> out / out_l / out_r.
 
         Every block: (1) the input is written into the ring at absolute
         sample indices (``absw`` counts samples since the module was
         built; reads are absolute too, modulo the ring, so nothing here
         knows or cares where block boundaries fall); (2) the scheduler
-        fires a grain at every multiple of ``sr / density`` that lands in
-        this block, each one a record of ``(onset, read start, rate,
-        length, window, level)`` frozen from the params at that moment;
-        (3) every grain in flight is rendered as one ``(G, F)`` matrix
-        op -- ``k = n - onset``, ``pos = start + rate * k``, a 4-tap
-        Hermite read of the ring at ``pos``, times the window at ``k``,
-        masked to the grain's span -- and summed over G in spawn order;
-        (4) grains whose span has ended are dropped.
+        fires the grains whose onsets land in this block -- the next
+        onset is the last one plus ``sr / density`` scaled by that
+        grain's own ``spray_time`` draw -- each one a record of
+        ``(onset, read start, rate, length, window, level, pan)`` frozen
+        from the params (plus its own draws) at that moment; (3) every
+        grain in flight is rendered as one ``(G, F)`` matrix op --
+        ``k = n - onset``, ``pos = start + rate * k``, a 4-tap Hermite
+        read of the ring at ``pos``, times the window at ``k``, masked
+        to the grain's span -- and summed over G in spawn order, once
+        unpanned for ``out`` and, when any grain in flight is panned,
+        once per channel; (4) grains whose span has ended are dropped.
 
         Because a grain's parameters are fixed at its onset and the sums
         run in a fixed order, the render is block-size independent to
         the bit, and a knob turn reaches the *next* grain only -- no
         zipper, no clicks. The read start is ``onset - D`` where ``D``
-        is ``position * buffer`` floored at the head start the grain
-        needs: ``_GR_HEAD`` for the interpolator's forward taps plus
+        is the grain's ``position * buffer`` floored at the head start
+        it needs: ``_GR_HEAD`` for the interpolator's forward taps plus
         ``(rate - 1) * (L - 1)`` when the grain reads faster than real
         time (else it would overtake the write head). If ``buffer`` is
         shorter than that head start the grain is shortened to fit.
+
+        Randomness (slice 2): grain ``i`` draws four uniforms from
+        ``default_rng([seed, i])`` -- interval factor, position offset,
+        pitch offset, pan -- so the cloud is a pure function of the seed
+        and the grain index, whatever the blocking. No draws are made at
+        all while every spray and ``width`` is zero, and the arithmetic
+        then reduces to the slice-1 stream exactly.
 
         Grains are scaled by ``1 / max(1, density * size * window_mean)``
         so a dense cloud sits at about the input's level. The dry side
         of ``mix`` is the input read back from the ring ``_GR_HEAD``
         samples late, so at the neutral (position 0, pitch 0) dry and
-        wet line up sample for sample.
+        wet line up sample for sample; it is centred in ``out_l`` /
+        ``out_r``. The pan law is constant-peak (``min(1, 1 -/+ pan)``),
+        so ``width`` 0 leaves the stereo outs bit-identical to ``out``.
         """
         from ..modules.granular import GRANULAR_WINDOWS
 
         src = self._input_buffer(patch, buffers, module.id, "in")
         if src is None:
-            return np.zeros(frames, dtype=np.float32)
+            z = np.zeros(frames, dtype=np.float32)
+            return {"out": z, "out_l": z, "out_r": z}
 
         sr = float(self.sample_rate)
 
@@ -9498,8 +9512,17 @@ class NumpyBackend(AudioBackend):
         pitch = _f("pitch", -24.0, 24.0, 0.0)
         position = _f("position", 0.0, 1.0, 0.0)
         mix = _f("mix", 0.0, 1.0, 1.0)
+        spray_time = _f("spray_time", 0.0, 1.0, 0.0)
+        spray_pos = _f("spray_pos", 0.0, 1.0, 0.0)
+        spray_pitch = _f("spray_pitch", 0.0, 1200.0, 0.0)
+        width = _f("width", 0.0, 1.0, 0.0)
+        try:
+            seed = int(module.params.get("seed", 1))
+        except (TypeError, ValueError):
+            seed = 1
         window = str(module.params.get("window", "hann"))
         shape = GRANULAR_WINDOWS.index(window) if window in GRANULAR_WINDOWS else 0
+        sprayed = spray_time > 0.0 or spray_pos > 0.0 or spray_pitch > 0.0 or width > 0.0
 
         B = int(round(buffer_s * sr))                       # history, samples
         L_max = int(np.ceil(0.5 * sr)) + 2                  # the longest grain
@@ -9530,10 +9553,13 @@ class NumpyBackend(AudioBackend):
             state["len"] = np.zeros(0, dtype=np.int64)
             state["shape"] = np.zeros(0, dtype=np.int64)
             state["amp"] = np.zeros(0, dtype=np.float64)
+            state["pan"] = np.zeros(0, dtype=np.float64)
             state["last_t"] = None
-            state["hop"] = None
+            state["gi"] = 0                 # index of the next grain to fire
+            state["pend"] = None            # (gi, draws) cached for that grain
         if frames == 0:
-            return np.empty(0, dtype=np.float32)
+            e = np.empty(0, dtype=np.float32)
+            return {"out": e, "out_l": e, "out_r": e}
 
         ring = state["ring"]
         absw = int(state["absw"])
@@ -9543,58 +9569,90 @@ class NumpyBackend(AudioBackend):
         x = src.astype(np.float64)
         ring[n % N] = x
 
-        # --- 2. this block's grain recipe -------------------------------
-        rate = 2.0 ** (pitch / 12.0)
-        L = max(self._GR_MIN_LEN, int(round(size_ms * 1e-3 * sr)))
-        L += L & 1                                          # even: 50% overlap is exact
-        ahead = max(0.0, rate - 1.0)
-        head = self._GR_HEAD + int(np.ceil(ahead * (L - 1)))
-        if head > B and ahead > 0.0:
-            # The buffer can't give this grain the head start it needs at
-            # this rate: shorten the grain to what the buffer can feed.
-            L = max(self._GR_MIN_LEN, int((B - self._GR_HEAD) / ahead) + 1)
-            L += L & 1
-            head = self._GR_HEAD + int(np.ceil(ahead * (L - 1)))
-        D = max(float(head), position * B)
-        overlap = density * L / sr * self._gr_window_mean(state, L, shape)
+        # --- 2. this block's nominal grain recipe -----------------------
+        L0 = max(self._GR_MIN_LEN, int(round(size_ms * 1e-3 * sr)))
+        L0 += L0 & 1                                        # even: 50% overlap is exact
+        overlap = density * L0 / sr * self._gr_window_mean(state, L0, shape)
         amp = 1.0 / max(1.0, overlap)
+        hop = sr / density
+
+        def _draws(gi):
+            """Grain gi's four uniforms (interval, position, pitch, pan),
+            or None while nothing is sprayed. Cached for the pending
+            grain so a block boundary never re-rolls it."""
+            if not sprayed:
+                return None
+            pend = state["pend"]
+            if pend is not None and pend[0] == gi:
+                return pend[1]
+            u = np.random.default_rng([seed, gi]).random(4)
+            state["pend"] = (gi, u)
+            return u
+
+        def _interval(u):
+            if u is None:
+                return hop
+            return hop * (1.0 + spray_time * (2.0 * u[0] - 1.0))
 
         # --- 3. fire the grains that land in this block -----------------
-        hop = sr / density
+        gi = int(state["gi"])
         last_t = state["last_t"]
         if last_t is None:
             next_t = float(absw)
         else:
-            next_t = last_t + hop
-            if state["hop"] != hop and next_t < absw:
-                # Density went up: the next grain is due now, not at the
-                # old (longer) hop from the last one.
+            next_t = last_t + _interval(_draws(gi))
+            if next_t < absw:
+                # Only after a density / spray_time change: the pending
+                # grain is due now, not at the old interval.
                 next_t = float(absw)
-        state["hop"] = hop
-        new_onsets = []
         end = absw + frames
+        new = []
         while next_t < end:
-            new_onsets.append(int(np.floor(next_t)))
+            u = _draws(gi)
+            onset = int(np.floor(next_t))
+            if u is None:
+                st, p, pan = pitch, position, 0.0
+            else:
+                st = pitch + spray_pitch / 100.0 * (2.0 * u[2] - 1.0)
+                st = max(-self._GR_SPRAY_ST_MAX, min(self._GR_SPRAY_ST_MAX, st))
+                p = min(1.0, max(0.0, position + spray_pos * (2.0 * u[1] - 1.0)))
+                pan = width * (2.0 * u[3] - 1.0)
+            rate = 2.0 ** (st / 12.0)
+            L = L0
+            ahead = max(0.0, rate - 1.0)
+            head = self._GR_HEAD + int(np.ceil(ahead * (L - 1)))
+            if head > B and ahead > 0.0:
+                # The buffer can't give this grain the head start it
+                # needs at this rate: shorten it to what it can feed.
+                L = max(self._GR_MIN_LEN, int((B - self._GR_HEAD) / ahead) + 1)
+                L += L & 1
+                head = self._GR_HEAD + int(np.ceil(ahead * (L - 1)))
+            D = max(float(head), p * B)
+            new.append((onset, onset - D, rate, L, pan))
             last_t = next_t
-            next_t += hop
+            gi += 1
+            next_t += _interval(_draws(gi))
         state["last_t"] = last_t
-        if new_onsets:
+        state["gi"] = gi
+        if new:
             room = self._GR_MAX_GRAINS - state["onset"].shape[0]
-            new_onsets = new_onsets[:max(0, room)]
-        if new_onsets:
-            k = len(new_onsets)
-            on = np.asarray(new_onsets, dtype=np.int64)
-            state["onset"] = np.concatenate([state["onset"], on])
-            state["start"] = np.concatenate([state["start"], on - D])
-            state["rate"] = np.concatenate([state["rate"], np.full(k, rate)])
-            state["len"] = np.concatenate([state["len"], np.full(k, L, dtype=np.int64)])
+            new = new[:max(0, room)]
+        if new:
+            k = len(new)
+            cols = list(zip(*new))
+            state["onset"] = np.concatenate([state["onset"], np.asarray(cols[0], dtype=np.int64)])
+            state["start"] = np.concatenate([state["start"], np.asarray(cols[1], dtype=np.float64)])
+            state["rate"] = np.concatenate([state["rate"], np.asarray(cols[2], dtype=np.float64)])
+            state["len"] = np.concatenate([state["len"], np.asarray(cols[3], dtype=np.int64)])
             state["shape"] = np.concatenate([state["shape"], np.full(k, shape, dtype=np.int64)])
             state["amp"] = np.concatenate([state["amp"], np.full(k, amp)])
+            state["pan"] = np.concatenate([state["pan"], np.asarray(cols[4], dtype=np.float64)])
 
         # --- 4. render every grain in flight ----------------------------
         G = state["onset"].shape[0]
         if G == 0:
             wet = np.zeros(frames, dtype=np.float64)
+            wet_l = wet_r = wet
         else:
             g_on = state["onset"][:, None]
             g_len = state["len"][:, None]
@@ -9614,22 +9672,43 @@ class NumpyBackend(AudioBackend):
                 w[rows] = self._gr_window(kk[rows].astype(np.float64), g_len[rows].astype(np.float64), int(si))
             contrib = np.where(valid, w * y * state["amp"][:, None], 0.0)
             wet = contrib.sum(axis=0)
+            pans = state["pan"]
+            if np.any(pans != 0.0):
+                # Constant-peak law: a centred grain is at unity in both
+                # channels (so an unpanned grain's row is untouched).
+                gl = np.minimum(1.0, 1.0 - pans)[:, None]
+                gr = np.minimum(1.0, 1.0 + pans)[:, None]
+                wet_l = (contrib * gl).sum(axis=0)
+                wet_r = (contrib * gr).sum(axis=0)
+            else:
+                wet_l = wet_r = wet
 
             # --- 5. retire the grains whose span has ended -------------
             keep = (state["onset"] + state["len"]) > end
             if not keep.all():
-                for key in ("onset", "start", "rate", "len", "shape", "amp"):
+                for key in ("onset", "start", "rate", "len", "shape", "amp", "pan"):
                     state[key] = state[key][keep]
 
         state["absw"] = end
 
         # --- mix: dry is the ring read _GR_HEAD samples late ------------
         if mix >= 1.0:
-            return wet.astype(np.float32)
+            out = wet.astype(np.float32)
+            if wet_l is wet:
+                return {"out": out, "out_l": out, "out_r": out}
+            return {"out": out, "out_l": wet_l.astype(np.float32), "out_r": wet_r.astype(np.float32)}
         dry = ring[(n - self._GR_HEAD) % N]
         if mix <= 0.0:
-            return dry.astype(np.float32)
-        return ((1.0 - mix) * dry + mix * wet).astype(np.float32)
+            out = dry.astype(np.float32)
+            return {"out": out, "out_l": out, "out_r": out}
+        out = ((1.0 - mix) * dry + mix * wet).astype(np.float32)
+        if wet_l is wet:
+            return {"out": out, "out_l": out, "out_r": out}
+        return {
+            "out": out,
+            "out_l": ((1.0 - mix) * dry + mix * wet_l).astype(np.float32),
+            "out_r": ((1.0 - mix) * dry + mix * wet_r).astype(np.float32),
+        }
 
     # ----- Flanger rendering ----------------------------------------------
 

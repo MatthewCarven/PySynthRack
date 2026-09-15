@@ -225,7 +225,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`matrix_mixer`](#matrix_mixer) | Routing & VCA | `in_1`…`in_4` (audio), `cv_1`…`cv_4` (cv) → `out_1`…`out_4` (audio) |
 | [`resampler`](#resampler) | Effects | `in` (audio), `pitch_cv` (cv), `brake` (gate) → `out`, `out_l`, `out_r` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
-| [`granular`](#granular) | Effects | `in` (audio) → `out` (audio) |
+| [`granular`](#granular) | Effects | `in` (audio) → `out`, `out_l`, `out_r` (audio) |
 | [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv) → `out` (audio) |
 | [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`compressor`](#compressor) | Effects | `in`,`sidechain` (audio), `threshold_cv` (cv) → `out` (audio), `gr` (cv) |
@@ -2458,41 +2458,66 @@ grain — `hann` (smooth), `triangle` (brighter joins), `expo` (a
 percussive attack-decay "expodec" grain that turns a pad into a rain of
 taps).
 
+**The sprays** (slice 2) are what turn a grain *stream* into a grain
+*cloud*. Each is a random amount added per grain, drawn from a stream
+seeded by `seed` and keyed by the grain's index, so the cloud is exactly
+reproducible — same seed, same input, same cloud, whatever the block
+size. `spray_time` jitters the onsets (each interval is the hop scaled
+by a random factor in 1 ± `spray_time`; 0 is the synchronous stream
+with its sideband, 1 is fully asynchronous — even 0.3 smears the
+sideband into a haze). `spray_pos` scatters the read point (in
+`position` units, symmetric, clamped to the buffer — the last few
+hundred ms of a pluck become a wash). `spray_pitch` scatters the
+transposition in cents (10–30 ct is a chorus; 1200 an octave cloud).
+`width` scatters each grain across `out_l` / `out_r`.
+
 **Slice 1 (2026-09-15):** capture + a synchronous, deterministic grain
-stream, mono. Slice 2 adds the spray scheduler (`spray_pos` /
-`spray_pitch` / `seed`, jittered onsets) and stereo (`width`,
-`out_l`/`out_r`); slice 3 adds `freeze` and `position_cv`.
+stream, mono. **Slice 2 (2026-09-15):** the sprays, `seed`, stereo.
+Slice 3 adds `freeze` and `position_cv`.
 
 **Ports**
 
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | The signal captured into the buffer. A `(V, F)` voice source is summed — one buffer. Unpatched → silence. |
-| `out` | out | audio | The cloud, blended with the dry input by `mix`. |
+| `out` | out | audio | The cloud, every grain at unity, blended with the dry input by `mix`. |
+| `out_l` / `out_r` | out | audio | The cloud with each grain panned by its own draw within ±`width`; the dry stays centred. At `width` 0 both are `out`, bit-exact. |
 
 **Parameters**
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
 | `buffer` | `2.0` | 0.5 … 10 s | Seconds of history the grains can read. Resizing keeps the history it can and drops the grains in flight (one grain's worth of dropout). |
-| `density` | `25.0` | 0.5 … 100 /s | Grains per second. |
+| `density` | `25.0` | 0.5 … 100 /s | Grains per second (the mean, when `spray_time` is up). |
+| `spray_time` | `0.0` | 0 … 1 | Onset jitter: each interval is the hop × a random factor in 1 ± `spray_time`. 0 synchronous, 1 asynchronous. |
 | `size` | `80.0` | 10 … 500 ms | Grain length (rounded to an even sample count so 50% overlap is exact). |
 | `pitch` | `0.0` | −24 … +24 st | Transposition, per grain. |
+| `spray_pitch` | `0.0` | 0 … 1200 ct | Transposition scatter, ± cents about `pitch` (the sum never past ±36 st). |
 | `position` | `0.0` | 0 … 1 | How far back the grains read: 0 = now, 1 = `buffer` seconds ago. |
+| `spray_pos` | `0.0` | 0 … 1 | Read-point scatter, ± in `position` units, clamped to the buffer. |
 | `window` | `hann` | `hann` / `triangle` / `expo` | Grain shape. |
+| `width` | `0.0` | 0 … 1 | Stereo scatter: each grain panned to a random spot within ±`width` on `out_l` / `out_r`. Constant-peak law — a centred grain is at unity in both, a hard-panned one at unity in one and zero in the other. |
 | `mix` | `1.0` | 0 … 1 | Dry/wet. The dry is the input two samples late — the head start every read needs — so at the neutral dry and wet line up sample for sample. |
+| `seed` | `1` | int | The random stream. Same seed, same input → the same cloud. |
 
 **How it works.** Every block the input is written into the ring at
 *absolute* sample indices; reads are absolute too, modulo the ring, so
 nothing knows where block boundaries fall. A grain is a record of
-`(onset, read start, rate, length, window, level)` **frozen from the
-params at the moment it fires** — turning a knob reaches the *next*
-grain, never one in flight, which is why there is no zipper, no click,
-and the render is block-size independent to the bit. Every grain in
+`(onset, read start, rate, length, window, level, pan)` **frozen from
+the params — plus its own four random draws — at the moment it fires**
+— turning a knob reaches the *next* grain, never one in flight, which
+is why there is no zipper, no click, and the render is block-size
+independent to the bit. Grain *i*'s draws come from
+`default_rng([seed, i])` (interval factor, position, pitch, pan), so
+the cloud is a pure function of the seed and the grain index; while
+every spray and `width` is zero no draws are made at all and the
+arithmetic reduces to the slice-1 stream exactly. Every grain in
 flight is rendered as one `(G, F)` matrix op: `k = n − onset`, `pos =
 start + rate·k`, a 4-tap Hermite read of the ring at `pos` (the
 [`resampler`](#resampler)'s, exact at integer positions), times the
-window at `k`, masked to the grain's span, summed in spawn order.
+window at `k`, masked to the grain's span, summed in spawn order —
+once unpanned for `out`, and once per channel when any grain in flight
+is panned.
 
 A grain reading faster than real time (`pitch` > 0) would overtake the
 write head, so `position` is floored at the head start it needs —
@@ -2501,7 +2526,8 @@ shortened to fit. Grains are scaled by `1 / max(1, density × size ×
 window mean)` so a dense cloud sits at about the input's level (a DC
 input through a dense hann or triangle cloud comes out at exactly 1.0);
 sparse grains play at their natural level. Cost: ~1.5% of realtime at
-the defaults, ~9% at the extreme (100 grains/s × 500 ms = 50 in flight).
+the defaults, ~2% sprayed, ~10% at the extreme (100 grains/s × 500 ms
+= 50 in flight, more when `spray_time` clumps them).
 
 **Patching.** `pluck → granular → reverb`, `pitch` +12, `density` 30,
 `size` 120, `position` 0.15, `mix` 0.6 — every pluck gets an
@@ -2509,8 +2535,12 @@ octave-up cloud trailing 300 ms behind it: `examples/granular_cloud.json`.
 The same patch at `pitch` 0, `density` 8, `size` 40 is a stutter; at
 `pitch` −12, `size` 400, `window` `expo` it is a rain of low taps; with
 a [`file_player`](#file_player) in front and `position` swept by hand it
-is a scrub through the last two seconds. For a transposition that
-*hides* the grains, use the [`pitch_shifter`](#pitch_shifter).
+is a scrub through the last two seconds. `examples/granular_haze.json`
+is the cloud proper: the same pluck into `spray_time` 1, `spray_pos`
+0.22, `spray_pitch` 25 ct, `width` 1 — every note dissolves into a
+stereo wash a quarter-second behind itself; turn `seed` to hear a
+different cloud from the same notes. For a transposition that *hides*
+the grains, use the [`pitch_shifter`](#pitch_shifter).
 
 ---
 
@@ -4076,5 +4106,6 @@ loads in the app. Notable ones referenced above:
 - `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.
 - `organ_leslie.json` — the pairing: a self-playing maj7 organ through the [`rotary`](#rotary), a 5 BPM clock on `fast` flipping the Leslie between chorale and tremolo every six seconds so the horn and drum chase each other.
 - `granular_cloud.json` — a shift-register pluck melody into the [`granular`](#granular) at `pitch` +12, `density` 30, `size` 120 ms, `position` 0.15: every pluck gets an octave-up grain cloud trailing 300 ms behind it, through a hall.
+- `granular_haze.json` — the cloud proper: a pluck melody into the [`granular`](#granular) with `spray_time` 1 (asynchronous), `spray_pos` 0.22, `spray_pitch` 25 ct and `width` 1 — every note dissolves into a stereo haze a quarter-second behind itself; `seed` picks the cloud.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `stereo_hard_pan.json` — left/right speaker sinks.

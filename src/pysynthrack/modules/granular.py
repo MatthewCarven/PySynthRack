@@ -27,43 +27,77 @@ knobs:
     (brighter joins), ``expo`` (a percussive attack-decay grain — the
     classic "expodec" — that turns a pad into a rain of taps).
 
-**Slice 1 (this):** capture + a synchronous, deterministic grain stream,
-mono. Slice 2 adds the spray scheduler (``spray_pos`` / ``spray_pitch``
-/ ``seed``, jittered onsets) and stereo (``width``, ``out_l``/``out_r``);
-slice 3 adds ``freeze`` and ``position_cv``.
+**The sprays (slice 2)** are what turn a grain *stream* into a grain
+*cloud*. Each is a random amount added per grain, drawn from a stream
+seeded by ``seed`` and keyed by the grain's index, so the cloud is
+exactly reproducible — same seed, same input, same cloud, whatever the
+block size:
+
+  * ``spray_time``: onset jitter. Each interval between grains is the
+    nominal hop scaled by a random factor in ``1 ± spray_time`` — 0 is
+    the synchronous stream (with its pitched sideband at ``density``
+    Hz), 1 is fully asynchronous (intervals from 0 to two hops, mean
+    unchanged). Even 0.3 smears the sideband into a haze;
+  * ``spray_pos``: read-point scatter, in ``position`` units (a fraction
+    of ``buffer``), symmetric about ``position`` and clamped to the
+    buffer. Smears *time*: the last few hundred ms of a pluck become a
+    wash;
+  * ``spray_pitch``: transposition scatter in cents, symmetric about
+    ``pitch``. 10–30 ct is a chorus; 1200 is an octave cloud;
+  * ``width``: per-grain stereo scatter on ``out_l`` / ``out_r``. Each
+    grain is panned to a random spot within ``±width``; at 0 both
+    channels are ``out``.
+
+**Slice 1:** capture + a synchronous, deterministic grain stream, mono.
+**Slice 2 (this):** the sprays, ``seed``, and stereo. Slice 3 adds
+``freeze`` and ``position_cv``.
 
 Rules of the road, all of them so a patch is exactly reproducible:
 
-  * every grain's rate, length, window and level are fixed at the moment
-    it fires — turning a knob affects the *next* grain, never one in
-    flight (no zipper, no clicks, and the render is block-size
-    independent to the bit);
+  * every grain's onset, rate, read point, length, window, level and pan
+    are fixed at the moment it fires — turning a knob affects the *next*
+    grain, never one in flight (no zipper, no clicks, and the render is
+    block-size independent to the bit);
   * a grain reading faster than real time (``pitch`` > 0) would overtake
-    the write head, so ``position`` is floored at the head start it
+    the write head, so its read point is floored at the head start it
     needs (``(rate − 1) × size``); if the buffer is shorter than that,
     the grain is shortened instead. Reading slower than real time needs
     no such care;
   * grains are level-normalized by their expected overlap (``density``
     × ``size`` × the window's mean), so a dense cloud is not a loud one;
-    sparse grains play at their natural level.
+    sparse grains play at their natural level;
+  * the pan law is constant-peak (a centred grain is at unity in both
+    channels, a hard-panned one at unity in one and zero in the other),
+    so ``width`` 0 leaves ``out_l`` and ``out_r`` bit-identical to
+    ``out``, and ``out`` always hears every grain at unity.
 
 Ports:
   * ``in`` (audio): the signal captured into the buffer. A ``(V, F)``
     voice source is summed — one buffer. Unpatched → silence.
-  * ``out`` (audio): the cloud, blended with the dry input by ``mix``.
+  * ``out`` (audio): the cloud, every grain at unity, blended with the
+    dry input by ``mix``.
+  * ``out_l`` / ``out_r`` (audio): the cloud with each grain panned by
+    its own draw within ``±width``; the dry stays centred.
 
 Params:
   * ``buffer``: seconds of history the grains can read from, 0.5 … 10.
     Default 2. Resizing keeps the history it can and drops the grains in
     flight (one grain's worth of dropout).
   * ``density``: grains per second, 0.5 … 100. Default 25.
+  * ``spray_time``: onset jitter, 0 (synchronous) … 1 (asynchronous).
+    Default 0.
   * ``size``: grain length in ms, 10 … 500. Default 80. (Rounded to an
     even sample count so 50% overlap is exact.)
   * ``pitch``: transposition in semitones, −24 … +24. Default 0.
+  * ``spray_pitch``: transposition scatter, ± cents, 0 … 1200. Default 0.
   * ``position``: how far back the grains read, 0 (now) … 1 (``buffer``
     seconds ago). Default 0.
+  * ``spray_pos``: read-point scatter, ± in ``position`` units, 0 … 1.
+    Default 0.
   * ``window``: ``hann`` | ``triangle`` | ``expo``. Default ``hann``.
+  * ``width``: stereo scatter, 0 (every grain centred) … 1. Default 0.
   * ``mix``: dry/wet, 0 … 1. Default 1.
+  * ``seed``: the random stream. Default 1.
 """
 from __future__ import annotations
 
@@ -76,20 +110,26 @@ GRANULAR_WINDOWS = ("hann", "triangle", "expo")
 
 @register_module_type
 class Granular(Module):
-    """Grain cloud over a live-captured ring buffer (slice 1: mono, synchronous).
+    """Grain cloud over a live-captured ring buffer (slices 1 + 2).
 
     Parameters:
         buffer: History length, seconds, 0.5..10. Default 2.
         density: Grains per second, 0.5..100. Default 25.
+        spray_time: Onset jitter, 0 (synchronous)..1 (asynchronous). Default 0.
         size: Grain length, ms, 10..500. Default 80.
         pitch: Transposition, semitones, -24..24. Default 0.
+        spray_pitch: Transposition scatter, +- cents, 0..1200. Default 0.
         position: Read point, 0 (now)..1 (``buffer`` s ago). Default 0.
+        spray_pos: Read-point scatter, +- in position units, 0..1. Default 0.
         window: ``"hann"``, ``"triangle"`` or ``"expo"``. Default ``"hann"``.
+        width: Per-grain stereo scatter, 0..1. Default 0.
         mix: Dry/wet, 0..1. Default 1.
+        seed: Random stream seed (int). Default 1.
 
     Ports:
         in (in, audio): the signal (voice sources are summed).
-        out (out, audio): the cloud, blended by ``mix``.
+        out (out, audio): the cloud, every grain at unity, blended by ``mix``.
+        out_l / out_r (out, audio): the cloud with per-grain pans.
     """
 
     TYPE = "granular"
@@ -97,11 +137,20 @@ class Granular(Module):
     DEFAULT_PARAMS = {
         "buffer": 2.0,
         "density": 25.0,
+        "spray_time": 0.0,
         "size": 80.0,
         "pitch": 0.0,
+        "spray_pitch": 0.0,
         "position": 0.0,
+        "spray_pos": 0.0,
         "window": "hann",
+        "width": 0.0,
         "mix": 1.0,
+        "seed": 1,
     }
     INPUT_PORTS = [Port("in", "in", "audio")]
-    OUTPUT_PORTS = [Port("out", "out", "audio")]
+    OUTPUT_PORTS = [
+        Port("out", "out", "audio"),
+        Port("out_l", "out", "audio"),
+        Port("out_r", "out", "audio"),
+    ]

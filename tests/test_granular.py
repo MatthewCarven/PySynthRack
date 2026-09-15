@@ -33,6 +33,23 @@ Coverage:
   - UI: the window combo offers GRANULAR_WINDOWS; every param gets its
     own widget (no fallthrough to a text box).
   - Example granular_cloud.json loads, compiles, renders, is audible.
+
+Slice 2 (sprays, seed, stereo):
+  - OFF at the defaults: no draws are made while every spray and width
+    is zero (the pend cache stays None) and out_l / out_r ARE out.
+  - Seeded and reproducible: same seed -> all three outs array_equal;
+    a different seed differs; sprayed renders are block-size
+    independent to the bit (64 vs 512, every spray + width on).
+  - spray_time: intervals within [1 - s, 1 + s] x hop, mean ~ hop.
+  - spray_pos: an impulse's copies land across position +- spray_pos
+    of the buffer, and use the range.
+  - spray_pitch: isolated grains' periods spread across +- the cents,
+    each one an exact ratio.
+  - width: constant-peak law (per isolated grain max(L, R) peak == out
+    peak; L and R differ); `out` is bit-identical with width on or off
+    (it hears every grain at unity); width 0 -> L is R is out even with
+    the other sprays on; mix 0 -> all three are the dry.
+  - Example granular_haze.json plays in stereo.
 """
 from __future__ import annotations
 
@@ -63,23 +80,34 @@ def _rig(params=None, block=F):
     return patch, osc, gr, b
 
 
-def _run(params, x, block=F, change=None):
+KEYS = ("out", "out_l", "out_r")
+
+
+def _run_all(params, x, block=F, change=None):
     """Render x (F,) or (V, F) through a fresh granular.
 
     ``change`` = (block_index, {param: value}) applies a param edit before
-    that block. Returns (out, x trimmed to out's length, backend, module).
+    that block. Returns ({out, out_l, out_r}, x trimmed, backend, module).
     """
     patch, osc, gr, b = _rig(params, block)
     n = x.shape[-1] // block
-    out = []
+    outs = {k: [] for k in KEYS}
     for k in range(n):
         if change is not None and k == change[0]:
             for key, val in change[1].items():
                 gr.params[key] = val
         sl = slice(k * block, (k + 1) * block)
-        out.append(b._render_granular(gr, block, {(osc.id, "out"): x[..., sl]}, patch))
-    y = np.concatenate(out)
-    return y, x[..., : y.shape[-1]], b, gr
+        r = b._render_granular(gr, block, {(osc.id, "out"): x[..., sl]}, patch)
+        for key in KEYS:
+            outs[key].append(r[key])
+    y = {k: np.concatenate(v) for k, v in outs.items()}
+    return y, x[..., : y["out"].shape[-1]], b, gr
+
+
+def _run(params, x, block=F, change=None):
+    """The mono ``out`` of _run_all: (out, x trimmed, backend, module)."""
+    y, x, b, gr = _run_all(params, x, block, change)
+    return y["out"], x, b, gr
 
 
 def _noise(secs, seed=0, amp=0.3):
@@ -110,15 +138,18 @@ class TestModel:
         assert isinstance(gr, Granular)
         assert gr.CATEGORY == "Effects"
         assert gr.params == {
-            "buffer": 2.0, "density": 25.0, "size": 80.0, "pitch": 0.0,
-            "position": 0.0, "window": "hann", "mix": 1.0,
+            "buffer": 2.0, "density": 25.0, "spray_time": 0.0, "size": 80.0,
+            "pitch": 0.0, "spray_pitch": 0.0, "position": 0.0, "spray_pos": 0.0,
+            "window": "hann", "width": 0.0, "mix": 1.0, "seed": 1,
         }
         assert GRANULAR_WINDOWS == ("hann", "triangle", "expo")
 
     def test_ports_and_signal_kinds(self):
         gr = Patch().add_module("granular")
         assert [(p.name, p.signal_kind) for p in gr.input_ports] == [("in", "audio")]
-        assert [(p.name, p.signal_kind) for p in gr.output_ports] == [("out", "audio")]
+        assert [(p.name, p.signal_kind) for p in gr.output_ports] == [
+            ("out", "audio"), ("out_l", "audio"), ("out_r", "audio"),
+        ]
 
     def test_json_round_trip_and_unknown_param(self):
         from pysynthrack.io_patch import patch_from_json, patch_to_json
@@ -151,15 +182,16 @@ class TestSilence:
         gr = patch.add_module("granular")
         b = NumpyBackend(sample_rate=SR, block_size=F)
         b.compile(patch)
-        y = b._render_granular(gr, F, {}, patch)
-        assert y.shape == (F,) and y.dtype == np.float32 and not y.any()
+        r = b._render_granular(gr, F, {}, patch)
+        for key in KEYS:
+            assert r[key].shape == (F,) and r[key].dtype == np.float32 and not r[key].any()
         y, *_ = _run({"pitch": 12.0, "density": 100.0}, np.zeros(F * 40, np.float32))
         assert not y.any()
 
     def test_zero_frames(self):
         patch, osc, gr, b = _rig()
-        y = b._render_granular(gr, 0, {(osc.id, "out"): np.zeros(0, np.float32)}, patch)
-        assert y.shape == (0,)
+        r = b._render_granular(gr, 0, {(osc.id, "out"): np.zeros(0, np.float32)}, patch)
+        assert all(r[key].shape == (0,) for key in KEYS)
 
 
 # ----- The neutral -----------------------------------------------------------
@@ -447,6 +479,154 @@ class TestShape:
         assert y.dtype == np.float32 and np.all(np.isfinite(y))
 
 
+# ----- Slice 2: sprays, seed, stereo ------------------------------------------
+
+
+SPRAYED = {
+    "pitch": 5.0, "density": 30.0, "size": 120.0, "position": 0.3,
+    "spray_time": 0.7, "spray_pos": 0.2, "spray_pitch": 300.0, "width": 1.0,
+    "seed": 5,
+}
+
+
+class TestSprayOff:
+    def test_no_draws_and_stereo_is_mono_at_the_defaults(self):
+        x = _noise(1.0, seed=20)
+        y, x, b, gr = _run_all({"pitch": 7.3, "density": 17.0, "window": "expo"}, x)
+        assert b._state[gr.id]["pend"] is None            # never rolled a die
+        assert np.array_equal(y["out_l"], y["out"])
+        assert np.array_equal(y["out_r"], y["out"])
+        assert np.array_equal(b._state[gr.id]["pan"], np.zeros_like(b._state[gr.id]["pan"]))
+
+
+class TestSeed:
+    def test_same_seed_same_cloud_different_seed_different(self):
+        x = _noise(1.5, seed=21)
+        a, *_ = _run_all(SPRAYED, x)
+        c, *_ = _run_all(SPRAYED, x)
+        d, *_ = _run_all({**SPRAYED, "seed": 6}, x)
+        for key in KEYS:
+            assert np.array_equal(a[key], c[key])
+            assert not np.array_equal(a[key], d[key])
+
+    def test_sprayed_render_is_block_size_independent_bit_exact(self):
+        x = _noise(2.0, seed=22)
+        a, *_ = _run_all(SPRAYED, x, block=512)
+        c, *_ = _run_all(SPRAYED, x, block=64)
+        for key in KEYS:
+            n = min(a[key].shape[0], c[key].shape[0])
+            assert np.array_equal(a[key][:n], c[key][:n]), key
+        assert np.abs(a["out"][SR // 2:]).max() > 0.05
+
+    def test_a_seed_change_reaches_the_next_grain_only(self):
+        x = _noise(1.0, seed=23)
+        k0 = x.shape[0] // F - 12
+        y, x, b, gr = _run_all({**SPRAYED, "size": 400.0, "density": 10.0}, x,
+                               change=(k0, {"seed": 99}))
+        assert np.all(np.isfinite(y["out"]))
+
+
+class TestSprayTime:
+    def test_intervals_are_the_hop_scaled_within_one_plus_minus_spray(self):
+        dc = np.ones(10 * SR, np.float32)
+        hop = SR / 20.0
+        y, *_ = _run({"density": 20.0, "size": 10.0, "spray_time": 0.5}, dc)
+        starts = np.array([s for s, e in _runs(y) if s > SR])
+        iv = np.diff(starts).astype(np.float64)
+        assert len(iv) > 150
+        assert iv.min() >= 0.5 * hop - 2 and iv.max() <= 1.5 * hop + 2
+        assert iv.max() - iv.min() > 0.6 * hop           # it actually scatters
+        assert abs(iv.mean() - hop) < 0.1 * hop          # density is preserved
+
+    def test_full_spray_puts_some_grains_closer_than_a_grain(self):
+        """A run detector can't see an interval shorter than the grain
+        (overlapping DC grains merge into one run), so count grains
+        FIRED against runs SEEN: at spray 1 some merged; at spray 0
+        none did."""
+        dc = np.ones(10 * SR, np.float32)
+        y, x, b, gr = _run({"density": 20.0, "size": 10.0, "spray_time": 1.0}, dc)
+        fired = b._state[gr.id]["gi"]
+        assert len(_runs(y)) < 0.9 * fired
+        y0, x, b0, gr0 = _run({"density": 20.0, "size": 10.0}, dc)
+        assert len(_runs(y0)) >= b0._state[gr0.id]["gi"] - 2
+
+
+class TestSprayPos:
+    def test_impulse_copies_scatter_across_position_plus_minus_spray(self):
+        """Long grains (500 ms) so about half of the grains in range
+        catch the impulse; each copy lands at imp + its own D, D drawn
+        from position +- spray_pos of the buffer: [24000, 72000]."""
+        x = np.zeros(4 * SR, np.float32)
+        imp = SR // 2
+        x[imp: imp + 2] = 1.0
+        y, *_ = _run({"position": 0.5, "spray_pos": 0.25, "density": 40.0, "size": 500.0}, x)
+        nz = np.flatnonzero(np.abs(y) > 1e-4)
+        assert nz.size > 20
+        lo, hi = imp + 24000, imp + 72000 + 1
+        assert nz.min() >= lo - 3 and nz.max() <= hi + 3
+        assert nz.max() - nz.min() > 0.35 * 96000        # uses most of the range
+        # and with no spray every copy lands at exactly position * buffer
+        y0, *_ = _run({"position": 0.5, "density": 40.0, "size": 500.0}, x)
+        nz0 = np.flatnonzero(np.abs(y0) > 1e-4)
+        assert nz0.size > 0
+        assert nz0.min() >= imp + 48000 and nz0.max() <= imp + 48000 + 1
+
+
+class TestSprayPitch:
+    def test_isolated_grains_spread_across_the_cents(self):
+        """density 4 / size 200 ms on 220 Hz, spray +-700 ct: each grain's
+        period is SOME exact ratio; over 30 grains they span the range."""
+        L = 9600
+        x = _tone(220.0, 8.0)
+        y, *_ = _run({"density": 4.0, "size": 200.0, "spray_pitch": 700.0, "seed": 2}, x)
+        pers = np.array(_isolated_grain_periods(y, L, SR // 4))
+        assert len(pers) >= 25
+        ratios = (SR / 220.0) / pers                  # playback rate per grain
+        lo, hi = 2 ** (-7 / 12), 2 ** (7 / 12)
+        assert ratios.min() >= lo * 0.995 and ratios.max() <= hi * 1.005
+        assert ratios.min() < 0.8 and ratios.max() > 1.25
+        assert len(set(np.round(ratios, 3))) > 20      # not a few repeated values
+
+
+class TestStereo:
+    def test_constant_peak_pan_law_on_isolated_grains(self):
+        dc = np.ones(4 * SR, np.float32)
+        y, *_ = _run_all({"density": 2.0, "size": 50.0, "width": 1.0}, dc)
+        peaks = []
+        for s, e in _runs(y["out"]):
+            if s < SR:
+                continue
+            pl, pr, po = y["out_l"][s:e].max(), y["out_r"][s:e].max(), y["out"][s:e].max()
+            assert max(pl, pr) == pytest.approx(po, abs=1e-6)     # the loud side is unity
+            assert min(pl, pr) <= po + 1e-6
+            peaks.append((pl, pr))
+        assert len(peaks) >= 5
+        assert any(abs(a - b) > 0.3 for a, b in peaks)          # some grains are off-centre
+        assert not np.array_equal(y["out_l"], y["out_r"])
+
+    def test_out_hears_every_grain_at_unity_whatever_the_width(self):
+        x = _noise(1.5, seed=24)
+        a, *_ = _run_all({**SPRAYED, "width": 0.0}, x)
+        c, *_ = _run_all({**SPRAYED, "width": 1.0}, x)
+        assert np.array_equal(a["out"], c["out"])
+        assert np.array_equal(a["out_l"], a["out"]) and np.array_equal(a["out_r"], a["out"])
+        assert not np.array_equal(c["out_l"], c["out"])
+
+    def test_mix_zero_is_the_dry_on_all_three(self):
+        x = _noise(1.0, seed=25)
+        y, x, b, gr = _run_all({**SPRAYED, "mix": 0.0}, x)
+        for key in KEYS:
+            assert np.array_equal(y[key][HEAD:], x[:-HEAD])
+
+    def test_mix_half_blends_each_channel_with_the_centred_dry(self):
+        x = _noise(1.0, seed=26)
+        wet, *_ = _run_all(SPRAYED, x)
+        dry, *_ = _run_all({**SPRAYED, "mix": 0.0}, x)
+        half, *_ = _run_all({**SPRAYED, "mix": 0.5}, x)
+        for key in KEYS:
+            assert np.allclose(half[key], 0.5 * dry[key] + 0.5 * wet[key], atol=1e-6)
+
+
 # ----- UI --------------------------------------------------------------------
 
 
@@ -460,7 +640,7 @@ class TestUI:
         app.patch = Patch()
         module = app.patch.add_module("granular")
         kinds = ("add_combo", "add_drag_float", "add_slider_float", "add_input_text",
-                 "add_input_float", "add_checkbox")
+                 "add_input_float", "add_checkbox", "add_drag_int")
         before = {k: len(getattr(app_mod.dpg, k).call_args_list) for k in kinds}
         app._create_node_for_module(module)
         out = {}
@@ -501,3 +681,20 @@ class TestExample:
         assert np.asarray(out).shape[1] == 2
         assert peak > 0.05
         assert b._state[gr.id]["onset"].shape[0] >= 1          # grains in flight
+
+    def test_granular_haze_example_plays_in_stereo(self):
+        path = Path(__file__).resolve().parent.parent / "examples" / "granular_haze.json"
+        patch = load_patch(path)
+        gr = next(m for m in patch if m.TYPE == "granular")
+        assert gr.params["spray_time"] == 1.0 and gr.params["width"] == 1.0
+        b = NumpyBackend(sample_rate=44100, block_size=512)
+        b.compile(patch)
+        outs = []
+        for k in range(int(6 * 44100 / 512)):
+            out, _ = b.render_block_multi(512)
+            assert out is not None and np.all(np.isfinite(out))
+            outs.append(np.asarray(out))
+        o = np.concatenate(outs)
+        assert o.shape[1] == 2
+        assert np.abs(o).max() > 0.05
+        assert not np.array_equal(o[:, 0], o[:, 1])

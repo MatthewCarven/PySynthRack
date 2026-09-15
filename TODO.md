@@ -239,6 +239,43 @@ once the board cleared.
       granular sound" or as out of tune? (Slice 2's spray smears it.)
       And is `hann` at 25 × 80 ms — transparent — the right default,
       or should a fresh node sound granular out of the box?
+      **Same day, slice 2:** `granular_haze.json` — the cloud proper
+      (async, ±0.44 s position scatter, ±25 ct, full width). Does the
+      constant-peak pan law read as wide or as lumpy? Is `spray_time` 1
+      too random for a melody, and where does the sideband vanish
+      (0.3?)? Try `seed` — is a different cloud audibly different?
+- [x] **`granular` — SLICE 2: sprays, seed, stereo — SHIPPED
+      2026-09-15** (Matthew: "granular slice 2 please", same day as
+      slice 1). New params, ALL OFF at their defaults: `spray_time`
+      0..1 (each interval = hop × a factor in 1 ± s; mean density
+      preserved) · `spray_pitch` 0..1200 ct (±, sum clamped ±36 st) ·
+      `spray_pos` 0..1 (± position units, clamped to the buffer) ·
+      `width` 0..1 (per-grain pan, constant-peak `min(1, 1 ∓ pan)` so
+      a centred grain is unity in both) · `seed` int (1). New ports
+      `out_l` / `out_r` (dry centred; `out` hears every grain at
+      unity). Grain *i* draws four uniforms from
+      `default_rng([seed, i])` — interval, position, pitch, pan — so
+      the cloud is a pure function of (seed, grain index): reproducible
+      and block-independent to the bit; the pending grain's draws are
+      cached across blocks. No draws at all while everything is zero →
+      **the four slice-1 reference renders (two block sizes) are
+      unchanged bit-exact**. Cap raised 64 → 96 in flight (spray_time
+      clumps). 13 new tests (50 total): no draws + L is R is out at the
+      defaults; same seed same cloud / different seed different;
+      sprayed 64-vs-512 bit-exact on all three outs; intervals within
+      [1−s, 1+s]·hop with the mean at hop; full spray merges some
+      grains (fired vs runs seen — a run detector can't see an interval
+      shorter than a grain); impulse copies land across position ±
+      spray of the buffer (with 500 ms grains so they catch it) and at
+      exactly position·buffer without spray; per-grain pitch ratios
+      span ± the cents, each exact; constant-peak pan law per isolated
+      grain; `out` bit-identical with width on or off; mix 0 dry on
+      all three; the haze example plays in stereo. Suite **3275**.
+      Cost ~2% sprayed, ~10% at the clumped extreme. **Slice 3**
+      (open): `freeze` (gate + toggle — stop writing, keep reading;
+      `position` becomes a scrub across the held buffer) +
+      `position_cv` (voice-summed CV on position, read per grain at its
+      onset — the sampler's edge-latch rule) + examples.
 - [x] **`granular` — grain cloud, SLICE 1 — SHIPPED 2026-09-15, module
       #92** (Matthew: "granular slice 1 please" — the front of the build
       queue). Effects: `in` (voice sources summed — one buffer) → `out`.

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "next_id": 8,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "tempo - one note per beat", "params": { "bpm": 72.0, "division": 1.0, "pulse_width": 0.3 } },
+    { "id": 2, "type": "shift_random", "name": "MELODY - probability 0 locks the loop", "params": { "probability": 0.15, "length": 8, "range": 2.0, "bipolar": false, "seed": 3 } },
+    { "id": 3, "type": "quantizer", "name": "in-tune", "params": { "root": "D", "scale": "dorian", "hysteresis": 10.0, "transpose": -12.0 } },
+    { "id": 4, "type": "pluck", "name": "STRING - the dry voice", "params": { "decay": 1.5, "damping": 0.5, "color": 0.7, "position": 0.22, "level": 0.9 } },
+    { "id": 5, "type": "granular", "name": "HAZE - async, scattered in time, pitch and space; try spray_pos / width / seed", "params": { "buffer": 2.0, "density": 40.0, "spray_time": 1.0, "size": 150.0, "pitch": 0.0, "spray_pitch": 25.0, "position": 0.25, "spray_pos": 0.22, "window": "hann", "width": 1.0, "mix": 0.7, "seed": 1 } },
+    { "id": 6, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.9 } },
+    { "id": 7, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.9 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "cv", "dst_module_id": 3, "dst_port": "in" },
+    { "src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "pitch_cv" },
+    { "src_module_id": 2, "src_port": "gate", "dst_module_id": 4, "dst_port": "trigger" },
+    { "src_module_id": 4, "src_port": "out", "dst_module_id": 5, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "out_l", "dst_module_id": 6, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "out_r", "dst_module_id": 7, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 140], "2": [280, 140], "3": [560, 140], "4": [800, 140],
+      "5": [1040, 140], "6": [1400, 80], "7": [1400, 220]
+    }
+  }
+}

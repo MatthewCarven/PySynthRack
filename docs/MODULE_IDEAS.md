@@ -463,7 +463,7 @@ noise, or anything.
   and record it (the new readout is the tool).
 - Gorgeous with cv_gates (17 enveloped strikes) and `burst`.
 
-### `granular` (L — slice it) — **slice 1 SHIPPED 2026-09-15** (Effects; capture + synchronous stream, mono — `granular_cloud.json`); slices 2 (spray scheduler + stereo) and 3 (freeze + position_cv) open
+### `granular` (L — slice it) — **slices 1 + 2 SHIPPED 2026-09-15** (Effects; capture + stream — `granular_cloud.json`; sprays + seed + stereo — `granular_haze.json`); slice 3 (freeze + position_cv) open
 
 Grain-cloud texture engine over a live-captured buffer.
 
@@ -481,9 +481,14 @@ Grain-cloud texture engine over a live-captured buffer.
   `density` / `size` / `pitch` / `position` / `window` / `mix`, grains
   frozen at their onset, bit-exact neutral (hann at 50% = the input),
   bit-exact block independence; `seed` deferred to slice 2 since nothing
-  in slice 1 is random. (2) density/spray scheduler (`spray_pos`,
+  in slice 1 is random. ~~(2) density/spray scheduler (`spray_pos`,
   `spray_pitch`, `seed`, jittered onsets) + stereo (`width`,
-  `out_l`/`out_r`); (3) freeze + position_cv + examples.
+  `out_l`/`out_r`)~~ — SHIPPED 2026-09-15: `spray_time` (interval × a
+  factor in 1 ± s), `spray_pos` (± position units), `spray_pitch` (±
+  cents), `width` (constant-peak per-grain pan), `seed`; grain *i*
+  draws from `default_rng([seed, i])` so the cloud is reproducible and
+  block-independent to the bit; slice-1 renders unchanged at the
+  defaults. (3) freeze + position_cv + examples.
 - Tests: seeded cloud reproducible; freeze truly static (repeated reads
   bit-identical); scheduler block-size independent (grain onsets carried
   across joins); mix=0 bit-exact dry.
