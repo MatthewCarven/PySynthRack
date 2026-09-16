@@ -130,6 +130,41 @@ own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
 
 ---
 
+## 2026-09-16 (later) — the feedback door: planned, not built
+
+Matthew: "plan the feedback door with me please Claude then after we
+can implement it?" — so this entry is the plan, written down before a
+line moves, with the decisions marked for him. The plan itself lives in
+TODO.md under "Sanction gate-rate feedback".
+
+**Survey.** The compiler honours two delayed paths: a buffered sink's
+`fill` and cables into a `matrix_mixer` that `_compute_late_edges`
+marks (forward cable order, BFS from the matrix back to the cable's
+source). Every other cycle is *severed*: Kahn never emits its members,
+they fall into the leftover tail in id order, and a consumer renders
+before its source with the buffer absent. A sweep of all 122 examples
+found exactly one severed loop and three live ones: **the May self-wah
+(`envelope_follower_wah.json`) has never wahed** — its filter →
+audio_to_cv → cutoff_cv loop sorts [keyboard, filter, audio_to_cv,
+speaker], and an A/B with the cable removed is `array_equal`. The three
+matrix examples and the governor are the only loops that close.
+
+**The change.** Keep pass 1 untouched — the matrix stays the guarded
+door, so every existing loop compiles to the same late set and renders
+bit-identically — and add pass 2: walk the cables in *reverse* order
+and mark late any cable whose destination can still reach its source
+through the non-late graph. Reverse, because the cable that closed the
+loop is the one that should carry the block of latency; forward order
+would put it on the feed-forward leg. One cable per cycle; self-loops
+mark themselves; the render side already seeds and stashes by
+`_late_edges` and needs nothing. Decisions for Matthew: the choice of
+late cable (last-drawn), safety (scrub non-finite at the stash + count,
+no global ceiling — the matrix keeps its `soft_clip`), examples (a new
+`krell_feedback.json` beside the existing krell; the self-wah simply
+starts working), and UI visibility of late cables as a follow-up.
+
+---
+
 ## 2026-09-16 — `granular` slice 3: freeze and the scrub; the module is complete
 
 Matthew: "granular slice 3 please Claude." Three slices in two days,

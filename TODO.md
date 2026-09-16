@@ -471,6 +471,72 @@ same session.
       so it wants its own tests and its own ears. Until then `loop` mode
       is the supported route and both the module docstring and
       MODULES.md say so plainly.
+      **PLAN (2026-09-16, Matthew: "plan the feedback door with me
+      please, then implement").** Survey first: today `_is_delayed_edge`
+      honours (a) a buffered sink's `fill` and (b) cables INTO a
+      `matrix_mixer` that `_compute_late_edges` marked (forward
+      `patch.cables` order, BFS "can the matrix reach this cable's
+      source?"). Everything else that closes a cycle is SEVERED: Kahn
+      never emits the cycle members, they fall into the leftover tail
+      in id order, and the consumer renders before its source with the
+      buffer simply absent. Two shipped examples are inert because of
+      it: the krell's `eoc → trig` (known, routed around with `loop`
+      mode) and **`envelope_follower_wah.json` — the May self-wah has
+      never wahed**: filter → audio_to_cv → filter.cutoff_cv sorts
+      [keyboard, filter, audio_to_cv, speaker], and an A/B with the
+      cable removed is `array_equal`. The matrix examples
+      (`matrix_feedback_echo`, `organ_feedback_drone`, `organ_shimmer`)
+      and `ring_governor_monitor` are the only live loops in the rack.
+      *The change, in one sentence:* keep pass 1 exactly as it is (the
+      matrix stays the guarded door, so every existing loop compiles to
+      the SAME late set and renders bit-identically), then add pass 2
+      — walk `patch.cables` in REVERSE order and mark late any cable
+      whose destination can still reach its source through the
+      non-late, non-fill graph. Reverse order means the cable that
+      CLOSED the loop (drawn last, saved last) is the one that reads a
+      block late, so the feed-forward path keeps zero latency (forward
+      order would put the block on osc→delay→filter's forward leg
+      instead of on filter→delay's return). One cable per cycle:
+      marking it breaks the cycle for every other member. Self-loops
+      (`eoc → trig`) are cycles of length one and mark themselves.
+      Render side needs NOTHING new: the seed / stash in
+      `render_block_multi` already keys on `_late_edges`. *Decisions
+      for Matthew:* (1) reverse-order "last drawn" as the choice of
+      late cable — vs first-drawn, vs preferring a particular jack
+      kind; (2) safety — the general door has no soft ceiling (the
+      matrix keeps its `soft_clip`; the speaker clips ±1; hardware has
+      no guardrail either): scrub non-finite values at the stash and
+      count them, and let the docs say "for audio loops, close through
+      the matrix or put a limiter in the loop" — vs a global soft
+      ceiling on every late edge (would colour audio loops); (3)
+      examples — add `krell_feedback.json` (the true self-patch)
+      ALONGSIDE `krell_machine.json` (ears passed on it) rather than
+      converting it, and leave the self-wah example as is now that it
+      works; (4) UI visibility as its own small follow-up: draw
+      late-read cables differently (DPG per-link theme, feasibility
+      first) + a status line on compile ("feedback: 2 cables read one
+      block late") so the block of latency is never a mystery.
+      *Build order:* (i) capture reference renders of the four live-loop
+      examples + late sets BEFORE editing; (ii) pass 2 in
+      `_compute_late_edges` + non-finite scrub at the stash; (iii)
+      tests — exact late set for every existing loop example
+      (unchanged); a non-matrix cycle marks exactly one cable, the
+      last-drawn, with the forward chain still ordered; a `mixer`
+      self-loop repeats the matrix's geometric-staircase latency pin
+      through the new door; two independent loops and a figure-eight
+      both fully sort; `fg.eoc → fg.trig` fires forever with period =
+      cycle + one block (pinned at 512 AND 64 — block-size dependence
+      is the door's documented property, as it already is for the
+      matrix); the self-wah loop changes the render and stays bounded;
+      a gain-2 loop stays finite (scrubbed) and the counter counts; a
+      new examples-sweep tripwire "no severed cycle: Kahn's leftover
+      tail is empty for every example"; (iv) examples
+      `krell_feedback.json` + the self-wah gets a does-something
+      tripwire; (v) docs — Cabling rules gain a "Feedback" paragraph,
+      matrix_mixer "sanctioned door" → "guarded door", the fg docstring
+      + entry drop the "legal but inert" caveat, audio_to_cv's
+      self-wah, WORKLOG + this entry. Full suite watched: this changes
+      compile for every patch.
 - [x] **Follow-on 1: per-slope `curve_rise` / `curve_fall`** — SHIPPED
       2026-09-12 (Matthew's pick, the ears having liked it 08-29).
       Offsets ADDED to the shared `curve` for their slope, summed and
