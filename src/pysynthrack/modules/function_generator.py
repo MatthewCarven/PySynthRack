@@ -20,12 +20,15 @@ That last one is why ``eor``/``eoc`` are the important jacks. They are the
 module's *self-awareness*: it announces when it reaches the top (**end of
 rise**) and when it gets back to the bottom (**end of cycle**). On hardware
 you patch ``eoc`` back into ``trig`` and it re-fires itself forever — the
-"krell" patch. In THIS rack that cable is legal but inert: feedback closes
-only through the ``matrix_mixer`` door (or a buffered sink's ``fill``), and
-every other cycle is severed by the topological sort rather than delayed.
-``loop`` mode is the supported way to the same machine, which is why it is
-here; put something wandering into ``rate_cv`` and the pace never repeats.
-See ``examples/krell_machine.json``.
+"krell" patch. That works here too (since 2026-09-16 any cable that closes
+a loop is read one block late — see the feedback notes in MODULES.md):
+OR the returning ``eoc`` with a short starter pulse through a [logic]
+module into ``trig`` (an input takes one cable, and the loop needs one
+poke to begin), and the period is the cycle plus one block.
+``examples/krell_feedback.json`` is exactly that. ``loop`` mode is the
+same machine with no block of latency and no starter, which is why it is
+here; put something wandering into ``rate_cv`` and the pace never
+repeats. See ``examples/krell_machine.json``.
 
 Three modes, which are three different answers to "what does the gate mean?"
 

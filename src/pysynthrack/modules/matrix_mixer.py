@@ -8,14 +8,17 @@ scales its whole output column (duck a bus from an envelope; one jack
 per column, not per node — sixteen CV jacks would be soup).
 
 **Feedback patching** is the real feature. The backend topo-sorts a DAG,
-so a loop (matrix → delay → back into the matrix) cannot order — the
-matrix is the sanctioned door: at compile time, any cable INTO a
-matrix_mixer that would close a cycle is marked a **late-read**: the
-matrix reads that source's *previous block* (one block of feedback
-latency — the standard software-modular answer; at 48 kHz / 512 that's
-~10.7 ms in the loop). Feed-forward cables through the matrix stay
-zero-latency, and the rest of the graph sorts exactly as before. The
-first block of a fresh loop reads silence (pinned).
+so a loop (matrix → delay → back into the matrix) cannot order — at
+compile time, any cable INTO a matrix_mixer that would close a cycle is
+marked a **late-read**: the matrix reads that source's *previous block*
+(one block of feedback latency — the standard software-modular answer;
+at 48 kHz / 512 that's ~10.7 ms in the loop). Feed-forward cables
+through the matrix stay zero-latency, and the rest of the graph sorts
+exactly as before. The first block of a fresh loop reads silence
+(pinned). Since 2026-09-16 *every* loop closes this way, through any
+module — the matrix is no longer the only door, but it is the
+**guarded** one: ``soft_clip`` below is what keeps a hot loop on the
+ceiling, and a loop closed elsewhere has no such guardrail.
 
 ``soft_clip`` (default on) is the stability guardrail, shaped so it
 never colors a sane mix: **transparent below 0.95** (bit-exact — a

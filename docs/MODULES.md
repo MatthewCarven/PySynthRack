@@ -135,6 +135,26 @@ their params *are* the mapping.)
 > **VCA**'s audio input is named **`audio`** (and its control input `cv`).
 > Always check a module's ports when wiring.
 
+- **Feedback loops close, one block late.** The engine renders the graph in
+  dependency order, which a loop has none of — so at compile time the cable
+  that *closes* each loop (the one you drew last) becomes a **late-read**:
+  its destination hears the source's *previous block*. Every loop therefore
+  costs exactly one block of latency (~10.7 ms at 48 kHz / 512), sitting on
+  that one cable; feed-forward paths stay instant, and the rest of the graph
+  orders exactly as before. Cables into a [`matrix_mixer`](#matrix_mixer)
+  are chosen first (it has been the feedback door since August, and it is
+  the *guarded* one — its `soft_clip` keeps a hot loop on the ceiling);
+  since 2026-09-16 any other loop closes the same way. That means a
+  self-patched `eoc → trig`, a filter driven by its own envelope follower,
+  a delay regenerating through a filter — all real now. Three things to
+  know: the loop's timing depends on the block size (a `eoc → trig` krell's
+  period is its cycle plus one block); a loop with gain above one and no
+  ceiling grows until it clips (put a [`limiter`](#limiter) in it, or close
+  it through the matrix) — if it ever blows past float range the engine
+  scrubs the loop to silence for a block and counts it rather than
+  poisoning the graph; and to move the block of latency to a different
+  cable, delete and re-draw so that cable is the last one.
+
 ### Backends
 
 The DSP lives behind an `AudioBackend` interface with two implementations:
@@ -2911,7 +2931,7 @@ The **rise/fall function** — the west-coast module that is an envelope, an LFO
 * **Wandering clock, fixed swing** — `mode` `loop`, an [lfo](#lfo) into `rise_cv` only: the period wanders while `eoc` stays a fixed `fall` after every `eor`.
 * **Krell** — `mode` `loop` with something wandering into `rate_cv` (an [lfo](#lfo) on its `random` waveform, a [shift_random](#shift_random)), and `eoc → sample_hold.trig` so every cycle grabs a fresh pitch: a self-playing generative machine whose pace never repeats. See `examples/krell_machine.json`.
 
-> **On self-patching `eoc → trig`.** On hardware that is *the* krell patch, and the cable is legal here — but it will not fire. This rack closes a feedback loop only through the [matrix_mixer](#matrix_mixer) (the sanctioned one-block-delayed door) or a buffered sink's `fill`; any other cycle is severed by the topological sort rather than delayed, so the returning `eoc` never arrives. `loop` mode is the supported way to get the same machine, which is exactly why it exists. Sanctioning gate-rate self-patching is a compiler change, not a module one — it is on the roadmap.
+> **On self-patching `eoc → trig`.** On hardware that is *the* krell patch, and since 2026-09-16 it works here too: any cable that closes a loop is read one block late (see *Feedback loops* under Cabling rules). `trig` takes one cable and the loop needs one poke to begin, so OR the returning `eoc` with a short starter pulse through a [`logic`](#logic) module — `examples/krell_feedback.json` is exactly that, and its period is the cycle plus one block. `loop` mode is the same machine with no latency and no starter, which is why it exists; `examples/krell_machine.json` uses it.
 
 #### `clock`
 
@@ -3324,7 +3344,12 @@ sidechain a pad, a band of a track can shape a synth.
 | `gain` | `1.0` | ≥0 | Scales the output `cv`. |
 
 **Patching.** `crossover.low → audio_to_cv.in`, then `audio_to_cv.cv →
-oscillator.amp_cv`. See `examples/envelope_follower_wah.json`.
+oscillator.amp_cv`. Or the **self-wah**: `filter.out → audio_to_cv.in`
+and `audio_to_cv.cv → filter.cutoff_cv` — the filter's own output
+envelope opens it, so attacks brighten and decays close down. That is a
+loop, and it closes one block late (see *Feedback loops* under Cabling
+rules; before 2026-09-16 this cable was silently inert). See
+`examples/envelope_follower_wah.json`.
 
 #### `cv_to_audio`
 
@@ -3386,17 +3411,19 @@ grid (negative = phase flip; identity diagonal default = a bit-exact
 (one jack per column — per-node CV would be sixteen jacks of soup).
 
 **Feedback.** The backend renders a topo-sorted DAG, so a loop
-(matrix → delay → back into the matrix) has no valid order — unless it
-passes through this module: at compile time, any cable INTO a
-matrix_mixer that would close a cycle is marked a **late-read** — the
-matrix reads that source's *previous block*, giving the loop exactly
-**one block of feedback latency** (~10.7 ms at 48 kHz/512; the
-standard software-modular answer). Feed-forward paths through the
-matrix stay zero-latency, the rest of the graph sorts exactly as
-before, and a fresh loop's first block reads silence. Suddenly whole
-patch classes exist: regenerating echo networks, shimmer
-(reverb + pitch_shifter in a loop), drone feedback, cross-coupled
-delay lines.
+(matrix → delay → back into the matrix) has no valid order — at
+compile time, any cable INTO a matrix_mixer that would close a cycle
+is marked a **late-read** — the matrix reads that source's *previous
+block*, giving the loop exactly **one block of feedback latency**
+(~10.7 ms at 48 kHz/512; the standard software-modular answer).
+Feed-forward paths through the matrix stay zero-latency, the rest of
+the graph sorts exactly as before, and a fresh loop's first block reads
+silence. Suddenly whole patch classes exist: regenerating echo
+networks, shimmer (reverb + pitch_shifter in a loop), drone feedback,
+cross-coupled delay lines. Since 2026-09-16 *every* loop closes this
+way, through any module (see *Feedback loops* under Cabling rules) —
+the matrix is no longer the only door, but it is the **guarded** one:
+`soft_clip` is what keeps a hot loop on the ceiling.
 
 ``soft_clip`` (default **on**) is the stability guardrail, shaped to
 never color a sane mix: **transparent below 0.95** (bit-exact — a
@@ -4144,6 +4171,7 @@ loads in the app. Notable ones referenced above:
 - `pitch_shifter_harmonizer.json` — a stereo major triad from one module: `semitones` +4, `harmony` +7, `spread` 1 → third left, fifth right, root centred.
 - `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.
 - `organ_leslie.json` — the pairing: a self-playing maj7 organ through the [`rotary`](#rotary), a 5 BPM clock on `fast` flipping the Leslie between chorale and tremolo every six seconds so the horn and drum chase each other.
+- `krell_feedback.json` — the real krell self-patch: the [`function_generator`](#function_generator) in `trigger` mode with its own `eoc` OR'd (through [`logic`](#logic)) with a 12-second starter pulse back into `trig`. The loop closes one block late — the feedback door, generalized 2026-09-16. Same dice, quantizer and voice as `krell_machine.json`, which runs the no-latency `loop` mode version.
 - `granular_cloud.json` — a shift-register pluck melody into the [`granular`](#granular) at `pitch` +12, `density` 30, `size` 120 ms, `position` 0.15: every pluck gets an octave-up grain cloud trailing 300 ms behind it, through a hall.
 - `granular_haze.json` — the cloud proper: a pluck melody into the [`granular`](#granular) with `spray_time` 1 (asynchronous), `spray_pos` 0.22, `spray_pitch` 25 ct and `width` 1 — every note dissolves into a stereo haze a quarter-second behind itself; `seed` picks the cloud.
 - `granular_freeze.json` — **tap F** to freeze: a [`key_trigger`](#key_trigger) latch on the [`granular`](#granular)'s `freeze` holds the last two seconds of a pluck melody while a slow triangle [`lfo`](#lfo) on `position_cv` scans them; tap again to release and recording resumes with no hole.

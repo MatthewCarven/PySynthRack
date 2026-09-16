@@ -76,8 +76,15 @@ already three light before slice 2 added one -- count with
 > 2026-09-16: **`granular` slice 3 shipped — the module is complete.**
 > Suite **3416**, 122 examples (fourteen banked, plus a re-listen:
 > `clock_divider_swing.json`'s fills LFO was dead-wired since 09-11,
-> found by a new cable-port tripwire in the examples sweep). Next: the
-> feedback door, possibility follow-ons, the 2026-08-04 keep-list.
+> found by a new cable-port tripwire in the examples sweep).
+>
+> 2026-09-16 (later): **the feedback door is general** — every loop
+> closes, one block late, through any module; the matrix is the guarded
+> door, no longer the only one. Suite **3563**, 123 examples (fifteen
+> banked: `krell_feedback.json` joins; `envelope_follower_wah.json`
+> wahs for the first time since May). Next: the UI follow-up (draw late
+> cables), possibility follow-ons, the 2026-08-04 keep-list, the
+> cable-loader fail-soft.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -127,6 +134,79 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-16 (last) — the feedback door, generalized: built
+
+Matthew: "as recommended please Claude, execute the plan please." Built
+to the plan in the entry below, all four decisions as recommended.
+
+**The change.** `_compute_late_edges` keeps pass 1 byte-for-byte —
+cables into a `matrix_mixer`, forward order — and adds pass 2: every
+remaining cable, walked in *reverse* `patch.cables` order, that can
+still reach its own source through the non-late, non-fill graph goes
+late. The render side needed nothing: the seed and stash in
+`render_block_multi` already key on `_late_edges`. One addition there:
+a late source that produced a non-finite value is scrubbed to zero
+before it is stashed, and counted (`_late_nonfinite`), so a loop that
+blows past float range costs one silent block instead of poisoning the
+graph forever.
+
+**The recipe held, and caught the one bug.** Eight reference renders —
+the three matrix loops, the governor, four loop-free examples — with
+their late sets and topological orders, captured before editing. After
+the first cut the governor's late set had grown by its own `fill`
+cable: pass 2 saw a cable whose destination reaches its source and
+marked it, not knowing that a fill cable is already a delayed edge
+seeded from the sink itself. Skipping fill cables in pass 2 was the
+fix; all eight then matched exactly, render, late set and order. The
+krell example had to be dropped from the reference set — it renders
+differently run to run on its own (unseeded noise / random LFO), which
+is not the door's doing but is worth knowing.
+
+**What it opens.** `eoc → trig` fires forever — the real krell — with
+a period of exactly `cycle + block − 1` samples at 512 *and* 64 (one
+block of loop latency, less a sample of edge accounting; block-size
+dependence is the door's documented property, as it was for the
+matrix). The May self-wah wahs: its loop changes the render and stays
+under 1.0, and the shipped example now sorts the follower *after* the
+filter with the return cable late. A `mixer` self-loop with a DC
+driver walks the geometric staircase one generation per block at every
+sample — the matrix test's twin through the new door. Two loops and a
+figure-eight all sort. Closing or opening a loop while running
+recompiles cleanly.
+
+**Two things the smoke tests taught.** A bare `eoc → trig` self-loop
+never *starts* — nothing pokes it — and `trig` takes one cable, so the
+starter and the return are OR'd through `logic`; and the starter pulse
+must be shorter than the fg's cycle, or the OR never falls and the
+returning `eoc` is not a rising edge (my first starter was 0.6 s long
+and the smoke "fired once", exactly the failure the door exists to
+end). And a square wave is no DC driver for a staircase pin: sample 0
+flips sign block to block. `constant → cv_to_audio` is.
+
+**Example `krell_feedback.json`** (banked): the krell's dice, quantizer
+and voice with the engine in `trigger` mode, its `eoc` OR'd with a
+12-second starter (bpm 20, division 0.25, pulse 0.01 — all panel-
+reachable) back into `trig`. `krell_machine.json` stays on `loop` mode
+as the no-latency version; its tripwire's message no longer says the
+cable "does not close in this rack".
+
+**21 tests** in `tests/test_feedback_door.py`, plus a new examples-sweep
+tripwire — Kahn's leftover tail must be empty for every example (before
+today the self-wah sat in that tail for four months). **Suite 3563.**
+123 examples. Docs: a *Feedback loops* paragraph under Cabling rules;
+the function generator's "legal but inert" note and docstring
+rewritten; the matrix is the "guarded" door now, not the "sanctioned"
+one; the self-wah is documented as the loop it is.
+
+**Follow-up, its own small session:** draw late-read cables
+differently in the node editor and say "feedback: N cables read one
+block late" on compile — `_late_edges` and `_late_nonfinite` are the
+data. And fg Follow-on 4 (`eor → trig`) is unblocked.
+
+**Yours: 7 commits to push.**
 
 ---
 

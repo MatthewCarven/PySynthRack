@@ -493,9 +493,12 @@ class TestKrellExample:
 
         The first draft of this example used `eoc -> logic -> trig` and
         rendered perfectly while firing once per starter-clock pulse,
-        because this rack severs any feedback cycle that does not pass
-        through the matrix_mixer door. A patch that merely LOOKS like a
-        krell is the failure mode worth a tripwire.
+        because (until 2026-09-16) this rack severed any feedback cycle
+        that did not pass through the matrix_mixer door. A patch that
+        merely LOOKS like a krell is the failure mode worth a tripwire.
+        The door is general now and `krell_feedback.json` IS the
+        self-patch (see test_feedback_door.py); this example stays on
+        `loop` mode -- the ears passed on it -- as the no-latency route.
         """
         from pathlib import Path
 
@@ -505,8 +508,8 @@ class TestKrellExample:
         patch = load_patch(path)
         fg = next(m for m in patch if m.TYPE == "function_generator")
         assert fg.params["mode"] == "loop", (
-            "the krell engine must free-run: a self-patched eoc -> trig "
-            "cable does not close in this rack"
+            "this krell free-runs on loop mode (the self-patched version "
+            "is krell_feedback.json)"
         )
         b = NumpyBackend(sample_rate=44100, block_size=256)
         b.compile(patch)

@@ -62,6 +62,38 @@ def test_example_cables_land_on_real_ports(path):
         )
 
 
+@pytest.mark.parametrize("path", EXAMPLE_FILES, ids=lambda p: p.stem)
+def test_example_has_no_severed_cycle(path):
+    """Since 2026-09-16 every cable that would close a cycle becomes a
+    late-read (the feedback door, generalized), so Kahn's leftover tail
+    -- modules the sort could not emit -- must be EMPTY for every
+    example. Before the door, ``envelope_follower_wah.json``'s self-wah
+    loop sat in that tail for four months, compiling and rendering with
+    its cable inert. A non-empty tail here means a loop the door did not
+    close."""
+    patch = load_patch(path)
+    backend = NumpyBackend(sample_rate=44100, block_size=256)
+    backend.compile(patch)
+    in_deg = {m: 0 for m in patch.modules}
+    for c in patch.cables:
+        if backend._is_delayed_edge(patch, c):
+            continue
+        in_deg[c.dst_module_id] += 1
+    ready = [m for m, d in in_deg.items() if d == 0]
+    order = []
+    while ready:
+        m = ready.pop(0)
+        order.append(m)
+        for c in patch.cables_out_of(m):
+            if backend._is_delayed_edge(patch, c):
+                continue
+            in_deg[c.dst_module_id] -= 1
+            if in_deg[c.dst_module_id] == 0:
+                ready.append(c.dst_module_id)
+    severed = [(patch.modules[m].TYPE, m) for m in patch.modules if m not in order]
+    assert severed == [], f"{path.name}: cycle members the sort could not place: {severed}"
+
+
 def test_ring_governor_example_keeps_its_feedback_loop():
     """The governor demo's whole point is the fill -> ratio_cv cycle; lock
     it so a future edit can't quietly sever the loop and leave a patch

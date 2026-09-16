@@ -452,7 +452,56 @@ same session.
       because it is literally the same function.
       40 tests; suite **2930**. Example `krell_machine.json`.
       **EARS PASSED 2026-08-29** — Matthew: "works fine".
-- [ ] **Sanction gate-rate feedback (`eoc → trig`)** — FOUND while
+- [x] **Sanction gate-rate feedback (`eoc → trig`) — THE FEEDBACK DOOR,
+      GENERALIZED — SHIPPED 2026-09-16** (Matthew: "as recommended
+      please Claude, execute the plan"). Built to the plan below,
+      all four decisions as recommended. `_compute_late_edges` keeps
+      pass 1 byte-for-byte (cables into a matrix, forward order) and
+      adds pass 2: every remaining cable, in REVERSE `patch.cables`
+      order, that can still reach its own source through the non-late
+      graph goes late; a buffered sink's `fill` cable is skipped (it is
+      already a delayed edge in its own right — the one fix pass 2
+      needed, caught by the governor reference). Non-finite values in a
+      late source are scrubbed to zero at the stash and counted in
+      `backend._late_nonfinite`. **Eight reference renders + late sets
+      + topo orders (the three matrix examples, the governor, and four
+      loop-free examples), captured before editing: all identical
+      after.** (`krell_machine.json` dropped from the set — it renders
+      differently run to run on its own, unseeded noise/random LFO;
+      not the door.) 21 tests in `tests/test_feedback_door.py`: matrix
+      examples keep their single into-the-matrix late edge; the
+      governor's fill is delayed but never late; last-drawn cable goes
+      late and the forward chain sorts (and drawing the return first
+      moves it — documented); a self-loop marks itself; two loops + a
+      figure-eight fully sort; no cycle → no late edges; late set
+      survives save/reload; the mixer-door staircase (a DC driver
+      through `constant → cv_to_audio`, one generation per block at
+      EVERY sample — the matrix test's twin); a fresh loop's first block
+      reads silence; **`eoc → trig` fires forever with period exactly
+      `cycle + block − 1` at 512 AND 64** (one block of loop latency
+      less a sample of edge accounting); the starter alone is not a
+      krell; the self-wah loop changes the render and stays ≤ 1.0, and
+      the shipped example sorts the follower AFTER the filter with its
+      cable late; a gain-2 loop stays finite and trips the counter, a
+      tame one never does; closing/opening a loop while running
+      recompiles cleanly; `krell_feedback.json` self-plays through the
+      real self-patch (>10 notes in 20 s, breathing). Plus a new
+      examples-sweep tripwire `test_example_has_no_severed_cycle`
+      (Kahn's leftover tail empty for all 123 examples). Suite
+      **3563**. Docs: Cabling rules gained a *Feedback loops*
+      paragraph; the fg entry's "legal but inert" note and docstring
+      rewritten; matrix_mixer "sanctioned" → "guarded" door;
+      audio_to_cv's self-wah documented as a loop. Two smoke-test
+      lessons: a self-loop `eoc → trig` alone NEVER starts — `trig`
+      takes one cable, so the starter and the return are OR'd through
+      `logic`, and the starter pulse must be SHORTER than the cycle or
+      the OR never falls and there is no rising edge (a 0.6 s starter
+      killed the first smoke); and a square wave is no DC driver for a
+      staircase pin (sample 0 flips sign block to block). **Follow-up
+      (UI, own small session):** draw late-read cables differently +
+      a compile status line — the `_late_edges` set and the
+      `_late_nonfinite` counter are the data. **Unblocked:** fg
+      Follow-on 4 (`eor → trig` rise-only retrigger). Original entry:
       building the example, and it is a **compiler** job, not a module
       one, so it is queued rather than done. On hardware, `eoc` patched
       back to `trig` is *the* krell patch. Here that cable is legal and
@@ -574,8 +623,9 @@ same session.
       mono). No example needed. Docs carry the honest caveat: the CVs
       are collapsed to mono by SUM, so `velocity_cv → fall_cv` is a
       one-note-at-a-time trick until per-voice rates exist.
-- [ ] **Follow-on 4** — `eor`-into-`trig` as a rise-only retrigger once
-      feedback closes (the compiler job).
+- [ ] **Follow-on 4** — `eor`-into-`trig` as a rise-only retrigger.
+      UNBLOCKED 2026-09-16: the feedback door is general now; this is
+      an example + a paragraph, not a compiler job.
 - [x] **Per-voice rise/fall rates** — SHIPPED 2026-09-14, same day it
       was surfaced (Matthew: "execute"). A `(V, F)` `rise_cv` / `fall_cv`
       against a `(V, F)` trigger with the same V gives each slot its own

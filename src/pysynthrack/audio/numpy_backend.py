@@ -1137,6 +1137,11 @@ class NumpyBackend(AudioBackend):
         # recompiles so an edit near a running loop doesn't drop a block.
         self._late_edges: set[tuple[int, str, int, str]] = set()
         self._late_prev: dict[tuple[int, str], np.ndarray] = {}
+        # Blocks in which a late-read source produced a non-finite value
+        # and was scrubbed to zero before being stashed (a feedback loop
+        # that blew past float range). A counter, not a silencer: the
+        # loop keeps running, the readout can say it happened.
+        self._late_nonfinite: int = 0
         self._state: dict[int, dict[str, Any]] = {}
         # Parallel map from module_id → module TYPE that owned the state.
         # Used in compile() to discard state when a patch swap reuses the
@@ -1253,10 +1258,11 @@ class NumpyBackend(AudioBackend):
             source = getattr(patch, "source_path", None)
             self._patch_dir = str(Path(source).resolve().parent) if source else None
             self._media_path_cache = {}
-            # Feedback door: cables into a matrix_mixer that would close
-            # a cycle become LATE-READS (previous-block buffer, one block
-            # of loop latency) — computed BEFORE the sort so the sort can
-            # ignore them and the rest of the graph orders as ever.
+            # Feedback door: any cable that would close a cycle becomes
+            # a LATE-READ (previous-block buffer, one block of loop
+            # latency) — cables into a matrix_mixer first, then whatever
+            # still closes a loop — computed BEFORE the sort so the sort
+            # can ignore them and the rest of the graph orders as ever.
             self._late_edges = self._compute_late_edges(patch)
             self._topo_order = self._topological_sort(patch)
             # Precompute which output ports carry CV, for the UI meters.
@@ -1472,14 +1478,13 @@ class NumpyBackend(AudioBackend):
     def _is_delayed_edge(self, patch: Patch, cable) -> bool:
         """True for cables carrying a one-block-DELAYED signal.
 
-        Two kinds today: the buffered sink's ``fill`` cv out (the
-        governor loop), and any cable compile marked a matrix_mixer
-        LATE-READ (a cable into the matrix that would close a cycle —
-        see :meth:`_compute_late_edges`). Both are real signal paths
-        but not within-block dependencies: their values are seeded from
-        the previous block before the render walk, which is exactly
-        what lets a feedback loop close while the rest of the graph
-        still sorts deterministically.
+        Two kinds: the buffered sink's ``fill`` cv out (the governor
+        loop), and any cable compile marked a LATE-READ (a cable that
+        would close a cycle -- see :meth:`_compute_late_edges`). Both
+        are real signal paths but not within-block dependencies: their
+        values are seeded from the previous block before the render
+        walk, which is exactly what lets a feedback loop close while
+        the rest of the graph still sorts deterministically.
         """
         src = patch.modules.get(cable.src_module_id)
         if (
@@ -1498,43 +1503,45 @@ class NumpyBackend(AudioBackend):
     def _compute_late_edges(
         self, patch: Patch
     ) -> set[tuple[int, str, int, str]]:
-        """Find the cables into a matrix_mixer that would close a cycle.
+        """Find every cable that would close a cycle, in two passes.
 
-        For each cable into a matrix (audio rows AND column CVs — a
-        cycle through ``audio_to_cv`` into a cv jack would poison the
-        sort just the same), ask whether the matrix can already reach
-        the cable's source through the live graph (delayed edges — fill
-        outs and late-reads marked earlier in this very scan —
-        excluded). If it can, the cable would close a cycle: mark it
-        late. Scanning in ``patch.cables`` order makes the marking
-        deterministic — with two cables closing the same loop, the
-        first stays... no: the first FOUND closing a cycle goes late,
-        which may already break the loop for the second (it then stays
-        zero-latency). Cycles that avoid every matrix_mixer are
-        untouched (Kahn's leftover tail, as ever — the matrix is the
-        sanctioned door).
+        A cable "closes a cycle" when its destination can already reach
+        its source through the live graph (delayed edges -- fill outs
+        and late-reads marked earlier in this very scan -- excluded).
+        Such a cable becomes a LATE-READ: its consumer sees the
+        previous block's buffer, and the sort ignores it. Marking one
+        cable breaks the cycle for every other member, so each loop
+        costs exactly one block of latency, at that cable.
+
+        **Pass 1 -- the matrix door (unchanged since 2026-08-04).** Cables
+        into a ``matrix_mixer`` (audio rows AND column CVs -- a cycle
+        through ``audio_to_cv`` into a cv jack would poison the sort
+        just the same), in ``patch.cables`` order. Kept first and kept
+        identical so every loop that already closed through the matrix
+        compiles to the same late set and renders bit-for-bit as
+        before; the matrix stays the *guarded* door, the one with a
+        soft ceiling.
+
+        **Pass 2 -- every other loop (2026-09-16).** The remaining cables
+        in REVERSE ``patch.cables`` order: the cable that closed the
+        loop -- drawn last, saved last -- is the one that reads a block
+        late, so the feed-forward path keeps zero latency (forward
+        order would put the block on ``osc -> delay -> filter``'s
+        forward leg instead of ``filter -> delay``'s return). A
+        self-loop (``eoc -> trig``) is a cycle of length one and marks
+        itself. Cycles that pass 1 already broke are not cycles here.
+
+        Deterministic either way: the same patch, saved and reloaded,
+        gets the same late set (JSON keeps cable order).
         """
         late: set[tuple[int, str, int, str]] = set()
-        matrix_ids = {
-            mid for mid, m in patch.modules.items() if m.TYPE == "matrix_mixer"
-        }
-        if not matrix_ids:
-            return late
-        for cable in patch.cables:
-            if cable.dst_module_id not in matrix_ids:
-                continue
-            key = (
-                cable.src_module_id,
-                cable.src_port,
-                cable.dst_module_id,
-                cable.dst_port,
-            )
-            # BFS: can the matrix reach this cable's source?
+
+        def _closes_cycle(cable) -> bool:
+            # BFS: can this cable's destination reach its source?
             target = cable.src_module_id
             seen = {cable.dst_module_id}
             frontier = [cable.dst_module_id]
-            found = False
-            while frontier and not found:
+            while frontier:
                 mid = frontier.pop()
                 for out_cable in patch.cables_out_of(mid):
                     out_key = (
@@ -1554,12 +1561,45 @@ class NumpyBackend(AudioBackend):
                         continue
                     nxt = out_cable.dst_module_id
                     if nxt == target:
-                        found = True
-                        break
+                        return True
                     if nxt not in seen:
                         seen.add(nxt)
                         frontier.append(nxt)
-            if found:
+            return False
+
+        def _key(cable):
+            return (
+                cable.src_module_id,
+                cable.src_port,
+                cable.dst_module_id,
+                cable.dst_port,
+            )
+
+        # Pass 1: the matrix door, forward order.
+        matrix_ids = {
+            mid for mid, m in patch.modules.items() if m.TYPE == "matrix_mixer"
+        }
+        if matrix_ids:
+            for cable in patch.cables:
+                if cable.dst_module_id not in matrix_ids:
+                    continue
+                if _closes_cycle(cable):
+                    late.add(_key(cable))
+        # Pass 2: everything else, reverse order. A buffered sink's
+        # ``fill`` cable is already a delayed edge in its own right (it
+        # is seeded from the sink, not from _late_prev) -- never mark it.
+        for cable in reversed(patch.cables):
+            key = _key(cable)
+            if key in late:
+                continue
+            src_mod = patch.modules.get(cable.src_module_id)
+            if (
+                src_mod is not None
+                and src_mod.TYPE in NumpyBackend._BUFFERED_SPEAKERS
+                and cable.src_port == "fill"
+            ):
+                continue
+            if _closes_cycle(cable):
                 late.add(key)
         return late
 
@@ -2112,11 +2152,20 @@ class NumpyBackend(AudioBackend):
                     buffers[(module_id, module.OUTPUT_PORTS[0].name)] = result
 
         # Stash the fresh late-read source buffers for the next block's
-        # seed (the source rendered after the matrix and overwrote its
-        # key above, so this is this block's real output).
+        # seed (the source rendered after its consumer and overwrote its
+        # key above, so this is this block's real output). A loop that
+        # blew past float range would otherwise seed inf/NaN into next
+        # block and poison everything downstream forever; scrub it to
+        # zero and count it -- the loop keeps running from the dry
+        # input, the readout can say it happened. (The matrix door's
+        # soft_clip is the guardrail that keeps this from ever firing;
+        # a bare loop has none, like hardware.)
         for key in late_srcs:
             buf = buffers.get(key)
             if buf is not None:
+                if not np.all(np.isfinite(buf)):
+                    buf = np.nan_to_num(buf, nan=0.0, posinf=0.0, neginf=0.0)
+                    self._late_nonfinite += 1
                 self._late_prev[key] = buf
 
         # CV meters: one block-mean scalar per cv output port. Cheap
