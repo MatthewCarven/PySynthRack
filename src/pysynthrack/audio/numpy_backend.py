@@ -1603,6 +1603,25 @@ class NumpyBackend(AudioBackend):
                 late.add(key)
         return late
 
+    # ----- feedback-door observables (for the UI) -----------------------------
+
+    def feedback_cables(self, patch: Patch) -> set[tuple[int, str, int, str]]:
+        """The cables that read one block late if ``patch`` compiled now.
+
+        A pure function of the patch (:meth:`_compute_late_edges` -- no
+        lock, no state touched), so the node editor can colour a loop
+        the moment it is drawn, running or not, and the answer is the
+        same one the next compile will give.
+        """
+        return self._compute_late_edges(patch)
+
+    def feedback_scrubs(self) -> int:
+        """Blocks so far in which a late-read source went non-finite and
+        was scrubbed to silence before being fed back (a loop that blew
+        past float range -- see :meth:`render_block_multi`). Lock-free:
+        one int, read by the GUI tick."""
+        return int(self._late_nonfinite)
+
     # ----- start / stop ----------------------------------------------------
 
     def start(self) -> None:

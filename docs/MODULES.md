@@ -153,7 +153,12 @@ their params *are* the mapping.)
   it through the matrix) — if it ever blows past float range the engine
   scrubs the loop to silence for a block and counts it rather than
   poisoning the graph; and to move the block of latency to a different
-  cable, delete and re-draw so that cable is the last one.
+  cable, delete and re-draw so that cable is the last one. **You can see
+  all of this in the editor:** the late cable is drawn **amber** (and
+  thicker) the moment the loop closes, the status bar says which cable it
+  is, and the toolbar's `loops` slot counts them — hover it for the list.
+  While audio runs, `loops N !K` in the warning colour means K blocks of a
+  loop blew past float range and were scrubbed.
 
 ### Backends
 

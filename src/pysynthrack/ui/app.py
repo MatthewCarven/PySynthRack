@@ -96,6 +96,7 @@ from . import scope_math
 from ..modules.transient_shaper import TRANSIENT_SHAPER_SPEEDS
 from .dsp_load import (
     IDLE_COLOR,
+    WARN_COLOR,
     diagnose,
     format_dsp_load,
     format_host_api,
@@ -202,6 +203,12 @@ BUFFER_SLIDER_TAG = "buffer_slider"
 DSP_TEXT_TAG = "dsp_load_text"
 XRUN_TEXT_TAG = "xrun_text"
 HOSTAPI_TEXT_TAG = "hostapi_text"
+LOOPS_TEXT_TAG = "loops_text"
+LOOPS_TOOLTIP_TAG = "loops_tooltip_text"
+# A cable that closes a feedback loop is drawn in this (amber) so the one
+# block of latency it carries is never a mystery. See _refresh_late_links.
+LATE_LINK_COLOR = (235, 160, 40, 255)
+LATE_LINK_HOVER_COLOR = (255, 200, 90, 255)
 DSP_TOOLTIP_TAG = "dsp_load_tooltip_text"
 XRUN_TOOLTIP_TAG = "xrun_tooltip_text"
 
@@ -224,6 +231,13 @@ class App:
         self._attr_to_port: dict[int, tuple[int, str, str]] = {}  # attr_id → (mod, port, dir)
         self._port_to_attr: dict[tuple[int, str, str], int] = {}  # (mod, port, dir) → attr_id
         self._link_to_cable: dict[int, Cable] = {}
+        # Feedback door: the cable keys the backend will read one block
+        # late for the CURRENT patch (recomputed on every cable/module
+        # change, not per frame), the dpg theme that paints them, and
+        # the last readout text so the toolbar is only touched on change.
+        self._late_keys: set[tuple[int, str, int, str]] = set()
+        self._late_link_theme: int | None = None
+        self._loops_text: str = ""
 
         # dpg-id → (module_id, param_name) for every scrollable param widget,
         # so a mouse wheel over one can nudge its value. Filled as nodes are
@@ -506,6 +520,19 @@ class App:
                         "PortAudio host API the output stream opened on.\n"
                         "MME is the Windows default and the most "
                         "jitter-prone; WASAPI generally schedules better."
+                    )
+                dpg.add_spacer(width=12)
+                # Feedback loops in the patch: how many cables read one
+                # block late (drawn amber in the editor), and -- while
+                # running -- whether any loop blew past float range and
+                # got scrubbed. Lives here rather than in the status bar
+                # because a status line is gone the next time anything
+                # else has something to say. See _refresh_late_links.
+                dpg.add_text("loops --", tag=LOOPS_TEXT_TAG, color=IDLE_COLOR)
+                with dpg.tooltip(LOOPS_TEXT_TAG):
+                    dpg.add_text(
+                        "No feedback loops in this patch.",
+                        tag=LOOPS_TOOLTIP_TAG,
                     )
 
             dpg.add_separator()
@@ -3744,6 +3771,14 @@ class App:
         link_id = dpg.add_node_link(out_attr, in_attr, parent=EDITOR_TAG)
         self._link_to_cable[link_id] = cable
         self._recompile_if_running()
+        self._refresh_late_links()
+        if self._cable_key(cable) in self._late_keys:
+            # The moment a loop closes is the moment the block of
+            # latency matters; the amber cable shows WHERE, this says so.
+            self._set_status(
+                f"Loop closed: {self._cable_label(cable)} reads one block "
+                "late (feedback)"
+            )
 
     def _on_link_deleted(self, sender, app_data) -> None:
         link_id = app_data
@@ -3757,6 +3792,7 @@ class App:
             )
         # DPG removes the visual link itself; we only update our state.
         self._recompile_if_running()
+        self._refresh_late_links()
 
     def _set_module_param(self, module_id: int, name: str, value) -> bool:
         """Write a param to the *model* first, then tell the backend.
@@ -4973,6 +5009,7 @@ class App:
                 f"Deleted: {len(selected_links)} cable(s), {len(selected_nodes)} node(s)"
             )
             self._recompile_if_running()
+            self._refresh_late_links()
 
     def _on_toggle_audio(self) -> None:
         if self.backend.is_running:
@@ -5007,6 +5044,7 @@ class App:
         self._reset_zoom_state()
         self.patch = Patch()
         self._recompile_if_running()
+        self._refresh_late_links()
         self._set_status("New patch")
 
     def _on_open(self) -> None:
@@ -5407,6 +5445,7 @@ class App:
         # Restore the saved window size/position (off-screen-safe).
         self._apply_window_geometry()
 
+        self._refresh_late_links()
         self._set_status(f"Loaded: {os.path.basename(path)}")
 
     # ----- helpers --------------------------------------------------------
@@ -5491,6 +5530,7 @@ class App:
         dpg.set_value(DSP_TEXT_TAG, format_dsp_load(load))
         dpg.configure_item(DSP_TEXT_TAG, color=load_color(load))
         self._update_stream_health(load)
+        self._update_loops_readout()
 
     def _update_stream_health(self, load: float | None) -> None:
         """Refresh the underflow count and host-API readouts.
@@ -5515,6 +5555,133 @@ class App:
             dpg.set_value(HOSTAPI_TEXT_TAG, format_host_api(host_api))
         if dpg.does_item_exist(XRUN_TOOLTIP_TAG):
             dpg.set_value(XRUN_TOOLTIP_TAG, diagnose(load, xruns))
+
+    # ----- feedback loops: amber cables + the toolbar readout -------------
+
+    @staticmethod
+    def _cable_key(cable: Cable) -> tuple[int, str, int, str]:
+        return (
+            cable.src_module_id,
+            cable.src_port,
+            cable.dst_module_id,
+            cable.dst_port,
+        )
+
+    def _cable_label(self, cable: Cable) -> str:
+        """``type#id.port -> type#id.port`` -- short and unambiguous, for
+        the status bar and the loops tooltip (ASCII only: it is
+        painted by the DPG font)."""
+        def _m(mid: int) -> str:
+            module = self.patch.modules.get(mid)
+            return f"{module.TYPE}#{mid}" if module is not None else f"#{mid}"
+        return (
+            f"{_m(cable.src_module_id)}.{cable.src_port} -> "
+            f"{_m(cable.dst_module_id)}.{cable.dst_port}"
+        )
+
+    def _ensure_late_link_theme(self) -> int | None:
+        if self._late_link_theme is not None:
+            return self._late_link_theme
+        try:
+            with dpg.theme() as theme:
+                with dpg.theme_component(dpg.mvNodeLink):
+                    dpg.add_theme_color(
+                        dpg.mvNodeCol_Link, LATE_LINK_COLOR,
+                        category=dpg.mvThemeCat_Nodes,
+                    )
+                    dpg.add_theme_color(
+                        dpg.mvNodeCol_LinkHovered, LATE_LINK_HOVER_COLOR,
+                        category=dpg.mvThemeCat_Nodes,
+                    )
+                    dpg.add_theme_color(
+                        dpg.mvNodeCol_LinkSelected, LATE_LINK_HOVER_COLOR,
+                        category=dpg.mvThemeCat_Nodes,
+                    )
+                    dpg.add_theme_style(
+                        dpg.mvNodeStyleVar_LinkThickness, 4.0,
+                        category=dpg.mvThemeCat_Nodes,
+                    )
+        except Exception:
+            return None
+        self._late_link_theme = theme
+        return theme
+
+    def _refresh_late_links(self) -> None:
+        """Recolour the cables the feedback door will read one block late.
+
+        Asks the backend which cables of the CURRENT patch close a loop
+        (a pure function of the patch -- the same answer the next
+        compile gives, so this is right before Start too), binds the
+        amber theme to those links and the default to every other, and
+        rewrites the toolbar ``loops`` readout. Called on every cable or
+        module change and on load/new, never per frame. A backend
+        without the observable (the pyo stub) leaves everything as it
+        is.
+        """
+        finder = getattr(self.backend, "feedback_cables", None)
+        late: set[tuple[int, str, int, str]] = set()
+        if finder is not None:
+            try:
+                late = set(finder(self.patch))
+            except Exception:
+                late = set()
+        self._late_keys = late
+        theme = self._ensure_late_link_theme() if late else self._late_link_theme
+        for link_id, cable in list(self._link_to_cable.items()):
+            is_late = self._cable_key(cable) in late
+            try:
+                if is_late and theme is not None:
+                    dpg.bind_item_theme(link_id, theme)
+                else:
+                    dpg.bind_item_theme(link_id, 0)
+            except Exception:
+                # A link deleted this frame is a freed item; nothing to paint.
+                pass
+        self._update_loops_readout(force=True)
+
+    def _update_loops_readout(self, force: bool = False) -> None:
+        """The toolbar ``loops`` slot: ``loops --`` (none), ``loops N``
+        (N cables read one block late), and while running ``loops N !K``
+        in the warning colour when K blocks of a loop have been scrubbed
+        for going non-finite. Touches dpg only when the text changes."""
+        if not dpg.does_item_exist(LOOPS_TEXT_TAG):
+            return
+        n = len(self._late_keys)
+        scrubs = 0
+        if self.backend.is_running:
+            getter = getattr(self.backend, "feedback_scrubs", None)
+            if getter is not None:
+                try:
+                    scrubs = int(getter())
+                except Exception:
+                    scrubs = 0
+        if n == 0:
+            text, color = "loops --", IDLE_COLOR
+            tip = "No feedback loops in this patch."
+        elif scrubs:
+            text, color = f"loops {n} !{scrubs}", WARN_COLOR
+            tip = (
+                f"{scrubs} block(s) of a feedback loop blew past float range and "
+                "were scrubbed to silence.\nAdd a limiter to the loop, or close "
+                "it through a matrix_mixer (soft_clip)."
+            )
+        else:
+            text, color = f"loops {n}", (200, 200, 200, 255)
+            tip = ""
+        if n:
+            lines = [
+                f"{self._cable_label(c)}  (reads one block late)"
+                for c in self._link_to_cable.values()
+                if self._cable_key(c) in self._late_keys
+            ]
+            head = f"{n} cable(s) close a feedback loop and read one block late (amber):"
+            tip = head + "\n" + "\n".join(lines) + ("\n\n" + tip if tip else "")
+        if force or text != self._loops_text:
+            self._loops_text = text
+            dpg.set_value(LOOPS_TEXT_TAG, text)
+            dpg.configure_item(LOOPS_TEXT_TAG, color=color)
+            if dpg.does_item_exist(LOOPS_TOOLTIP_TAG):
+                dpg.set_value(LOOPS_TOOLTIP_TAG, tip)
 
     def _update_cv_meters(self) -> None:
         """Push the backend's latest per-cv-port levels into the bars.

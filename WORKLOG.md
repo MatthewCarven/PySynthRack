@@ -82,9 +82,11 @@ already three light before slice 2 added one -- count with
 > closes, one block late, through any module; the matrix is the guarded
 > door, no longer the only one. Suite **3563**, 123 examples (fifteen
 > banked: `krell_feedback.json` joins; `envelope_follower_wah.json`
-> wahs for the first time since May). Next: the UI follow-up (draw late
-> cables), possibility follow-ons, the 2026-08-04 keep-list, the
-> cable-loader fail-soft.
+> wahs for the first time since May). Then **the late-cable UI**: the
+> closing cable is drawn amber, a `loops` toolbar readout, a status
+> line on closing. Suite **3574**. One eyeball wanted (does the amber
+> paint in a real window). Next: fg follow-on 4, possibility
+> follow-ons, the 2026-08-04 keep-list, the cable-loader fail-soft.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -134,6 +136,44 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-16 (last) — the late-cable UI: the block of latency, visible
+
+Matthew: "late-cable UI follow-up please Claude thank you!" — the small
+follow-up the door asked for.
+
+**What it does.** The cable that closes a loop is drawn **amber** and
+thicker the moment it is drawn — before Start, because the backend now
+exposes `feedback_cables(patch)`, the late set a compile *would*
+produce, a pure function of the patch. The status bar says "Loop
+closed: delay#3.out -> mixer#2.in2 reads one block late (feedback)".
+The toolbar gains a `loops` slot beside `api`: `loops --`, `loops N`,
+or — while running — `loops N !K` in the warning colour when K blocks
+of a loop went non-finite and were scrubbed (`feedback_scrubs()`, the
+counter the door added). Hover it for the list of late cables.
+
+**How.** One dpg theme, built lazily and once (`mvNodeCol_Link` /
+`LinkHovered` / `LinkSelected` in the nodes category plus
+`mvNodeStyleVar_LinkThickness` 4), bound per link with
+`bind_item_theme` — the possibility panel's per-cell precedent. The
+refresh runs on every cable or module change and on load/new, never
+per frame; the readout's per-frame tick only touches dpg when its text
+changes. A backend without the observables (the pyo stub) leaves the
+editor untouched, the getattr-guarded discipline the DSP readout set.
+
+**Tests.** 11 in `tests/test_late_cable_ui.py`, mocked dpg handing out
+distinct ids — the context managers (`node_attribute`, `theme`, …) get
+a tiny stand-in whose `__enter__` returns the next id, which is what
+lets `_port_to_attr` and the link map stay distinguishable. One test
+construction: "a plain cable stays quiet" cannot be read off the *last*
+status value (nothing overwrote the earlier "Loop closed"); count the
+writes instead.
+
+**Suite 3574.** One eyeball for Matthew: does the amber actually
+paint? DPG documents per-link theme colours; nothing here runs a real
+window.
 
 ---
 

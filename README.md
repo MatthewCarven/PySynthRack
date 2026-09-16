@@ -41,7 +41,9 @@ can build real patches in it today.
     buffered sink and its tape-warp sibling, and a disk recorder.
 - **Drag-cable node-graph UI** (DearPyGui): wire jacks together, canvas zoom
   (Ctrl +/‑/wheel), scroll-to-adjust knobs, live CV and audio-level meters, and
-  overlap-aware node placement.
+  overlap-aware node placement. Feedback loops are allowed — the cable that
+  closes one reads a block late and is drawn amber, with a `loops` readout in
+  the toolbar.
 - **Three signal kinds** — audio / CV / gate — with bridge modules to convert
   between them and a standardised 1 V/oct + `cv_depth` modulation convention.
 - **MIDI input** from a hardware controller (optional `[midi]` extra).

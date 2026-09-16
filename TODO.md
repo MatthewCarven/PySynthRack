@@ -497,11 +497,32 @@ same session.
       `logic`, and the starter pulse must be SHORTER than the cycle or
       the OR never falls and there is no rising edge (a 0.6 s starter
       killed the first smoke); and a square wave is no DC driver for a
-      staircase pin (sample 0 flips sign block to block). **Follow-up
-      (UI, own small session):** draw late-read cables differently +
-      a compile status line — the `_late_edges` set and the
-      `_late_nonfinite` counter are the data. **Unblocked:** fg
-      Follow-on 4 (`eor → trig` rise-only retrigger). Original entry:
+      staircase pin (sample 0 flips sign block to block). **Follow-up (UI) — SHIPPED 2026-09-16, same day** (Matthew:
+      "late-cable UI follow-up please"): backend observables
+      `feedback_cables(patch)` (the late set a compile would produce —
+      a pure function of the patch, so the editor colours a loop the
+      moment it is drawn, before Start) and `feedback_scrubs()`;
+      `App._refresh_late_links` binds an amber, thicker node-link
+      theme (`mvNodeCol_Link` / Hovered / Selected +
+      `mvNodeStyleVar_LinkThickness` 4, built once) to exactly the
+      late links and theme 0 to the rest, on every cable/module change
+      and on load/new — never per frame; a toolbar `loops` slot beside
+      `api` reads `loops --` / `loops N` / `loops N !K` (K scrubbed
+      blocks, WARN colour) with a tooltip listing `type#id.port ->
+      type#id.port (reads one block late)`; drawing the cable that
+      closes a loop writes "Loop closed: ... reads one block late
+      (feedback)" to the status bar. 11 tests
+      (`tests/test_late_cable_ui.py`, mocked dpg with distinct ids via
+      a context-manager stand-in for `node_attribute`/`theme`):
+      observables agree with the compile; a loaded loop paints exactly
+      its late link amber; readout + tooltip (ASCII); the status line
+      once, not for a plain cable; deleting the late link clears
+      everything; theme built once; scrubs turn it amber while
+      running; a backend without the observables leaves the editor
+      alone; new patch resets. Suite **3574**. Real-window eyeball
+      wanted: the amber actually paints (DPG per-link theme binding
+      is documented but untested here). **Unblocked:** fg Follow-on 4
+      (`eor → trig` rise-only retrigger). Original entry:
       building the example, and it is a **compiler** job, not a module
       one, so it is queued rather than done. On hardware, `eoc` patched
       back to `trig` is *the* krell patch. Here that cable is legal and
