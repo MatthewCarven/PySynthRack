@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "next_id": 10,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "tempo - one note per beat", "params": { "bpm": 80.0, "division": 1.0, "pulse_width": 0.3 } },
+    { "id": 2, "type": "shift_random", "name": "MELODY - probability 0 locks the loop", "params": { "probability": 0.1, "length": 8, "range": 2.0, "bipolar": false, "seed": 11 } },
+    { "id": 3, "type": "quantizer", "name": "in-tune", "params": { "root": "A", "scale": "pentatonic minor", "hysteresis": 10.0, "transpose": -12.0 } },
+    { "id": 4, "type": "pluck", "name": "STRING - the dry voice", "params": { "decay": 1.6, "damping": 0.45, "color": 0.75, "position": 0.2, "level": 0.9 } },
+    { "id": 5, "type": "key_trigger", "name": "TAP F = FREEZE (latch; tap again to release)", "params": { "key": "F", "mode": "latch" } },
+    { "id": 6, "type": "lfo", "name": "SCAN - sweeps position across the held buffer", "params": { "waveform": "triangle", "rate": 0.07, "depth": 1.0, "bipolar": false, "cv_depth": 1.0 } },
+    { "id": 7, "type": "granular", "name": "CLOUD - tap F: the last 2 s are held and the LFO scans them", "params": { "buffer": 2.0, "density": 40.0, "spray_time": 1.0, "size": 150.0, "pitch": 0.0, "spray_pitch": 20.0, "position": 0.0, "spray_pos": 0.06, "position_cv_depth": 0.9, "window": "hann", "width": 0.9, "freeze": false, "mix": 0.75, "seed": 1 } },
+    { "id": 8, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.9 } },
+    { "id": 9, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.9 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "cv", "dst_module_id": 3, "dst_port": "in" },
+    { "src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "pitch_cv" },
+    { "src_module_id": 2, "src_port": "gate", "dst_module_id": 4, "dst_port": "trigger" },
+    { "src_module_id": 4, "src_port": "out", "dst_module_id": 7, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "out", "dst_module_id": 7, "dst_port": "freeze" },
+    { "src_module_id": 6, "src_port": "cv", "dst_module_id": 7, "dst_port": "position_cv" },
+    { "src_module_id": 7, "src_port": "out_l", "dst_module_id": 8, "dst_port": "in" },
+    { "src_module_id": 7, "src_port": "out_r", "dst_module_id": 9, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 140], "2": [280, 140], "3": [560, 140], "4": [800, 140],
+      "5": [800, 460], "6": [800, 620], "7": [1080, 140], "8": [1440, 80], "9": [1440, 220]
+    }
+  }
+}

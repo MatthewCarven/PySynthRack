@@ -108,6 +108,7 @@ The full map:
 | `burst.count_cv` | `8.0` (`count_cv_depth`) | gates per burst | `count + round(d·cv[edge])`, read at the trigger edge and latched per burst, clamped 1…16 |
 | `sampler.vel` / `kick_drum.vel` / `snare_drum.vel` / `hat_drum.vel` | — (multiplier) | linear | `hit · max(0, cv[edge])`, read at the edge and latched; a `(V, F)` source collapses to the loudest voice at that sample |
 | `pitch_shifter.pitch_cv` | `12.0` | semitones | `st + d·mean cv` |
+| `granular.position_cv` | `1.0` (`position_cv_depth`) | fraction of the buffer | `position + d·cv[onset]`, read at each grain's onset and latched for that grain; clamped 0…1; a `(V, F)` source is averaged |
 | `delay.time_cv` | `50.0` | ms | `time + d·cv` |
 | `loudness.level_cv` | `1.0` | level (0…1) | `level + d·mean cv` |
 | `tilt_eq.tilt_cv` | `6.0` | dB | `tilt + d·mean cv` |
@@ -225,7 +226,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`matrix_mixer`](#matrix_mixer) | Routing & VCA | `in_1`…`in_4` (audio), `cv_1`…`cv_4` (cv) → `out_1`…`out_4` (audio) |
 | [`resampler`](#resampler) | Effects | `in` (audio), `pitch_cv` (cv), `brake` (gate) → `out`, `out_l`, `out_r` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
-| [`granular`](#granular) | Effects | `in` (audio) → `out`, `out_l`, `out_r` (audio) |
+| [`granular`](#granular) | Effects | `in` (audio), `position_cv` (cv), `freeze` (gate) → `out`, `out_l`, `out_r` (audio) |
 | [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv) → `out` (audio) |
 | [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`compressor`](#compressor) | Effects | `in`,`sidechain` (audio), `threshold_cv` (cv) → `out` (audio), `gr` (cv) |
@@ -2471,15 +2472,32 @@ hundred ms of a pluck become a wash). `spray_pitch` scatters the
 transposition in cents (10–30 ct is a chorus; 1200 an octave cloud).
 `width` scatters each grain across `out_l` / `out_r`.
 
+**Freeze and the scrub.** `freeze` — the param switch, or a high
+`freeze` gate, either one — stops the buffer *recording* while the grains
+keep *reading*: whatever was in the last `buffer` seconds is held, and
+`position` becomes a scrub across it (0 = the last sample captured, 1 =
+the oldest). The buffer's timeline is *captured* time, like a tape:
+release the freeze and recording resumes from where it stopped, with no
+hole. `position_cv` (× `position_cv_depth`, in fractions of the buffer
+per CV unit) moves the read point, read once per grain at its onset — a
+sequencer into it re-cuts a frozen phrase at every step, an LFO scans
+the held buffer, a `shift_random` at sixteenths is a beat repeat. A
+grain that was reading right at the head when a freeze landed holds its
+last sample for the rest of its window; grains further back are
+untouched.
+
 **Slice 1 (2026-09-15):** capture + a synchronous, deterministic grain
 stream, mono. **Slice 2 (2026-09-15):** the sprays, `seed`, stereo.
-Slice 3 adds `freeze` and `position_cv`.
+**Slice 3 (2026-09-16):** `freeze` and `position_cv` — the module is
+complete against its spec.
 
 **Ports**
 
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | The signal captured into the buffer. A `(V, F)` voice source is summed — one buffer. Unpatched → silence. |
+| `position_cv` | in | cv | Added to `position` × `position_cv_depth`, read at each grain's onset sample and latched for that grain. A `(V, F)` source is averaged. |
+| `freeze` | in | gate | High holds the buffer (ORed with the `freeze` param). Per-sample: the freeze lands on the exact sample the gate rises, so the held content does not depend on the block size. |
 | `out` | out | audio | The cloud, every grain at unity, blended with the dry input by `mix`. |
 | `out_l` / `out_r` | out | audio | The cloud with each grain panned by its own draw within ±`width`; the dry stays centred. At `width` 0 both are `out`, bit-exact. |
 
@@ -2495,9 +2513,11 @@ Slice 3 adds `freeze` and `position_cv`.
 | `spray_pitch` | `0.0` | 0 … 1200 ct | Transposition scatter, ± cents about `pitch` (the sum never past ±36 st). |
 | `position` | `0.0` | 0 … 1 | How far back the grains read: 0 = now, 1 = `buffer` seconds ago. |
 | `spray_pos` | `0.0` | 0 … 1 | Read-point scatter, ± in `position` units, clamped to the buffer. |
+| `position_cv_depth` | `1.0` | −1 … 1 | Fractions of the buffer per CV unit on `position_cv`; 1 means a 0..1 CV sweeps the whole buffer. |
 | `window` | `hann` | `hann` / `triangle` / `expo` | Grain shape. |
 | `width` | `0.0` | 0 … 1 | Stereo scatter: each grain panned to a random spot within ±`width` on `out_l` / `out_r`. Constant-peak law — a centred grain is at unity in both, a hard-panned one at unity in one and zero in the other. |
-| `mix` | `1.0` | 0 … 1 | Dry/wet. The dry is the input two samples late — the head start every read needs — so at the neutral dry and wet line up sample for sample. |
+| `freeze` | off | on / off | Hold the buffer: stop recording, keep reading. ORed with the `freeze` gate. |
+| `mix` | `1.0` | 0 … 1 | Dry/wet. The dry is the live input two samples late — the head start every read needs — so at the neutral dry and wet line up sample for sample; it keeps playing while frozen. |
 | `seed` | `1` | int | The random stream. Same seed, same input → the same cloud. |
 
 **How it works.** Every block the input is written into the ring at
@@ -2519,6 +2539,17 @@ window at `k`, masked to the grain's span, summed in spawn order —
 once unpanned for `out`, and once per channel when any grain in flight
 is panned.
 
+The ring is indexed in *captured* time — a counter that advances only
+while recording — while grain onsets run on wall time. Per sample,
+`frozen = gate > 0.5 or the freeze param`; the input is written only at
+the live samples, and a grain fired at sample *j* reads back from the
+index of the last sample captured as of *j*. Live, that is the sample's
+own index and everything reduces to the unfrozen stream exactly; frozen,
+the head stands still, so the grain's head start becomes `rate × size`
+(not `(rate − 1) × size`), and every read is clamped to the head so a
+grain that was running alongside it when a freeze landed holds its last
+sample instead of running into stale data.
+
 A grain reading faster than real time (`pitch` > 0) would overtake the
 write head, so `position` is floored at the head start it needs —
 `(rate − 1) × size` — and if `buffer` is shorter than that the grain is
@@ -2539,8 +2570,16 @@ is a scrub through the last two seconds. `examples/granular_haze.json`
 is the cloud proper: the same pluck into `spray_time` 1, `spray_pos`
 0.22, `spray_pitch` 25 ct, `width` 1 — every note dissolves into a
 stereo wash a quarter-second behind itself; turn `seed` to hear a
-different cloud from the same notes. For a transposition that *hides*
-the grains, use the [`pitch_shifter`](#pitch_shifter).
+different cloud from the same notes. `examples/granular_freeze.json`
+adds a [`key_trigger`](#key_trigger) latch on `freeze` (**tap F**) and a
+0.07 Hz triangle [`lfo`](#lfo) on `position_cv`: play, tap F, and the
+last two seconds hang in the air while the LFO scans them; tap again to
+let go. `examples/granular_beat_repeat.json` is the drum machine into
+`density` 32 × `size` 62.5 ms (exact 125 ms slices), a
+[`shift_random`](#shift_random) at sixteenths on `position_cv` and a 15
+BPM clock on `freeze` — two seconds recording, two seconds held and
+re-cut, forever; `mix` 1 hears only the repeats. For a transposition
+that *hides* the grains, use the [`pitch_shifter`](#pitch_shifter).
 
 ---
 
@@ -4107,5 +4146,7 @@ loads in the app. Notable ones referenced above:
 - `organ_leslie.json` — the pairing: a self-playing maj7 organ through the [`rotary`](#rotary), a 5 BPM clock on `fast` flipping the Leslie between chorale and tremolo every six seconds so the horn and drum chase each other.
 - `granular_cloud.json` — a shift-register pluck melody into the [`granular`](#granular) at `pitch` +12, `density` 30, `size` 120 ms, `position` 0.15: every pluck gets an octave-up grain cloud trailing 300 ms behind it, through a hall.
 - `granular_haze.json` — the cloud proper: a pluck melody into the [`granular`](#granular) with `spray_time` 1 (asynchronous), `spray_pos` 0.22, `spray_pitch` 25 ct and `width` 1 — every note dissolves into a stereo haze a quarter-second behind itself; `seed` picks the cloud.
+- `granular_freeze.json` — **tap F** to freeze: a [`key_trigger`](#key_trigger) latch on the [`granular`](#granular)'s `freeze` holds the last two seconds of a pluck melody while a slow triangle [`lfo`](#lfo) on `position_cv` scans them; tap again to release and recording resumes with no hole.
+- `granular_beat_repeat.json` — the drum machine into a [`granular`](#granular) cutting exact 125 ms slices (`density` 32 × `size` 62.5 ms), a [`shift_random`](#shift_random) at sixteenths on `position_cv` picking the slice point and a 15 BPM clock on `freeze`: two seconds recording, two seconds held and re-cut, forever.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `stereo_hard_pan.json` — left/right speaker sinks.

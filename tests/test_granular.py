@@ -50,6 +50,29 @@ Slice 2 (sprays, seed, stereo):
     (it hears every grain at unity); width 0 -> L is R is out even with
     the other sprays on; mix 0 -> all three are the dry.
   - Example granular_haze.json plays in stereo.
+
+Slice 3 (freeze + position_cv):
+  - OFF at the defaults: the 36 slice-2 reference arrays (six param
+    sets x two block sizes x three outs) were captured before the edit
+    and are array_equal after it (session-verified; the structural
+    claims below are what the suite pins).
+  - freeze toggle: the captured-sample count stops; at position 0 the
+    output is the last grain-length tiled -- periodic at the hop, bit
+    for bit. The gate ORs with the toggle.
+  - freeze gate is per-sample: an edge at a non-boundary sample renders
+    bit-exact in 64s and 512s (sprayed, pitched).
+  - Captured time is continuous: after a freeze/release cycle the
+    output is the input-with-the-frozen-span-removed delayed by
+    position, bit-exact; during the freeze it reads the held buffer.
+  - A freeze landing mid-grain holds the grain's last sample (a ramp
+    input never shows a stale burst); frozen from an empty buffer is
+    silence; the dry side of mix is the live input even while frozen.
+  - position_cv is read at each grain's onset and latched: a DC CV
+    equals the same position bit-exact; a step takes effect for the
+    next grains; depth 0 disables, -1 inverts; a (V, F) CV is averaged;
+    the sum is clamped to the buffer.
+  - Examples granular_freeze.json (freeze mid-way stops capture) and
+    granular_beat_repeat.json (the clock holds it about half the time).
 """
 from __future__ import annotations
 
@@ -75,38 +98,54 @@ def _rig(params=None, block=F):
     osc = patch.add_module("oscillator")
     gr = patch.add_module("granular", params=params or {})
     patch.connect(osc.id, "out", gr.id, "in")
+    clk = patch.add_module("clock")
+    lfo = patch.add_module("lfo")
+    patch.connect(clk.id, "out", gr.id, "freeze")
+    patch.connect(lfo.id, "cv", gr.id, "position_cv")
     b = NumpyBackend(sample_rate=SR, block_size=block)
     b.compile(patch)
+    b._gr_test_ids = (clk.id, lfo.id)
     return patch, osc, gr, b
 
 
 KEYS = ("out", "out_l", "out_r")
 
 
-def _run_all(params, x, block=F, change=None):
+def _run_all(params, x, block=F, change=None, gate=None, cv=None):
     """Render x (F,) or (V, F) through a fresh granular.
 
     ``change`` = (block_index, {param: value}) applies a param edit before
-    that block. Returns ({out, out_l, out_r}, x trimmed, backend, module).
+    that block; ``gate`` / ``cv`` are optional (F,) or (V, F) signals on
+    the ``freeze`` / ``position_cv`` jacks. Returns ({out, out_l,
+    out_r}, x trimmed, backend, module); the backend carries a
+    ``_gr_c`` list of the captured-sample count after every block.
     """
     patch, osc, gr, b = _rig(params, block)
+    clk_id, lfo_id = b._gr_test_ids
     n = x.shape[-1] // block
     outs = {k: [] for k in KEYS}
+    b._gr_c = []
     for k in range(n):
         if change is not None and k == change[0]:
             for key, val in change[1].items():
                 gr.params[key] = val
         sl = slice(k * block, (k + 1) * block)
-        r = b._render_granular(gr, block, {(osc.id, "out"): x[..., sl]}, patch)
+        bufs = {(osc.id, "out"): x[..., sl]}
+        if gate is not None:
+            bufs[(clk_id, "out")] = gate[..., sl]
+        if cv is not None:
+            bufs[(lfo_id, "cv")] = cv[..., sl]
+        r = b._render_granular(gr, block, bufs, patch)
         for key in KEYS:
             outs[key].append(r[key])
+        b._gr_c.append(int(b._state[gr.id]["c"]))
     y = {k: np.concatenate(v) for k, v in outs.items()}
     return y, x[..., : y["out"].shape[-1]], b, gr
 
 
-def _run(params, x, block=F, change=None):
+def _run(params, x, block=F, change=None, gate=None, cv=None):
     """The mono ``out`` of _run_all: (out, x trimmed, backend, module)."""
-    y, x, b, gr = _run_all(params, x, block, change)
+    y, x, b, gr = _run_all(params, x, block, change, gate, cv)
     return y["out"], x, b, gr
 
 
@@ -140,13 +179,16 @@ class TestModel:
         assert gr.params == {
             "buffer": 2.0, "density": 25.0, "spray_time": 0.0, "size": 80.0,
             "pitch": 0.0, "spray_pitch": 0.0, "position": 0.0, "spray_pos": 0.0,
-            "window": "hann", "width": 0.0, "mix": 1.0, "seed": 1,
+            "position_cv_depth": 1.0, "window": "hann", "width": 0.0,
+            "freeze": False, "mix": 1.0, "seed": 1,
         }
         assert GRANULAR_WINDOWS == ("hann", "triangle", "expo")
 
     def test_ports_and_signal_kinds(self):
         gr = Patch().add_module("granular")
-        assert [(p.name, p.signal_kind) for p in gr.input_ports] == [("in", "audio")]
+        assert [(p.name, p.signal_kind) for p in gr.input_ports] == [
+            ("in", "audio"), ("position_cv", "cv"), ("freeze", "gate"),
+        ]
         assert [(p.name, p.signal_kind) for p in gr.output_ports] == [
             ("out", "audio"), ("out_l", "audio"), ("out_r", "audio"),
         ]
@@ -154,10 +196,11 @@ class TestModel:
     def test_json_round_trip_and_unknown_param(self):
         from pysynthrack.io_patch import patch_from_json, patch_to_json
         patch = Patch()
-        patch.add_module("granular", params={"window": "expo", "pitch": 7.0, "density": 40.0})
+        patch.add_module("granular", params={"window": "expo", "pitch": 7.0, "density": 40.0, "freeze": True})
         back = patch_from_json(patch_to_json(patch))
         gr = next(iter(back))
         assert gr.params["window"] == "expo"
+        assert gr.params["freeze"] is True
         assert gr.params["pitch"] == pytest.approx(7.0)
         assert gr.params["density"] == pytest.approx(40.0)
         with pytest.raises(Exception):
@@ -168,9 +211,14 @@ class TestModel:
         gr = patch.add_module("granular")
         lfo = patch.add_module("lfo")
         spk = patch.add_module("speaker_output")
+        clk = patch.add_module("clock")
         patch.connect(gr.id, "out", spk.id, "in")             # audio -> audio
+        patch.connect(lfo.id, "cv", gr.id, "position_cv")     # cv -> cv
+        patch.connect(clk.id, "out", gr.id, "freeze")         # gate -> gate
         with pytest.raises(Exception):
             patch.connect(lfo.id, "cv", gr.id, "in")          # cv -> audio
+        with pytest.raises(Exception):
+            patch.connect(lfo.id, "cv", gr.id, "freeze")      # cv -> gate
 
 
 # ----- Silence ---------------------------------------------------------------
@@ -627,6 +675,170 @@ class TestStereo:
             assert np.allclose(half[key], 0.5 * dry[key] + 0.5 * wet[key], atol=1e-6)
 
 
+# ----- Slice 3: freeze and position_cv -----------------------------------------
+
+
+L80 = 3840          # the default 80 ms grain at 48 k
+HOP25 = 1920        # the default 25/s hop
+
+
+class TestFreeze:
+    def test_toggle_stops_capture_and_tiles_the_last_grain(self):
+        x = _noise(4.0, seed=30)
+        k0 = (2 * SR) // F
+        y, x, b, gr = _run({}, x, change=(k0, {"freeze": True}))
+        c = b._gr_c
+        assert c[k0] == c[-1] == k0 * F             # capture stopped at the block
+        assert c[k0 - 2] < c[k0 - 1] == k0 * F      # ... having run right up to it
+        t0 = k0 * F
+        seg = y[t0 + L80 + 100: t0 + L80 + 100 + HOP25 * 10]
+        assert np.array_equal(seg[HOP25:], seg[:-HOP25])   # periodic at the hop
+        assert np.abs(seg).max() > 0.05
+
+    def test_gate_ors_with_the_toggle(self):
+        x = _noise(1.0, seed=31)
+        gate = np.zeros(SR, np.float32)
+        y, x, b, gr = _run({"freeze": True}, x, gate=gate)
+        assert b._gr_c[-1] == 0
+        gate[:] = 1.0
+        y, x, b, gr = _run({}, x, gate=gate)
+        assert b._gr_c[-1] == 0
+        gate[:] = 0.0
+        y, x, b, gr = _run({}, x, gate=gate)
+        assert b._gr_c[-1] == y.shape[0]
+
+    def test_gate_edge_is_per_sample_and_block_exact(self):
+        x = _noise(4.0, seed=32)
+        gate = np.zeros(4 * SR, np.float32)
+        gate[2 * SR + 37: 3 * SR + 11] = 1.0
+        p = {"position": 0.1, "spray_time": 0.5, "spray_pos": 0.1, "width": 0.7, "pitch": 3.0}
+        a, *_ = _run_all(p, x, block=512, gate=gate)
+        c, *_ = _run_all(p, x, block=64, gate=gate)
+        for key in KEYS:
+            n = min(a[key].shape[0], c[key].shape[0])
+            assert np.array_equal(a[key][:n], c[key][:n]), key
+        # and the captured count stopped exactly at the edge, both ways
+        _y, _x, b512, _g = _run_all(p, x, block=512, gate=gate)
+        assert b512._gr_c[(2 * SR + 37) // 512] == 2 * SR + 37
+
+    def test_captured_time_is_continuous_across_a_freeze(self):
+        """position 0.25: y[n] == captured[c(n) - 24000] where ``captured``
+        is the input with the frozen span cut out -- no hole, no
+        duplication, bit-exact once the grains fired during the freeze
+        have played out."""
+        x = _noise(4.0, seed=33)
+        gate = np.zeros(4 * SR, np.float32)
+        f, u = 2 * SR + 37, 3 * SR + 11
+        gate[f:u] = 1.0
+        y, x, b, gr = _run({"position": 0.25}, x, gate=gate)
+        live = gate[: y.shape[0]] <= 0.5
+        captured = x[live]
+        cidx = np.cumsum(live) - 1
+        n0 = u + L80 + 100
+        assert np.array_equal(y[n0:], captured[cidx[n0:] - 24000])
+        # during the freeze the held buffer is read: periodic at the hop
+        seg = y[f + L80 + 100: u - 100]
+        assert np.array_equal(seg[HOP25:], seg[:-HOP25])
+        # and before it, the plain delay
+        assert np.array_equal(y[SR:f], x[SR - 24000: f - 24000])
+
+    def test_a_freeze_landing_mid_grain_holds_not_stale(self):
+        """A ramp 0 -> 1 over 4 s, frozen at 3.5 s with grains reading
+        right at the head: after the freeze the output stays near the
+        last captured value (0.875). Stale data -- the ring a lap ago --
+        would read ~0.3 here."""
+        ramp = np.linspace(0.0, 1.0, 4 * SR, dtype=np.float32)
+        gate = np.zeros(4 * SR, np.float32)
+        f = int(3.5 * SR) + 5
+        gate[f:] = 1.0
+        y, x, b, gr = _run({}, ramp, gate=gate)
+        post = y[f + 50: f + L80]
+        assert post.min() > 0.85 and post.max() < 0.88
+
+    def test_frozen_from_empty_is_silent_and_block_exact(self):
+        x = _noise(1.0, seed=34)
+        p = {"freeze": True, "pitch": 12.0, "spray_time": 0.4}
+        a, *_ = _run(p, x, block=512)
+        c, *_ = _run(p, x, block=64)
+        assert not a.any()
+        n = min(a.shape[0], c.shape[0])
+        assert np.array_equal(a[:n], c[:n])
+
+    def test_frozen_head_start_at_plus_twelve_reads_only_the_past(self):
+        """Frozen, a +12 grain needs rate * (L - 1) of head start (the
+        head is not moving). If it read past the head it would see
+        zeros / stale data and the 64-vs-512 renders would diverge."""
+        x = _noise(3.0, seed=35)
+        t = 188 * 512                                # a boundary both sizes share
+        p = {"pitch": 12.0, "spray_time": 0.3, "seed": 3}
+        a, *_ = _run(p, x, block=512, change=(t // 512, {"freeze": True}))
+        c, *_ = _run(p, x, block=64, change=(t // 64, {"freeze": True}))
+        n = min(a.shape[0], c.shape[0])
+        assert np.array_equal(a[:n], c[:n])
+        assert np.abs(a[t + L80:]).max() > 0.05
+
+    def test_dry_is_the_live_input_even_while_frozen(self):
+        x = _noise(1.0, seed=36)
+        y, x, b, gr = _run_all({"mix": 0.0, "freeze": True}, x)
+        for key in KEYS:
+            assert np.array_equal(y[key][HEAD:], x[:-HEAD])
+        y, x, b, gr = _run_all({"mix": 0.5, "freeze": True, "position": 0.3}, x)
+        assert np.allclose(y["out"][HEAD:], 0.5 * x[:-HEAD], atol=1e-6)   # empty buffer: wet is 0
+
+
+class TestPositionCV:
+    def test_dc_cv_equals_the_same_position_bit_exact(self):
+        x = _noise(3.0, seed=40)
+        cv = np.full(3 * SR, 0.25, np.float32)
+        a, x, *_ = _run({}, x, cv=cv)
+        c, *_ = _run({"position": 0.25}, x)
+        assert np.array_equal(a, c)
+        assert np.array_equal(a[SR:], x[SR - 24000: -24000])
+
+    def test_a_step_is_read_at_each_grain_s_onset(self):
+        x = _noise(4.0, seed=41)
+        cv = np.zeros(4 * SR, np.float32)
+        cv[2 * SR:] = 0.5
+        y, x, b, gr = _run({}, x, cv=cv)
+        assert np.array_equal(y[SR: 2 * SR], x[SR - HEAD: 2 * SR - HEAD])
+        n0 = 2 * SR + L80 + 100
+        assert np.array_equal(y[n0:], x[n0 - 48000: -48000])
+
+    def test_depth_scales_and_inverts(self):
+        x = _noise(3.0, seed=42)
+        cv = np.full(3 * SR, 0.75, np.float32)
+        off, *_ = _run({"position_cv_depth": 0.0, "position": 0.25}, x, cv=cv)
+        inv, *_ = _run({"position_cv_depth": -1.0, "position": 1.0}, x, cv=cv)
+        ref, *_ = _run({"position": 0.25}, x)
+        assert np.array_equal(off, ref)
+        assert np.array_equal(inv, ref)
+
+    def test_voice_cv_is_averaged_and_the_sum_is_clamped(self):
+        x = _noise(3.0, seed=43)
+        cv2 = np.stack([np.full(3 * SR, 0.5, np.float32), np.zeros(3 * SR, np.float32)])
+        a, *_ = _run({}, x, cv=cv2)
+        ref, *_ = _run({"position": 0.25}, x)
+        assert np.array_equal(a, ref)
+        big = np.full(3 * SR, 5.0, np.float32)
+        c, *_ = _run({}, x, cv=big)
+        one, *_ = _run({"position": 1.0}, x)
+        assert np.array_equal(c, one)
+
+    def test_cv_scrubs_a_frozen_buffer(self):
+        """Frozen, an LFO on position walks the read point across the
+        held buffer: the output is the held content at a moving delay
+        -- it changes over time even though nothing new is captured."""
+        x = _noise(4.0, seed=44)
+        cv = (0.5 + 0.4 * np.sin(2 * np.pi * 0.5 * np.arange(4 * SR) / SR)).astype(np.float32)
+        k0 = (2 * SR) // F
+        y, x, b, gr = _run({}, x, cv=cv, change=(k0, {"freeze": True}))
+        t0 = k0 * F + L80
+        assert b._gr_c[-1] == k0 * F
+        seg = y[t0: t0 + 2 * SR - L80]
+        assert np.abs(seg).max() > 0.05
+        assert not np.array_equal(seg[HOP25:], seg[:-HOP25])       # NOT a static loop
+
+
 # ----- UI --------------------------------------------------------------------
 
 
@@ -698,3 +910,43 @@ class TestExample:
         assert o.shape[1] == 2
         assert np.abs(o).max() > 0.05
         assert not np.array_equal(o[:, 0], o[:, 1])
+
+    def test_granular_freeze_example_freezes_when_told(self):
+        """The F key is a latch the tests can't press; the ``freeze``
+        param is the same switch. Half-way through, capture stops and
+        the LFO on position_cv keeps the cloud moving."""
+        path = Path(__file__).resolve().parent.parent / "examples" / "granular_freeze.json"
+        patch = load_patch(path)
+        gr = next(m for m in patch if m.TYPE == "granular")
+        assert any(c.dst_port == "freeze" for c in patch.cables_into(gr.id))
+        assert any(c.dst_port == "position_cv" for c in patch.cables_into(gr.id))
+        b = NumpyBackend(sample_rate=44100, block_size=512)
+        b.compile(patch)
+        cs, peak = [], 0.0
+        for k in range(int(6 * 44100 / 512)):
+            if k == int(3 * 44100 / 512):
+                gr.params["freeze"] = True
+            out, _ = b.render_block_multi(512)
+            assert out is not None and np.all(np.isfinite(out))
+            peak = max(peak, float(np.abs(out).max()))
+            cs.append(int(b._state[gr.id]["c"]))
+        cs = np.asarray(cs)
+        k0 = int(3 * 44100 / 512)
+        assert np.all(np.diff(cs[:k0]) > 0) and np.all(np.diff(cs[k0:]) == 0)
+        assert peak > 0.05
+
+    def test_granular_beat_repeat_example_holds_half_the_time(self):
+        path = Path(__file__).resolve().parent.parent / "examples" / "granular_beat_repeat.json"
+        patch = load_patch(path)
+        gr = next(m for m in patch if m.TYPE == "granular")
+        b = NumpyBackend(sample_rate=44100, block_size=512)
+        b.compile(patch)
+        cs, peak = [], 0.0
+        for k in range(int(8 * 44100 / 512)):
+            out, _ = b.render_block_multi(512)
+            assert out is not None and np.all(np.isfinite(out))
+            peak = max(peak, float(np.abs(out).max()))
+            cs.append(int(b._state[gr.id]["c"]))
+        advanced = (np.diff(np.asarray(cs)) > 0).mean()
+        assert 0.4 < advanced < 0.6, advanced
+        assert peak > 0.1

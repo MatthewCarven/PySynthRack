@@ -9476,6 +9476,23 @@ class NumpyBackend(AudioBackend):
         time (else it would overtake the write head). If ``buffer`` is
         shorter than that head start the grain is shortened to fit.
 
+        Freeze (slice 3): the ring is indexed in *captured* time -- a
+        counter ``c`` that advances only while recording -- while grain
+        onsets run on wall time ``absw``. Per sample, ``frozen = gate >
+        0.5 or the freeze param``; the block's input is written only at
+        the live samples, and ``hw[j]`` (the index of the last captured
+        sample as of sample j) is what a grain fired at j reads back
+        from: ``start = hw[j] - D``. Live, ``hw[j]`` is the sample's own
+        index and everything reduces to slices 1-2 exactly; frozen, the
+        head stands still, so the grain's required head start is
+        ``rate * (L - 1)`` rather than ``(rate - 1) * (L - 1)``, and a
+        read is clamped to ``hw - 2`` per sample so a grain that was
+        running alongside the head when a freeze landed holds its last
+        sample instead of running into stale data. Releasing the freeze
+        resumes recording at ``c`` -- captured time is continuous, no
+        hole. ``position_cv`` (times ``position_cv_depth``) is read at
+        the grain's onset sample and latched.
+
         Randomness (slice 2): grain ``i`` draws four uniforms from
         ``default_rng([seed, i])`` -- interval factor, position offset,
         pitch offset, pan -- so the cloud is a pure function of the seed
@@ -9485,11 +9502,13 @@ class NumpyBackend(AudioBackend):
 
         Grains are scaled by ``1 / max(1, density * size * window_mean)``
         so a dense cloud sits at about the input's level. The dry side
-        of ``mix`` is the input read back from the ring ``_GR_HEAD``
-        samples late, so at the neutral (position 0, pitch 0) dry and
-        wet line up sample for sample; it is centred in ``out_l`` /
-        ``out_r``. The pan law is constant-peak (``min(1, 1 -/+ pan)``),
-        so ``width`` 0 leaves the stereo outs bit-identical to ``out``.
+        of ``mix`` is the live input ``_GR_HEAD`` samples late (a
+        two-sample tail carried in state -- not a ring read, which would
+        go stale while frozen), so at the neutral (position 0, pitch 0)
+        dry and wet line up sample for sample; it is centred in
+        ``out_l`` / ``out_r``. The pan law is constant-peak (``min(1,
+        1 -/+ pan)``), so ``width`` 0 leaves the stereo outs
+        bit-identical to ``out``.
         """
         from ..modules.granular import GRANULAR_WINDOWS
 
@@ -9497,6 +9516,10 @@ class NumpyBackend(AudioBackend):
         if src is None:
             z = np.zeros(frames, dtype=np.float32)
             return {"out": z, "out_l": z, "out_r": z}
+        pos_cv = self._input_buffer(patch, buffers, module.id, "position_cv", collapse=False)
+        if pos_cv is not None and pos_cv.ndim == 2:
+            pos_cv = pos_cv.mean(axis=0)
+        fz_gate = self._input_buffer(patch, buffers, module.id, "freeze")
 
         sr = float(self.sample_rate)
 
@@ -9506,6 +9529,11 @@ class NumpyBackend(AudioBackend):
             except (TypeError, ValueError):
                 return default
 
+        try:
+            toggle = float(module.params.get("freeze", False)) >= 0.5
+        except (TypeError, ValueError):
+            toggle = bool(module.params.get("freeze", False))
+        cv_depth = _f("position_cv_depth", -1.0, 1.0, 1.0)
         buffer_s = _f("buffer", 0.5, 10.0, 2.0)
         density = _f("density", 0.5, 100.0, 25.0)
         size_ms = _f("size", 10.0, 500.0, 80.0)
@@ -9537,16 +9565,20 @@ class NumpyBackend(AudioBackend):
             old_ring = state.get("ring")
             old_N = state.get("N")
             absw = int(state.get("absw", 0))
+            c = int(state.get("c", absw))
+            dry_tail = state.get("dry_tail")
             ring = np.zeros(N, dtype=np.float64)
             if old_ring is not None:
-                keep = min(old_N, N, absw)
+                keep = min(old_N, N, c)
                 if keep > 0:
-                    m = np.arange(absw - keep, absw)
+                    m = np.arange(c - keep, c)
                     ring[m % N] = old_ring[m % old_N]
             state.clear()
             state["N"] = N
             state["ring"] = ring
             state["absw"] = absw
+            state["c"] = c                  # captured samples: the ring's clock
+            state["dry_tail"] = np.zeros(self._GR_HEAD) if dry_tail is None else dry_tail
             state["onset"] = np.zeros(0, dtype=np.int64)
             state["start"] = np.zeros(0, dtype=np.float64)
             state["rate"] = np.zeros(0, dtype=np.float64)
@@ -9565,9 +9597,24 @@ class NumpyBackend(AudioBackend):
         absw = int(state["absw"])
         n = absw + np.arange(frames, dtype=np.int64)
 
-        # --- 1. capture ------------------------------------------------
+        # --- 1. capture (only while not frozen) ------------------------
         x = src.astype(np.float64)
-        ring[n % N] = x
+        c0 = int(state["c"])
+        if fz_gate is not None and fz_gate.shape[0] == frames:
+            frozen = fz_gate > 0.5
+            if toggle:
+                frozen = np.ones(frames, dtype=bool)
+        else:
+            frozen = np.full(frames, toggle, dtype=bool)
+        live = ~frozen
+        # hw[j]: index (captured time) of the last sample captured as of
+        # sample j -- its own index when live, the head when frozen.
+        hw = c0 + np.cumsum(live) - 1
+        if frozen.any():
+            ring[hw[live] % N] = x[live]
+        else:
+            ring[hw % N] = x
+        state["c"] = int(hw[-1]) + 1
 
         # --- 2. this block's nominal grain recipe -----------------------
         L0 = max(self._GR_MIN_LEN, int(round(size_ms * 1e-3 * sr)))
@@ -9610,16 +9657,23 @@ class NumpyBackend(AudioBackend):
         while next_t < end:
             u = _draws(gi)
             onset = int(np.floor(next_t))
+            j = onset - absw
             if u is None:
                 st, p, pan = pitch, position, 0.0
             else:
                 st = pitch + spray_pitch / 100.0 * (2.0 * u[2] - 1.0)
                 st = max(-self._GR_SPRAY_ST_MAX, min(self._GR_SPRAY_ST_MAX, st))
-                p = min(1.0, max(0.0, position + spray_pos * (2.0 * u[1] - 1.0)))
+                p = position + spray_pos * (2.0 * u[1] - 1.0)
                 pan = width * (2.0 * u[3] - 1.0)
+            if pos_cv is not None and pos_cv.shape[0] == frames:
+                # Read at the onset sample and latched for this grain.
+                p = p + cv_depth * float(pos_cv[j])
+            p = min(1.0, max(0.0, p))
             rate = 2.0 ** (st / 12.0)
             L = L0
-            ahead = max(0.0, rate - 1.0)
+            # Live, the head advances with the grain (drift rate - 1);
+            # frozen, it stands still (drift rate).
+            ahead = max(0.0, rate - (0.0 if frozen[j] else 1.0))
             head = self._GR_HEAD + int(np.ceil(ahead * (L - 1)))
             if head > B and ahead > 0.0:
                 # The buffer can't give this grain the head start it
@@ -9628,7 +9682,7 @@ class NumpyBackend(AudioBackend):
                 L += L & 1
                 head = self._GR_HEAD + int(np.ceil(ahead * (L - 1)))
             D = max(float(head), p * B)
-            new.append((onset, onset - D, rate, L, pan))
+            new.append((onset, float(hw[j]) - D, rate, L, pan))
             last_t = next_t
             gi += 1
             next_t += _interval(_draws(gi))
@@ -9660,6 +9714,10 @@ class NumpyBackend(AudioBackend):
             valid = (kk >= 0) & (kk < g_len)
             kk = np.minimum(np.maximum(kk, 0), g_len - 1)
             pos = state["start"][:, None] + state["rate"][:, None] * kk
+            # Never past the last captured sample (minus the Hermite's
+            # forward taps). A no-op while live -- the head start
+            # guarantees it -- and the hold when a freeze lands mid-grain.
+            pos = np.minimum(pos, (hw - self._GR_HEAD)[None, :].astype(np.float64))
             i0 = np.floor(pos).astype(np.int64)
             frac = pos - i0
             y = _hermite4(
@@ -9691,13 +9749,16 @@ class NumpyBackend(AudioBackend):
 
         state["absw"] = end
 
-        # --- mix: dry is the ring read _GR_HEAD samples late ------------
+        # --- mix: dry is the live input _GR_HEAD samples late -----------
+        tail = state["dry_tail"]
+        joined = np.concatenate([tail, x])
+        state["dry_tail"] = joined[-self._GR_HEAD:].copy()
         if mix >= 1.0:
             out = wet.astype(np.float32)
             if wet_l is wet:
                 return {"out": out, "out_l": out, "out_r": out}
             return {"out": out, "out_l": wet_l.astype(np.float32), "out_r": wet_r.astype(np.float32)}
-        dry = ring[(n - self._GR_HEAD) % N]
+        dry = joined[:frames]
         if mix <= 0.0:
             out = dry.astype(np.float32)
             return {"out": out, "out_l": out, "out_r": out}

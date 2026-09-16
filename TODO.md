@@ -244,6 +244,73 @@ once the board cleared.
       constant-peak pan law read as wide or as lumpy? Is `spray_time` 1
       too random for a melody, and where does the sideband vanish
       (0.3?)? Try `seed` — is a different cloud audibly different?
+      **2026-09-16, slice 3:** `granular_freeze.json` — play, **tap F**,
+      the last 2 s hang while the LFO scans them; tap again. Does the
+      freeze edge click (grains at the head hold their last sample)?
+      And `granular_beat_repeat.json` — 2 s recording / 2 s held and
+      re-cut at sixteenths; is `mix` 0.6 the right balance, or is the
+      `mix` 1 "only the repeats" version the one? **Also re-listen to
+      `clock_divider_swing.json`:** its LFO → `fills_cv` cable was
+      wired to a port the LFO doesn't have (`out`; it is `cv`) since
+      it shipped on 09-11, so the "fills breathe 2 → 6" never
+      happened. Fixed 09-16; the snare pattern should now thicken and
+      thin over ~30 s.
+- [x] **`granular` — SLICE 3: freeze + position_cv — SHIPPED
+      2026-09-16** (Matthew: "granular slice 3 please"). **The module is
+      complete against its spec.** New: `freeze` gate port + `freeze`
+      bool param (ORed, the resampler's `brake` idiom; the gate is
+      per-sample so the held content is block-size independent) ·
+      `position_cv` port + `position_cv_depth` (−1..1, buffer fractions
+      per CV unit, default 1; read at each grain's onset and latched;
+      a (V, F) CV averaged; sum clamped 0..1). Design: the ring is
+      indexed in CAPTURED time (`state["c"]`, advances only while live)
+      while onsets run on wall time (`absw`); per block `hw[j] = c0 +
+      cumsum(live)[j] − 1` is the last-captured index as of sample j;
+      the input is written only at live samples; a grain fired at j
+      reads from `hw[j] − D`; frozen-at-onset grains need `rate × (L−1)`
+      of head start (the head isn't moving); every read is clamped to
+      `hw − 2` per sample (a no-op live, the HOLD when a freeze lands
+      mid-grain — a ramp test shows no stale burst); the dry side of
+      `mix` moved from a ring read to a 2-sample tail of the live
+      input (bit-identical live, correct while frozen); a release
+      resumes recording at `c` — captured time is continuous, no hole.
+      **All 36 slice-2 reference arrays (six param sets × two block
+      sizes × three outs, captured before editing) unchanged
+      bit-exact.** 15 new tests (65 for the module): toggle stops `c`
+      and tiles the last grain (periodic at the hop, bit-exact); gate
+      ORs with toggle; a mid-block gate edge is bit-exact 64-vs-512 and
+      `c` stops on the edge sample; captured-time continuity (`y[n] ==
+      captured[c(n) − 24000]` after a freeze/release, bit-exact; the
+      held buffer periodic during; the plain delay before); mid-grain
+      hold vs stale; frozen-from-empty silent + block-exact; +12 frozen
+      head start block-exact (toggle on a shared boundary); dry live
+      while frozen; position_cv DC == position bit-exact; a step
+      latches per grain; depth 0 / −1; (V, F) averaged + clamped; an
+      LFO scrubs a frozen buffer (not a static loop); both examples.
+      Suite **3416**. Two examples: `granular_freeze.json` (key_trigger
+      F latch + LFO scan) and `granular_beat_repeat.json` (drum
+      machine, 125 ms slices, shift_random re-cut, 15 BPM freeze
+      clock). **Found on the way:** `Patch.from_dict` appends cables
+      without checking the ports exist (`connect` does), so a typo'd
+      cable in a saved patch loads clean and is silently inert — my
+      beat-repeat wired a clock's non-existent `gate` and the freeze
+      never engaged while the examples sweep passed. Added
+      `test_example_cables_land_on_real_ports` to the sweep; it
+      immediately caught `clock_divider_swing.json`'s dead LFO cable
+      (fixed). The loader itself is below.
+- [ ] **`Patch.from_dict` accepts cables to ports that don't exist —
+      silently inert.** Found 2026-09-16 (above). `Patch.connect`
+      validates; the JSON loader doesn't, so a hand-edited or
+      version-drifted patch can carry a dead cable that renders as
+      "nothing happens". Same shape as the media-path bug: fail soft
+      with nothing to say. Options: (a) validate in `from_dict` and
+      raise (breaks loading old patches after a port rename — bad);
+      (b) drop the cable and REPORT it (status bar: "2 cables dropped:
+      lfo#4.out → euclidean#3.fills_cv", the media-path precedent);
+      (c) keep the cable in the model, flag it in the node editor
+      (dashed/red) so a port rename is visible and re-cableable. (b)
+      or (c); (c) is the one that helps the user fix it. Own small
+      session. The examples are now guarded by the sweep tripwire.
 - [x] **`granular` — SLICE 2: sprays, seed, stereo — SHIPPED
       2026-09-15** (Matthew: "granular slice 2 please", same day as
       slice 1). New params, ALL OFF at their defaults: `spray_time`

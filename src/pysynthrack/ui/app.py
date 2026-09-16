@@ -1682,8 +1682,10 @@ class App:
             # dry/wet. Slice 2: ``spray_time`` (onset jitter, 0 = sync),
             # ``spray_pos`` (read-point scatter, position units),
             # ``spray_pitch`` (cents), ``width`` (per-grain pan scatter
-            # on out_l/out_r), ``seed``. Every knob reaches the NEXT
-            # grain, not the ones in flight.
+            # on out_l/out_r), ``seed``. Slice 3: ``freeze`` (the switch,
+            # ORed with the freeze gate) and ``position_cv_depth``
+            # (buffer fractions per CV unit). Every knob reaches the
+            # NEXT grain, not the ones in flight.
             if param_name == "window":
                 dpg.add_combo(
                     label=param_name, items=list(GRANULAR_WINDOWS),
@@ -1765,6 +1767,19 @@ class App:
                 dpg.add_drag_int(
                     label=param_name, default_value=int(current), speed=1,
                     min_value=0, max_value=999999,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "freeze":
+                dpg.add_checkbox(
+                    label=f"{param_name} (or gate)", default_value=bool(current),
+                    callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "position_cv_depth":
+                dpg.add_slider_float(
+                    label=f"{param_name} (buffer/unit)", default_value=float(current),
+                    min_value=-1.0, max_value=1.0, format="%.2f",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "next_id": 13,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "kick clock - every beat", "params": { "bpm": 120.0, "division": 1.0, "pulse_width": 0.2 } },
+    { "id": 2, "type": "clock", "name": "hat clock - eighths", "params": { "bpm": 120.0, "division": 2.0, "pulse_width": 0.2 } },
+    { "id": 3, "type": "clock", "name": "seq clock - sixteenths", "params": { "bpm": 120.0, "division": 4.0, "pulse_width": 0.2 } },
+    { "id": 4, "type": "sequencer", "name": "snare pattern - backbeat", "params": { "steps": 16, "step1_on": false, "step2_on": false, "step3_on": false, "step4_on": false, "step5_on": true, "step6_on": false, "step7_on": false, "step8_on": false, "step9_on": false, "step10_on": false, "step11_on": false, "step12_on": false, "step13_on": true, "step14_on": false, "step15_on": false, "step16_on": false } },
+    { "id": 5, "type": "kick_drum", "name": "KICK", "params": { "freq_start": 180.0, "freq_end": 48.0, "bend": 45.0, "decay": 380.0, "click": 0.35, "drive": 0.25, "level": 0.65 } },
+    { "id": 6, "type": "snare_drum", "name": "SNARE", "params": { "tone_decay": 110.0, "noise_decay": 190.0, "snappy": 0.6, "level": 0.6 } },
+    { "id": 7, "type": "hat_drum", "name": "HATS - closed eighths", "params": { "decay_closed": 55.0, "decay_open": 400.0, "level": 0.35 } },
+    { "id": 8, "type": "mixer", "name": "drum bus", "params": { "gain1": 1.0, "gain2": 1.0, "gain3": 1.0, "master": 0.9 } },
+    { "id": 9, "type": "clock", "name": "FREEZE CLOCK - 2 s held, 2 s recording, forever", "params": { "bpm": 15.0, "division": 1.0, "pulse_width": 0.5 } },
+    { "id": 10, "type": "shift_random", "name": "RE-CUT - a new slice point every sixteenth; probability 0 locks the pattern", "params": { "probability": 0.15, "length": 16, "range": 1.0, "bipolar": false, "seed": 4 } },
+    { "id": 11, "type": "granular", "name": "BEAT REPEAT - 125 ms slices of the last 2 s; held every other bar (mix 1 = only the repeats)", "params": { "buffer": 2.0, "density": 32.0, "spray_time": 0.0, "size": 62.5, "pitch": 0.0, "spray_pitch": 0.0, "position": 0.0, "spray_pos": 0.0, "position_cv_depth": 1.0, "window": "hann", "width": 0.0, "freeze": false, "mix": 0.6, "seed": 1 } },
+    { "id": 12, "type": "speaker_output", "name": "Output", "params": { "gain": 0.9 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 5, "dst_port": "trigger" },
+    { "src_module_id": 2, "src_port": "out", "dst_module_id": 7, "dst_port": "closed_trigger" },
+    { "src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "clock" },
+    { "src_module_id": 4, "src_port": "gate", "dst_module_id": 6, "dst_port": "trigger" },
+    { "src_module_id": 5, "src_port": "out", "dst_module_id": 8, "dst_port": "in1" },
+    { "src_module_id": 6, "src_port": "out", "dst_module_id": 8, "dst_port": "in2" },
+    { "src_module_id": 7, "src_port": "out", "dst_module_id": 8, "dst_port": "in3" },
+    { "src_module_id": 3, "src_port": "out", "dst_module_id": 10, "dst_port": "clock" },
+    { "src_module_id": 8, "src_port": "out", "dst_module_id": 11, "dst_port": "in" },
+    { "src_module_id": 9, "src_port": "out", "dst_module_id": 11, "dst_port": "freeze" },
+    { "src_module_id": 10, "src_port": "cv", "dst_module_id": 11, "dst_port": "position_cv" },
+    { "src_module_id": 11, "src_port": "out", "dst_module_id": 12, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 60], "2": [40, 220], "3": [40, 380], "4": [280, 380],
+      "5": [520, 60], "6": [520, 220], "7": [520, 380], "8": [780, 220],
+      "9": [780, 500], "10": [780, 660], "11": [1060, 220], "12": [1380, 220]
+    }
+  }
+}

@@ -142,7 +142,7 @@
     },
     {
       "src_module_id": 4,
-      "src_port": "out",
+      "src_port": "cv",
       "dst_module_id": 3,
       "dst_port": "fills_cv"
     },

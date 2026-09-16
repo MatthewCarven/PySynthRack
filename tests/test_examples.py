@@ -40,6 +40,28 @@ def test_example_loads_compiles_and_renders(path):
             assert np.all(np.isfinite(out)), f"{path.name}: non-finite output"
 
 
+@pytest.mark.parametrize("path", EXAMPLE_FILES, ids=lambda p: p.stem)
+def test_example_cables_land_on_real_ports(path):
+    """``Patch.from_dict`` appends cables WITHOUT checking the ports exist
+    (``Patch.connect`` does), so a typo'd cable in a saved patch loads
+    clean and is silently inert -- ``_input_buffer`` just never finds a
+    buffer for it. Found 2026-09-16 when granular_beat_repeat.json wired
+    a clock's non-existent ``gate`` out into ``freeze`` and the freeze
+    never engaged, while the example sweep passed. The loader's own
+    fail-soft is a TODO; this at least keeps the shipped examples
+    honest."""
+    patch = load_patch(path)
+    for c in patch.cables:
+        src = patch.modules[c.src_module_id]
+        dst = patch.modules[c.dst_module_id]
+        assert c.src_port in {p.name for p in src.output_ports}, (
+            f"{path.name}: {src.TYPE}#{src.id} has no out-port {c.src_port!r}"
+        )
+        assert c.dst_port in {p.name for p in dst.input_ports}, (
+            f"{path.name}: {dst.TYPE}#{dst.id} has no in-port {c.dst_port!r}"
+        )
+
+
 def test_ring_governor_example_keeps_its_feedback_loop():
     """The governor demo's whole point is the fill -> ratio_cv cycle; lock
     it so a future edit can't quietly sever the loop and leave a patch

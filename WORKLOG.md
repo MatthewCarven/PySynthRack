@@ -71,7 +71,12 @@ already three light before slice 2 added one -- count with
 > 2026-09-15: **`granular` slice 1 shipped — module #92.** Suite
 > **3260**, 119 examples (eleven banked). Then **slice 2 shipped** the
 > same day — sprays, `seed`, stereo. Suite **3275**, 120 examples
-> (twelve banked). Next: granular slice 3 (freeze + position_cv), the
+> (twelve banked).
+>
+> 2026-09-16: **`granular` slice 3 shipped — the module is complete.**
+> Suite **3416**, 122 examples (fourteen banked, plus a re-listen:
+> `clock_divider_swing.json`'s fills LFO was dead-wired since 09-11,
+> found by a new cable-port tripwire in the examples sweep). Next: the
 > feedback door, possibility follow-ons, the 2026-08-04 keep-list.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
@@ -122,6 +127,100 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-16 — `granular` slice 3: freeze and the scrub; the module is complete
+
+Matthew: "granular slice 3 please Claude." Three slices in two days,
+each its own commit, each verified against reference renders captured
+from the previous one before a line was edited.
+
+**What it adds.** `freeze` — a gate port and a bool param, ORed, the
+resampler's `brake` idiom — stops the buffer *recording* while the
+grains keep *reading*, so the last `buffer` seconds hang and `position`
+scrubs across them. `position_cv` with `position_cv_depth` (fractions
+of the buffer per CV unit, default 1 — house rule, one row added to
+the CV-depth map) moves the read point, read at each grain's onset and
+latched for that grain — the sampler's `start_cv` edge-latch rule,
+because a block-mean would smear a sequencer's step across the grains
+that straddle it.
+
+**Captured time.** The design decision that made everything else fall
+out: the ring is indexed in *captured* time — a counter `c` that
+advances only while recording — while grain onsets run on wall time.
+Per block, `hw[j] = c0 + cumsum(live)[j] − 1` is the index of the last
+sample captured as of sample *j*; the input is written only at the
+live samples; a grain fired at *j* reads from `hw[j] − D`. Live,
+`hw[j]` is the sample's own index and the arithmetic IS slice 2's (all
+36 reference arrays — six param sets × two block sizes × three outs —
+`array_equal` after the edit). Frozen, the head stands still, so the
+head start a fast grain needs becomes `rate × (L − 1)` rather than
+`(rate − 1) × (L − 1)`. And a release resumes recording at `c`: the
+timeline is continuous, like a tape, no hole and no duplicate — pinned
+by a test that reconstructs `captured = x[live]` and asserts `y[n] ==
+captured[c(n) − 24000]` bit-exact after a freeze/release cycle.
+
+**The per-sample freeze.** The gate is read per sample, not per block:
+the freeze lands on the exact sample the gate rises, the captured count
+stops there (asserted), and a mid-block edge renders bit-exact in 64s
+and 512s. That is what makes "hold the last two seconds" mean the same
+two seconds whatever the buffer-size slider says.
+
+**The one artefact, chosen.** A grain that was running alongside the
+head (position 0, rate 1) when a freeze lands would overtake the
+now-stationary head and read stale data — the ring a lap ago, which
+can be anything. Three options: cut the grain (a click), let it read
+stale (a burst of unrelated audio), or clamp its read to the head so
+it holds its last sample under the rest of its window (a short DC
+hold, continuous in value). The clamp — `pos = min(pos, hw − 2)` per
+sample, a no-op while live because the head start guarantees it. The
+ramp test shows the output staying within 0.85–0.88 of a 0.875 head
+value; stale would have read ~0.3. Grains further back than one grain
+length are untouched, which is nearly all of them.
+
+**The dry moved.** `mix`'s dry side was a ring read two samples back;
+frozen, that goes stale. It is now a two-sample tail of the live input
+carried in state — bit-identical live (both are the float64 of the
+same float32 samples), correct while frozen, and the reference check
+is what proves the "bit-identical" half.
+
+**Found on the way: cables to nowhere.** The beat-repeat example wired
+a clock's non-existent `gate` out into `freeze`; the freeze never
+engaged and the examples sweep passed. `Patch.connect` validates port
+names; `Patch.from_dict` does not — it appends whatever the JSON says,
+and `_input_buffer` simply never finds a buffer for the dead cable.
+Fail soft with nothing to say, the media-path shape again. Added
+`test_example_cables_land_on_real_ports` to the sweep, which
+immediately caught a second one: **`clock_divider_swing.json` (banked
+for ears since 09-11) had `lfo.out → euclidean.fills_cv`, and an LFO's
+port is `cv`** — its "fills breathe 2 → 6" never happened. Fixed
+(A/B confirms the LFO now changes the render); Matthew's ears item
+updated. The loader's own behaviour is a TODO with three options;
+(c) keep-and-flag in the node editor is the one that helps.
+
+**Examples** (both banked): `granular_freeze.json` — a `key_trigger`
+latch on `freeze` (**tap F**) and a 0.07 Hz triangle LFO on
+`position_cv` over a pluck melody: play, tap, the last two seconds hang
+and the LFO scans them; tap again. `granular_beat_repeat.json` — the
+drum machine into `density` 32 × `size` 62.5 ms (exact 125 ms slices),
+a `shift_random` at sixteenths picking the slice point, a 15 BPM clock
+on `freeze`: two seconds recording, two seconds held and re-cut. (A
+sequencer's gate only follows the clock's pulse width, so it froze 10%
+of the time on the first try; the slow clock is the honest switch.)
+
+**Three test constructions again**, all mine: I compared against the
+untrimmed input (the helper returns a trimmed copy for a reason); a
+param change lands *before* its block, so the capture count stops one
+block earlier than I first asserted; and 2 s is not a multiple of 512,
+so "toggle at 2 s" toggled at different samples in 64s and 512s — pick
+a boundary both sizes share, the rotary's lesson relearned.
+
+**15 new tests; 65 for the module; suite 3416 (122 of those are the new cable-port tripwire, one per example).** 122 examples. The
+module is complete against its MODULE_IDEAS spec: three slices,
+`8cea850` / `af6a851` / this.
+
+**Yours: 5 commits to push.**
 
 ---
 
