@@ -537,6 +537,102 @@ class TestKrellExample:
         assert gaps.max() > gaps.min() * 1.3, "the pace never breathes"
 
 
+# ----- eor: what it is for, and the patch that is a latch (2026-09-17) ---------
+
+
+class TestEor:
+    def _self_patched_eor_cycles(self, block):
+        """A trigger-mode fg with eor OR'd (with a 30 ms starter) back into
+        its own trig, through the feedback door. Returns the number of
+        complete cycles (eoc pulses) in 3 s."""
+        p = Patch()
+        fg = p.add_module("function_generator", params={"mode": "trigger", "rise": 0.1, "fall": 0.5})
+        clk = p.add_module("clock", params={"bpm": 1.0, "division": 1.0, "pulse_width": 0.0005})
+        lg = p.add_module("logic")
+        p.connect(clk.id, "out", lg.id, "a")
+        p.connect(fg.id, "eor", lg.id, "b")
+        p.connect(lg.id, "or", fg.id, "trig")
+        b = NumpyBackend(sample_rate=48000, block_size=block)
+        b.compile(p)
+        assert b._late_edges == {(lg.id, "or", fg.id, "trig")}
+        seen = []
+        orig = b._render_function_generator
+
+        def spy(module, frames, buffers, patch_ref):
+            r = orig(module, frames, buffers, patch_ref)
+            if module.id == fg.id:
+                seen.append(np.asarray(r["eoc"]).copy())
+            return r
+
+        b._render_function_generator = spy
+        for _ in range(int(3 * 48000 / block)):
+            b.render_block_multi(block)
+        e = np.concatenate(seen)
+        return int(((e[1:] > 0.5) & (e[:-1] <= 0.5)).sum())
+
+    @pytest.mark.parametrize("block", [512, 64])
+    def test_self_patched_eor_into_trig_is_a_latch_not_a_cycle(self, block):
+        """The docs say it, this pins it: eor back into the same trig never
+        completes a second cycle -- the retrigger lands a few ms into
+        the fall and pins the output at the top (512), or the 2 ms pulse
+        straddles two blocks and the loop dies (64). Either way, at most
+        the starter's one cycle. The krell is eoc."""
+        assert self._self_patched_eor_cycles(block) <= 1
+
+    def test_the_swell_strike_example_fires_the_pluck_at_every_peak(self):
+        """fg_eor_swell_strike.json: the fg cycles through the krell loop,
+        and at every eor the fg is at 1.0 and the pluck goes from silent
+        to struck."""
+        from pathlib import Path
+
+        from pysynthrack.io_patch import load_patch
+
+        path = Path(__file__).parent.parent / "examples" / "fg_eor_swell_strike.json"
+        patch = load_patch(path)
+        fg = next(m for m in patch if m.TYPE == "function_generator")
+        pl = next(m for m in patch if m.TYPE == "pluck")
+        assert any(c.src_port == "eor" and c.dst_module_id == pl.id for c in patch.cables_into(pl.id))
+        b = NumpyBackend(sample_rate=44100, block_size=512)
+        b.compile(patch)
+        env, eor, pluck = [], [], []
+        orig_fg = b._render_function_generator
+        orig_pl = b._render_pluck
+
+        def spy_fg(module, frames, buffers, patch_ref):
+            r = orig_fg(module, frames, buffers, patch_ref)
+            if module.id == fg.id:
+                env.append(np.asarray(r["out"]).copy())
+                eor.append(np.asarray(r["eor"]).copy())
+            return r
+
+        def spy_pl(module, frames, buffers, patch_ref):
+            r = orig_pl(module, frames, buffers, patch_ref)
+            pluck.append(np.asarray(r["out"] if isinstance(r, dict) else r).copy())
+            return r
+
+        b._render_function_generator = spy_fg
+        b._render_pluck = spy_pl
+        for _ in range(int(44100 * 25 / 512)):
+            out, _devices = b.render_block_multi(512)
+            assert out is not None and np.all(np.isfinite(out))
+        env = np.concatenate(env)
+        eor = np.concatenate(eor)
+        pl_env = np.abs(np.concatenate(pluck))
+        eors = np.flatnonzero((eor[1:] > 0.5) & (eor[:-1] <= 0.5)) + 1
+        assert len(eors) >= 5, f"only {len(eors)} swells in 25 s"
+        for t in eors:
+            assert env[t] == pytest.approx(1.0, abs=1e-6)          # eor IS the peak
+            # A strike: the pluck's peak right after eor is well above
+            # whatever was still ringing right before it (a fast swell
+            # can re-strike a 2 s decay mid-ring -- "quiet before" is
+            # not the claim, "louder after" is).
+            before = pl_env[max(0, t - 3000):t].max() if t > 0 else 0.0
+            after = pl_env[t:t + 3000].max()
+            assert after > 0.3 and after > 1.5 * before, (t, before, after)
+        gaps = np.diff(eors) / 44100.0
+        assert gaps.max() > gaps.min() * 1.3, "the pace never breathes"
+
+
 # ----- Per-slope curves (2026-09-12) ------------------------------------------
 
 

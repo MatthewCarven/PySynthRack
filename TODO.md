@@ -644,9 +644,32 @@ same session.
       mono). No example needed. Docs carry the honest caveat: the CVs
       are collapsed to mono by SUM, so `velocity_cv → fall_cv` is a
       one-note-at-a-time trick until per-voice rates exist.
-- [ ] **Follow-on 4** — `eor`-into-`trig` as a rise-only retrigger.
-      UNBLOCKED 2026-09-16: the feedback door is general now; this is
-      an example + a paragraph, not a compiler job.
+- [x] **Follow-on 4 — `eor`: what it is for — SHIPPED 2026-09-17**
+      (Matthew: "fg follow-on 4 (eor → trig rise-only retrigger — an
+      example and a paragraph now)"). **Deviation, measured first:**
+      the literal self-patch `eor → trig` is a LATCH, not a cycle. The
+      pulse arrives a block after the top, a few ms into the fall; the
+      retrigger restarts a rise from ~0.99 that finishes in ~2 ms and
+      fires eor again — at 512 the output pins at 0.98–1.0 with a
+      613-sample ripple; at 64 the 2 ms pulse straddles two blocks, the
+      OR never re-edges and the loop DIES (out = 0). Same in loop mode;
+      gate mode dies at both. There is no musical reading of it, so
+      the paragraph says so plainly (docstring + MODULES.md fg entry,
+      "What `eor` is for") and a test pins it: self-patched eor→trig
+      completes ≤ 1 cycle at 512 AND 64. What `eor` IS for is firing
+      things at the PEAK, and the example is that:
+      `fg_eor_swell_strike.json` — a slow fg (1.2 s / 1.8 s, curve
+      −0.3, cycling through the krell loop with a random LFO on
+      `rate_cv`) swells a C2 saw through `filter.cutoff_cv` + a VCA;
+      `eor → pluck.trigger` strikes at the top of every swell and
+      `eor → sample_hold.trig` grabs the strike's pentatonic pitch at
+      that same instant. Test: ≥ 5 swells in 25 s, `out` == 1.0 at
+      every eor, the pluck's peak after each eor > 0.3 and > 1.5×
+      whatever was ringing before (a fast swell re-strikes a 2 s
+      decay mid-ring — "quiet before" was the wrong claim, "louder
+      after" is right; the example is unseeded, so the test was run
+      three times). Suite **3584**. 124 examples. The fg's follow-on
+      list is closed.
 - [x] **Per-voice rise/fall rates** — SHIPPED 2026-09-14, same day it
       was surfaced (Matthew: "execute"). A `(V, F)` `rise_cv` / `fall_cv`
       against a `(V, F)` trigger with the same V gives each slot its own

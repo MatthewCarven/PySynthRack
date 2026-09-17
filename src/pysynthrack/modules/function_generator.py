@@ -30,6 +30,22 @@ same machine with no block of latency and no starter, which is why it is
 here; put something wandering into ``rate_cv`` and the pace never
 repeats. See ``examples/krell_machine.json``.
 
+``eor`` is the other announcement, and its job is to fire things **at the
+peak**: ``eor → pluck.trigger`` strikes a note at the top of a swell,
+``eor → sample_hold.trig`` grabs a voltage at the loudest moment, ``eor``
+into a *second* function generator's ``trig`` chains an attack into
+another shape (a four-stage envelope from two modules), and ``eor`` into
+a sequencer's clock is ``eoc``'s clock shifted by the rise time.
+``examples/fg_eor_swell_strike.json`` is the first two: a swelling drone
+whose every peak fires a pentatonic pluck. One patch that does NOT work,
+and is worth knowing why: ``eor`` back into this module's own ``trig``.
+The pulse arrives a block after the top, a few milliseconds into the
+fall; a retrigger there restarts a rise from ~0.99 that finishes in a
+couple of milliseconds and fires ``eor`` again, so the output is pinned
+at the top with a block-rate ripple -- and at small block sizes the 2 ms
+pulse straddles two blocks, the edge never re-arms, and the loop simply
+dies. A latch, not a cycle. The krell is ``eoc``, always.
+
 Three modes, which are three different answers to "what does the gate mean?"
 
   * ``trigger`` — fire and forget. A rising edge starts the rise; the gate's

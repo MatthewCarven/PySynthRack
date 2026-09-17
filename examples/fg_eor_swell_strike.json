@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "next_id": 16,
+  "modules": [
+    { "id": 1, "type": "function_generator", "name": "THE SWELL - trigger mode; eoc re-fires it (the krell loop), eor fires the strike", "params": { "mode": "trigger", "rise": 1.2, "fall": 1.8, "curve": -0.3, "curve_rise": 0.0, "curve_fall": 0.0 } },
+    { "id": 2, "type": "clock", "name": "STARTER - pokes it once every 12 s; the loop does the rest", "params": { "bpm": 20.0, "division": 0.25, "pulse_width": 0.01 } },
+    { "id": 3, "type": "logic", "name": "OR - starter or eoc", "params": {} },
+    { "id": 4, "type": "oscillator", "name": "DRONE - a low saw that swells with the function", "params": { "waveform": "saw_blep", "freq": 65.4064, "amp": 0.5 } },
+    { "id": 5, "type": "filter", "name": "the swell opens it", "params": { "mode": "lowpass", "cutoff": 180.0, "resonance": 1.2, "cv_depth": 4.0 } },
+    { "id": 6, "type": "vca", "name": "the swell lifts it", "params": {} },
+    { "id": 7, "type": "noise", "name": "the dice", "params": { "color": "white", "amp": 1.0 } },
+    { "id": 8, "type": "sample_hold", "name": "EOR grabs the strike's pitch AT THE PEAK", "params": {} },
+    { "id": 9, "type": "quantizer", "name": "in tune - pentatonic minor, two octaves up", "params": { "root": "C", "scale": "pentatonic minor", "hysteresis": 10.0, "transpose": 12.0 } },
+    { "id": 10, "type": "pluck", "name": "THE STRIKE - fired by eor, at the top of every swell", "params": { "decay": 2.2, "damping": 0.35, "color": 0.85, "position": 0.15, "level": 0.8 } },
+    { "id": 11, "type": "mixer", "name": "drone + strike", "params": { "gain1": 0.7, "gain2": 1.0, "gain3": 1.0, "gain4": 1.0, "master": 0.9 } },
+    { "id": 12, "type": "reverb", "name": "air", "params": { "size": 0.7, "decay": 0.6, "damping": 0.4, "mix": 0.3, "cv_depth": 1.0 } },
+    { "id": 13, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.9 } },
+    { "id": 14, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.9 } },
+    { "id": 15, "type": "lfo", "name": "wander - a new pace every swell or two", "params": { "waveform": "random", "rate": 0.25, "depth": 1.0, "bipolar": true, "cv_depth": 1.0 } }
+  ],
+  "cables": [
+    { "src_module_id": 2, "src_port": "out", "dst_module_id": 3, "dst_port": "a" },
+    { "src_module_id": 1, "src_port": "eoc", "dst_module_id": 3, "dst_port": "b" },
+    { "src_module_id": 3, "src_port": "or", "dst_module_id": 1, "dst_port": "trig" },
+    { "src_module_id": 15, "src_port": "cv", "dst_module_id": 1, "dst_port": "rate_cv" },
+    { "src_module_id": 4, "src_port": "out", "dst_module_id": 5, "dst_port": "in" },
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 5, "dst_port": "cutoff_cv" },
+    { "src_module_id": 5, "src_port": "out", "dst_module_id": 6, "dst_port": "audio" },
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 6, "dst_port": "cv" },
+    { "src_module_id": 7, "src_port": "cv", "dst_module_id": 8, "dst_port": "in" },
+    { "src_module_id": 1, "src_port": "eor", "dst_module_id": 8, "dst_port": "trig" },
+    { "src_module_id": 8, "src_port": "out", "dst_module_id": 9, "dst_port": "in" },
+    { "src_module_id": 9, "src_port": "out", "dst_module_id": 10, "dst_port": "pitch_cv" },
+    { "src_module_id": 1, "src_port": "eor", "dst_module_id": 10, "dst_port": "trigger" },
+    { "src_module_id": 6, "src_port": "out", "dst_module_id": 11, "dst_port": "in1" },
+    { "src_module_id": 10, "src_port": "out", "dst_module_id": 11, "dst_port": "in2" },
+    { "src_module_id": 11, "src_port": "out", "dst_module_id": 12, "dst_port": "in" },
+    { "src_module_id": 12, "src_port": "out_l", "dst_module_id": 13, "dst_port": "in" },
+    { "src_module_id": 12, "src_port": "out_r", "dst_module_id": 14, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "2": [40, 560], "3": [300, 560], "15": [40, 720], "1": [560, 460],
+      "4": [40, 60], "5": [300, 60], "6": [560, 60],
+      "7": [40, 260], "8": [300, 260], "9": [560, 260], "10": [840, 260],
+      "11": [1120, 160], "12": [1380, 160], "13": [1660, 100], "14": [1660, 240]
+    }
+  }
+}
