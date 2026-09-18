@@ -5,14 +5,14 @@ A modular software synthesizer in Python with a drag-cable node-graph UI. Think 
 ## Status: active development (pre-1.0)
 
 PySynthRack has grown well past its first prototype into a working instrument:
-**92 modules** across seven categories, a full CV/modulation system, MIDI,
+**93 modules** across seven categories, a full CV/modulation system, MIDI,
 recording, and a node editor with zoom, live meters, and per-patch layout
 persistence. It's still pre-1.0 — the patch format and APIs can shift — but you
 can build real patches in it today.
 
 ### What works
 
-- **92 modules** in seven Add-menu categories:
+- **93 modules** in seven Add-menu categories:
   - **Sources (20)** — oscillator (sine / saw / square / triangle, each in
     naive, PolyBLEP/PolyBLAMP `*_blep`, and wavetable `*_wt` flavours),
     supersaw, wavetable morph (with single-cycle WAV import), FM operator,
@@ -27,9 +27,10 @@ can build real patches in it today.
     wobble), convolution reverb (IR), ring modulator, frequency shifter, pitch
     shifter, granular cloud, resampler (with tape-stop/spin), octaver, vocoder,
     and a full dynamics set (compressor, limiter, noise gate, transient shaper).
-  - **Modulation (16)** — LFO, ADSR, AD envelope, function generator, clock,
+  - **Modulation (17)** — LFO, ADSR, AD envelope, function generator, clock,
     clock divider, step sequencer, fader sequencer, possibility sequencer
-    (0 / 1 / **?** steps), arpeggiator, euclidean / burst / bernoulli
+    (0 / 1 / **?** steps) and possibility selector (a router whose routes
+    are **?**), arpeggiator, euclidean / burst / bernoulli
     clockwork, gate logic, chaos, and a shift-register random source.
   - **Routing & VCA (6)** — VCA, 4-in mixer, an 8×8 matrix mixer with
     feedback, mid/side, audio/CV combiners.
@@ -76,7 +77,7 @@ for the design write-up.
 src/pysynthrack/
 ├── core/            # Pure-Python model: Port, Module, Patch (no audio, no UI)
 ├── audio/           # AudioBackend interface + numpy (reference) / pyo backends
-├── modules/         # The 92 module type definitions — ports & params, no DSP
+├── modules/         # The 93 module type definitions — ports & params, no DSP
 ├── io_patch/        # JSON save / load
 ├── ui/              # DearPyGui app — node editor, palette, transport, meters
 ├── _crash.py        # Crash-log wiring (GUI + audio-thread hooks)

@@ -62,6 +62,7 @@ from .oscillator import Oscillator
 from .parametric_eq import ParametricEQ
 from .phaser import Phaser
 from .pluck import Pluck
+from .possibility_selector import PossibilitySelector
 from .possibility_seq import PossibilitySeq
 from .quantizer import Quantizer
 from .resampler import Resampler
@@ -159,6 +160,7 @@ __all__ = [
     "ParametricEQ",
     "Phaser",
     "Pluck",
+    "PossibilitySelector",
     "PossibilitySeq",
     "Quantizer",
     "Resampler",

@@ -284,6 +284,7 @@ class PyoBackend(AudioBackend):
             "bernoulli_gate",
             "clock_divider",
             "possibility_seq",
+            "possibility_selector",
             "arpeggiator",
             "chord",
             "logic",

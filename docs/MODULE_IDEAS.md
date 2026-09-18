@@ -33,7 +33,7 @@ Dynamics: `compressor` `limiter` `noise_gate` `transient_shaper` ·
 Pitch/frequency: `ring_mod` `freq_shifter` `bitcrusher` ·
 Character/space: `tape` `convolver` ·
 CV tools: `quantizer` `slew` `pitch_detector` ·
-Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate` `burst` `arpeggiator` `chord` `chaos` ·
+Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate` `burst` `arpeggiator` `chord` `chaos` `possibility_selector` ·
 Voices: `fm_op` `pluck` `modal` `granular` `kick_drum`/`snare_drum`/`hat_drum` `sampler` `organ` ·
 Visual: `scope` `spectrum` ·
 Planned run (2026-08-03): `logic` `mid_side` `octaver` · `matrix_mixer`
@@ -350,6 +350,46 @@ instrument.
 - Tests: emitted rows at exact semitone offsets; strum stagger
   sample-accurate; the 4 rows ≡ 4 independent mono renders; example patch
   minds headroom at the mono sink (4-voice sum!).
+
+### `possibility_selector` (M) — "Modulation" — **SHIPPED 2026-09-18** (see TODO.md / WORKLOG.md)
+
+The possibility bridge's second brick, the *meta* one: a register over
+WHICH module fires. Where `possibility_seq` holds bits with holes in them
+(whether), this holds **routes** with holes in them (which). Sketched on
+TODO 2026-08-15 ("collapse the router itself"), earned its spec once the
+first module had been played, built to it the same day.
+
+- Ports: `in` gate (the gate to route); `clock` gate (step advance —
+  unpatched, `in`'s own edges step it: the distributor reading); `reset`;
+  `reroll`; outs `out1`..`out4` gate (high while `in` is high and the
+  step routes there; nothing before step 1). `in` unpatched → the clock
+  itself is routed.
+- Params: `steps` 1..16 · `mode` loop/latch/dice (possibility_seq's) ·
+  `balanced` · `seed` · `weight1..4` 0..1 (how the open steps lean; all
+  equal = fair; 0 removes that output from every `?`) ·
+  `step{i}_state` = the step's candidate set: `"0"` rest, `"1"`–`"4"`
+  decided, `"?"` all four, a digit subset (`"13"`) some.
+- DSP: possibility_seq's take model verbatim (decided steps read live;
+  open steps memoized per take in loop/latch, cleared on wrap / reroll /
+  seed; dice never memoizes) with `resolve_route` in place of
+  `resolve_step`: a weighted draw over the candidates (one uniform,
+  cumulative walk), or under `balanced` for a *fair* step the least-used
+  candidate (PBP's `RandomGeneratorPerfect` selector, width 1, ties by
+  the die). Pure reference `collapse_routes`; the renderer is pinned
+  against it. Possibility count = product of each open step's choices.
+- Panel: the possibility panel one level up — cells coloured per route,
+  click cycles `0→1→2→3→4→?→0`, right-click = four checkboxes for the
+  candidate set (writes the canonical string), four `? leans to` sliders,
+  the readout.
+- Tests (56): route-string round trips; weights lean / zero removes /
+  all-zero falls back fair; balanced deals every output its share and
+  respects subsets; rng consumed only on real choices; renderer ==
+  reference in loop / balanced / dice; latch holds, reroll refreshes,
+  reset rewinds; block-size independence; the two stepping contracts and
+  the held-input mid-gate switch; a real whether × which graph at 512 and
+  64; the panel's gesture, popup, readout and repaint; the example.
+- Example `possibility_selector_kit.json`: whether × which drums + a
+  four-string harp stepping on its own hits.
 
 ### `chaos` (S–M) — "Modulation" (added 2026-08-04)
 

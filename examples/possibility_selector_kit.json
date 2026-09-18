@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "next_id": 24,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "sixteenth clock", "params": { "bpm": 112.0, "division": 4.0, "pulse_width": 0.3 } },
+
+    { "id": 2, "type": "possibility_seq", "name": "WHETHER - does this sixteenth hit at all? (odd steps yes, evens ?)",
+      "params": { "mode": "loop", "balanced": false, "seed": 5,
+        "step1_state": "1", "step2_state": "?", "step3_state": "1", "step4_state": "?",
+        "step5_state": "1", "step6_state": "?", "step7_state": "1", "step8_state": "?",
+        "step9_state": "1", "step10_state": "?", "step11_state": "1", "step12_state": "?",
+        "step13_state": "1", "step14_state": "?", "step15_state": "1", "step16_state": "?",
+        "step2_p": 0.35, "step4_p": 0.35, "step6_p": 0.35, "step8_p": 0.5,
+        "step10_p": 0.35, "step12_p": 0.35, "step14_p": 0.35, "step16_p": 0.6 } },
+
+    { "id": 3, "type": "possibility_selector", "name": "WHICH drum - clocked by the sixteenths; kick 1, snare 2, closed hat 3, open hat 4",
+      "params": { "mode": "loop", "balanced": false, "seed": 2,
+        "weight1": 0.7, "weight2": 0.5, "weight3": 1.0, "weight4": 0.5,
+        "step1_state": "1", "step2_state": "?", "step3_state": "3", "step4_state": "?",
+        "step5_state": "2", "step6_state": "?", "step7_state": "3", "step8_state": "34",
+        "step9_state": "1", "step10_state": "?", "step11_state": "3", "step12_state": "13",
+        "step13_state": "2", "step14_state": "?", "step15_state": "3", "step16_state": "24" } },
+
+    { "id": 4, "type": "kick_drum", "name": "out1: KICK", "params": { "freq_start": 170.0, "freq_end": 46.0, "bend": 50.0, "decay": 380.0, "click": 0.3, "drive": 0.2, "level": 0.65 } },
+    { "id": 5, "type": "snare_drum", "name": "out2: SNARE", "params": { "tone_decay": 100.0, "noise_decay": 180.0, "snappy": 0.6, "level": 0.5 } },
+    { "id": 6, "type": "hat_drum", "name": "out3: closed hat / out4: open hat", "params": { "decay_closed": 50.0, "decay_open": 380.0, "level": 0.3 } },
+
+    { "id": 7, "type": "possibility_seq", "name": "HARP rhythm - a sparse gate, some of it undecided",
+      "params": { "mode": "loop", "balanced": false, "seed": 11,
+        "step1_state": "1", "step2_state": "0", "step3_state": "0", "step4_state": "?",
+        "step5_state": "0", "step6_state": "0", "step7_state": "1", "step8_state": "0",
+        "step9_state": "?", "step10_state": "0", "step11_state": "0", "step12_state": "1",
+        "step13_state": "0", "step14_state": "0", "step15_state": "?", "step16_state": "0",
+        "step4_p": 0.5, "step9_p": 0.5, "step15_p": 0.5 } },
+
+    { "id": 8, "type": "possibility_selector", "name": "WHICH string - no clock: every HIT steps it (C3 E3 G3 B3, two strings open)",
+      "params": { "mode": "loop", "balanced": true, "seed": 4, "steps": 8,
+        "step1_state": "1", "step2_state": "2", "step3_state": "3", "step4_state": "4",
+        "step5_state": "?", "step6_state": "3", "step7_state": "?", "step8_state": "1" } },
+
+    { "id": 9,  "type": "constant", "name": "string 1: C3", "params": { "value": -1.0 } },
+    { "id": 10, "type": "constant", "name": "string 2: E3", "params": { "value": -0.6666667 } },
+    { "id": 11, "type": "constant", "name": "string 3: G3", "params": { "value": -0.4166667 } },
+    { "id": 12, "type": "constant", "name": "string 4: B3", "params": { "value": -0.0833333 } },
+    { "id": 13, "type": "pluck", "name": "string 1", "params": { "decay": 1.6, "damping": 0.4, "color": 0.8, "position": 0.18, "level": 0.5 } },
+    { "id": 14, "type": "pluck", "name": "string 2", "params": { "decay": 1.6, "damping": 0.4, "color": 0.8, "position": 0.18, "level": 0.5 } },
+    { "id": 15, "type": "pluck", "name": "string 3", "params": { "decay": 1.6, "damping": 0.4, "color": 0.8, "position": 0.18, "level": 0.5 } },
+    { "id": 16, "type": "pluck", "name": "string 4", "params": { "decay": 1.6, "damping": 0.4, "color": 0.8, "position": 0.18, "level": 0.5 } },
+
+    { "id": 17, "type": "mixer", "name": "drum bus", "params": { "gain1": 1.0, "gain2": 1.0, "gain3": 1.0, "gain4": 1.0, "master": 0.9 } },
+    { "id": 18, "type": "mixer", "name": "harp bus", "params": { "gain1": 1.0, "gain2": 1.0, "gain3": 1.0, "gain4": 1.0, "master": 0.7 } },
+    { "id": 19, "type": "mixer", "name": "master", "params": { "gain1": 1.0, "gain2": 0.9, "gain3": 1.0, "gain4": 1.0, "master": 0.95 } },
+    { "id": 20, "type": "reverb", "name": "a little room", "params": { "size": 0.5, "decay": 0.45, "damping": 0.5, "mix": 0.2, "cv_depth": 1.0 } },
+    { "id": 21, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.9 } },
+    { "id": 22, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.9 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 3, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "gate", "dst_module_id": 3, "dst_port": "in" },
+    { "src_module_id": 3, "src_port": "out1", "dst_module_id": 4, "dst_port": "trigger" },
+    { "src_module_id": 3, "src_port": "out2", "dst_module_id": 5, "dst_port": "trigger" },
+    { "src_module_id": 3, "src_port": "out3", "dst_module_id": 6, "dst_port": "closed_trigger" },
+    { "src_module_id": 3, "src_port": "out4", "dst_module_id": 6, "dst_port": "open_trigger" },
+
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 7, "dst_port": "clock" },
+    { "src_module_id": 7, "src_port": "gate", "dst_module_id": 8, "dst_port": "in" },
+    { "src_module_id": 8, "src_port": "out1", "dst_module_id": 13, "dst_port": "trigger" },
+    { "src_module_id": 8, "src_port": "out2", "dst_module_id": 14, "dst_port": "trigger" },
+    { "src_module_id": 8, "src_port": "out3", "dst_module_id": 15, "dst_port": "trigger" },
+    { "src_module_id": 8, "src_port": "out4", "dst_module_id": 16, "dst_port": "trigger" },
+    { "src_module_id": 9,  "src_port": "out", "dst_module_id": 13, "dst_port": "pitch_cv" },
+    { "src_module_id": 10, "src_port": "out", "dst_module_id": 14, "dst_port": "pitch_cv" },
+    { "src_module_id": 11, "src_port": "out", "dst_module_id": 15, "dst_port": "pitch_cv" },
+    { "src_module_id": 12, "src_port": "out", "dst_module_id": 16, "dst_port": "pitch_cv" },
+
+    { "src_module_id": 4, "src_port": "out", "dst_module_id": 17, "dst_port": "in1" },
+    { "src_module_id": 5, "src_port": "out", "dst_module_id": 17, "dst_port": "in2" },
+    { "src_module_id": 6, "src_port": "out", "dst_module_id": 17, "dst_port": "in3" },
+    { "src_module_id": 13, "src_port": "out", "dst_module_id": 18, "dst_port": "in1" },
+    { "src_module_id": 14, "src_port": "out", "dst_module_id": 18, "dst_port": "in2" },
+    { "src_module_id": 15, "src_port": "out", "dst_module_id": 18, "dst_port": "in3" },
+    { "src_module_id": 16, "src_port": "out", "dst_module_id": 18, "dst_port": "in4" },
+    { "src_module_id": 17, "src_port": "out", "dst_module_id": 19, "dst_port": "in1" },
+    { "src_module_id": 18, "src_port": "out", "dst_module_id": 19, "dst_port": "in2" },
+    { "src_module_id": 19, "src_port": "out", "dst_module_id": 20, "dst_port": "in" },
+    { "src_module_id": 20, "src_port": "out_l", "dst_module_id": 21, "dst_port": "in" },
+    { "src_module_id": 20, "src_port": "out_r", "dst_module_id": 22, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 420],
+      "2": [300, 60], "3": [620, 60],
+      "4": [1000, 40], "5": [1000, 200], "6": [1000, 360],
+      "7": [300, 560], "8": [620, 560],
+      "9": [620, 800], "10": [620, 900], "11": [620, 1000], "12": [620, 1100],
+      "13": [1000, 560], "14": [1000, 720], "15": [1000, 880], "16": [1000, 1040],
+      "17": [1300, 200], "18": [1300, 760], "19": [1560, 460], "20": [1820, 460],
+      "21": [2080, 400], "22": [2080, 540]
+    }
+  }
+}

@@ -2668,6 +2668,8 @@ class NumpyBackend(AudioBackend):
             return self._render_wavetable_morph(module, frames, buffers, patch)
         if module.TYPE == "possibility_seq":
             return self._render_possibility_seq(module, frames, buffers, patch)
+        if module.TYPE == "possibility_selector":
+            return self._render_possibility_selector(module, frames, buffers, patch)
         if module.TYPE == "sampler":
             return self._render_sampler(module, frames, buffers, patch)
         if module.TYPE == "euclidean":
@@ -4216,6 +4218,155 @@ class NumpyBackend(AudioBackend):
         st["prev_reset"] = prev_reset
         st["prev_reroll"] = prev_reroll
         return {"gate": gate_out}
+
+    def _render_possibility_selector(self, module, frames: int, buffers, patch) -> dict:
+        """Clocked 1-to-4 gate router with undecided routes (see
+        modules/possibility_selector.py -- the possibility register one
+        level up: a symbol per step instead of a bit).
+
+        Per-sample edge loop on tolist()'d rows (the clock_divider
+        precedent): the stepper, reset and reroll edges must interleave in
+        sample order. Two stepping contracts: with ``clock`` patched it is
+        the stepper and ``in`` is the routed signal; with ``clock``
+        unpatched ``in`` is both (route k applies to the k-th hit). With
+        ``in`` unpatched the clock itself is routed. Step advance matches
+        the sequencer: idx starts at -1 so the first edge plays step 1;
+        ``out{k}`` is high while the signal is high and the current step
+        routes to k (nothing passes before the first step).
+
+        The take model mirrors possibility_seq: rests and decided steps are
+        read live from params every step (panel edits land immediately);
+        open steps go through ``resolve_route`` -- memoized per step in
+        ``loop``/``latch`` (one take), the memo clearing on a loop wrap
+        (``loop``), a ``reroll`` edge, or a ``seed`` change; in ``dice``
+        nothing is memoized. The balanced bag (deal count per output)
+        lives beside the memo and clears with it, so a ``loop``/``latch``
+        bar is dealt exactly like the reference ``collapse_routes``; in
+        ``dice`` it persists and deals evenly through time.
+
+        Determinism: one ``default_rng(seed)`` consumed only on a real
+        choice -- the sequence of takes is a pure function of the seed and
+        the edge history, block-size independent by construction.
+        """
+        from ..modules.possibility_selector import (
+            MAX_STEPS as _PSEL_MAX,
+            N_OUTS as _PSEL_OUTS,
+            POSSIBILITY_MODES,
+            parse_route,
+            resolve_route,
+        )
+
+        sig_in = self._input_buffer(patch, buffers, module.id, "in")
+        clock = self._input_buffer(patch, buffers, module.id, "clock")
+        reset = self._input_buffer(patch, buffers, module.id, "reset")
+        reroll = self._input_buffer(patch, buffers, module.id, "reroll")
+        stepper = clock if clock is not None else sig_in
+        sig = sig_in if sig_in is not None else clock
+
+        try:
+            steps = int(module.params.get("steps", 16))
+        except (TypeError, ValueError):
+            steps = 16
+        steps = max(1, min(_PSEL_MAX, steps))
+        mode = str(module.params.get("mode", "loop"))
+        if mode not in POSSIBILITY_MODES:
+            mode = "loop"
+        balanced = bool(module.params.get("balanced", False))
+        try:
+            seed = int(module.params.get("seed", 1))
+        except (TypeError, ValueError):
+            seed = 1
+        seed = max(0, seed)
+        weights = []
+        for k in range(1, _PSEL_OUTS + 1):
+            try:
+                w = float(module.params.get(f"weight{k}", 1.0))
+            except (TypeError, ValueError):
+                w = 1.0
+            weights.append(min(1.0, max(0.0, w)))
+        states = [str(module.params.get(f"step{i}_state", "0"))
+                  for i in range(1, _PSEL_MAX + 1)]
+        cands = [parse_route(s) for s in states]
+
+        st = self._state.setdefault(module.id, {})
+        if st.get("seed") != seed:
+            st["seed"] = seed
+            st["rng"] = np.random.default_rng(seed)
+            st["memo"] = {}
+            st["bag"] = [0] * _PSEL_OUTS
+            st["idx"] = -1
+            st["route"] = 0
+            st["prev_step"] = False
+            st["prev_reset"] = False
+            st["prev_reroll"] = False
+        rng = st["rng"]
+        rand = rng.random
+        memo: dict = st["memo"]
+        bag: list = st["bag"]
+        idx = int(st["idx"])
+        route = int(st["route"])
+        prev_step = bool(st["prev_step"])
+        prev_reset = bool(st["prev_reset"])
+        prev_reroll = bool(st["prev_reroll"])
+
+        gh = self._GATE_HIGH
+        c_row = (stepper > gh).tolist() if stepper is not None else [False] * frames
+        r_row = (reset > gh).tolist() if reset is not None else [False] * frames
+        rr_row = (reroll > gh).tolist() if reroll is not None else [False] * frames
+        active = [0] * frames  # the output each sample would pass to (0 = none)
+
+        for n in range(frames):
+            r = r_row[n]
+            if r and not prev_reset:
+                idx = -1  # rewind; the take is kept
+            prev_reset = r
+
+            rr = rr_row[n]
+            if rr and not prev_reroll:
+                memo.clear()  # a fresh take for every open step still to come
+                for k in range(_PSEL_OUTS):
+                    bag[k] = 0
+            prev_reroll = rr
+
+            c = c_row[n]
+            if c and not prev_step:
+                nxt = (idx + 1) % steps
+                if mode == "loop" and nxt == 0 and idx != -1:
+                    memo.clear()  # the pattern wrapped: a fresh take
+                    for k in range(_PSEL_OUTS):
+                        bag[k] = 0
+                idx = nxt
+                cs = cands[idx]
+                if len(cs) <= 1:
+                    route = cs[0] if cs else 0  # decided steps read live
+                elif mode == "dice":
+                    route = resolve_route(states[idx], weights, balanced, bag, rand)
+                elif idx in memo:
+                    route = int(memo[idx])
+                else:
+                    route = resolve_route(states[idx], weights, balanced, bag, rand)
+                    memo[idx] = route
+            prev_step = c
+
+            if idx >= 0:
+                active[n] = route
+
+        st["idx"] = idx
+        st["route"] = route
+        st["prev_step"] = prev_step
+        st["prev_reset"] = prev_reset
+        st["prev_reroll"] = prev_reroll
+
+        out = {}
+        if sig is None:
+            for k in range(1, _PSEL_OUTS + 1):
+                out[f"out{k}"] = np.zeros(frames, dtype=np.float32)
+            return out
+        high = sig > gh
+        act = np.asarray(active, dtype=np.int8)
+        for k in range(1, _PSEL_OUTS + 1):
+            out[f"out{k}"] = ((act == k) & high).astype(np.float32)
+        return out
 
     # ----- Chaos rendering -------------------------------------------------
 

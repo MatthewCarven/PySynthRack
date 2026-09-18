@@ -94,8 +94,12 @@ already three light before slice 2 added one -- count with
 >
 > 2026-09-18: **the reroll-divider example** shipped
 > (`possibility_reroll_divider.json`, banked) -- the first possibility
-> follow-on. 125 examples. Next: the meta-possibility selector, the
-> 2026-08-04 keep-list, the cable-loader fail-soft.
+> follow-on. Then **`possibility_selector`, module #93** -- the
+> meta-possibility selector, a router whose routes are `?`; its panel;
+> `possibility_selector_kit.json` (banked). Suite **3649**, 126
+> examples, **93 modules**. The possibility bridge's follow-on list is
+> closed. One eyeball wanted (the route colours + the checkbox popup).
+> Next: the 2026-08-04 keep-list, the cable-loader fail-soft.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -145,6 +149,91 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-18 — possibility_selector: the router collapses (module #93)
+
+Matthew: "... and the meta-possibility selector — collapse which module
+fires, the genuinely novel one". The TODO sketch (2026-08-15) said it
+earns a spec once the first module has been played; it has ("exactly
+what I was hoping for"), so the spec went into MODULE_IDEAS.md first and
+the module was built to it.
+
+**What it is.** `possibility_seq` is a register of bits with holes in
+it — each step says *whether* a hit fires. This is the same register
+one level up: each step says *which* of four outputs the incoming gate
+goes to, and a step can be left open. A step's state is the **set** of
+outputs it may go to — `"1"`–`"4"` decided, `"?"` all four, a digit
+subset like `"13"` some (kick or hat, never snare), `"0"` a rest — so
+the possibility count is the product of each open step's choices, up
+to 4^16. The take model is possibility_seq's verbatim (loop / latch /
+dice, memo per take, reroll, reset, seed → deterministic, block-size
+independent) with `resolve_route` in place of `resolve_step`: a
+weighted draw over the candidates — `weight1..4` say how the open steps
+*lean*, and a zero weight takes that output out of every `?` without
+touching a decided step.
+
+**`balanced`, generalised.** The seq's fix for coin clumping deals
+fair `?`s from a two-value shuffle-bag. Here a fair open step (its
+candidates equally weighted) is dealt to the candidate used *least* so
+far, ties broken by the die — which is exactly PythonBinaryPossibility's
+`RandomGeneratorPerfect` selector (width 1), and is where the module's
+name comes from. Sixteen fair `?`s over four outputs come out four of
+each, every seed, one of each in every consecutive four. Decided steps
+don't touch the bag (they weren't dealt), same as the seq.
+
+**Two stepping contracts**, so one cable is enough either way. `clock`
+patched: the sequencer reading — route *k* belongs to clock tick *k*,
+`in` only says whether anything passes, and a held `in` switches
+outputs mid-gate as the step moves. A possibility_seq gate into `in`
+with the same clock on both is a **whether × which** kit: the sum of
+the four outputs is exactly the seq's gate, pinned through the real
+graph at 512 and 64. `clock` unpatched: the distributor reading —
+`in`'s own edges step the register, route *k* belongs to the *k*-th
+hit whenever it arrives. `in` unpatched: the clock itself is routed.
+
+**The panel** is the possibility panel one level up, built beside it
+rather than after ears this time because sixteen text inputs for
+route strings would have been unusable: cells coloured per route (one
+hue per output, grey rest, the family's amber for anything open, the
+label carrying a subset's digits), click cycles `0→1→2→3→4→?→0`, a
+subset sits in the `?` slot (next click is a rest), right-click opens
+four checkboxes that write the canonical state string (`format_route`:
+all ticked is `?`, one is decided, none is a rest — the popup ticks
+repaint from the model too), four `? leans to` sliders, the readout.
+The `_pseq_theme` global-theme economy is reused with its own colour
+table.
+
+**Example `possibility_selector_kit.json`** (banked): a WHETHER seq
+(odd sixteenths hit, evens `?`) into a clocked WHICH selector — kick 1,
+snare 2, closed hat 3, open hat 4, the open steps leaning to the hats,
+step 8 `"34"`, step 12 `"13"`, step 16 `"24"`; beside it a
+four-string harp — a sparse gate into a second selector with no clock,
+so every *hit* walks an eight-note register (C3 E3 G3 B3 ? G3 ? C3)
+whose two open strings are dealt `balanced` and re-drawn each pass.
+The seeded render: the drum outputs sum exactly to the seq's gate and
+every drum gets played; every harp pass reads 1 2 3 4 x 3 y 1 with
+x ≠ y.
+
+**Test lessons.** (1) The clock's float64 phase accumulator lands an
+edge a sample apart between block sizes now and then (600-sample pulses
+at 48 kHz: nine of 95,744 samples differ) — a graph-level block-size
+claim must compare the *sequence of hit routes*, and the module's own
+block-size pin stays on hand-built pulses. (2) A pulse train built
+with an `offset` needs its reads offset too; "all rests" was the gaps,
+not the module — assert `count(0) == 0` on the read before comparing
+takes. (3) Two seconds of a 240 bpm graph gave 24 hits and out4 never
+came up; render four.
+
+**56 tests** (`tests/test_possibility_selector.py` 35,
+`tests/test_selector_panel.py` 21). MODULES.md entry + index row +
+appendix line, the seq entry points at its sibling, README 93 modules
+(Modulation 17), MODULE_IDEAS spec marked shipped. **Suite 3649**, 126
+examples, **93 modules**. The possibility bridge's follow-on list is
+closed. **EYES wanted:** the route colours and the four-checkbox popup
+in a real window (the possibility panel's popup + tooltip coexistence is
+proven; this adds checkboxes inside the popup).
 
 ---
 

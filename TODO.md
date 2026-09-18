@@ -50,9 +50,41 @@ shipped; the rest queue behind Matthew's ears.
       **tripwire** that counts `backend.set_param` call sites in the UI
       source, so a new callback can't quietly reintroduce it. Rule
       written into docs/architecture.md. Suite **2699**.
-- [ ] **The selector, meta-possibility version** — a register over WHICH
-      module fires: collapse the router itself. Sketch only; earns a spec
-      in MODULE_IDEAS.md when the first module has been played.
+- [x] **`possibility_selector` — the selector, meta-possibility version —
+      SHIPPED 2026-09-18, module #93** (Matthew: "the meta-possibility
+      selector — collapse which module fires, the genuinely novel one").
+      Spec written into MODULE_IDEAS.md and built to it the same day. A
+      clocked 1-to-4 gate router whose routes can be undecided: each
+      step's state is the SET of outputs it may go to — `"1"`–`"4"`
+      decided, `"?"` any, a digit subset (`"13"` = kick or hat) some,
+      `"0"` a rest — with possibility_seq's take model verbatim
+      (loop/latch/dice, memo per take, reroll, reset, seed) and a
+      weighted draw over the candidates (`weight1..4`, how the open
+      steps lean; 0 removes an output from every `?` without touching a
+      decided step). `balanced` generalises the coin's bag to a hand of
+      cards: a fair open step is dealt to the least-used candidate —
+      PBP's `RandomGeneratorPerfect` selector, which is where the name
+      comes from. Two stepping contracts: `clock` patched = the
+      sequencer reading (route k belongs to tick k, `in` says whether
+      anything passes → a possibility_seq gate into `in` is WHETHER x
+      WHICH); `clock` unpatched = the distributor reading (`in`'s own
+      edges step it, route k belongs to the k-th hit); `in` unpatched
+      routes the clock itself. Panel = the possibility panel one level
+      up: cells coloured per route, click cycles `0→1→2→3→4→?→0`,
+      right-click = four checkboxes writing the canonical subset string,
+      `? leans to` sliders, the readout (`8 ? -> 65,536 possible bars`
+      out of the box). Renderer pinned bit-exact against the pure
+      `collapse_routes` reference in loop / balanced / dice; 56 tests
+      across `tests/test_possibility_selector.py` (35) and
+      `tests/test_selector_panel.py` (21). Example
+      `possibility_selector_kit.json` (banked): whether x which drums +
+      a four-string harp stepping on its own hits. Suite **3649**, 126
+      examples, 93 modules. Test lessons: the clock's float phase lands
+      an edge a sample apart between block sizes — compare a graph
+      render's hit ROUTES as a sequence, keep the module's own
+      block-size pin on hand-built pulses; a pulse train with an
+      `offset` needs the reads offset too. **EYES wanted:** the route
+      colours and the four-checkbox popup in a real window.
 - [x] **Example: reroll divider** — SHIPPED 2026-09-18 as
       `examples/possibility_reroll_divider.json`. Not a second free-running
       clock but a [`clock_divider`](docs/MODULES.md#clock_divider) chain

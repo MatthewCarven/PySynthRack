@@ -282,6 +282,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`fader_seq`](#fader_seq) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
 | [`shift_random`](#shift_random) | Modulation | `clock`,`write` (gate) → `cv` (cv), `gate` (gate) |
 | [`possibility_seq`](#possibility_seq) | Modulation | `clock`,`reset`,`reroll` (gate) → `gate` (gate) |
+| [`possibility_selector`](#possibility_selector) | Modulation | `in`,`clock`,`reset`,`reroll` (gate) → `out1`–`out4` (gate) |
 | [`chaos`](#chaos) | Modulation | `reset` (gate) → `x`,`y`,`z` (cv), `gate` (gate) |
 | [`euclidean`](#euclidean) | Modulation | `clock`,`reset` (gate), `fills_cv` (cv) → `gate`,`accent` (gate) |
 | [`burst`](#burst) | Modulation | `trigger`,`clock` (gate), `count_cv` (cv) → `gate` (gate), `env` (cv) |
@@ -3059,7 +3060,9 @@ needs an answer*. A pattern with k undecided steps holds 2^k distinct bars;
 this module plays one per pass and draws fresh ones on demand. Where
 [`sequencer`](#sequencer) covers decided patterns and
 [`bernoulli_gate`](#bernoulli_gate) covers the all-random single stream,
-this is the pattern with holes in it.
+this is the pattern with holes in it. Its sibling
+[`possibility_selector`](#possibility_selector) is the same register one
+level up — steps that say *which* output fires rather than *whether*.
 
 `mode` says **when the `?`s decide**: `loop` (default) redraws every `?`
 each time the pattern wraps — every bar a fresh take from the same
@@ -3121,6 +3124,89 @@ clock, so the re-deal lands exactly on a downbeat:
 `examples/possibility_reroll_divider.json` holds a latched kick and snare
 for four bars (`divn` 16 = a bar, then `div4`) and re-deals the hat every
 bar.
+
+#### `possibility_selector`
+
+A clocked **1-to-4 gate router whose routes can be undecided** — the second
+brick of the possibility bridge, and the *meta* one.
+[`possibility_seq`](#possibility_seq) is a register of bits with holes in
+it: each step says *whether* something fires. This is a register of
+**routes** with holes in it: each step sends the incoming gate to `out1`,
+`out2`, `out3` or `out4` — *which* module fires — or is `?`, undecided
+among them until the music needs an answer. Patch a clock into `in` and
+the four outputs into a [`kick_drum`](#kick_drum), a
+[`snare_drum`](#snare_drum), a [`hat_drum`](#hat_drum) and a fourth voice,
+and every tick fires *some* drum; which one is the undecided bit. The
+router itself collapses.
+
+Each step's state is **the set of outputs it may go to**: `"1"`…`"4"` is
+decided (that output, every take); `"?"` is open among all four; a subset
+is written as its digits — `"13"` is *kick or hat, never snare*, `"234"`
+is *anything but the kick*; `"0"` is a rest. A pattern with k open steps
+holds the product of their choices — up to 4^k — distinct bars, and the
+panel counts them.
+
+`mode` is exactly [`possibility_seq`](#possibility_seq)'s: `loop` redraws
+the open steps every wrap, `latch` holds one take until a `reroll` edge or
+a `seed` change, `dice` rolls fresh every time round.
+`weight1`…`weight4` say **how the open steps lean** — an open step draws
+among its candidates in proportion to their weights, so `weight4` = 0.25
+makes the fourth voice a rare guest and `weight2` = 0 takes the snare out
+of every `?` without touching a decided `"2"`; all equal is a fair draw.
+`balanced` is the clumping fix generalised from a coin to a hand of cards:
+a *fair* open step is dealt from a shuffle-bag — the output dealt least so
+far among its candidates, ties broken by the die — so a bar of `?`s spreads
+across the outputs instead of landing three kicks in a row. (In
+PythonBinaryPossibility that least-used draw is called *the selector*,
+hence the name.)
+
+**Two stepping contracts**, so one cable is enough either way. With
+`clock` patched it is the sequencer reading: step *k*'s route applies to
+clock tick *k* and `in` only says whether anything passes — a
+[`possibility_seq`](#possibility_seq) `gate` into `in` makes a *whether* ×
+*which* kit. With `clock` unpatched it is the distributor reading: `in`'s
+own rising edges step the register, so route *k* applies to the *k*-th
+hit whenever it arrives — four [`pluck`](#pluck)s tuned to a chord on the
+outputs and a sparse gate into `in` is a harp whose string order is a
+register you can leave holes in. With `in` unpatched the clock itself is
+routed.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | gate | The gate to route. |
+| `clock` | in | gate | Advance one step per **rising edge**. Unpatched, `in`'s own edges step the register. |
+| `reset` | in | gate | A rising edge rewinds so the next step is step 1. The current take is kept. |
+| `reroll` | in | gate | A rising edge draws a fresh take — every open step still to come re-resolves. |
+| `out1`…`out4` | out | gate | High while `in` is high **and** the current step routes there — the [`sequencer`](#sequencer) contract, so pulse width follows the input's. Nothing passes before the first step. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `steps` | `16` | 1…16 | Active loop length; the register wraps after this many steps. |
+| `mode` | `loop` | loop / latch / dice | When the open steps decide (see above). |
+| `balanced` | `false` | bool | Deal fair open steps from the least-used-output bag. |
+| `seed` | `1` | ≥ 0 | All randomness; the sequence of takes is a pure function of the seed and the edge history. |
+| `weight{k}` | `1.0` | 0…1 | How the open steps lean towards `out{k}`. Decided steps ignore it. |
+| `step{i}_state` | `1?3?2?3?1?3?2?3?` | "0" / "1"–"4" / "?" / digits | The register (i = 1…16). The default ships eight open steps — 65,536 possible bars. |
+
+**The panel.** The [`possibility_seq`](#possibility_seq) face one level up:
+sixteen **step cells**, each coloured by its route (one hue per output,
+grey for a rest, the family's amber for anything still open) and labelled
+`0`, `1`–`4`, `?` or the subset's digits. **Click a cell to cycle
+`0 → 1 → 2 → 3 → 4 → ? → 0`**; **right-click** for four checkboxes — tick
+the outputs the step may go to (all four is a plain `?`, one is a decided
+step, none is a rest). Hover for what the step does in words. Above the
+cells sit `steps`, `mode`, `balanced`, `seed` and the four `? leans to`
+sliders; beneath them the **possibility readout** — `8 ? -> 65,536
+possible bars`. Steps past `steps` grey out.
+
+**Patching.** `possibility_seq.gate → possibility_selector.in` with the
+same `clock` on both (whether × which), `out1..out4 → kick / snare /
+closed hat / open hat`; or a sparse gate into `in` alone and four plucks
+on the outputs. `examples/possibility_selector_kit.json` is both at once.
 
 #### `chaos`
 
@@ -4124,6 +4210,14 @@ loads in the app. Notable ones referenced above:
   `python examples/samples/generate_samples.py` first to create the
   loop — until you do, the patch loads and plays silently rather than
   failing, because an unreadable path is silence by contract.
+- `possibility_selector_kit.json` — the router collapses: a
+  [`possibility_seq`](#possibility_seq) decides *whether* each sixteenth
+  hits and a clocked [`possibility_selector`](#possibility_selector)
+  decides *which* drum gets it (kick 1, snare 2, closed hat 3, open hat
+  4, the open steps leaning to the hats); beside it a four-string harp —
+  a sparse gate into a second selector with no clock, so every *hit*
+  steps an eight-note register of strings (C3 E3 G3 B3) with two notes
+  left open and dealt `balanced`.
 - `possibility_reroll_divider.json` — the reroll divider: one sixteenth
   clock, two chained [`clock_divider`](#clock_divider)s (`divn` 16 = a bar,
   then `div4` = four bars) and three `latch`ed

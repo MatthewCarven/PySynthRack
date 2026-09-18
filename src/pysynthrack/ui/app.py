@@ -66,6 +66,14 @@ from ..modules.possibility_seq import (
     format_possibilities,
     next_state as pseq_next_state,
 )
+from ..modules.possibility_selector import (
+    MAX_STEPS as PSEL_MAX_STEPS,
+    N_OUTS as PSEL_N_OUTS,
+    format_possibilities as psel_format_possibilities,
+    format_route as psel_format_route,
+    next_state as psel_next_state,
+    parse_route as psel_parse_route,
+)
 from ..modules.wavetable_morph import WT_STACKS
 from ..modules.compressor import DETECTOR_MODES
 from ..modules.distortion import DISTORTION_MODES
@@ -253,6 +261,11 @@ class App:
         self._pseq_cells: dict[int, list[int]] = {}
         self._pseq_count_labels: dict[int, int] = {}
         self._pseq_themes: dict[str, int] = {}
+        # possibility_selector panel: the same shape, one level up (cells
+        # keyed by route, themes per output colour).
+        self._psel_cells: dict[int, list[int]] = {}
+        self._psel_count_labels: dict[int, int] = {}
+        self._psel_themes: dict[str, int] = {}
 
         # The file_player node whose Browse / Add-to-list button was last
         # clicked, so the shared WAV file dialog's callback knows which
@@ -712,6 +725,10 @@ class App:
                 # rows — the whole param set lives on the panel.
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                     self._build_possibility_panel(module)
+            elif module.TYPE == "possibility_selector":
+                # The same face one level up: cells hold routes, not bits.
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                    self._build_selector_panel(module)
             else:
                 # organ's nine drawbars render as a compact fader bank
                 # (fader_seq lineage); its remaining params fall through
@@ -4548,6 +4565,252 @@ class App:
         if self._set_module_param(module_id, f"step{i}_p", float(app_data)):
             self._refresh_possibility_panel(module_id)
 
+    # ----- possibility_selector panel ---------------------------------------
+
+    # Cell colours keyed by route: one hue per output (so a bar reads as a
+    # kit at a glance), the family's amber for anything still open (a full
+    # ``?`` or a subset -- the label carries the digits), grey for a rest,
+    # and the parked colour past the loop length.
+    _PSEL_COLORS = {
+        "1": ((172, 70, 70), (196, 88, 88), (150, 58, 58), (250, 240, 240)),
+        "2": ((66, 108, 176), (84, 128, 200), (56, 92, 154), (240, 245, 250)),
+        "3": ((66, 148, 108), (84, 176, 130), (56, 128, 92), (244, 250, 245)),
+        "4": ((132, 88, 176), (154, 106, 200), (114, 76, 154), (246, 240, 250)),
+        "0": _PSEQ_COLORS["0"],
+        "?": _PSEQ_COLORS["?"],
+        "off": _PSEQ_COLORS["off"],
+    }
+
+    def _psel_theme(self, key: str):
+        """A cached button theme per route colour key (built on first use);
+        the same global-theme economy as ``_pseq_theme``."""
+        cached = self._psel_themes.get(key)
+        if cached is not None:
+            return cached
+        base, hovered, active, text = self._PSEL_COLORS[key]
+        try:
+            with dpg.theme() as theme:
+                with dpg.theme_component(dpg.mvButton):
+                    dpg.add_theme_color(dpg.mvThemeCol_Button, base)
+                    dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, hovered)
+                    dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, active)
+                    dpg.add_theme_color(dpg.mvThemeCol_Text, text)
+        except Exception:
+            return None
+        self._psel_themes[key] = theme
+        return theme
+
+    @staticmethod
+    def _psel_tip(i: int, state: str) -> str:
+        """Tooltip for one cell: where the step goes now, and how to change it."""
+        cands = psel_parse_route(state)
+        if not cands:
+            what = "rest - nothing passes"
+        elif len(cands) == 1:
+            what = f"to out{cands[0]} every take"
+        elif len(cands) == PSEL_N_OUTS:
+            what = "undecided - any output (the weights decide)"
+        else:
+            what = "undecided - " + " or ".join(f"out{k}" for k in cands)
+        return (
+            f"step {i}: {what}\n"
+            "click to cycle 0 > 1 > 2 > 3 > 4 > ?   |   right-click to pick outputs"
+        )
+
+    def _build_selector_panel(self, module) -> None:
+        """The selector panel: the possibility panel one level up.
+
+        Settings rows (loop length, mode, bag, seed), a row of four
+        ``weight`` sliders (how the open steps lean), then sixteen
+        click-to-cycle cells -- ``0 -> 1 -> 2 -> 3 -> 4 -> ? -> 0`` -- each
+        with a right-click popup of four checkboxes for the step's
+        candidate set (``13`` = out1 or out3), and the possibility readout
+        underneath. Every repaint reads from the model, one path.
+        """
+        mid = module.id
+        with dpg.group(horizontal=True):
+            dpg.add_slider_int(
+                label="steps",
+                default_value=int(module.params["steps"]),
+                min_value=1,
+                max_value=PSEL_MAX_STEPS,
+                width=120,
+                callback=self._on_selector_steps,
+                user_data=(mid, "steps"),
+            )
+            dpg.add_combo(
+                label="mode",
+                items=list(POSSIBILITY_MODES),
+                default_value=str(module.params["mode"]),
+                width=80,
+                callback=self._on_selector_param,
+                user_data=(mid, "mode"),
+            )
+        with dpg.group(horizontal=True):
+            balanced = dpg.add_checkbox(
+                label="balanced",
+                default_value=bool(module.params["balanced"]),
+                callback=self._on_selector_param,
+                user_data=(mid, "balanced"),
+            )
+            with dpg.tooltip(balanced):
+                dpg.add_text(
+                    "Deal the fair open steps from a shuffle-bag - the\n"
+                    "output used least so far - so a bar spreads across\n"
+                    "the outputs. Weighted steps keep their lean."
+                )
+            dpg.add_drag_int(
+                label="seed",
+                default_value=int(module.params["seed"]),
+                speed=1,
+                min_value=0,
+                max_value=999999,
+                width=110,
+                callback=self._on_selector_param,
+                user_data=(mid, "seed"),
+            )
+        with dpg.group(horizontal=True):
+            lean = dpg.add_text("? leans to")
+            with dpg.tooltip(lean):
+                dpg.add_text(
+                    "How an open step draws among its outputs: all equal is\n"
+                    "a fair draw, 0 takes that output out of every ?.\n"
+                    "Decided steps ignore these."
+                )
+            for k in range(1, PSEL_N_OUTS + 1):
+                dpg.add_slider_float(
+                    label=f"{k}",
+                    default_value=float(module.params[f"weight{k}"]),
+                    min_value=0.0,
+                    max_value=1.0,
+                    format="%.2f",
+                    width=62,
+                    callback=self._on_selector_weight,
+                    user_data=(mid, k),
+                )
+
+        cells: list[int] = []
+        with dpg.group(horizontal=True, horizontal_spacing=2):
+            for i in range(1, PSEL_MAX_STEPS + 1):
+                state = str(module.params[f"step{i}_state"])
+                with dpg.group():
+                    cell = dpg.add_button(
+                        label=state,
+                        width=30,
+                        height=28,
+                        callback=self._on_selector_step,
+                        user_data=(mid, i),
+                    )
+                    cells.append(cell)
+                    with dpg.tooltip(cell):
+                        dpg.add_text(
+                            self._psel_tip(i, state),
+                            tag=f"psel_tip_{mid}_{i}",
+                        )
+                    # Right-click: the step's candidate set. One checkbox
+                    # per output; all four ticked is a plain ?, one is a
+                    # decided step, none is a rest -- the popup and the
+                    # click cycle write the same state string.
+                    with dpg.popup(cell, mousebutton=dpg.mvMouseButton_Right):
+                        dpg.add_text(f"step {i} may go to")
+                        cands = psel_parse_route(state)
+                        for k in range(1, PSEL_N_OUTS + 1):
+                            dpg.add_checkbox(
+                                label=f"out{k}",
+                                default_value=k in cands,
+                                tag=f"psel_cand_{mid}_{i}_{k}",
+                                callback=self._on_selector_candidate,
+                                user_data=(mid, i, k),
+                            )
+                    dpg.add_text(f"{i}")
+        self._psel_cells[mid] = cells
+        self._psel_count_labels[mid] = dpg.add_text("", tag=f"psel_count_{mid}")
+        self._refresh_selector_panel(mid)
+
+    def _refresh_selector_panel(self, module_id: int) -> None:
+        """Redraw every cell (label, colour, tooltip, popup ticks) and the
+        count readout straight from the model."""
+        module = self.patch.modules.get(module_id)
+        cells = self._psel_cells.get(module_id)
+        if module is None or not cells:
+            return
+        try:
+            steps = int(module.params.get("steps", PSEL_MAX_STEPS))
+        except (TypeError, ValueError):
+            steps = PSEL_MAX_STEPS
+        states = [
+            str(module.params.get(f"step{i}_state", "0"))
+            for i in range(1, PSEL_MAX_STEPS + 1)
+        ]
+        for idx, cell in enumerate(cells):
+            i = idx + 1
+            state = states[idx]
+            cands = psel_parse_route(state)
+            dpg.set_item_label(cell, psel_format_route(cands))
+            if i > steps:
+                key = "off"
+            elif len(cands) == 1:
+                key = str(cands[0])
+            elif cands:
+                key = "?"
+            else:
+                key = "0"
+            theme = self._psel_theme(key)
+            if theme is not None:
+                dpg.bind_item_theme(cell, theme)
+            tip_tag = f"psel_tip_{module_id}_{i}"
+            if dpg.does_item_exist(tip_tag):
+                dpg.set_value(tip_tag, self._psel_tip(i, state))
+            for k in range(1, PSEL_N_OUTS + 1):
+                cand_tag = f"psel_cand_{module_id}_{i}_{k}"
+                if dpg.does_item_exist(cand_tag):
+                    dpg.set_value(cand_tag, k in cands)
+        label = self._psel_count_labels.get(module_id)
+        if label is not None:
+            dpg.set_value(label, psel_format_possibilities(states, steps))
+
+    def _on_selector_step(self, sender, app_data, user_data) -> None:
+        """A cell was clicked: cycle its route 0 -> 1 -> 2 -> 3 -> 4 -> ? -> 0."""
+        module_id, i = user_data
+        module = self.patch.modules.get(module_id)
+        if module is None:
+            return
+        nxt = psel_next_state(str(module.params.get(f"step{i}_state", "0")))
+        if self._set_module_param(module_id, f"step{i}_state", nxt):
+            self._refresh_selector_panel(module_id)
+
+    def _on_selector_candidate(self, sender, app_data, user_data) -> None:
+        """A popup checkbox flipped: add or drop that output from the step's
+        candidate set and write the canonical state string."""
+        module_id, i, k = user_data
+        module = self.patch.modules.get(module_id)
+        if module is None:
+            return
+        cands = set(psel_parse_route(module.params.get(f"step{i}_state", "0")))
+        if app_data:
+            cands.add(int(k))
+        else:
+            cands.discard(int(k))
+        if self._set_module_param(module_id, f"step{i}_state", psel_format_route(cands)):
+            self._refresh_selector_panel(module_id)
+
+    def _on_selector_steps(self, sender, app_data, user_data) -> None:
+        """Loop length moved: parked cells grey out and the count shrinks."""
+        module_id, name = user_data
+        if self._set_module_param(module_id, name, int(app_data)):
+            self._refresh_selector_panel(module_id)
+
+    def _on_selector_param(self, sender, app_data, user_data) -> None:
+        """mode / balanced / seed - no repaint needed, just the write."""
+        module_id, name = user_data
+        value = int(app_data) if name == "seed" else app_data
+        self._set_module_param(module_id, name, value)
+
+    def _on_selector_weight(self, sender, app_data, user_data) -> None:
+        """One of the four lean sliders moved."""
+        module_id, k = user_data
+        self._set_module_param(module_id, f"weight{k}", float(app_data))
+
     # ----- per-key velocity calibration dialog ------------------------------
 
     _NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
@@ -4967,6 +5230,8 @@ class App:
             # refresh set_value a dead item. The themes are global and stay.
             self._pseq_cells.pop(module_id, None)
             self._pseq_count_labels.pop(module_id, None)
+            self._psel_cells.pop(module_id, None)
+            self._psel_count_labels.pop(module_id, None)
             # Drop meter bookkeeping too: the bar drawlist items are freed
             # with the node below, so a lingering entry would make the next
             # _update_cv_meters frame call set_value on a dead item — the
