@@ -772,10 +772,34 @@ halves), then built — the selector's precedent.
       scope on the Helmholtz sawtooth. Suite **3680**, 127 examples.
       Prototyping findings: STK's flute is tuned to 1.5 periods ("we're
       overblowing here") — worth knowing before the wind half.
-- [ ] **`wind`** — the blown half: `model` flute | reed, spec in
-      MODULE_IDEAS.md (prototyped 2026-09-18: the reed is in tune to
-      +-5 ct and speaks above a pressure threshold; the flute holds
-      +-10 ct C3..C6 at moderate breath and goes sharp blown hard low).
+- [x] **`wind` — SHIPPED 2026-09-18, module #95.** Sources. The blown
+      half: `model` flute | reed. Flute = STK Flute (jet delay 0.32 of a
+      bore tuned to 1.5 periods x a measured 1.5% regime correction —
+      the overblown register, STK's "we're overblowing here"; jet
+      table x(x^2-1) clamped; 0.5/0.5 reflections; one-pole + DC block
+      in the return; breath mapped 0.85..1.4 — the jet saturates and
+      dies above ~1.5). Reed = STK Clarinet mouthpiece (one round-trip
+      delay, reed table clip(0.7 - 0.3 dp), -0.95 x one-pole reflection;
+      breath mapped 0.58..1.0 — it needs ~0.58 to speak and closes
+      above ~1.1, both physical). Shared with `bowed`: the slice-buffer
+      chunked loop (<= the jet / the bore), the integer-count gate ramp
+      (`_gate_ramp_env`, extracted from bowed), per-block pitch, early-
+      out. Breath noise = a per-(voice, note) seeded stream drawn per
+      segment between rising edges, so a note is block-size exact;
+      output DC-blocked. Tuning: reed +-5 ct C2..C6 measured (+-8
+      pinned); flute +-4 ct C3..C6 at moderate breath (+-10 pinned),
+      sharp blown hard low down. Cost < 0.5 ms/block per voice across
+      the range. 32 tests in `tests/test_wind.py`. Example
+      `wind_duet.json` (banked): a flute tune an octave up with vibrato
+      and a breathing LFO over a chalumeau reed line at half speed.
+      Suite **3717**, 128 examples, 95 modules. Deviation from the
+      docstring's first draft: the "odd harmonics" clarinet claim did
+      NOT survive measurement (the model's even harmonics come and go
+      with breath and noise) — the docs say harmonic-rich vs nearly
+      pure instead, and that is what the test pins. Trap: a stray -1
+      sample carried over from the prototype's calibration knob made
+      the flute 25 ct sharp at C6 — the prototype's `comp_extra=-1`
+      had cancelled it; measure the MODULE, not the prototype.
 
 ## Media paths (2026-08-29)
 

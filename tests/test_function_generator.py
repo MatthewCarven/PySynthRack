@@ -582,11 +582,15 @@ class TestEor:
     def test_the_swell_strike_example_fires_the_pluck_at_every_peak(self):
         """fg_eor_swell_strike.json: the fg cycles through the krell loop,
         and at every eor the fg is at 1.0 and the pluck goes from silent
-        to struck."""
+        to struck. The example's noise and random LFO draw from numpy's
+        global RNG (unseeded modules), so the test seeds it: one fast
+        swell in ~6 re-struck a pluck still ringing at 0.65 and failed
+        the "louder after" claim about one run in four."""
         from pathlib import Path
 
         from pysynthrack.io_patch import load_patch
 
+        np.random.seed(0x45_4F_52)  # "EOR"
         path = Path(__file__).parent.parent / "examples" / "fg_eor_swell_strike.json"
         patch = load_patch(path)
         fg = next(m for m in patch if m.TYPE == "function_generator")

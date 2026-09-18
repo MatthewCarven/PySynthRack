@@ -2714,6 +2714,8 @@ class NumpyBackend(AudioBackend):
             return self._render_fm_op(module, frames, buffers, patch)
         if module.TYPE == "bowed":
             return self._render_bowed(module, frames, buffers, patch)
+        if module.TYPE == "wind":
+            return self._render_wind(module, frames, buffers, patch)
         if module.TYPE == "pluck":
             return self._render_pluck(module, frames, buffers, patch)
         if module.TYPE == "modal":
@@ -13561,6 +13563,36 @@ class NumpyBackend(AudioBackend):
     # A lifted, decayed string below this output peak early-outs.
     _BOW_SILENCE = 1e-5
 
+    # ----- Wind (flute / reed) ------------------------------------------------
+
+    _WIND_C4 = 261.6255653005986
+    _WIND_MAX_F0 = 2500.0
+    # The flute's jet model loses its register below ~80 Hz; the reed
+    # goes down to the contrabass.
+    _WIND_MIN_F0 = {"flute": 80.0, "reed": 30.0}
+    # Bore reflection one-pole pole ranges (damping 0..1).
+    _WIND_POLE = {"flute": (0.5, 0.85), "reed": (0.3, 0.8)}
+    # Breath pressure ranges (breath 0..1): the flute speaks in a window
+    # (jet saturation kills it above ~1.5), the reed needs ~0.58 to speak
+    # and closes above ~1.1 -- both measured 2026-09-18.
+    _WIND_PRESSURE = {"flute": (0.85, 0.55), "reed": (0.58, 0.42)}
+    # Flute: bore tuned to 1.5 periods (STK: "we're overblowing here"),
+    # times a measured regime correction (the jet's phase pulls the
+    # regime sharp by ~1.5%); jet at 0.32 of the bore; 0.5/0.5 jet/end
+    # reflections; DC block in the return.
+    _WIND_FLUTE_BORE = 1.5 * 1.015
+    _WIND_FLUTE_JET = 0.32
+    _WIND_FLUTE_REFL = 0.5
+    # Reed: reflection -0.95 through the loss filter; table 0.7 - 0.3 dp.
+    _WIND_REED_REFL = 0.95
+    _WIND_REED_OFFSET = 0.7
+    _WIND_REED_SLOPE = 0.3
+    _WIND_DC_POLE = 0.995
+    _WIND_MODEL_GAIN = {"flute": 0.3, "reed": 1.0}
+    _WIND_OUT_GAIN = 2.0
+    _WIND_SILENCE = 1e-5
+    _WIND_SEED = 0x57494E44  # "WIND"
+
     # ----- sampler ----------------------------------------------------------
 
     # Retrigger declick: a voice re-struck while still sounding keeps its old
@@ -14512,37 +14544,9 @@ class NumpyBackend(AudioBackend):
                 continue  # a lifted, silent string is free
 
             # --- the bow envelope: integer-count ramps, segmented at edges
-            env = np.empty(frames, dtype=np.float64)
-            on_count = int(st["on_count"][v])
-            off_count = int(st["off_count"][v])
-            env_off = float(st["env_off"][v])
-            changes = np.flatnonzero(gt != np.concatenate(([prev], gt[:-1])))
-            bounds = changes.tolist() + [frames]
-            seg_start = 0
-            cur = prev
-            for seg_end in bounds:
-                n_seg = seg_end - seg_start
-                if n_seg > 0:
-                    k = np.arange(1, n_seg + 1, dtype=np.float64)
-                    if cur:
-                        env[seg_start:seg_end] = np.minimum(1.0, (on_count + k) / att_n)
-                        on_count += n_seg
-                    else:
-                        env[seg_start:seg_end] = env_off * np.maximum(
-                            0.0, 1.0 - (off_count + k) / rel_n)
-                        off_count += n_seg
-                if seg_end < frames:
-                    # an edge at seg_end: the state flips for the next segment
-                    if cur:
-                        env_off = float(env[seg_end - 1]) if seg_end > 0 else (
-                            min(1.0, on_count / att_n) if on_count else 0.0)
-                        off_count = 0
-                    else:
-                        cur_env = float(env[seg_end - 1]) if seg_end > 0 else (
-                            env_off * max(0.0, 1.0 - off_count / rel_n))
-                        on_count = int(cur_env * att_n)
-                    cur = not cur
-                seg_start = seg_end
+            env, on_count, off_count, env_off = self._gate_ramp_env(
+                gt, prev, int(st["on_count"][v]), int(st["off_count"][v]),
+                float(st["env_off"][v]), att_n, rel_n)
             st["on_count"][v] = on_count
             st["off_count"][v] = off_count
             st["env_off"][v] = env_off
@@ -14634,6 +14638,291 @@ class NumpyBackend(AudioBackend):
         b = np.array([alpha / a0, 0.0, -alpha / a0])
         a = np.array([1.0, -2.0 * np.cos(w0) / a0, (1.0 - alpha) / a0])
         return b, a
+
+    @staticmethod
+    def _gate_ramp_env(gt, prev: bool, on_count: int, off_count: int,
+                       env_off: float, att_n: int, rel_n: int):
+        """A linear attack/release ramp driven by a gate row, as integer
+        counts from the edges (bit-exact across block sizes).
+
+        While the gate is high the envelope is ``min(1, on_count/att_n)``
+        with ``on_count`` counting samples since the rising edge; after a
+        falling edge it is ``env_off * max(0, 1 - off_count/rel_n)`` from
+        the level it had. A rising edge mid-release restarts the attack
+        count FROM the current level (``on_count = env * att_n``) so a
+        fast re-articulation never jumps. Returns the per-sample envelope
+        and the carried ``(on_count, off_count, env_off)``.
+        """
+        frames = len(gt)
+        env = np.empty(frames, dtype=np.float64)
+        changes = np.flatnonzero(gt != np.concatenate(([prev], gt[:-1])))
+        bounds = changes.tolist() + [frames]
+        seg_start = 0
+        cur = bool(prev)
+        for seg_end in bounds:
+            n_seg = seg_end - seg_start
+            if n_seg > 0:
+                k = np.arange(1, n_seg + 1, dtype=np.float64)
+                if cur:
+                    env[seg_start:seg_end] = np.minimum(1.0, (on_count + k) / att_n)
+                    on_count += n_seg
+                else:
+                    env[seg_start:seg_end] = env_off * np.maximum(
+                        0.0, 1.0 - (off_count + k) / rel_n)
+                    off_count += n_seg
+            if seg_end < frames:
+                # an edge at seg_end: the state flips for the next segment
+                if cur:
+                    env_off = float(env[seg_end - 1]) if seg_end > 0 else (
+                        min(1.0, on_count / att_n) if on_count else 0.0)
+                    off_count = 0
+                else:
+                    cur_env = float(env[seg_end - 1]) if seg_end > 0 else (
+                        env_off * max(0.0, 1.0 - off_count / rel_n))
+                    on_count = int(cur_env * att_n)
+                cur = not cur
+            seg_start = seg_end
+        return env, on_count, off_count, env_off
+
+    # ----- Wind rendering ------------------------------------------------------
+
+    def _render_wind(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Blown pipe, flute or reed (see modules/wind.py for the contract).
+
+        Same machinery as the bowed string: per voice, slice-buffer delay
+        lines compacted once per block, the loop advanced in vectorized
+        chunks no longer than the shortest delay, an integer-count breath
+        ramp from the gate edges (``_gate_ramp_env``), pitch read at the
+        block's last rising edge or the block mean, early-out when the
+        breath is off and the pipe has gone quiet.
+
+        ``flute`` (STK Flute): ``temp = dcblock(-lowpass(bore_out))``;
+        ``jet.write(breath - 0.5 temp)``; ``bore.write(jettable(jet_out)
+        + 0.5 temp)`` with ``jettable(x) = clip(x(x^2 - 1))``; the bore is
+        1.5 periods (the overblown register), the jet 0.32 of it; chunks
+        <= the jet delay. ``reed`` (STK Clarinet mouthpiece):
+        ``dp = -0.95 lowpass(line_out) - breath``; ``line.write(breath +
+        dp * clip(0.7 - 0.3 dp))``; one round-trip delay = the period;
+        chunks <= it. Both: the delay is ``sr/f0``-based minus the loss
+        filter's exact phase delay at f0, fraction as a linear-interp
+        read. Breath = ``maxp(breath[n]) * env[n] * (1 + noise * white)``
+        with the white noise a per-(voice, note) seeded stream drawn per
+        segment, so a note renders identically at any block size. The
+        output is DC-blocked (the reed's line carries the breath pressure).
+        """
+        from ..modules.wind import WIND_MODELS
+
+        pitch = self._input_buffer(patch, buffers, module.id, "pitch_cv", collapse=False)
+        gate = self._input_buffer(patch, buffers, module.id, "gate", collapse=False)
+        if pitch is None and gate is None:
+            self._state.pop(module.id, None)
+            return np.zeros(frames, dtype=np.float32)
+        b_cv = self._input_buffer(patch, buffers, module.id, "breath_cv")
+
+        voiced = (pitch is not None and pitch.ndim == 2) or (
+            gate is not None and gate.ndim == 2
+        )
+        V = 1
+        for sig in (pitch, gate):
+            if sig is not None and sig.ndim == 2:
+                V = max(V, sig.shape[0])
+
+        def row(sig, v):
+            if sig is None:
+                return None
+            if sig.ndim == 2:
+                return sig[v] if v < sig.shape[0] else sig[0]
+            return sig
+
+        def fparam(name, default, lo, hi):
+            try:
+                x = float(module.params.get(name, default))
+            except (TypeError, ValueError):
+                x = default
+            return min(hi, max(lo, x))
+
+        model = str(module.params.get("model", "flute"))
+        if model not in WIND_MODELS:
+            model = "flute"
+        breath = fparam("breath", 0.5, 0.0, 1.0)
+        noise = fparam("noise", 0.15, 0.0, 1.0)
+        attack = fparam("attack", 0.04, 0.001, 10.0)
+        release = fparam("release", 0.1, 0.001, 10.0)
+        damping = fparam("damping", 0.5, 0.0, 1.0)
+        depth = fparam("cv_depth", 1.0, -10.0, 10.0)
+        level = fparam("level", 0.5, 0.0, 1.0)
+        try:
+            seed = max(0, int(module.params.get("seed", 1)))
+        except (TypeError, ValueError):
+            seed = 1
+
+        sr = float(self.sample_rate)
+        maxlen = int(self._WIND_FLUTE_BORE * sr / min(self._WIND_MIN_F0.values())) + 8
+
+        st = self._state.setdefault(module.id, {})
+        if (st.get("V") != V or st.get("maxlen") != maxlen or st.get("block") != frames
+                or st.get("model") != model):
+            st.clear()
+            buflen = maxlen + frames + 4
+            st.update({
+                "V": V, "maxlen": maxlen, "block": frames, "buflen": buflen, "model": model,
+                "bore": np.zeros((V, buflen), dtype=np.float64),
+                "jet": np.zeros((V, buflen), dtype=np.float64),
+                "w": np.full(V, maxlen, dtype=np.int64),
+                "lp_z": np.zeros(V, dtype=np.float64),
+                "dc_z": np.zeros(V, dtype=np.float64),
+                "odc_z": np.zeros(V, dtype=np.float64),
+                "prev_gate": np.zeros(V, dtype=bool),
+                "on_count": np.zeros(V, dtype=np.int64),
+                "off_count": np.zeros(V, dtype=np.int64),
+                "env_off": np.zeros(V, dtype=np.float64),
+                "hits": np.zeros(V, dtype=np.int64),
+                "rng": [None] * V,
+                "active": np.zeros(V, dtype=bool),
+            })
+        bore = st["bore"]
+        jet = st["jet"]
+        buflen = int(st["buflen"])
+
+        p_lo, p_hi = self._WIND_POLE[model]
+        pole = p_lo + (p_hi - p_lo) * damping
+        att_n = max(1, int(round(attack * sr)))
+        rel_n = max(1, int(round(release * sr)))
+        gate_high = self._GATE_HIGH
+        pr_lo, pr_range = self._WIND_PRESSURE[model]
+        if b_cv is not None:
+            maxp = pr_lo + pr_range * np.clip(breath + depth * b_cv.astype(np.float64), 0.0, 1.0)
+        else:
+            maxp = np.full(frames, pr_lo + pr_range * breath)
+        f_lo = self._WIND_MIN_F0[model]
+        dc_b = np.array([1.0, -1.0])
+        dc_a = np.array([1.0, -self._WIND_DC_POLE])
+        if model == "flute":
+            lp_b = np.array([-(1.0 - pole)])
+        else:
+            lp_b = np.array([1.0 - pole])
+        lp_a = np.array([1.0, -pole])
+
+        out = np.zeros((V, frames), dtype=np.float64)
+        for v in range(V):
+            p_row = row(pitch, v)
+            g_row = row(gate, v)
+            gt = (g_row > gate_high) if g_row is not None else np.zeros(frames, dtype=bool)
+            prev = bool(st["prev_gate"][v])
+            rising = np.flatnonzero(gt & ~np.concatenate(([prev], gt[:-1])))
+            if rising.size:
+                st["active"][v] = True
+            if not st["active"][v]:
+                st["prev_gate"][v] = bool(gt[-1])
+                continue
+
+            env, on_count, off_count, env_off = self._gate_ramp_env(
+                gt, prev, int(st["on_count"][v]), int(st["off_count"][v]),
+                float(st["env_off"][v]), att_n, rel_n)
+            st["on_count"][v] = on_count
+            st["off_count"][v] = off_count
+            st["env_off"][v] = env_off
+            st["prev_gate"][v] = bool(gt[-1])
+
+            # Breath noise: a fresh seeded stream per note, drawn per
+            # segment between rising edges (same consumption at any block
+            # size). Silence before the first note draws nothing.
+            white = np.zeros(frames, dtype=np.float64)
+            seg_start = 0
+            for e in rising.tolist() + [frames]:
+                if e > seg_start and st["rng"][v] is not None:
+                    white[seg_start:e] = st["rng"][v].uniform(-1.0, 1.0, e - seg_start)
+                if e < frames:
+                    st["hits"][v] += 1
+                    st["rng"][v] = np.random.default_rng(
+                        (self._WIND_SEED, seed, module.id, v, int(st["hits"][v])))
+                seg_start = e
+            breath_p = maxp * env * (1.0 + noise * white)
+
+            if p_row is None:
+                cv_val = 0.0
+            elif rising.size:
+                cv_val = float(p_row[rising[-1]])
+            else:
+                cv_val = float(np.mean(p_row))
+            f0 = self._WIND_C4 * (2.0 ** cv_val)
+            f0 = min(self._WIND_MAX_F0, max(f_lo, f0))
+            w0 = 2.0 * np.pi * f0 / sr
+            tau = float(np.arctan2(pole * np.sin(w0), 1.0 - pole * np.cos(w0)) / w0)
+            if model == "flute":
+                L = self._WIND_FLUTE_BORE * sr / f0 - tau
+                L = max(4.0, L)
+                Lj = max(2, int(round(self._WIND_FLUTE_JET * L)))
+            else:
+                L = max(4.0, sr / f0 - tau)
+                Lj = 0
+            L_i = int(L)
+            L_f = L - L_i
+            chunk_max = max(1, min(L_i, Lj) if Lj else L_i)
+
+            w = int(st["w"][v])
+            if w + frames > buflen:
+                bore[v, :maxlen] = bore[v, w - maxlen:w]
+                jet[v, :maxlen] = jet[v, w - maxlen:w]
+                w = maxlen
+            b_row = bore[v]
+            j_row = jet[v]
+            z = np.array([st["lp_z"][v]])
+            zd = np.array([st["dc_z"][v]])
+            o_row = out[v]
+            refl = self._WIND_FLUTE_REFL
+            r_refl = self._WIND_REED_REFL
+            r_off = self._WIND_REED_OFFSET
+            r_slope = self._WIND_REED_SLOPE
+
+            pos = 0
+            while pos < frames:
+                n = min(chunk_max, frames - pos)
+                rb = w - L_i
+                b0 = b_row[rb:rb + n]
+                line_out = b0 + L_f * (b_row[rb - 1:rb - 1 + n] - b0)
+                filt, z = lfilter(lp_b, lp_a, line_out, zi=z)
+                bp = breath_p[pos:pos + n]
+                if model == "flute":
+                    temp, zd = lfilter(dc_b, dc_a, filt, zi=zd)
+                    j_row[w:w + n] = bp - refl * temp
+                    jd = j_row[w - Lj:w - Lj + n]
+                    jt = jd * (jd * jd - 1.0)
+                    np.clip(jt, -1.0, 1.0, out=jt)
+                    jt += refl * temp
+                    b_row[w:w + n] = jt
+                else:
+                    dp = -r_refl * filt - bp
+                    rt = r_off - r_slope * dp
+                    np.clip(rt, -1.0, 1.0, out=rt)
+                    b_row[w:w + n] = bp + dp * rt
+                o_row[pos:pos + n] = b_row[w:w + n]
+                w += n
+                pos += n
+            st["w"][v] = w
+            st["lp_z"][v] = float(z[0])
+            st["dc_z"][v] = float(zd[0])
+
+            # Output DC block (the reed's line carries the breath pressure).
+            y, zo = lfilter(dc_b, dc_a, o_row, zi=np.array([st["odc_z"][v]]))
+            st["odc_z"][v] = float(zo[0])
+            o_row[:] = y * self._WIND_MODEL_GAIN[model]
+
+            if not gt[-1] and env[-1] <= 0.0 and float(np.max(np.abs(o_row))) < self._WIND_SILENCE:
+                st["active"][v] = False
+                bore[v, :] = 0.0
+                jet[v, :] = 0.0
+                st["lp_z"][v] = 0.0
+                st["dc_z"][v] = 0.0
+                st["odc_z"][v] = 0.0
+                st["on_count"][v] = 0
+                st["off_count"][v] = 0
+                st["env_off"][v] = 0.0
+                o_row[:] = 0.0
+
+        out *= level * self._WIND_OUT_GAIN
+        result = out if voiced else out[0]
+        return result.astype(np.float32)
 
     # ----- Clockwork trio (euclidean / burst / bernoulli) ------------------
 

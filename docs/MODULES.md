@@ -109,6 +109,7 @@ The full map:
 | `sampler.vel` / `kick_drum.vel` / `snare_drum.vel` / `hat_drum.vel` | — (multiplier) | linear | `hit · max(0, cv[edge])`, read at the edge and latched; a `(V, F)` source collapses to the loudest voice at that sample |
 | `pitch_shifter.pitch_cv` | `12.0` | semitones | `st + d·mean cv` |
 | `bowed.pressure_cv` / `bowed.velocity_cv` | `1.0` (shared) | level (0…1) | `pressure/velocity + d·cv[n]`, per sample, clamped 0…1; mono, shared by every voice |
+| `wind.breath_cv` | `1.0` | level (0…1) | `breath + d·cv[n]`, per sample, clamped 0…1; mono, shared by every voice |
 | `granular.position_cv` | `1.0` (`position_cv_depth`) | fraction of the buffer | `position + d·cv[onset]`, read at each grain's onset and latched for that grain; clamped 0…1; a `(V, F)` source is averaged |
 | `delay.time_cv` | `50.0` | ms | `time + d·cv` |
 | `loudness.level_cv` | `1.0` | level (0…1) | `level + d·mean cv` |
@@ -236,6 +237,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`fm_op`](#fm_op) | Sources | `pitch_cv`,`amp_cv`,`index_cv` (cv), `pm` (audio) → `out` (audio) |
 | [`pluck`](#pluck) | Sources | `pitch_cv` (cv), `trigger` (gate) → `out` (audio) |
 | [`bowed`](#bowed) | Sources | `pitch_cv`,`pressure_cv`,`velocity_cv` (cv), `gate` (gate) → `out` (audio) |
+| [`wind`](#wind) | Sources | `pitch_cv`,`breath_cv` (cv), `gate` (gate) → `out` (audio) |
 | [`modal`](#modal) | Sources | `excite` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`kick_drum`](#kick_drum) | Sources | `trigger` (gate), `vel`, `pitch_cv` (cv) → `out` (audio) |
 | [`snare_drum`](#snare_drum) | Sources | `trigger` (gate), `vel` (cv) → `out` (audio) |
@@ -919,7 +921,8 @@ backend only; silent stub under pyo. See `examples/pluck_strings.json`.
 
 A **bowed-string physical model** — the sustained-excitation waveguide
 that completes the family beside [`pluck`](#pluck) (a string struck once)
-and [`modal`](#modal) (a resonator struck once). The bow stays on the
+and [`modal`](#modal) (a resonator struck once); [`wind`](#wind) is its
+blown sibling. The bow stays on the
 string for as long as `gate` is high, so the note *sustains*, swells and
 speaks: a cello line, a scraped double bass, a viola drone, and past the
 sweet spot the squeal and crunch a real bow makes when it is pressed too
@@ -995,6 +998,75 @@ pyo. See `examples/bowed_cello.json`.
 | `body` | `0.5` | 0 … 1 | Body-resonance mix (0 = the raw bridge sawtooth). |
 | `cv_depth` | `1.0` | 0 … 4 | Level per CV unit on `pressure_cv` / `velocity_cv`. |
 | `level` | `0.5` | 0 … 1 | Output level. |
+
+#### `wind`
+
+A **blown-pipe physical model** — the other half of the rack's sustained
+physical-modeling pair (with [`bowed`](#bowed)). A column of air in a
+pipe is a delay line; what keeps it singing is the player's breath
+through a nonlinearity at the mouth, and the note is the pipe's own
+resonance, held for as long as `gate` is high. `model` picks the mouth:
+
+- **`flute`** — Cook's slide flute (STK *Flute*): breath pressure minus
+  the pipe's reflection drives a **jet** delay line whose output passes
+  through the cubic jet table `x(x² − 1)` and back into the bore, with a
+  lowpass and a DC blocker in the bore's return. The bore is tuned to one
+  and a half periods so the pipe speaks in its *overblown* register —
+  STK's own trick ("we're overblowing here"), and why it sounds like a
+  flute rather than a whistle. Breathy and hollow; blow hard at the
+  bottom of the range and it goes sharp, as a flute does. Home range
+  ~C3 upward (below ~80 Hz the jet loses its register and the pitch is
+  clamped).
+- **`reed`** — the STK *Clarinet* mouthpiece: one round-trip delay line
+  with a lowpass loss and the **reed table** `clip(0.7 − 0.3·Δp)`, `Δp`
+  the pressure difference across the reed. It needs enough pressure
+  before it speaks and too much closes it — both physical, and `breath`
+  is mapped so 0..1 runs from just-speaking to nearly closed. Hollow low
+  down, reedy and bright blown harder; goes down to the contrabass.
+
+`breath` is the player's pressure; `noise` is breath noise, seeded per
+voice and per note so renders are deterministic (`seed`); `attack` /
+`release` are the breath ramps on the gate (integer-count, block-size
+exact, a re-blow picking up from the current level); `damping` is the
+pipe's loss lowpass. `breath_cv` adds `cv_depth` × CV to `breath` **per
+sample** (mono, shared by every voice): an envelope for a swell, a slow
+LFO for a breathing player, a fast one for flutter. Pitch is 1 V/oct on
+`pitch_cv` (C4 = 0 V) read per block — at the block's last gate edge or
+the block mean; a polyphonic source gives one independent pipe per voice
+and silent voices cost nothing.
+
+Tuning: the reed's bore is `sr/f0` minus the loss filter's exact phase
+delay at f0 (±5 cents C2..C6 measured, ±8 pinned); the flute's is 1.5
+periods times a measured 1.5% regime correction (±4 cents C3..C6 at
+moderate breath, ±10 pinned; hard breath low down bends it sharp). Both
+loops run in vectorized chunks no longer than the shortest delay (the
+jet for the flute, the whole bore for the reed), so the models are cheap
+— under 0.5 ms of an 11.6 ms block per voice across the range. The
+output is DC-blocked (the reed's line carries the breath pressure).
+Numpy backend only; silent stub under pyo. See `examples/wind_duet.json`.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `pitch_cv` | in | cv | 1 V/oct, C4 = 0 V. Unpatched → C4. |
+| `gate` | in | gate | Breath on while high, per voice. |
+| `breath_cv` | in | cv | Adds `cv_depth` × CV to `breath`, per sample (mono, shared by all voices). |
+| `out` | out | audio | The pipe. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `model` | `flute` | flute / reed | The mouth: air jet or clarinet reed. |
+| `breath` | `0.5` | 0 … 1 | Blowing pressure, just-speaking → hard-blown. |
+| `noise` | `0.15` | 0 … 1 | Breath noise. |
+| `attack` | `0.04` | 0.001 … 10 s | Breath ramp in after the gate rises. |
+| `release` | `0.1` | 0.001 … 10 s | Breath ramp out after the gate falls. |
+| `damping` | `0.5` | 0 … 1 | Pipe losses (darkness). |
+| `cv_depth` | `1.0` | 0 … 4 | Level per CV unit on `breath_cv`. |
+| `level` | `0.5` | 0 … 1 | Output level. |
+| `seed` | `1` | ≥ 0 | Breath-noise seed. |
 
 #### `modal`
 
@@ -4293,6 +4365,10 @@ loads in the app. Notable ones referenced above:
   `python examples/samples/generate_samples.py` first to create the
   loop — until you do, the patch loads and plays silently rather than
   failing, because an unreadable path is silence by contract.
+- `wind_duet.json` — two [`wind`](#wind)s: a `flute` tune an octave up
+  (vibrato LFO summed into `pitch_cv`, a 0.15 Hz LFO on `breath_cv` so
+  the player breathes) over a `reed` line in the chalumeau register at
+  half speed off a [`clock_divider`](#clock_divider), through a chamber.
 - `bowed_cello.json` — a cello line on the [`bowed`](#bowed) string: an
   eight-step [`sequencer`](#sequencer) two octaves down through a
   [`slew`](#slew) (portamento) summed with a 5.5 Hz vibrato LFO into

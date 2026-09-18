@@ -33,6 +33,7 @@ from .cvtofrequency import CVToFrequency
 from .delay import Delay
 from .distortion import Distortion
 from .waveshaper import Waveshaper
+from .wind import Wind
 from .diskwriter import DiskWriter
 from .drums import HatDrum, KickDrum, SnareDrum
 from .fileplayer import FilePlayer
@@ -193,5 +194,6 @@ __all__ = [
     "Vocoder",
     "WarpingBufferedSpeakerOutput",
     "Waveshaper",
+    "Wind",
     "WavetableMorph",
 ]

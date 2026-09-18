@@ -544,7 +544,7 @@ waveguide: the bow stays on the string while `gate` is high.
   voice (44.1 kHz).
 - Example `bowed_cello.json`.
 
-### `wind` (M) — "Sources" — the blown half of "bowed or wind"
+### `wind` (M) — "Sources" — **SHIPPED 2026-09-18** (see TODO.md / WORKLOG.md) — the blown half of "bowed or wind"
 
 - Ports: `pitch_cv` (cv, voice-aware); `gate` (gate, voice-aware — breath
   on while high); `breath_cv` (cv, mono, per-sample, × `cv_depth`) →
@@ -563,6 +563,19 @@ waveguide: the bow stays on the string while `gate` is high.
   pressure threshold (over-pressure closes the reed — physical); the
   flute holds ±10 ct C3..C6 at moderate breath and goes sharp when blown
   hard at low pitch (physical too).
+- As built: the flute bore is `1.5 × 1.015 × sr/f0 − τ(f0)` (no extra
+  sample — a stray −1 was 25 ct sharp at C6), the breath maps
+  flute 0.85..1.4 / reed 0.58..1.0, both models clamp f0 at 2.5 kHz and
+  the flute at 80 Hz below; per-note seeded breath noise drawn per
+  segment between rising edges; output DC-blocked; the gate ramp is
+  the shared `_gate_ramp_env` helper (extracted from `bowed`).
+  Tests (32) mirror the bowed set plus: reed ±8 ct C2..C6, flute ±10 ct
+  C3..C6, the two models differ on one note (reed harmonic-rich,
+  flute nearly pure — the odd-harmonic claim did NOT survive
+  measurement: the model's even harmonics come and go with breath and
+  noise), reed level monotone in breath, the flute speaks at every
+  breath 0..1, seeded noise, breath_cv, model switch mid-stream.
+  Example `wind_duet.json`.
 
 ### `granular` (L — slice it) — **ALL THREE SLICES SHIPPED** 2026-09-15/16 (Effects; capture + stream — `granular_cloud.json`; sprays + seed + stereo — `granular_haze.json`; freeze + position_cv — `granular_freeze.json`, `granular_beat_repeat.json`). Complete against this spec.
 
@@ -967,7 +980,7 @@ full specs above.
   string / blown pipe): completes the physical-modeling family beside
   `pluck` (struck string) and `modal` (struck resonator), and sounds
   like nothing else in the rack. **Picked 2026-09-18 — full specs above
-  (`bowed` SHIPPED; `wind` specced).**
+  (both SHIPPED 2026-09-18).**
 
 **Modulation — the west-coast hole**
 - `function_generator` (M) — the Maths move: rise/fall envelope with

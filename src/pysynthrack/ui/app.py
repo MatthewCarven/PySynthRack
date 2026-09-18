@@ -75,6 +75,7 @@ from ..modules.possibility_selector import (
     parse_route as psel_parse_route,
 )
 from ..modules.wavetable_morph import WT_STACKS
+from ..modules.wind import WIND_MODELS
 from ..modules.compressor import DETECTOR_MODES
 from ..modules.distortion import DISTORTION_MODES
 from ..modules.meter import METER_MODES
@@ -3157,6 +3158,48 @@ class App:
                 dpg.add_slider_float(
                     label=labels[param_name], default_value=float(current),
                     min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "wind":
+            # Blown pipe. ``model`` picks the mouth (flute jet / clarinet
+            # reed); ``breath`` is the player's pressure, ``noise`` the
+            # breath noise; ``attack`` / ``release`` are the breath ramps
+            # in seconds; ``damping`` darkens the bore; ``cv_depth`` scales
+            # breath_cv in level per unit; ``seed`` keys the noise.
+            if param_name == "model":
+                dpg.add_combo(
+                    label=param_name, items=list(WIND_MODELS),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("breath", "noise", "damping", "level"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("attack", "release"):
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.005,
+                    min_value=0.001, max_value=10.0, format="%.3f s",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f lvl/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "seed":
+                dpg.add_drag_int(
+                    label=param_name, default_value=int(current), speed=1,
+                    min_value=0, max_value=999999,
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

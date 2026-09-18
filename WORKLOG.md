@@ -100,9 +100,11 @@ already three light before slice 2 added one -- count with
 > examples, **93 modules**. The possibility bridge's follow-on list is
 > closed. One eyeball wanted (the route colours + the checkbox popup).
 >
-> Later on 09-18: **`bowed`, module #94** — the bowed half of the
-> keep-list's "bowed/wind", spec first then built; `bowed_cello.json`
-> (banked). Suite **3680**, 127 examples. `wind` is specced and next.
+> Later on 09-18: **`bowed`, module #94** and **`wind`, module #95** —
+> both halves of the keep-list's "bowed/wind", specs first then built;
+> `bowed_cello.json` + `wind_duet.json` (banked). Suite **3717**, 128
+> examples, **95 modules**. The physical-modeling family is complete:
+> struck string, struck resonator, bowed string, blown pipe.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -152,6 +154,66 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-18 — wind: the pipe that sustains (module #95)
+
+The blown half of "bowed/wind", built to the spec written alongside
+`bowed`'s. One module, two mouths: `model` = `flute` (Cook's slide
+flute, STK *Flute*) or `reed` (the STK *Clarinet* mouthpiece), sharing
+the bore machinery, the breath ramp and the breath noise.
+
+**The flute** is a jet delay (0.32 of the bore) feeding the cubic jet
+table `x(x² − 1)` into a bore tuned to **1.5 periods** — STK's own
+"we're overblowing here", the reason it sounds like a flute and not a
+whistle — with a one-pole and a DC blocker in the return and 0.5/0.5
+jet/end reflections. It speaks in a pressure window: below ~0.9 it
+barely oscillates, above ~1.5 the jet table saturates and it dies, so
+`breath` 0..1 maps to 0.85..1.4 and every setting speaks. Its regime
+sits ~1.5% sharp of the bore, so the bore carries a measured 1.015
+correction; ±4 ct C3..C6 at moderate breath, sharp when blown hard
+low down (a flute does that), and clamped at 80 Hz below (the jet
+loses its register). **The reed** is one round-trip delay with a
+one-pole loss and the reed table `clip(0.7 − 0.3·Δp)`; it needs ~0.58
+of pressure to speak and closes above ~1.1 — both physical — so
+`breath` maps to 0.58..1.0. In tune to ±5 ct C2..C6 out of the box.
+
+**Shared with `bowed`**, now as one helper: the integer-count gate
+ramp (`_gate_ramp_env`, extracted from the bowed renderer with its
+tests as the guard), the slice-buffer chunked loop (chunks ≤ the jet
+for the flute, ≤ the bore for the reed — both cheap, under 0.5 ms a
+block per voice), per-block pitch, early-out. New: breath noise as a
+**per-(voice, note) seeded stream drawn per segment between rising
+edges** — the same samples come out at any block size, and the next
+note re-seeds, so the early-out point (which IS block-size dependent)
+never leaks into a later note. The output is DC-blocked because the
+reed's line carries the breath pressure.
+
+**Two things the measurements changed.** (1) The docstring's first
+draft called the reed "odd harmonics, the chalumeau and the clarion"
+— the physical clarinet story. Measured, the model's even harmonics
+come and go with breath and noise (h2/h1 from 0.09 to 1.05 across
+settings), so the claim came out and the test pins what is true: on
+one note the reed is harmonic-rich and the flute nearly pure (upper
+harmonics 3× the flute's, relative to the fundamental). (2) The
+module's flute was 25 ct sharp at C6 while the prototype was +2: the
+prototype's calibration runs had used `comp_extra = −1`, cancelling a
+`− 1.0` in its bore formula, and the module had copied the formula
+without the cancellation. One stray sample at a 64-sample bore. The
+lesson is old and worth repeating: **measure the module, not the
+prototype** — the prototype's numbers are for deciding, the module's
+for pinning.
+
+**32 tests** (`tests/test_wind.py`), `examples/wind_duet.json`
+(banked: a flute tune an octave up with a vibrato LFO summed in and a
+0.15 Hz LFO on `breath_cv` so the player breathes, over a chalumeau
+reed line at half speed off a `clock_divider`, through a chamber —
+first draft peaked at 0.97, trimmed to 0.63). MODULES.md entry, index
+row, CV-depth row, appendix; README 95 modules (Sources 22);
+MODULE_IDEAS spec marked shipped with the as-built notes. **Suite
+3717**, 128 examples, **95 modules.** The physical-modeling family is
+complete: `pluck`, `modal`, `bowed`, `wind`.
 
 ---
 

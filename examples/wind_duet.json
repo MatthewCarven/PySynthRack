@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "next_id": 15,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "eighths at 96 - the gate stays high 80% of each",
+      "params": { "bpm": 96.0, "division": 2.0, "pulse_width": 0.8 } },
+    { "id": 2, "type": "sequencer", "name": "FLUTE line - up an octave, a lilting tune (semitones from C4)",
+      "params": { "steps": 8,
+        "step1_pitch": 12.0, "step1_on": true, "step2_pitch": 16.0, "step2_on": true,
+        "step3_pitch": 19.0, "step3_on": true, "step4_pitch": 16.0, "step4_on": true,
+        "step5_pitch": 14.0, "step5_on": true, "step6_pitch": 12.0, "step6_on": false,
+        "step7_pitch": 11.0, "step7_on": true, "step8_pitch": 12.0, "step8_on": true } },
+    { "id": 3, "type": "clock_divider", "name": "the reed moves at half speed",
+      "params": { "n": 3, "m": 2, "swing": 0.0, "pw": 0.85 } },
+    { "id": 4, "type": "sequencer", "name": "REED line - the chalumeau register, low",
+      "params": { "steps": 4,
+        "step1_pitch": -12.0, "step1_on": true, "step2_pitch": -17.0, "step2_on": true,
+        "step3_pitch": -15.0, "step3_on": true, "step4_pitch": -19.0, "step4_on": true } },
+    { "id": 5, "type": "lfo", "name": "the flute player breathes - 0.15 Hz on breath_cv",
+      "params": { "waveform": "sine", "rate": 0.15, "depth": 1.0, "bipolar": true, "cv_depth": 1.0 } },
+    { "id": 6, "type": "lfo", "name": "flute vibrato - 5 Hz, a hair",
+      "params": { "waveform": "sine", "rate": 5.0, "depth": 1.0, "bipolar": true, "cv_depth": 1.0 } },
+    { "id": 7, "type": "cv_scale", "name": "vibrato depth", "params": { "scale": 0.012 } },
+    { "id": 8, "type": "cv_combiner", "name": "flute pitch = line + vibrato", "params": { "mode": "sum" } },
+    { "id": 9, "type": "wind", "name": "FLUTE - blow harder (breath 0.8) and it goes sharp and airy, as a flute does",
+      "params": { "model": "flute", "breath": 0.45, "noise": 0.18, "attack": 0.05, "release": 0.12,
+                  "damping": 0.5, "cv_depth": 0.2, "level": 0.38, "seed": 3 } },
+    { "id": 10, "type": "wind", "name": "REED - the clarinet mouthpiece; below breath 0.1 it will not speak, at 1.0 it closes",
+      "params": { "model": "reed", "breath": 0.55, "noise": 0.08, "attack": 0.06, "release": 0.15,
+                  "damping": 0.6, "cv_depth": 1.0, "level": 0.32, "seed": 5 } },
+    { "id": 11, "type": "mixer", "name": "the pair", "params": { "gain1": 1.0, "gain2": 0.9, "gain3": 1.0, "gain4": 1.0, "master": 0.8 } },
+    { "id": 12, "type": "reverb", "name": "a chamber",
+      "params": { "size": 0.6, "decay": 0.55, "damping": 0.5, "mix": 0.25, "cv_depth": 1.0 } },
+    { "id": 13, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.9 } },
+    { "id": 14, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.9 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 3, "dst_port": "clock" },
+    { "src_module_id": 3, "src_port": "div2", "dst_module_id": 4, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "cv",   "dst_module_id": 8, "dst_port": "in1" },
+    { "src_module_id": 6, "src_port": "cv",   "dst_module_id": 7, "dst_port": "in" },
+    { "src_module_id": 7, "src_port": "out",  "dst_module_id": 8, "dst_port": "in2" },
+    { "src_module_id": 8, "src_port": "out",  "dst_module_id": 9, "dst_port": "pitch_cv" },
+    { "src_module_id": 2, "src_port": "gate", "dst_module_id": 9, "dst_port": "gate" },
+    { "src_module_id": 5, "src_port": "cv",   "dst_module_id": 9, "dst_port": "breath_cv" },
+    { "src_module_id": 4, "src_port": "cv",   "dst_module_id": 10, "dst_port": "pitch_cv" },
+    { "src_module_id": 4, "src_port": "gate", "dst_module_id": 10, "dst_port": "gate" },
+    { "src_module_id": 9, "src_port": "out",  "dst_module_id": 11, "dst_port": "in1" },
+    { "src_module_id": 10, "src_port": "out", "dst_module_id": 11, "dst_port": "in2" },
+    { "src_module_id": 11, "src_port": "out", "dst_module_id": 12, "dst_port": "in" },
+    { "src_module_id": 12, "src_port": "out_l", "dst_module_id": 13, "dst_port": "in" },
+    { "src_module_id": 12, "src_port": "out_r", "dst_module_id": 14, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 300], "2": [300, 60], "3": [300, 520], "4": [560, 520],
+      "5": [300, 300], "6": [560, 60], "7": [820, 60], "8": [1080, 120],
+      "9": [1360, 120], "10": [1360, 480], "11": [1680, 300], "12": [1940, 300],
+      "13": [2200, 240], "14": [2200, 380]
+    }
+  }
+}
