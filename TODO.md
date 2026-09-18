@@ -53,8 +53,19 @@ shipped; the rest queue behind Matthew's ears.
 - [ ] **The selector, meta-possibility version** — a register over WHICH
       module fires: collapse the router itself. Sketch only; earns a spec
       in MODULE_IDEAS.md when the first module has been played.
-- [ ] **Example: reroll divider** — slow clock into `reroll` so a latched
-      pattern re-decides every four bars; pairs with `clockwork_groove`.
+- [x] **Example: reroll divider** — SHIPPED 2026-09-18 as
+      `examples/possibility_reroll_divider.json`. Not a second free-running
+      clock but a [`clock_divider`](docs/MODULES.md#clock_divider) chain
+      off the SAME sixteenth clock (`divn` 16 = a bar, then `div4` = four
+      bars), so the re-deal lands on the downbeat by construction rather
+      than by two clocks happening to agree. Three `latch`ed patterns:
+      kick and snare hold a take for four bars and re-decide at bar 5; the
+      hat re-deals every bar off the first divider (balanced, eight hits a
+      bar, every bar). Three tests pin it (reroll edges ARE clock edges 0,
+      64, 128; kick/snare identical inside each four, different across;
+      hat 8/16 every bar and >= 6 distinct bars in 8). Test lesson: the
+      clock's first edge is sample 0 of block 0 -- a pairwise edge detector
+      misses step 1 and every bar reads one step late. Banked for ears.
 
 ## Planned — the quick-hit run (Matthew's pick, 2026-08-03)
 

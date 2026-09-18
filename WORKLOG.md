@@ -90,9 +90,12 @@ already three light before slice 2 added one -- count with
 > 2026-09-17: **fg follow-on 4 shipped** — the `eor` paragraph + the
 > swell-then-strike example; the literal `eor → trig` self-patch
 > measured as a latch and documented as one. Suite **3584**, 124
-> examples (sixteen banked). The fg's follow-on list is closed. Next:
-> possibility follow-ons, the 2026-08-04 keep-list, the cable-loader
-> fail-soft.
+> examples (sixteen banked). The fg's follow-on list is closed.
+>
+> 2026-09-18: **the reroll-divider example** shipped
+> (`possibility_reroll_divider.json`, banked) -- the first possibility
+> follow-on. 125 examples. Next: the meta-possibility selector, the
+> 2026-08-04 keep-list, the cable-loader fail-soft.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -142,6 +145,46 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-18 — the reroll divider: a groove you keep for four bars
+
+Matthew: "the possibility follow-ons (a reroll-divider example, and the
+meta-possibility selector ...)". This is the first half.
+
+The TODO said "slow clock into `reroll`". A second free-running
+`clock` at `division` 0.0625 would do it and would stay in phase only
+because both clocks start at phase 0 — a coincidence, not a contract.
+The example uses a [`clock_divider`](docs/MODULES.md#clock_divider)
+chain off the *same* sixteenth clock instead: `divn` 16 (one pulse a
+bar) into a second divider's `div4` (one every four bars). Both fire
+on their edge 0, so the re-deal lands exactly on the downbeat of bars
+1, 5, 9 … by construction, and in the sequencer's sample loop the
+reroll edge is read before the clock edge of the same sample, so step
+1 of the new bar is already the new take.
+
+Three `latch`ed patterns off one clock: a kick with a decided floor and
+four `?`s, a snare with the backbeat held and four ghosts, and a
+balanced all-`?` hat. Kick and snare take the four-bar reroll — a
+groove you keep long enough to learn, then lose; the hat takes the
+per-bar pulse from the first divider and re-deals every bar, eight
+hits a bar every bar. The seeded render: kick bars 1–4
+`x..xx.x.x...x...`, bars 5–8 `x..xx...x...x.x.`; snare likewise; hat a
+different eight-of-sixteen every bar.
+
+**One test lesson.** The clock's first rising edge is sample 0 of
+block 0 (the renderer starts at phase 0 so a downstream sequencer
+plays step 1 immediately). A pairwise edge detector
+(`buf[1:] > 0.5 & buf[:-1] <= 0.5`) misses it, every bar reads one
+step late, and the decided floor appears on steps 4/8/12/16. Prepend
+sample 0 when the buffer starts high.
+
+Three tests in `tests/test_possibility_seq.py` (reroll edges are clock
+edges 0, 64, 128; kick/snare identical within each four bars and
+different across; hat 8/16 every bar and ≥ 6 distinct bars in 8).
+MODULES.md: the possibility_seq patching paragraph and an appendix
+line. **125 examples.** Banked for ears.
 
 ---
 

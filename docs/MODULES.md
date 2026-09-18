@@ -3115,7 +3115,12 @@ kick_drum.trigger` (or any gate consumer). Three of them off one clock into
 [`kick_drum`](#kick_drum) / [`snare_drum`](#snare_drum) /
 [`hat_drum`](#hat_drum) → [`mixer`](#mixer) is a drum machine that is
 genuinely undecided — see `examples/possibility_groove.json`. A slow
-[`clock`](#clock) into `reroll` re-deals a `latch`ed pattern every N bars.
+[`clock`](#clock) into `reroll` re-deals a `latch`ed pattern every N bars —
+or, tighter, a [`clock_divider`](#clock_divider) off the *same* sixteenth
+clock, so the re-deal lands exactly on a downbeat:
+`examples/possibility_reroll_divider.json` holds a latched kick and snare
+for four bars (`divn` 16 = a bar, then `div4`) and re-deals the hat every
+bar.
 
 #### `chaos`
 
@@ -4119,6 +4124,13 @@ loads in the app. Notable ones referenced above:
   `python examples/samples/generate_samples.py` first to create the
   loop — until you do, the patch loads and plays silently rather than
   failing, because an unreadable path is silence by contract.
+- `possibility_reroll_divider.json` — the reroll divider: one sixteenth
+  clock, two chained [`clock_divider`](#clock_divider)s (`divn` 16 = a bar,
+  then `div4` = four bars) and three `latch`ed
+  [`possibility_seq`](#possibility_seq)s. Kick and snare hold a take for
+  four bars and re-decide on the downbeat of bar 5; the hat re-deals every
+  bar off the first divider. A groove you keep long enough to learn, then
+  lose. Pairs with `clockwork_groove.json`.
 - `clock_divider_swing.json` — swung hats from a straight clock: sixteenths
   into a [`clock_divider`](#clock_divider) (`div4` kick, `divn` 1 +
   `swing` 0.33 closed hats, `div8` open hats, `mult` 3 clocking a

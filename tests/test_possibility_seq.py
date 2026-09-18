@@ -309,3 +309,105 @@ class TestRendering:
         # Steps 5..8 replay the 4-step loop: decided steps repeat exactly.
         assert fires[0] and fires[1] and not fires[3]
         assert fires[4] and fires[5] and not fires[7]
+
+
+# ----- the reroll divider example (2026-09-18) ---------------------------------
+
+class TestRerollDividerExample:
+    """possibility_reroll_divider.json: one sixteenth clock, two chained
+    clock_dividers (divn 16 = a bar, then div4 = four bars), three latched
+    patterns. Kick and snare hold a take for four bars and re-decide on
+    the downbeat of bar 5; the hat re-deals every bar off the first
+    divider. The example is seeded, so the takes are pinned."""
+
+    @staticmethod
+    def _render(seconds=17.0, block=512, sr=44100):
+        from pathlib import Path
+
+        from pysynthrack.io_patch import load_patch
+
+        path = (Path(__file__).parent.parent / "examples"
+                / "possibility_reroll_divider.json")
+        patch = load_patch(path)
+        b = NumpyBackend(sample_rate=sr, block_size=block)
+        b.compile(patch)
+        clk = next(m for m in patch if m.TYPE == "clock")
+        seqs = {m.name.split(" ")[0]: m for m in patch
+                if m.TYPE == "possibility_seq"}
+        four = next(m for m in patch if m.TYPE == "clock_divider"
+                    and any(c.src_port == "div4"
+                            for c in patch.cables if c.src_module_id == m.id))
+        cap: dict = {}
+        orig_seq = b._render_possibility_seq
+        orig_clk = b._render_clock
+        orig_div = b._render_clock_divider
+
+        def spy_seq(module, frames, buffers, patch_ref):
+            r = orig_seq(module, frames, buffers, patch_ref)
+            cap.setdefault(module.id, []).append(np.asarray(r["gate"]).copy())
+            return r
+
+        def spy_clk(module, frames):
+            r = orig_clk(module, frames)
+            cap.setdefault(module.id, []).append(np.asarray(r).copy())
+            return r
+
+        def spy_div(module, frames, buffers, patch_ref):
+            r = orig_div(module, frames, buffers, patch_ref)
+            cap.setdefault(module.id, []).append(np.asarray(r["div4"]).copy())
+            return r
+
+        b._render_possibility_seq = spy_seq
+        b._render_clock = spy_clk
+        b._render_clock_divider = spy_div
+        for _ in range(int(sr * seconds / block)):
+            out, _devices = b.render_block_multi(block)
+            assert out is not None and np.all(np.isfinite(out))
+
+        def edges(buf):
+            e = np.flatnonzero((buf[1:] > 0.5) & (buf[:-1] <= 0.5)) + 1
+            # The clock's first edge is sample 0 of the first block -- an
+            # edge detector that only looks at pairs would miss step 1.
+            return np.concatenate([[0], e]) if buf[0] > 0.5 else e
+
+        clock_edges = edges(np.concatenate(cap[clk.id]))
+        bars = {}
+        for key, mod in seqs.items():
+            g = np.concatenate(cap[mod.id])
+            bars[key] = [
+                tuple(bool(g[clock_edges[bar * 16 + k]] > 0.5) for k in range(16))
+                for bar in range(len(clock_edges) // 16)
+            ]
+        reroll_edges = edges(np.concatenate(cap[four.id]))
+        return clock_edges, reroll_edges, bars
+
+    def test_the_four_bar_reroll_lands_on_the_downbeat(self):
+        clock_edges, reroll_edges, bars = self._render()
+        assert len(bars["KICK"]) >= 8
+        # Every four-bar reroll edge IS a clock edge, and it is step 1 of
+        # bar 1, 5, 9 ... (the divider fires on its edge 0, so the first
+        # lands with the very first sixteenth).
+        idx = np.searchsorted(clock_edges, reroll_edges)
+        assert np.array_equal(clock_edges[idx], reroll_edges)
+        assert list(idx[:3]) == [0, 64, 128][:len(idx)]
+        assert len(idx) >= 2
+
+    def test_kick_and_snare_hold_a_take_for_four_bars_then_change(self):
+        _clock_edges, _reroll_edges, bars = self._render()
+        for key in ("KICK", "SNARE"):
+            first, second = bars[key][0:4], bars[key][4:8]
+            assert len(set(first)) == 1, f"{key} wandered inside bars 1-4"
+            assert len(set(second)) == 1, f"{key} wandered inside bars 5-8"
+            assert first[0] != second[0], f"{key} did not re-decide at bar 5"
+        # The decided steps never move: the floor and the backbeat.
+        for bar in bars["KICK"][:8]:
+            assert bar[0] and bar[4] and bar[8] and bar[12]
+        for bar in bars["SNARE"][:8]:
+            assert bar[4] and bar[12]
+
+    def test_the_hat_re_deals_every_bar_and_always_gets_its_share(self):
+        _clock_edges, _reroll_edges, bars = self._render()
+        hats = bars["HAT"][:8]
+        for bar in hats:
+            assert sum(bar) == 8          # balanced: sixteen fair ?s, eight hits
+        assert len(set(hats)) >= 6        # rerolled every bar, not every four
