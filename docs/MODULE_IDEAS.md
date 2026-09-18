@@ -34,7 +34,7 @@ Pitch/frequency: `ring_mod` `freq_shifter` `bitcrusher` ·
 Character/space: `tape` `convolver` ·
 CV tools: `quantizer` `slew` `pitch_detector` ·
 Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate` `burst` `arpeggiator` `chord` `chaos` `possibility_selector` ·
-Voices: `fm_op` `pluck` `modal` `granular` `kick_drum`/`snare_drum`/`hat_drum` `sampler` `organ` ·
+Voices: `fm_op` `pluck` `bowed` `wind` `modal` `granular` `kick_drum`/`snare_drum`/`hat_drum` `sampler` `organ` ·
 Visual: `scope` `spectrum` ·
 Planned run (2026-08-03): `logic` `mid_side` `octaver` · `matrix_mixer`
 `vinyl` · `supersaw` `wavetable_morph` · plus quick hits at the end.
@@ -503,6 +503,67 @@ noise, or anything.
   and record it (the new readout is the tool).
 - Gorgeous with cv_gates (17 enveloped strikes) and `burst`.
 
+### `bowed` (M) — "Sources" — **SHIPPED 2026-09-18** (see TODO.md / WORKLOG.md)
+
+The keep-list's "bowed or wind" — the bowed half. Sustained-excitation
+waveguide: the bow stays on the string while `gate` is high.
+
+- Ports: `pitch_cv` (cv, voice-aware, 1 V/oct C4 = 0 V, unpatched → C4);
+  `gate` (gate, voice-aware — bow on while high); `pressure_cv`,
+  `velocity_cv` (cv, mono, per-sample, × `cv_depth`) → `out` (audio).
+- Params: `pressure` 0..1 (0.5, friction-table slope 5 − 4p) · `velocity`
+  0..1 (0.6, bow speed 0.03 + 0.2v) · `position` 0.05..0.5 (0.127, the
+  bridge-side fraction β) · `attack` / `release` s (0.05 / 0.15, integer-
+  count bow ramps) · `damping` 0..1 (0.5, bridge one-pole pole 0.15..0.7)
+  · `body` 0..1 (0.5, five parallel constant-peak bandpasses: 275/460/550
+  /1100/2200 Hz) · `cv_depth` (1.0, level per unit) · `level` (0.5).
+- DSP: Smith's bowed string as in STK `Bowed`. Bridge delay β·L and nut
+  delay (1−β)·L meet at the bow; string velocity there is
+  `−lowpass(bridge_out) − nut_out`; the bow injects `dv · table(dv)` with
+  `table(x) = min(1, (|x·slope| + 0.75)^−4)`, `dv` = bow velocity − string
+  velocity, into both halves; bridge reflection −0.95·one-pole, nut −1.
+  `L = sr/f0 − τ(f0)` with τ the one-pole's exact phase delay; the
+  fraction rides the bridge side as a linear-interp read, the nut side is
+  integer. Advanced in vectorized chunks ≤ the bridge delay (the pluck
+  precedent with a nonlinearity inside — elementwise, so it chunks the
+  same); slice buffers compacted once per block, no per-chunk modulo.
+  Output = the bridge wave → body bank mixed by `body` → × level. Voice
+  early-out when the bow is lifted, the envelope is 0 and the block is
+  silent.
+- Neutral: gate low from the start = free, exact zeros; unpatched =
+  silent and stateless.
+- Tests (27): registration / round trip; sustains and stays bounded;
+  ±10 ct C2..C6; fundamental carries energy; release then exact zeros;
+  attack time; velocity monotone level; pressure changes tone and level;
+  per-sample pressure_cv; velocity_cv × cv_depth; bridge vs sul tasto
+  centroid; damping monotone; body colours without retuning; voice
+  independence; mono ≡ single voice; block-size independence with the
+  bow landing and lifting mid-stream; re-bow during release doesn't jump;
+  early-out; unpatched; the widget sweep; the example.
+- Cost measured: ~0.5 ms of an 11.6 ms block at C4, ~1.7 ms at C6, one
+  voice (44.1 kHz).
+- Example `bowed_cello.json`.
+
+### `wind` (M) — "Sources" — the blown half of "bowed or wind"
+
+- Ports: `pitch_cv` (cv, voice-aware); `gate` (gate, voice-aware — breath
+  on while high); `breath_cv` (cv, mono, per-sample, × `cv_depth`) →
+  `out` (audio).
+- Params: `model` flute | reed · `breath` 0..1 · `noise` 0..1 (breath
+  noise) · `attack` / `release` s · `damping` 0..1 (bore reflection
+  lowpass) · `cv_depth` · `level` · `seed`.
+- DSP: STK `Flute` (jet delay 0.32 × a bore tuned to 1.5 periods — the
+  overblown register — jet table `x(x²−1)` clamped, reflections 0.5/0.5,
+  one-pole + DC block in the bore return) and STK `Clarinet` (one
+  round-trip delay, reed table `clip(0.7 − 0.3·pd)`, reflection
+  −0.95·lowpass). Chunked ≤ the jet delay (flute) / the bore (reed).
+  Breath = `maxp(breath) · env · (1 + noise · white)` with the white
+  noise a per-voice seeded stream (block-size exact). Prototyped
+  2026-09-18: the reed is in tune to ±5 ct C2..C6 and speaks above a
+  pressure threshold (over-pressure closes the reed — physical); the
+  flute holds ±10 ct C3..C6 at moderate breath and goes sharp when blown
+  hard at low pitch (physical too).
+
 ### `granular` (L — slice it) — **ALL THREE SLICES SHIPPED** 2026-09-15/16 (Effects; capture + stream — `granular_cloud.json`; sprays + seed + stereo — `granular_haze.json`; freeze + position_cv — `granular_freeze.json`, `granular_beat_repeat.json`). Complete against this spec.
 
 Grain-cloud texture engine over a live-captured buffer.
@@ -902,10 +963,11 @@ spec (ports/params/DSP/neutral/tests) when picked, same as ever.
 full specs above.
 
 **Sources**
-- `bowed` or `wind` (M–L) — sustained-excitation waveguide (bowed
+- ~~`bowed` or `wind` (M–L)~~ — sustained-excitation waveguide (bowed
   string / blown pipe): completes the physical-modeling family beside
   `pluck` (struck string) and `modal` (struck resonator), and sounds
-  like nothing else in the rack.
+  like nothing else in the rack. **Picked 2026-09-18 — full specs above
+  (`bowed` SHIPPED; `wind` specced).**
 
 **Modulation — the west-coast hole**
 - `function_generator` (M) — the Maths move: rise/fall envelope with

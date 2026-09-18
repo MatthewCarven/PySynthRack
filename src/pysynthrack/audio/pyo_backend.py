@@ -299,6 +299,7 @@ class PyoBackend(AudioBackend):
             "sampler",
             "rotary",
             "granular",
+            "bowed",
         ):
             # v0.3+ routing / bridge / CV-oscillator modules. The numpy
             # backend is the real implementation; pyo support arrives

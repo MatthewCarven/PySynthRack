@@ -99,7 +99,10 @@ already three light before slice 2 added one -- count with
 > `possibility_selector_kit.json` (banked). Suite **3649**, 126
 > examples, **93 modules**. The possibility bridge's follow-on list is
 > closed. One eyeball wanted (the route colours + the checkbox popup).
-> Next: the 2026-08-04 keep-list, the cable-loader fail-soft.
+>
+> Later on 09-18: **`bowed`, module #94** — the bowed half of the
+> keep-list's "bowed/wind", spec first then built; `bowed_cello.json`
+> (banked). Suite **3680**, 127 examples. `wind` is specced and next.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -149,6 +152,74 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-18 — bowed: the string that sustains (module #94)
+
+Matthew: "bowed/wind please Claude thanks!" — the first pick off the
+2026-08-04 keep-list since the function generator. Spec-on-pick: both
+halves were promoted from the one-liner into MODULE_IDEAS.md (ports,
+params, DSP, tests), then `bowed` was built to its spec. `wind` follows.
+
+**What it is.** The rack's physical-modeling family had two struck
+instruments — `pluck` (a string) and `modal` (a resonator) — and no
+sustained one. This is Smith's digital-waveguide bowed string as in
+STK's *Bowed*: a bridge-side delay (`position` × the period) and a
+nut-side delay meet at the bow; the string velocity there is
+`−lowpass(bridge_out) − nut_out`, the bow injects `dv · table(dv)` into
+both halves with `table(x) = min(1, (|x·slope| + 0.75)^−4)` — the
+friction curve: stick below the threshold, slip above it, and the
+stick-slip cycle at the string's own period is the note (the
+Helmholtz sawtooth at the bridge, which the example puts on a scope).
+The bow's two hands are `pressure` (the table's slope) and `velocity`
+(bow speed, ramped by integer-count `attack`/`release` on the gate),
+each with a per-sample CV; `damping` is the bridge one-pole; `body` a
+five-band bank (275/460/550/1100/2200 Hz constant-peak bandpasses).
+
+**How it runs.** The pluck's chunked loop, with a nonlinearity inside:
+the loop is advanced in vectorized chunks no longer than the shortest
+delay (the bridge side), and since the friction table is elementwise
+it chunks exactly like the linear loop did. Two changes over the pluck
+idiom that are worth keeping: delay lines are *slice buffers* (history
+compacted once per block, plain slices per chunk, no fancy-indexed
+modulo — the prototype went from 1.0 to 0.5 ms a block at C4), and
+the nut delay is integer with the whole fraction on the bridge side,
+so one of the two reads is a bare slice. Cost, one voice at 44.1 kHz:
+0.5 ms of an 11.6 ms block at C4, 0.9 at C5, 1.7 at C6 (chunks shrink
+with the period). A solo instrument by design; silent voices early-out.
+
+**Tuning.** Loop delay = `sr/f0 − τ(f0)` with τ the one-pole's *exact*
+phase delay at f0 (the ω→0 approximation was 10 ct sharp at C4, 50 at
+C6 — the residual is a near-constant sample, so the exact formula
+matters more the higher you go). Measured −3/−1/+1/+1/+6 ct C2..C6;
+±10 pinned. At `damping` 1 with the pole at 0.8 the note went +47 ct
+at C5 (the nonlinear loop picks its own regime under heavy loss), so
+the pole range is 0.15..0.7 and the pin holds across it.
+
+**Findings worth keeping.** (1) A prototype before the module: the
+bowed string worked first time from the STK recipe; the flute did NOT
+— it sat on a DC fixed point until the bore was retuned to **1.5
+periods** (STK's `setFrequency` says "we're overblowing here") and
+the breath pressure raised to STK's ~1.4, after which it speaks in a
+pressure window (jet saturation kills it above ~1.5); the reed speaks
+above a threshold and over-pressure closes it. Both physical, both
+now in the `wind` spec. (2) The re-bow contract: a gate rising during
+the release restarts the attack counter *from the current envelope
+level* (`on_count = env × attack_samples`), so a fast re-articulation
+never jumps — pinned by a diff-of-samples test around the re-bow.
+(3) Block-size independence under a gate that lands AND lifts
+mid-stream holds because every ramp is an integer count from its
+edge (the organ's lesson), the one-pole is one `lfilter` with carried
+`zi`, and the chunk math is elementwise.
+
+**27 tests**, `examples/bowed_cello.json` (banked: an eight-step line
+two octaves down through a `slew` and a vibrato LFO summed in a
+`cv_combiner`, 88% gates re-bowing every note, a 0.07 Hz triangle on
+`velocity_cv` swelling the bow, a scope on the bridge, a hall).
+MODULES.md entry + index row + CV-depth rows + appendix; README 94
+modules (Sources 21); MODULE_IDEAS specs for both halves. **Suite
+3680**, 127 examples, **94 modules.**
 
 ---
 

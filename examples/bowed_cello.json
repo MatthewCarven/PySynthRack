@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "next_id": 13,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "one note a second - the gate stays high 88% of it, so each note re-bows without lifting far",
+      "params": { "bpm": 60.0, "division": 1.0, "pulse_width": 0.88 } },
+    { "id": 2, "type": "sequencer", "name": "the line - a low cello phrase (semitones from C4)",
+      "params": { "steps": 8,
+        "step1_pitch": -24.0, "step1_on": true, "step2_pitch": -17.0, "step2_on": true,
+        "step3_pitch": -20.0, "step3_on": true, "step4_pitch": -15.0, "step4_on": true,
+        "step5_pitch": -12.0, "step5_on": true, "step6_pitch": -17.0, "step6_on": true,
+        "step7_pitch": -19.0, "step7_on": true, "step8_pitch": -24.0, "step8_on": true } },
+    { "id": 3, "type": "slew", "name": "portamento - the finger slides between notes",
+      "params": { "shape": "exponential", "rise_time": 0.12, "fall_time": 0.12 } },
+    { "id": 4, "type": "lfo", "name": "vibrato - 5.5 Hz",
+      "params": { "waveform": "sine", "rate": 5.5, "depth": 1.0, "bipolar": true, "cv_depth": 1.0 } },
+    { "id": 5, "type": "cv_scale", "name": "vibrato depth - 0.02 V is about a quarter of a semitone",
+      "params": { "scale": 0.02 } },
+    { "id": 6, "type": "cv_combiner", "name": "pitch = line + vibrato", "params": { "mode": "sum" } },
+    { "id": 7, "type": "lfo", "name": "the swell - a slow rise and fall on the bow speed",
+      "params": { "waveform": "triangle", "rate": 0.07, "depth": 1.0, "bipolar": true, "cv_depth": 1.0 } },
+    { "id": 8, "type": "bowed", "name": "CELLO - pressure is the rosin, velocity the arm; try pressure 0.8 for the crunch",
+      "params": { "pressure": 0.5, "velocity": 0.55, "position": 0.11, "attack": 0.06, "release": 0.18,
+                  "damping": 0.55, "body": 0.6, "cv_depth": 0.25, "level": 0.6 } },
+    { "id": 9, "type": "reverb", "name": "a hall",
+      "params": { "size": 0.8, "decay": 0.7, "damping": 0.45, "mix": 0.3, "cv_depth": 1.0 } },
+    { "id": 10, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.9 } },
+    { "id": 11, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.9 } },
+    { "id": 12, "type": "scope", "name": "the bridge - a sawtooth, the Helmholtz motion",
+      "params": {} }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "cv",   "dst_module_id": 3, "dst_port": "in" },
+    { "src_module_id": 3, "src_port": "out",  "dst_module_id": 6, "dst_port": "in1" },
+    { "src_module_id": 4, "src_port": "cv",   "dst_module_id": 5, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "out",  "dst_module_id": 6, "dst_port": "in2" },
+    { "src_module_id": 6, "src_port": "out",  "dst_module_id": 8, "dst_port": "pitch_cv" },
+    { "src_module_id": 2, "src_port": "gate", "dst_module_id": 8, "dst_port": "gate" },
+    { "src_module_id": 7, "src_port": "cv",   "dst_module_id": 8, "dst_port": "velocity_cv" },
+    { "src_module_id": 8, "src_port": "out",  "dst_module_id": 12, "dst_port": "in" },
+    { "src_module_id": 12, "src_port": "out", "dst_module_id": 9, "dst_port": "in" },
+    { "src_module_id": 9, "src_port": "out_l", "dst_module_id": 10, "dst_port": "in" },
+    { "src_module_id": 9, "src_port": "out_r", "dst_module_id": 11, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 60], "2": [300, 60], "3": [620, 60],
+      "4": [300, 360], "5": [620, 360], "6": [900, 160],
+      "7": [900, 460], "8": [1180, 200], "12": [1500, 200],
+      "9": [1780, 200], "10": [2060, 140], "11": [2060, 280]
+    }
+  }
+}

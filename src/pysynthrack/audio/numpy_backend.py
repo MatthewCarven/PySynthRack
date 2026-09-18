@@ -2712,6 +2712,8 @@ class NumpyBackend(AudioBackend):
             return self._render_cv_to_frequency(module, frames, buffers, patch)
         if module.TYPE == "fm_op":
             return self._render_fm_op(module, frames, buffers, patch)
+        if module.TYPE == "bowed":
+            return self._render_bowed(module, frames, buffers, patch)
         if module.TYPE == "pluck":
             return self._render_pluck(module, frames, buffers, patch)
         if module.TYPE == "modal":
@@ -13530,6 +13532,35 @@ class NumpyBackend(AudioBackend):
     _PLUCK_SILENCE = 1e-5
     _PLUCK_SEED = 0x504C5543  # "PLUC"
 
+    # ----- Bowed string ------------------------------------------------------
+
+    # Pitch clamps: the delay allocation below, and above ~2 kHz the
+    # bridge-side delay (position x period) shrinks to a handful of
+    # samples and the chunked loop degrades to per-sample cost.
+    _BOW_MIN_F0 = 30.0
+    _BOW_MAX_F0 = 2000.0
+    _BOW_C4 = 261.6255653005986
+    # Bridge reflection: one-pole lowpass, pole from ``damping``
+    # (0.15 = wide open .. 0.7 = dark), fixed loss gain per round trip.
+    _BOW_POLE_LO = 0.15
+    _BOW_POLE_HI = 0.70
+    _BOW_LOSS = 0.95
+    # Friction table (STK BowTable): slope from ``pressure``, and the
+    # bow velocity range from ``velocity``.
+    _BOW_SLOPE_MAX = 5.0
+    _BOW_SLOPE_RANGE = 4.0
+    _BOW_VEL_MIN = 0.03
+    _BOW_VEL_RANGE = 0.2
+    # Body: parallel constant-peak bandpasses (Hz, Q, gain) -- an air
+    # mode, the two main wood modes and the bridge hill -- mixed by
+    # ``body``; _BOW_BODY_GAIN level-matches the bank to the raw bridge.
+    _BOW_BODY = ((275.0, 4.0, 1.0), (460.0, 5.0, 0.9), (550.0, 6.0, 0.7),
+                 (1100.0, 2.5, 0.6), (2200.0, 2.0, 0.4))
+    _BOW_BODY_GAIN = 1.2
+    _BOW_OUT_GAIN = 2.0
+    # A lifted, decayed string below this output peak early-outs.
+    _BOW_SILENCE = 1e-5
+
     # ----- sampler ----------------------------------------------------------
 
     # Retrigger declick: a voice re-struck while still sounding keeps its old
@@ -14344,6 +14375,265 @@ class NumpyBackend(AudioBackend):
             pos += chunk
         st["widx"][v] = w
         st["ap_z"][v] = z
+
+    # ----- Bowed string rendering ------------------------------------------
+
+    def _render_bowed(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Bowed-string waveguide (see modules/bowed.py for the contract).
+
+        Per voice: two delay lines (bridge side ``beta x L``, nut side the
+        rest) meeting at the bow. Each sample the string velocity at the
+        bow is ``-lowpass(bridge_out) - nut_out``; the bow injects
+        ``dv x table(dv)`` (STK's friction table, ``dv`` = bow velocity
+        minus string velocity) into both halves. The loop is advanced in
+        vectorized CHUNKS no longer than the shorter delay (the pluck
+        precedent, now with a nonlinearity inside the loop -- elementwise,
+        so it chunks the same way); the bridge one-pole is one ``lfilter``
+        per chunk with carried ``zi``. Delay lines are slice buffers with
+        history compacted once per block (no per-chunk modulo).
+
+        Tuning: bridge + nut delay = ``sr/f0 - tau(f0)`` where tau is the
+        one-pole's exact phase delay at f0; the fraction rides the bridge
+        side as a linear-interpolation read (the nut side is integer).
+        The bow envelope is an integer-count ramp per voice (attack from
+        the gate's rising edge, release from the falling edge, a re-bow
+        picking up from the current level), so renders are block-size
+        independent at constant pitch and never click. Pressure and
+        velocity CVs are per-sample arrays sliced per chunk. Pitch is
+        read at the block's last rising edge if there is one, else the
+        block mean (glides at block rate). Body: five constant-peak
+        bandpasses in parallel, mixed by ``body``. A lifted string whose
+        output has decayed early-outs to exact zeros.
+        """
+        pitch = self._input_buffer(patch, buffers, module.id, "pitch_cv", collapse=False)
+        gate = self._input_buffer(patch, buffers, module.id, "gate", collapse=False)
+        if pitch is None and gate is None:
+            self._state.pop(module.id, None)
+            return np.zeros(frames, dtype=np.float32)
+        p_cv = self._input_buffer(patch, buffers, module.id, "pressure_cv")
+        v_cv = self._input_buffer(patch, buffers, module.id, "velocity_cv")
+
+        voiced = (pitch is not None and pitch.ndim == 2) or (
+            gate is not None and gate.ndim == 2
+        )
+        V = 1
+        for sig in (pitch, gate):
+            if sig is not None and sig.ndim == 2:
+                V = max(V, sig.shape[0])
+
+        def row(sig, v):
+            if sig is None:
+                return None
+            if sig.ndim == 2:
+                return sig[v] if v < sig.shape[0] else sig[0]
+            return sig
+
+        def fparam(name, default, lo, hi):
+            try:
+                x = float(module.params.get(name, default))
+            except (TypeError, ValueError):
+                x = default
+            return min(hi, max(lo, x))
+
+        pressure = fparam("pressure", 0.5, 0.0, 1.0)
+        velocity = fparam("velocity", 0.6, 0.0, 1.0)
+        beta = fparam("position", 0.127, 0.05, 0.5)
+        attack = fparam("attack", 0.05, 0.001, 10.0)
+        release = fparam("release", 0.15, 0.001, 10.0)
+        damping = fparam("damping", 0.5, 0.0, 1.0)
+        body = fparam("body", 0.5, 0.0, 1.0)
+        depth = fparam("cv_depth", 1.0, -10.0, 10.0)
+        level = fparam("level", 0.5, 0.0, 1.0)
+
+        sr = float(self.sample_rate)
+        maxlen = int(sr / self._BOW_MIN_F0) + 8
+        n_body = len(self._BOW_BODY)
+
+        st = self._state.setdefault(module.id, {})
+        if st.get("V") != V or st.get("maxlen") != maxlen or st.get("block") != frames:
+            st.clear()
+            buflen = maxlen + frames + 4
+            st.update({
+                "V": V, "maxlen": maxlen, "block": frames, "buflen": buflen,
+                "bridge": np.zeros((V, buflen), dtype=np.float64),
+                "neck": np.zeros((V, buflen), dtype=np.float64),
+                "w": np.full(V, maxlen, dtype=np.int64),
+                "lp_z": np.zeros(V, dtype=np.float64),
+                "body_z": np.zeros((V, n_body, 2), dtype=np.float64),
+                "prev_gate": np.zeros(V, dtype=bool),
+                "on_count": np.zeros(V, dtype=np.int64),
+                "off_count": np.zeros(V, dtype=np.int64),
+                "env_off": np.zeros(V, dtype=np.float64),
+                "active": np.zeros(V, dtype=bool),
+            })
+        bridge = st["bridge"]
+        neck = st["neck"]
+        buflen = int(st["buflen"])
+
+        pole = self._BOW_POLE_LO + (self._BOW_POLE_HI - self._BOW_POLE_LO) * damping
+        lp_b = np.array([self._BOW_LOSS * (1.0 - pole)])
+        lp_a = np.array([1.0, -pole])
+        att_n = max(1, int(round(attack * sr)))
+        rel_n = max(1, int(round(release * sr)))
+        gate_high = self._GATE_HIGH
+
+        # Per-sample bow hands (mono, shared by every voice).
+        if p_cv is not None:
+            slope = self._BOW_SLOPE_MAX - self._BOW_SLOPE_RANGE * np.clip(
+                pressure + depth * p_cv.astype(np.float64), 0.0, 1.0)
+        else:
+            slope = np.full(frames, self._BOW_SLOPE_MAX - self._BOW_SLOPE_RANGE * pressure)
+        if v_cv is not None:
+            maxvel = self._BOW_VEL_MIN + self._BOW_VEL_RANGE * np.clip(
+                velocity + depth * v_cv.astype(np.float64), 0.0, 1.0)
+        else:
+            maxvel = np.full(frames, self._BOW_VEL_MIN + self._BOW_VEL_RANGE * velocity)
+
+        body_coefs = None
+        if body > 0.0:
+            body_coefs = [
+                (self._bow_bp_coeffs(f, q), g) for f, q, g in self._BOW_BODY
+            ]
+
+        out = np.zeros((V, frames), dtype=np.float64)
+        for v in range(V):
+            p_row = row(pitch, v)
+            g_row = row(gate, v)
+            if g_row is not None:
+                gt = g_row > gate_high
+            else:
+                gt = np.zeros(frames, dtype=bool)
+            prev = bool(st["prev_gate"][v])
+            rising = np.flatnonzero(gt & ~np.concatenate(([prev], gt[:-1])))
+            if rising.size:
+                st["active"][v] = True
+            if not st["active"][v]:
+                st["prev_gate"][v] = bool(gt[-1])
+                continue  # a lifted, silent string is free
+
+            # --- the bow envelope: integer-count ramps, segmented at edges
+            env = np.empty(frames, dtype=np.float64)
+            on_count = int(st["on_count"][v])
+            off_count = int(st["off_count"][v])
+            env_off = float(st["env_off"][v])
+            changes = np.flatnonzero(gt != np.concatenate(([prev], gt[:-1])))
+            bounds = changes.tolist() + [frames]
+            seg_start = 0
+            cur = prev
+            for seg_end in bounds:
+                n_seg = seg_end - seg_start
+                if n_seg > 0:
+                    k = np.arange(1, n_seg + 1, dtype=np.float64)
+                    if cur:
+                        env[seg_start:seg_end] = np.minimum(1.0, (on_count + k) / att_n)
+                        on_count += n_seg
+                    else:
+                        env[seg_start:seg_end] = env_off * np.maximum(
+                            0.0, 1.0 - (off_count + k) / rel_n)
+                        off_count += n_seg
+                if seg_end < frames:
+                    # an edge at seg_end: the state flips for the next segment
+                    if cur:
+                        env_off = float(env[seg_end - 1]) if seg_end > 0 else (
+                            min(1.0, on_count / att_n) if on_count else 0.0)
+                        off_count = 0
+                    else:
+                        cur_env = float(env[seg_end - 1]) if seg_end > 0 else (
+                            env_off * max(0.0, 1.0 - off_count / rel_n))
+                        on_count = int(cur_env * att_n)
+                    cur = not cur
+                seg_start = seg_end
+            st["on_count"][v] = on_count
+            st["off_count"][v] = off_count
+            st["env_off"][v] = env_off
+            st["prev_gate"][v] = bool(gt[-1])
+            bow_vel = maxvel * env
+
+            # --- pitch -> delays (per block)
+            if p_row is None:
+                cv_val = 0.0
+            elif rising.size:
+                cv_val = float(p_row[rising[-1]])
+            else:
+                cv_val = float(np.mean(p_row))
+            f0 = self._BOW_C4 * (2.0 ** cv_val)
+            f0 = min(self._BOW_MAX_F0, max(self._BOW_MIN_F0, f0))
+            w0 = 2.0 * np.pi * f0 / sr
+            tau = float(np.arctan2(pole * np.sin(w0), 1.0 - pole * np.cos(w0)) / w0)
+            L = sr / f0 - tau
+            Ln = max(2, int(round((1.0 - beta) * L)))
+            Lb = max(2.0, L - Ln)
+            Db_i = int(Lb)
+            Db_f = Lb - Db_i
+            chunk_max = max(1, min(Db_i, Ln))
+
+            # --- compact the slice buffers once per block
+            w = int(st["w"][v])
+            if w + frames > buflen:
+                bridge[v, :maxlen] = bridge[v, w - maxlen:w]
+                neck[v, :maxlen] = neck[v, w - maxlen:w]
+                w = maxlen
+            b_row = bridge[v]
+            n_row = neck[v]
+            z = np.array([st["lp_z"][v]])
+            o_row = out[v]
+
+            pos = 0
+            while pos < frames:
+                n = min(chunk_max, frames - pos)
+                rb = w - Db_i
+                b0 = b_row[rb:rb + n]
+                bridge_out = b0 + Db_f * (b_row[rb - 1:rb - 1 + n] - b0)
+                nut_out = n_row[w - Ln:w - Ln + n]
+                filt, z = lfilter(lp_b, lp_a, bridge_out, zi=z)
+                vd = bow_vel[pos:pos + n] + filt + nut_out   # bow - (-filt - nut)
+                tbl = np.abs(vd * slope[pos:pos + n])
+                tbl += 0.75
+                np.power(tbl, -4.0, out=tbl)
+                np.minimum(tbl, 1.0, out=tbl)
+                new_vel = vd * tbl
+                n_row[w:w + n] = new_vel - filt
+                b_row[w:w + n] = new_vel - nut_out
+                o_row[pos:pos + n] = bridge_out
+                w += n
+                pos += n
+            st["w"][v] = w
+            st["lp_z"][v] = float(z[0])
+
+            # --- body resonances
+            if body_coefs is not None:
+                wet = np.zeros(frames, dtype=np.float64)
+                for i, ((bc, ac), g) in enumerate(body_coefs):
+                    y, zf = lfilter(bc, ac, o_row, zi=st["body_z"][v, i])
+                    st["body_z"][v, i] = zf
+                    wet += g * y
+                o_row *= (1.0 - body)
+                o_row += body * self._BOW_BODY_GAIN * wet
+
+            # --- early-out: bow lifted, envelope gone, string decayed
+            if not gt[-1] and env[-1] <= 0.0 and float(np.max(np.abs(o_row))) < self._BOW_SILENCE:
+                st["active"][v] = False
+                bridge[v, :] = 0.0
+                neck[v, :] = 0.0
+                st["lp_z"][v] = 0.0
+                st["body_z"][v, :, :] = 0.0
+                st["on_count"][v] = 0
+                st["off_count"][v] = 0
+                st["env_off"][v] = 0.0
+                o_row[:] = 0.0
+
+        out *= level * self._BOW_OUT_GAIN
+        result = out if voiced else out[0]
+        return result.astype(np.float32)
+
+    def _bow_bp_coeffs(self, freq: float, q: float):
+        """One RBJ constant-0dB-peak bandpass as (b, a) arrays."""
+        w0 = 2.0 * np.pi * min(freq, 0.45 * self.sample_rate) / self.sample_rate
+        alpha = np.sin(w0) / (2.0 * q)
+        a0 = 1.0 + alpha
+        b = np.array([alpha / a0, 0.0, -alpha / a0])
+        a = np.array([1.0, -2.0 * np.cos(w0) / a0, (1.0 - alpha) / a0])
+        return b, a
 
     # ----- Clockwork trio (euclidean / burst / bernoulli) ------------------
 

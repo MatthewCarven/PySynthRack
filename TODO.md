@@ -739,6 +739,44 @@ same session.
       anyone is playing). Decide whether that asymmetry should be
       documented as-is or changed; do not change it silently.
 
+## The physical-modeling family, sustained (opened 2026-09-18)
+
+Matthew's pick off the 2026-08-04 keep-list: "bowed/wind". The spec
+was promoted from the one-liner into MODULE_IDEAS.md first (both
+halves), then built — the selector's precedent.
+
+- [x] **`bowed` — SHIPPED 2026-09-18, module #94.** Sources. Smith's
+      bowed string as in STK `Bowed`: bridge (`position` x L) and nut
+      delays meeting at a friction table, `dv * min(1, (|dv*slope| +
+      0.75)^-4)` injected into both halves, bridge reflection
+      -0.95*one-pole (`damping`), nut -1; the bow's two hands
+      (`pressure` = the table's slope, `velocity` = bow speed) with
+      `attack`/`release` integer-count ramps on the gate and per-sample
+      `pressure_cv`/`velocity_cv` (x `cv_depth`, mono); a five-band
+      body bank mixed by `body`. Advanced in vectorized chunks <= the
+      bridge delay (the pluck precedent with a nonlinearity inside the
+      loop — elementwise, so it chunks the same), slice buffers
+      compacted once per block. Tuning: L = sr/f0 - the one-pole's
+      EXACT phase delay at f0, fraction on the bridge side as a
+      linear-interp read — within +-6 ct C2..C6 measured, +-10 pinned.
+      Cost measured (one voice, 44.1 kHz): 0.5 ms of an 11.6 ms block
+      at C4, 1.7 ms at C6 — a solo instrument by design; silent voices
+      free. 27 tests in `tests/test_bowed.py` (sustain bounded, pitch,
+      release to exact zeros, attack, the two hands, per-sample CVs,
+      position/damping/body spectra, voices, mono == single voice,
+      block-size independence with the bow landing AND lifting
+      mid-stream, re-bow during release doesn't jump, early-out,
+      widgets, the example). Example `bowed_cello.json` (banked): an
+      eight-step line two octaves down through a slew + vibrato LFO,
+      88% gates re-bowing each note, a slow swell on `velocity_cv`, a
+      scope on the Helmholtz sawtooth. Suite **3680**, 127 examples.
+      Prototyping findings: STK's flute is tuned to 1.5 periods ("we're
+      overblowing here") — worth knowing before the wind half.
+- [ ] **`wind`** — the blown half: `model` flute | reed, spec in
+      MODULE_IDEAS.md (prototyped 2026-09-18: the reed is in tune to
+      +-5 ct and speaks above a pressure threshold; the flute holds
+      +-10 ct C3..C6 at moderate breath and goes sharp blown hard low).
+
 ## Media paths (2026-08-29)
 
 - [x] **Relative media paths depended on the working directory** — FIXED

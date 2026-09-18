@@ -108,6 +108,7 @@ The full map:
 | `burst.count_cv` | `8.0` (`count_cv_depth`) | gates per burst | `count + round(d·cv[edge])`, read at the trigger edge and latched per burst, clamped 1…16 |
 | `sampler.vel` / `kick_drum.vel` / `snare_drum.vel` / `hat_drum.vel` | — (multiplier) | linear | `hit · max(0, cv[edge])`, read at the edge and latched; a `(V, F)` source collapses to the loudest voice at that sample |
 | `pitch_shifter.pitch_cv` | `12.0` | semitones | `st + d·mean cv` |
+| `bowed.pressure_cv` / `bowed.velocity_cv` | `1.0` (shared) | level (0…1) | `pressure/velocity + d·cv[n]`, per sample, clamped 0…1; mono, shared by every voice |
 | `granular.position_cv` | `1.0` (`position_cv_depth`) | fraction of the buffer | `position + d·cv[onset]`, read at each grain's onset and latched for that grain; clamped 0…1; a `(V, F)` source is averaged |
 | `delay.time_cv` | `50.0` | ms | `time + d·cv` |
 | `loudness.level_cv` | `1.0` | level (0…1) | `level + d·mean cv` |
@@ -234,6 +235,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`noise`](#noise) | Sources | — → `out` (audio), `cv` (cv) |
 | [`fm_op`](#fm_op) | Sources | `pitch_cv`,`amp_cv`,`index_cv` (cv), `pm` (audio) → `out` (audio) |
 | [`pluck`](#pluck) | Sources | `pitch_cv` (cv), `trigger` (gate) → `out` (audio) |
+| [`bowed`](#bowed) | Sources | `pitch_cv`,`pressure_cv`,`velocity_cv` (cv), `gate` (gate) → `out` (audio) |
 | [`modal`](#modal) | Sources | `excite` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`kick_drum`](#kick_drum) | Sources | `trigger` (gate), `vel`, `pitch_cv` (cv) → `out` (audio) |
 | [`snare_drum`](#snare_drum) | Sources | `trigger` (gate), `vel` (cv) → `out` (audio) |
@@ -911,6 +913,87 @@ backend only; silent stub under pyo. See `examples/pluck_strings.json`.
 | `damping` | `0.5` | 0 … 1 | Loop lowpass blend; higher = darker, faster HF fade. |
 | `color` | `0.7` | 0 … 1 | Exciter spectrum: soft thumb → hard plectrum. |
 | `position` | `0.2` | 0 … 1 | Pick-position comb on the burst; 0 disables. |
+| `level` | `0.5` | 0 … 1 | Output level. |
+
+#### `bowed`
+
+A **bowed-string physical model** — the sustained-excitation waveguide
+that completes the family beside [`pluck`](#pluck) (a string struck once)
+and [`modal`](#modal) (a resonator struck once). The bow stays on the
+string for as long as `gate` is high, so the note *sustains*, swells and
+speaks: a cello line, a scraped double bass, a viola drone, and past the
+sweet spot the squeal and crunch a real bow makes when it is pressed too
+hard.
+
+The model is the classic digital waveguide bowed string (Smith 1986, as
+in STK's *Bowed*): two delay lines meet at the bow — the bridge side
+(`position` of the string) and the nut side (the rest) — and at the
+meeting point a **friction table** turns the difference between the bow's
+velocity and the string's velocity into the velocity the bow injects back
+into both halves. Below a threshold the string sticks to the bow and is
+dragged; above it the string slips; the stick-slip cycle at the string's
+own period *is* the note (the Helmholtz motion — a sawtooth at the
+bridge, which is what a [`scope`](#scope) on `out` with `body` 0 shows).
+The bridge end reflects through a one-pole lowpass (`damping`, the
+string's losses) and the nut end inverts; the output is the wave arriving
+at the bridge, optionally coloured by a small bank of body resonances
+(`body`: an air mode, two wood modes and the bridge hill, in parallel).
+
+**The two hands.** `velocity` is how fast the bow moves — mostly loudness
+and how quickly the note speaks; its envelope is `attack` / `release`
+(the bow lands over `attack` seconds after the gate rises and lifts over
+`release` seconds after it falls, after which the string rings down on
+its own losses, quickly). `pressure` is how hard the bow is pressed — the
+friction table's slope: light is airy and whistly, medium the full tone,
+heavy raw and scratchy, and hard pressure at high velocity the crunch.
+`pressure_cv` and `velocity_cv` add `cv_depth` × CV to the two hands
+**per sample** (mono, shared by every voice): an LFO on `pressure_cv` is
+bow-pressure tremolo, a slow one on `velocity_cv` a swell, an envelope a
+sforzando.
+
+`position` is where the bow sits along the string as a fraction of its
+length: near the bridge (0.05–0.1) is bright and nasal, sul tasto (0.3+)
+soft and hollow (0.5, the exact middle, cancels the even harmonics).
+`damping` darkens the string. Pitch is 1 V/oct on `pitch_cv` (C4 = 0 V)
+read per block — at the block's last gate edge if there is one, else the
+block mean — so a [`slew`](#slew) on the CV is portamento and a small LFO
+summed in is vibrato; a polyphonic source gives one independent string
+per voice, and silent voices cost nothing. A re-bow during the release
+picks the envelope up from where it is, so nothing clicks.
+
+Tuning: the loop delay is `sr/f0` minus the bridge filter's exact phase
+delay at f0 (the fraction rides the bridge side as a linear-interpolation
+read), which lands within ±10 cents from C2 to C6 at the defaults; very
+hard pressure or extreme damping bends a real bowed note and this one
+too. The loop is advanced in vectorized chunks no longer than the bridge
+delay, so cost rises with pitch and with closeness to the bridge —
+roughly 5% of a 512-sample block at C4 for one voice, ~15% at C6: a solo
+instrument by design. Renders are block-size independent at constant
+pitch (integer-count bow ramps). Numpy backend only; silent stub under
+pyo. See `examples/bowed_cello.json`.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `pitch_cv` | in | cv | 1 V/oct, C4 = 0 V. Unpatched → C4. |
+| `gate` | in | gate | The bow is on the string while high, per voice. |
+| `pressure_cv` | in | cv | Adds `cv_depth` × CV to `pressure`, per sample (mono, shared by all voices). |
+| `velocity_cv` | in | cv | Adds `cv_depth` × CV to `velocity`, per sample (mono, shared). |
+| `out` | out | audio | The string at the bridge, through the body. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `pressure` | `0.5` | 0 … 1 | Bow force: light / full / crunch. |
+| `velocity` | `0.6` | 0 … 1 | Bow speed: loudness, and how fast the note speaks. |
+| `position` | `0.127` | 0.05 … 0.5 | Bow position as a fraction of the string; near the bridge is bright. |
+| `attack` | `0.05` | 0.001 … 10 s | Bow-landing ramp after the gate rises. |
+| `release` | `0.15` | 0.001 … 10 s | Bow-lifting ramp after the gate falls. |
+| `damping` | `0.5` | 0 … 1 | String losses (darkness). |
+| `body` | `0.5` | 0 … 1 | Body-resonance mix (0 = the raw bridge sawtooth). |
+| `cv_depth` | `1.0` | 0 … 4 | Level per CV unit on `pressure_cv` / `velocity_cv`. |
 | `level` | `0.5` | 0 … 1 | Output level. |
 
 #### `modal`
@@ -4210,6 +4293,13 @@ loads in the app. Notable ones referenced above:
   `python examples/samples/generate_samples.py` first to create the
   loop — until you do, the patch loads and plays silently rather than
   failing, because an unreadable path is silence by contract.
+- `bowed_cello.json` — a cello line on the [`bowed`](#bowed) string: an
+  eight-step [`sequencer`](#sequencer) two octaves down through a
+  [`slew`](#slew) (portamento) summed with a 5.5 Hz vibrato LFO into
+  `pitch_cv`, the clock's 88% gate re-bowing every note without quite
+  lifting, a slow triangle on `velocity_cv` swelling the bow, a
+  [`scope`](#scope) on the bridge signal (the Helmholtz sawtooth), a hall.
+  Try `pressure` 0.8 for the crunch.
 - `possibility_selector_kit.json` — the router collapses: a
   [`possibility_seq`](#possibility_seq) decides *whether* each sixteenth
   hits and a clocked [`possibility_selector`](#possibility_selector)

@@ -3161,6 +3161,42 @@ class App:
                 )
                 return
 
+        if module.TYPE == "bowed":
+            # Bowed string. ``pressure`` / ``velocity`` are the two hands
+            # (force, speed); ``position`` is where the bow sits along the
+            # string (near the bridge = bright); ``attack`` / ``release``
+            # are the bow landing / lifting ramps in seconds; ``damping``
+            # darkens; ``body`` mixes the resonance bank; ``cv_depth``
+            # scales pressure_cv / velocity_cv in level per unit.
+            if param_name in ("pressure", "velocity", "damping", "body", "level"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "position":
+                dpg.add_slider_float(
+                    label=f"{param_name} (of string)", default_value=float(current),
+                    min_value=0.05, max_value=0.5, format="%.3f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("attack", "release"):
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.005,
+                    min_value=0.001, max_value=10.0, format="%.3f s",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f lvl/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "pluck":
             # Karplus–Strong string. ``decay`` is a real t60 in seconds
             # (pitch-independent); ``damping`` darkens the loop; ``color``

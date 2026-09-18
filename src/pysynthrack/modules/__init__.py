@@ -12,6 +12,7 @@ from .adsr import ADSR
 from .arpeggiator import Arpeggiator
 from .audiotocv import AudioToCV
 from .bitcrusher import Bitcrusher
+from .bowed import Bowed
 from .chaos import Chaos
 from .chord import Chord
 from .chorus import Chorus
@@ -105,6 +106,7 @@ __all__ = [
     "AudioToCV",
     "BernoulliGate",
     "Bitcrusher",
+    "Bowed",
     "BufferedSpecificSpeakerOutput",
     "Burst",
     "Chaos",
