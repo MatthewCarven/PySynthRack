@@ -792,7 +792,7 @@ halves), then built — the selector's precedent.
       the range. 32 tests in `tests/test_wind.py`. Example
       `wind_duet.json` (banked): a flute tune an octave up with vibrato
       and a breathing LFO over a chalumeau reed line at half speed.
-      Suite **3717**, 128 examples, 95 modules. Deviation from the
+      Suite **3716**, 128 examples, 95 modules. Deviation from the
       docstring's first draft: the "odd harmonics" clarinet claim did
       NOT survive measurement (the model's even harmonics come and go
       with breath and noise) — the docs say harmonic-rich vs nearly
