@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "next_id": 11,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "eighths at 116 - one step per pulse",
+      "params": { "bpm": 116.0, "division": 2.0, "pulse_width": 0.5 } },
+    { "id": 2, "type": "sequencer", "name": "the line - a C minor 7 climb and fall (semitones from C4)",
+      "params": { "steps": 8,
+        "step1_pitch": 0.0,  "step1_on": true, "step2_pitch": 3.0,  "step2_on": true,
+        "step3_pitch": 7.0,  "step3_on": true, "step4_pitch": 10.0, "step4_on": true,
+        "step5_pitch": 12.0, "step5_on": true, "step6_pitch": 10.0, "step6_on": true,
+        "step7_pitch": 7.0,  "step7_on": true, "step8_pitch": 3.0,  "step8_on": true } },
+    { "id": 3, "type": "shift_random", "name": "VELOCITY BOX - a looping 8-step swell (loud loud mid soft soft soft mid loud); probability 0 locks it, ~0.1 mutates",
+      "params": { "probability": 0.12, "length": 8, "range": 1.0, "bipolar": false, "seed": 3 } },
+    { "id": 4, "type": "cv_scale", "name": "x0.7 - the accent span", "params": { "scale": 0.7 } },
+    { "id": 5, "type": "cv_offset", "name": "+0.3 - the quietest note still speaks (vel 0.3..1.0)", "params": { "offset": 0.3 } },
+    { "id": 6, "type": "oscillator", "name": "voice", "params": { "waveform": "saw_blep", "freq": 261.6256, "amp": 0.5 } },
+    { "id": 7, "type": "adsr", "name": "ENV with vel - the velocity is read at each gate's rising edge and scales the whole note",
+      "params": { "attack": 0.004, "decay": 0.14, "sustain": 0.25, "release": 0.12 } },
+    { "id": 8, "type": "filter", "name": "the same envelope opens the filter - hard notes are brighter as well as louder",
+      "params": { "mode": "lowpass", "cutoff": 900.0, "resonance": 0.9, "cv_depth": 2.0 } },
+    { "id": 9, "type": "vca", "name": "amp VCA", "params": { "gain": 1.0 } },
+    { "id": 10, "type": "speaker_output", "name": "Output", "params": { "gain": 0.8 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 3, "dst_port": "clock" },
+    { "src_module_id": 3, "src_port": "cv",   "dst_module_id": 4, "dst_port": "in" },
+    { "src_module_id": 4, "src_port": "out",  "dst_module_id": 5, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "out",  "dst_module_id": 7, "dst_port": "vel" },
+    { "src_module_id": 2, "src_port": "gate", "dst_module_id": 7, "dst_port": "gate" },
+    { "src_module_id": 2, "src_port": "cv",   "dst_module_id": 6, "dst_port": "freq_cv" },
+    { "src_module_id": 6, "src_port": "out",  "dst_module_id": 8, "dst_port": "in" },
+    { "src_module_id": 7, "src_port": "cv",   "dst_module_id": 8, "dst_port": "cutoff_cv" },
+    { "src_module_id": 8, "src_port": "out",  "dst_module_id": 9, "dst_port": "audio" },
+    { "src_module_id": 7, "src_port": "cv",   "dst_module_id": 9, "dst_port": "cv" },
+    { "src_module_id": 9, "src_port": "out",  "dst_module_id": 10, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 240], "2": [300, 60], "3": [300, 420], "4": [560, 420], "5": [820, 420],
+      "6": [820, 60], "7": [1080, 300], "8": [1340, 60], "9": [1600, 160], "10": [1860, 160]
+    }
+  }
+}

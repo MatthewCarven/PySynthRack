@@ -109,7 +109,7 @@ The full map:
 | `kick_drum.pitch_cv` | — (calibrated) | 1 V/oct fixed | `tune + 12·cv[edge]`, read at the trigger edge and latched per hit — the pitch bus, like `oscillator.freq_cv` |
 | `euclidean.fills_cv` | `8.0` (`fills_cv_depth`) | fills (hits per loop) | `fills + round(d·cv[edge])`, read at each clock edge, clamped 0…steps |
 | `burst.count_cv` | `8.0` (`count_cv_depth`) | gates per burst | `count + round(d·cv[edge])`, read at the trigger edge and latched per burst, clamped 1…16 |
-| `sampler.vel` / `kick_drum.vel` / `snare_drum.vel` / `hat_drum.vel` | — (multiplier) | linear | `hit · max(0, cv[edge])`, read at the edge and latched; a `(V, F)` source collapses to the loudest voice at that sample |
+| `sampler.vel` / `kick_drum.vel` / `snare_drum.vel` / `hat_drum.vel` / `adsr.vel` | — (multiplier) | linear | `hit · max(0, cv[edge])`, read at the edge and latched; a `(V, F)` source collapses to the loudest voice at that sample (the `adsr` latches per voice when its gate is `(V, F)`, and scales the whole envelope of the note — release included) |
 | `pitch_shifter.pitch_cv` | `12.0` | semitones | `st + d·mean cv` |
 | `bowed.pressure_cv` / `bowed.velocity_cv` | `1.0` (shared) | level (0…1) | `pressure/velocity + d·cv[n]`, per sample, clamped 0…1; mono, shared by every voice |
 | `wind.breath_cv` | `1.0` | level (0…1) | `breath + d·cv[n]`, per sample, clamped 0…1; mono, shared by every voice |
@@ -281,7 +281,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`phaser`](#phaser) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`vocoder`](#vocoder) | Effects | `mod`,`carrier` (audio) → `out` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv), `reset` (gate) → `cv` (cv) |
-| [`adsr`](#adsr) | Modulation | `gate` (gate) → `cv` (cv) |
+| [`adsr`](#adsr) | Modulation | `gate` (gate), `vel` (cv) → `cv` (cv) |
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
 | [`function_generator`](#function_generator) | Modulation | `trig` (gate), `rate_cv`,`rise_cv`,`fall_cv` (cv) → `out`,`out_inv` (cv), `eor`,`eoc` (gate) |
 | [`clock`](#clock) | Modulation | — → `out` (gate) |
@@ -3051,7 +3051,8 @@ a [VCA](#vca)'s `cv` (for volume) or a [Filter](#filter)'s `cutoff_cv`.
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `gate` | in | gate | Note on/off. Rising edge → attack; falling edge → release. |
-| `cv` | out | cv | The envelope, 0…1 (sustain level held while the gate is high). |
+| `vel` | in | cv | Velocity: a multiplier on the whole envelope of a note, **read at the gate's rising-edge sample and latched for that note**. `max(0, cv)`; unpatched = 1.0. |
+| `cv` | out | cv | The envelope, 0…1 (sustain level held while the gate is high) — times `vel`. |
 
 **Parameters**
 
@@ -3062,8 +3063,33 @@ a [VCA](#vca)'s `cv` (for volume) or a [Filter](#filter)'s `cutoff_cv`.
 | `sustain` | `0.7` | 0…1 | Level held while the gate stays high. |
 | `release` | `0.3` | 0…5 s | Time to fall from sustain to 0 after gate-off. |
 
+**Velocity.** `vel` is the envelope's velocity input: `cv = shape × vel`, the
+way a velocity-sensitive VCA sits after an analog envelope, so the attack
+peak, the sustain plateau and the release tail of a note all scale
+together. It is a knobless multiplier like `vca.cv` (the CV *is* the
+amount), and it follows the house edge-latch rule the drums and the
+[`sampler`](#sampler) use: the bus is sampled **at the gate's rising-edge
+sample** and held for that note — a velocity that moves mid-note changes
+nothing until the next key-down, so a `sample_hold`ed noise or a
+[`shift_random`](#shift_random) clocked alongside the sequencer gives each
+step its own accent. Negative values clamp to 0 (a silent note); values
+above 1 are honoured. Timing does not change with velocity: a soft note's
+attack still takes `attack` seconds to reach its lower peak. The one place
+velocity meets the retrigger rule (attack from the current level, no click)
+is a note re-struck *softer* than it is currently ringing — rather than
+jump down to the new peak, the level falls to it at the full-velocity
+attack slope and then decays as usual, so a velocity of 0 on a ringing
+note fades it out over one attack time. Voice-aware like the gate: a
+`(V, F)` `vel` (`midi_input.velocity_cv` is exactly that) latches per
+voice from its own row, a mono `vel` is shared by every voice, and a
+`(V, F)` `vel` on a mono gate collapses to the loudest voice at the edge,
+as the drums do. Unpatched it is exactly 1.0 and the envelope is
+bit-for-bit what it was before the input existed.
+
 **Patching.** `keyboard.gate → adsr.gate`, then `adsr.cv → vca.cv`. See
-`examples/keyboard_adsr.json`, `examples/filter_envelope.json`.
+`examples/keyboard_adsr.json`, `examples/filter_envelope.json`. For
+velocity: `midi_input.gate → adsr.gate` + `midi_input.velocity_cv →
+adsr.vel`, or the sequenced accents of `examples/adsr_velocity.json`.
 
 #### `ad_envelope`
 
@@ -4663,5 +4689,6 @@ loads in the app. Notable ones referenced above:
 - `granular_haze.json` — the cloud proper: a pluck melody into the [`granular`](#granular) with `spray_time` 1 (asynchronous), `spray_pos` 0.22, `spray_pitch` 25 ct and `width` 1 — every note dissolves into a stereo haze a quarter-second behind itself; `seed` picks the cloud.
 - `granular_freeze.json` — **tap F** to freeze: a [`key_trigger`](#key_trigger) latch on the [`granular`](#granular)'s `freeze` holds the last two seconds of a pluck melody while a slow triangle [`lfo`](#lfo) on `position_cv` scans them; tap again to release and recording resumes with no hole.
 - `granular_beat_repeat.json` — the drum machine into a [`granular`](#granular) cutting exact 125 ms slices (`density` 32 × `size` 62.5 ms), a [`shift_random`](#shift_random) at sixteenths on `position_cv` picking the slice point and a 15 BPM clock on `freeze`: two seconds recording, two seconds held and re-cut, forever.
+- `adsr_velocity.json` — accents: a [`shift_random`](#shift_random) clocked alongside the sequencer, scaled into 0.3…1.0, into [`adsr`](#adsr)`.vel` — every step's velocity is read at its gate edge and scales the whole note; the same envelope opens a filter, so hard notes are brighter as well as louder.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `stereo_hard_pan.json` — left/right speaker sinks.

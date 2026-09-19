@@ -5544,11 +5544,27 @@ class NumpyBackend(AudioBackend):
 
         All durations are clamped to a >= 1-sample minimum so any param
         edits remain numerically stable.
+
+        Velocity (2026-09-19): ``vel`` is a knobless multiplier on the
+        whole envelope of a note, read at the rising-edge sample and
+        latched until the next edge (the drums' / sampler's edge-latch
+        rule). Both paths run their stages in *output* space -- peak
+        ``scale``, plateau ``sustain * scale``, attack/decay steps scaled
+        so the times stay what the knobs say -- which with ``scale``
+        1.0 is the same arithmetic to the bit, so an unpatched ``vel``
+        renders exactly the pre-vel envelope. See the paths for the
+        re-struck-softer (fall-to-peak) rule.
         """
         # collapse=False so a (V, F) gate buffer reaches us with its
         # voice axis intact. Mono sources still arrive as (F,).
         gate_buf = self._input_buffer(
             patch, buffers, module.id, "gate", collapse=False
+        )
+        # Velocity bus, also voice-aware: it is only ever READ at a gate's
+        # rising-edge sample (and latched for that note), so it goes down
+        # whole and each path picks its own row / collapse rule.
+        vel_buf = self._input_buffer(
+            patch, buffers, module.id, "vel", collapse=False
         )
         sr = self.sample_rate
 
@@ -5569,33 +5585,60 @@ class NumpyBackend(AudioBackend):
             return self._render_adsr_voice(
                 module, frames, gate_buf,
                 attack_step, decay_step, sustain, release_samples,
+                vel_buf=vel_buf,
             )
         return self._render_adsr_mono(
             module, frames, gate_buf,
             attack_step, decay_step, sustain, release_samples,
+            vel_buf=vel_buf,
         )
 
     def _render_adsr_mono(
         self, module, frames, gate_buf,
         attack_step, decay_step, sustain, release_samples,
+        vel_buf=None,
     ):
         """Mono fast path — scalar state machine, output ``(F,)``.
 
-        Unchanged from the pre-slice-3 implementation. Kept as the fast
-        path so existing patches and the entire existing ADSR test
-        suite continue to work bit-for-bit identically.
+        Unchanged from the pre-slice-3 implementation but for the
+        velocity latch. Kept as the fast path so existing patches and
+        the entire existing ADSR test suite continue to work bit-for-bit
+        identically.
+
+        Velocity: ``scale`` is latched at each rising edge from ``vel``
+        (``max(0, vel[edge])``; a ``(V, F)`` bus collapses to its
+        loudest voice at that sample -- the drums' rule, because a
+        velocity bus carries 0 on idle slots; unpatched = 1.0). The
+        stages then run in output space: peak ``scale``, plateau
+        ``sustain * scale``, attack/decay steps ``* scale`` so a soft
+        note's attack still takes ``attack`` seconds (gentler slope, same
+        time). Every one of those products is exact at scale 1.0, which
+        is what makes the unpatched path bit-identical to the old code.
+
+        A note re-struck SOFTER than it is currently ringing would have
+        to jump down to its new peak; instead the level falls to the
+        peak at the full-velocity attack slope and decay carries on from
+        there -- output stays continuous, and a velocity-0 retrigger fades
+        a ringing note out over one attack time rather than cutting it.
         """
         state = self._state.setdefault(
             module.id,
-            {"phase": "idle", "level": 0.0, "prev_gate": False, "release_step": 0.0},
+            {"phase": "idle", "level": 0.0, "prev_gate": False,
+             "release_step": 0.0, "scale": 1.0},
         )
         # If this slot of state belongs to the voice-aware path from a
         # previous call (different gate shape), discard and reinit.
         if "phase_arr" in state:
             state.clear()
             state.update(
-                {"phase": "idle", "level": 0.0, "prev_gate": False, "release_step": 0.0}
+                {"phase": "idle", "level": 0.0, "prev_gate": False,
+                 "release_step": 0.0, "scale": 1.0}
             )
+        scale = float(state.get("scale", 1.0))
+        peak = scale
+        sus = sustain * scale
+        a_step = attack_step * scale
+        d_step = decay_step * scale
 
         out = np.empty(frames, dtype=np.float32)
 
@@ -5605,6 +5648,12 @@ class NumpyBackend(AudioBackend):
             )
 
             if gate_high and not state["prev_gate"]:
+                # Latch this note's velocity AT the edge sample.
+                scale = max(0.0, self._drum_edge_value(vel_buf, n, 1.0))
+                peak = scale
+                sus = sustain * scale
+                a_step = attack_step * scale
+                d_step = decay_step * scale
                 state["phase"] = "attack"
             elif not gate_high and state["prev_gate"]:
                 state["release_step"] = state["level"] / release_samples
@@ -5615,17 +5664,25 @@ class NumpyBackend(AudioBackend):
             level = state["level"]
 
             if phase == "attack":
-                level += attack_step
-                if level >= 1.0:
-                    level = 1.0
-                    state["phase"] = "decay"
+                if level > peak:
+                    # Re-struck softer than it rings: fall to the new
+                    # peak at the full-velocity attack slope, no jump.
+                    level -= attack_step
+                    if level <= peak:
+                        level = peak
+                        state["phase"] = "decay"
+                else:
+                    level += a_step
+                    if level >= peak:
+                        level = peak
+                        state["phase"] = "decay"
             elif phase == "decay":
-                level -= decay_step
-                if level <= sustain:
-                    level = sustain
+                level -= d_step
+                if level <= sus:
+                    level = sus
                     state["phase"] = "sustain"
             elif phase == "sustain":
-                level = sustain
+                level = sus
             elif phase == "release":
                 level -= state["release_step"]
                 if level <= 0.0:
@@ -5635,11 +5692,13 @@ class NumpyBackend(AudioBackend):
             state["level"] = level
             out[n] = level
 
+        state["scale"] = scale
         return out.astype(np.float32)
 
     def _render_adsr_voice(
         self, module, frames, gate_buf,
         attack_step, decay_step, sustain, release_samples,
+        vel_buf=None,
     ):
         """Voice-aware path — V independent state machines, vectorized.
 
@@ -5665,6 +5724,12 @@ class NumpyBackend(AudioBackend):
         Only divergence: a run computes ``L0 + k*step`` by multiply
         where the loop accumulated additions — float64 drift orders of
         magnitude below the float32 resolution that leaves this method.
+
+        Velocity (2026-09-19): each voice latches its own ``scale`` at
+        its rising edges -- from its own row of a ``(V, F)`` ``vel``
+        (``midi_input.velocity_cv``), or from the shared row of a mono
+        one -- and hands it to :meth:`_adsr_fill_run`, which runs the
+        stages in output space. Unpatched every voice keeps 1.0.
         """
         V = gate_buf.shape[0]
         state = self._state.setdefault(module.id, {})
@@ -5683,11 +5748,13 @@ class NumpyBackend(AudioBackend):
             state["level_arr"] = np.zeros(V, dtype=np.float64)
             state["prev_gate_arr"] = np.zeros(V, dtype=bool)
             state["release_step_arr"] = np.zeros(V, dtype=np.float64)
+            state["scale_arr"] = np.ones(V, dtype=np.float64)
 
         phase = state["phase_arr"]
         level = state["level_arr"]
         prev_gate = state["prev_gate_arr"]
         release_step = state["release_step_arr"]
+        scale_arr = state["scale_arr"]
 
         gate_high = gate_buf > self._GATE_HIGH  # (V, F) bool
         out = np.empty((V, frames), dtype=np.float64)
@@ -5704,12 +5771,21 @@ class NumpyBackend(AudioBackend):
             ph = int(phase[v])
             lvl = float(level[v])
             rs = float(release_step[v])
+            sc = float(scale_arr[v])
+            # This voice's velocity row: its own on a (V, F) bus, the one
+            # row of a mono bus, None when unpatched (scale stays 1.0).
+            if vel_buf is None:
+                vrow = None
+            elif vel_buf.ndim == 2:
+                vrow = vel_buf[v] if v < vel_buf.shape[0] else vel_buf[0]
+            else:
+                vrow = vel_buf
 
             if edges.size == 0:
                 # Common case: no gate activity this block — one run.
                 ph, lvl = self._adsr_fill_run(
                     out[v], 0, frames, ph, lvl, rs,
-                    attack_step, decay_step, sustain,
+                    attack_step, decay_step, sustain, sc,
                 )
             else:
                 starts = (
@@ -5723,7 +5799,10 @@ class NumpyBackend(AudioBackend):
                     if s in edge_set:
                         if row[s]:
                             # Rising -> attack from the current level
-                            # (retrigger picks up where we were).
+                            # (retrigger picks up where we were), with
+                            # the velocity latched AT the edge sample.
+                            if vrow is not None:
+                                sc = max(0.0, float(vrow[s]))
                             ph = self._ADSR_ATTACK
                         else:
                             # Falling -> release over the full window
@@ -5732,19 +5811,20 @@ class NumpyBackend(AudioBackend):
                             ph = self._ADSR_RELEASE
                     ph, lvl = self._adsr_fill_run(
                         out[v], s, int(e), ph, lvl, rs,
-                        attack_step, decay_step, sustain,
+                        attack_step, decay_step, sustain, sc,
                     )
 
             phase[v] = ph
             level[v] = lvl
             release_step[v] = rs
+            scale_arr[v] = sc
             prev_gate[v] = bool(row[-1])
 
         return out.astype(np.float32)
 
     def _adsr_fill_run(
         self, seg, pos, end, ph, lvl, rs,
-        attack_step, decay_step, sustain,
+        attack_step, decay_step, sustain, scale=1.0,
     ):
         """Fill ``seg[pos:end]`` with the envelope trajectory from entry
         state ``(ph, lvl)``, following the natural stage chain. Returns
@@ -5764,43 +5844,73 @@ class NumpyBackend(AudioBackend):
 
         Stage lengths are analytic (smallest k >= 1 crossing the
         target), so each stage is one ``arange`` + one clamp.
+
+        ``scale`` is the note's latched velocity: the stages run in
+        output space (peak ``scale``, plateau ``sustain * scale``,
+        attack/decay steps ``* scale``). At 1.0 every product is exact
+        and this is the pre-vel arithmetic to the bit. A run entered in
+        attack ABOVE its peak (re-struck softer than it rings) falls to
+        the peak at the full-velocity ``attack_step`` -- same shape as
+        the rise, mirrored -- and cascades into decay on the crossing
+        sample just as the rise does.
         """
+        peak = scale
+        sus = sustain * scale
+        a_step = attack_step * scale
+        d_step = decay_step * scale
         if ph == self._ADSR_ATTACK and pos < end:
-            ka = max(1, int(np.ceil((1.0 - lvl) / attack_step)))
-            k = min(ka - 1, end - pos)
-            if k > 0:
-                seg[pos:pos + k] = np.minimum(
-                    lvl + np.arange(1, k + 1, dtype=np.float64) * attack_step,
-                    1.0,
-                )
-                lvl = float(seg[pos + k - 1])
-                pos += k
+            if lvl > peak:
+                kf = max(1, int(np.ceil((lvl - peak) / attack_step)))
+                k = min(kf - 1, end - pos)
+                if k > 0:
+                    seg[pos:pos + k] = np.maximum(
+                        lvl - np.arange(1, k + 1, dtype=np.float64) * attack_step,
+                        peak,
+                    )
+                    lvl = float(seg[pos + k - 1])
+                    pos += k
+            else:
+                if lvl >= peak or a_step <= 0.0:
+                    # Already at the peak (a retrigger at the top, or
+                    # scale 0 where the peak IS 0): the crossing is this
+                    # sample. The guard also keeps 0/0 out of the ceil.
+                    ka = 1
+                else:
+                    ka = max(1, int(np.ceil((peak - lvl) / a_step)))
+                k = min(ka - 1, end - pos)
+                if k > 0:
+                    seg[pos:pos + k] = np.minimum(
+                        lvl + np.arange(1, k + 1, dtype=np.float64) * a_step,
+                        peak,
+                    )
+                    lvl = float(seg[pos + k - 1])
+                    pos += k
             if pos < end:
                 # Crossing falls inside this run: cascade into decay,
                 # which emits the crossing sample below.
                 ph = self._ADSR_DECAY
-                lvl = 1.0
+                lvl = peak
         if ph == self._ADSR_DECAY and pos < end:
-            if lvl <= sustain or decay_step <= 0.0:
+            if lvl <= sus or d_step <= 0.0:
                 # Includes the mid-flight "sustain raised above current
                 # level" case: the mask cascade clamps up to sustain on
                 # the first sample; maximum() reproduces that.
                 kd = 1
             else:
-                kd = max(1, int(np.ceil((lvl - sustain) / decay_step)))
+                kd = max(1, int(np.ceil((lvl - sus) / d_step)))
             k = min(kd, end - pos)
             seg[pos:pos + k] = np.maximum(
-                lvl - np.arange(1, k + 1, dtype=np.float64) * decay_step,
-                sustain,
+                lvl - np.arange(1, k + 1, dtype=np.float64) * d_step,
+                sus,
             )
             lvl = float(seg[pos + k - 1])
             pos += k
             if k == kd:
                 ph = self._ADSR_SUSTAIN
-                lvl = sustain
+                lvl = sus
         if ph == self._ADSR_SUSTAIN and pos < end:
-            seg[pos:end] = sustain
-            lvl = sustain
+            seg[pos:end] = sus
+            lvl = sus
             pos = end
         if ph == self._ADSR_RELEASE and pos < end:
             if rs > 0.0:
