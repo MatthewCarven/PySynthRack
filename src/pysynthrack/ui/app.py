@@ -54,7 +54,7 @@ from ..modules.organ import (
 )
 from ..modules.clockwork import DIVIDER_MAX_M, DIVIDER_MAX_N, DIVIDER_MAX_SWING
 from ..modules.drums import HAT_TONE_MAX, HAT_TONE_MIN
-from ..modules.sequencer import MAX_STEPS as SEQ_MAX_STEPS
+from ..modules.sequencer import MAX_STEPS as SEQ_MAX_STEPS, SEQ_DIRECTIONS
 from ..modules.sampler import (
     ROOT_MAX_NOTE as SAMPLER_ROOT_MAX,
     ROOT_MIN_NOTE as SAMPLER_ROOT_MIN,
@@ -1142,12 +1142,30 @@ class App:
                 return
 
         if module.TYPE == "sequencer":
-            # steps = loop length (int); step{i}_pitch = semitones (drag);
-            # step{i}_on = rest toggle (falls through to the generic checkbox).
+            # steps = loop length (int); direction = the run-mode switch
+            # (combo over SEQ_DIRECTIONS -- deliberately not named ``mode``,
+            # which would route through the shared combo branch above);
+            # seed = the random direction's stream; step{i}_pitch =
+            # semitones (drag); step{i}_on = rest toggle (falls through to
+            # the generic checkbox).
             if param_name == "steps":
                 dpg.add_slider_int(
                     label=param_name, default_value=int(current),
                     min_value=1, max_value=16,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "direction":
+                dpg.add_combo(
+                    label=param_name, items=list(SEQ_DIRECTIONS),
+                    default_value=str(current),
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "seed":
+                dpg.add_drag_int(
+                    label=param_name, default_value=int(current), speed=1,
+                    min_value=0, max_value=999999,
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
@@ -4448,9 +4466,12 @@ class App:
         return f"{int(st):+d} st ({name})"
 
     def _build_fader_seq_panel(self, module) -> None:
-        """The fader-bank front panel: one labelled ``steps`` slider, then
-        sixteen vertical pitch faders with only a step number and an on/off
-        tickbox beneath each — no other text (hover a fader for its note).
+        """The fader-bank front panel: a labelled ``steps`` slider, the
+        ``direction`` run-mode combo and the random ``seed`` beside it
+        (the three whole-pattern controls the shared engine reads — see
+        modules/sequencer.py), then sixteen vertical pitch faders with
+        only a step number and an on/off tickbox beneath each — no other
+        text (hover a fader for its note).
         """
         dpg.add_slider_int(
             label="steps",
@@ -4461,6 +4482,25 @@ class App:
             callback=self._on_param_changed,
             user_data=(module.id, "steps"),
         )
+        with dpg.group(horizontal=True, horizontal_spacing=8):
+            dpg.add_combo(
+                label="direction",
+                items=list(SEQ_DIRECTIONS),
+                default_value=str(module.params.get("direction", "forward")),
+                width=110,
+                callback=self._on_param_changed,
+                user_data=(module.id, "direction"),
+            )
+            dpg.add_drag_int(
+                label="seed",
+                default_value=int(module.params.get("seed", 1)),
+                speed=1,
+                min_value=0,
+                max_value=999999,
+                width=80,
+                callback=self._on_param_changed,
+                user_data=(module.id, "seed"),
+            )
         with dpg.group(horizontal=True, horizontal_spacing=5):
             for i in range(1, SEQ_MAX_STEPS + 1):
                 with dpg.group():

@@ -12,7 +12,8 @@ precedent: cv_gates vs cv_keyboard) — saved patches say which panel they
 want, and the original stays untouched.
 
 Engine sharing is by *contract*, not inheritance: this class publishes the
-exact same param names (``steps``, ``step{i}_pitch``, ``step{i}_on``) and
+exact same param names (``steps``, ``direction``, ``seed``,
+``step{i}_pitch``, ``step{i}_on``) and
 ports (``clock``/``reset`` in, ``cv``/``gate`` out) as Sequencer, and the
 numpy backend routes both TYPEs through the one ``_render_sequencer``
 renderer. The param dict is imported from ``sequencer`` rather than copied
@@ -47,6 +48,9 @@ class FaderSeq(Module):
 
     Parameters (identical contract to :class:`Sequencer`):
         steps: Active loop length, 1..16.
+        direction: forward | backward | pendulum | random — the run-mode
+            combo beside ``steps`` on the panel (see ``sequencer``).
+        seed: The random direction's stream.
         step{i}_pitch: Pitch of step *i* in semitones (1V/oct ``cv`` =
             ``semitones / 12``; 0 = C4). The panel's faders write integer
             semitones in [-12, +12]; the engine accepts any float.

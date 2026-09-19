@@ -3239,7 +3239,7 @@ A clock-driven **step sequencer** — the self-playing centrepiece. On each `clo
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `clock` | in | gate | Advance one step on each **rising edge**. First pulse plays step 1. |
-| `reset` | in | gate | A rising edge rewinds so the next clock plays step 1. Unpatched = free-running loop. |
+| `reset` | in | gate | A rising edge rewinds to the pattern's **start for the current `direction`** (step 1 in `forward`/`pendulum`, step `steps` in `backward`; `random` restarts its stream). Unpatched = free-running loop. |
 | `cv` | out | cv | Current step's pitch as 1V/oct (`semitones / 12`, C4 = 0 V), **held** for the whole step (sample-and-hold) so a note stays in tune while its envelope rings out. |
 | `gate` | out | gate | High while the clock is high **and** the current step is enabled. A disabled step is a rest. |
 
@@ -3247,11 +3247,24 @@ A clock-driven **step sequencer** — the self-playing centrepiece. On each `clo
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
-| `steps` | `8` | 1…16 | Active loop length; the sequence wraps back to step 1 after this many steps. |
+| `steps` | `8` | 1…16 | Active loop length; the sequence wraps after this many steps. |
+| `direction` | `forward` | `forward` / `backward` / `pendulum` / `random` | The order the steps are visited in — the run-mode switch. See below. |
+| `seed` | `1` | int ≥ 0 | The `random` direction's stream. Deterministic per seed; changing it re-rolls the stream on the spot. |
 | `step{i}_pitch` | C-major scale | −24…24 st | Pitch of step *i* in semitones (i = 1…16). Default is an ascending C-major scale on the first 8 steps. |
 | `step{i}_on` | `true` | bool | Whether step *i* fires its gate. `false` = a rest (the step still consumes a clock tick). |
 
-**Patching.** `clock.out → sequencer.clock`; `sequencer.cv → oscillator.freq_cv`; `sequencer.gate → adsr.gate → vca.cv`; `oscillator.out → vca.audio → speaker`. See `examples/sequencer_melody.json`. The `cv` is generic 1V/oct — patch it into a filter `cutoff_cv` or any CV input for stepped modulation instead of pitch.
+**Direction.** Four orders, one rule (`next_step_index` in `modules/sequencer.py`, so the tests pin the exact sequences):
+
+* `forward` — `1 2 … steps 1 2 …`. The default, bit-exact with the pre-direction engine.
+* `backward` — `steps … 2 1 steps …`. The first clock after a reset (or a fresh start) plays step `steps`.
+* `pendulum` — `1 2 … steps … 2 1 2 …`. The turnaround steps are **not** repeated, so `steps` 5 is an 8-note period (`1 2 3 4 5 4 3 2`); `steps` 1 is `1 1 1…` and `steps` 2 is `1 2 1 2` — the same rule, nothing special-cased.
+* `random` — every clock edge draws a uniformly random step in `1…steps` from `seed`'s stream (`np.random.default_rng(seed)`, one draw per edge; with `steps` 1 there is no choice and no draw is consumed). Draws happen only at edges, so the phrase is block-size independent.
+
+**Reset** rewinds to the pattern's start *for the direction*: `forward` and `pendulum` play step 1 next (pendulum heading up), `backward` plays step `steps`, and `random` **restarts its stream too** — a reset replays the same random phrase from the top. That makes a "random" line loopable: patch a slow clock or a `clock_divider` into `reset` and the sequencer plays a reproducible phrase per bar, which a patch file recalls exactly (`seed` is saved with it). Switching direction live is seamless: `forward` leaves the pendulum heading up and `backward` leaves it heading down, so a switch to `pendulum` carries on the way you were going.
+
+**Changing `steps` mid-run.** The playing step keeps sounding until the next clock. If it is now past the new end it is treated as the new *last* step on that clock: `forward` wraps to step 1, `backward` walks to step `steps − 1`, `pendulum` turns around. A step still inside the new length is untouched.
+
+**Patching.** `clock.out → sequencer.clock`; `sequencer.cv → oscillator.freq_cv`; `sequencer.gate → adsr.gate → vca.cv`; `oscillator.out → vca.audio → speaker`. See `examples/sequencer_melody.json`, and `examples/sequencer_pendulum.json` for a pendulum melody against a seeded `random` hat line. The `cv` is generic 1V/oct — patch it into a filter `cutoff_cv` or any CV input for stepped modulation instead of pitch.
 
 #### `fader_seq`
 
@@ -3260,8 +3273,12 @@ same engine, same ports, same params, different front. Instead of 33
 labelled parameter rows, the node draws sixteen **vertical pitch faders**
 side by side (Korg SQ-10 lineage) with nothing beneath each but its step
 number and an on/off tickbox; hover a fader for its note (`+7 st (G4)`).
-One labelled `steps` slider sets the loop length. The melody is readable
-at a glance — the fader heights *are* the tune.
+One labelled `steps` slider sets the loop length, with the `direction`
+run-mode combo and the random `seed` beside it (the same three
+whole-pattern controls as the original — the engine is shared, so the
+four orders and the reset rules read exactly as on
+[`sequencer`](#sequencer)). The melody is readable at a glance — the fader
+heights *are* the tune.
 
 Faders are quantized to **integer semitones over ±12**; the shared engine
 accepts any float, so a hand-edited patch JSON can still go microtonal or
@@ -4824,6 +4841,7 @@ loads in the app. Notable ones referenced above:
 - `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.
 - `mid_side_bass_mono.json` — bass mono: a wide [`supersaw`](#supersaw) pad (`spread` 0.9) and a 55 Hz sub summed into each channel, through [`mid_side`](#mid_side) at `width` 1.6 with `side_hp` 120 — the pad's detune would otherwise smear the sub across the field; with the corner in, the sub sits dead centre and the pad stays wide.
 - `lfo_retrigger.json` — the key-synced tremolo: a 90 BPM sequencer melody through an ADSR VCA and then a 7 Hz [`lfo`](#lfo) VCA, with the sequencer's `gate` also into the LFO's `reset` and `phase` 0.25 — every note opens at the top of the tremolo and pulses down from there, instead of landing wherever the cycle happened to be.
+- `sequencer_pendulum.json` — the [`sequencer`](#sequencer)'s `direction`: a five-step [`pluck`](#pluck) line in `pendulum` (an 8-note period, `1 2 3 4 5 4 3 2`) against a second sequencer in `random` (`seed` 7) gating a [`hat`](#hat) on sixteenths, with a [`clock_divider`](#clock_divider) at /16 resetting both every bar — so the "random" hat pattern is one reproducible bar, replayed.
 - `filter_resonance_sweep.json` — the [`filter`](#filter)'s `resonance_cv`: a saw through a lowpass, a 0.5 Hz LFO on `cutoff_cv` and a 0.11 Hz triangle on `resonance_cv` (`res_cv_depth` 1.5, so the Q breathes between 0.7 and 5.7) — the peak sharpens and softens on its own nine-second cycle, whatever the cutoff is doing.
 - `organ_leslie.json` — the pairing: a self-playing maj7 organ through the [`rotary`](#rotary), a 5 BPM clock on `fast` flipping the Leslie between chorale and tremolo every six seconds so the horn and drum chase each other.
 - `krell_feedback.json` — the real krell self-patch: the [`function_generator`](#function_generator) in `trigger` mode with its own `eoc` OR'd (through [`logic`](#logic)) with a 12-second starter pulse back into `trig`. The loop closes one block late — the feedback door, generalized 2026-09-16. Same dice, quantizer and voice as `krell_machine.json`, which runs the no-latency `loop` mode version.

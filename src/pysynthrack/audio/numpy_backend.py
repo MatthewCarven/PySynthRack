@@ -67,6 +67,10 @@ from ..modules.quantizer import (
     QUANTIZER_ROOTS as _Q_ROOTS,
     SCALE_INTERVALS as _Q_SCALES,
 )
+from ..modules.sequencer import (
+    SEQ_DIRECTIONS as _SEQ_DIRECTIONS,
+    next_step_index as _seq_next_step_index,
+)
 from .backend import AudioBackend
 
 # Imported lazily so a missing PortAudio install doesn't crash module import.
@@ -4114,13 +4118,28 @@ class NumpyBackend(AudioBackend):
         """Clock-driven step sequencer → 1V/oct ``cv`` + ``gate``.
 
         Advances one step per rising edge of the ``clock`` gate; a rising
-        edge on ``reset`` rewinds so the next clock plays step 1. The step
-        index starts at -1 so the first clock pulse lands on step 1
-        (index 0), and wraps modulo ``steps``. ``cv`` holds the current
-        step's pitch (``semitones / 12``) for the whole step — sample-and-
-        hold, so the note stays in tune while an envelope rings out after
-        the gate falls. ``gate`` is high while the clock is high *and* the
-        current step is enabled (a disabled step is a rest). Mono output.
+        edge on ``reset`` rewinds so the next clock plays the pattern's
+        start. The step index starts at -1 (*before the start*) so the
+        first clock pulse lands on step 1 (index 0) in ``forward`` and
+        ``pendulum``, and on the LAST step in ``backward``; which index
+        follows which is the one pure rule ``next_step_index`` in
+        modules/sequencer.py (forward wraps modulo ``steps``, backward
+        counts down, pendulum bounces without repeating the turnaround
+        steps, random draws). ``cv`` holds the current step's pitch
+        (``semitones / 12``) for the whole step — sample-and-hold, so the
+        note stays in tune while an envelope rings out after the gate
+        falls. ``gate`` is high while the clock is high *and* the current
+        step is enabled (a disabled step is a rest). Mono output.
+
+        ``random`` draws one ``integers(steps)`` per clock edge from a
+        Generator seeded with ``seed``. The Generator lives in the module
+        state and is built lazily on the first draw, rebuilt when ``seed``
+        changes, and DROPPED on a reset edge — so a reset replays the same
+        phrase from the top (a reproducible "random" line the rest of the
+        patch can lean on). Draws happen only at edges, so the stream is
+        block-size independent by construction. A ``forward`` render is
+        bit-exact with the pre-direction engine (the recipe's reference
+        renders are pinned in tests/test_sequencer.py).
 
         Per-sample because it is an edge-driven counter; cheap (one int
         compare + a couple of lookups per sample) and clear, matching the
@@ -4139,15 +4158,31 @@ class NumpyBackend(AudioBackend):
             bool(module.params.get(f"step{i}_on", True))
             for i in range(1, self._SEQ_MAX_STEPS + 1)
         ]
+        direction = str(module.params.get("direction", "forward"))
+        if direction not in _SEQ_DIRECTIONS:
+            direction = "forward"
+        try:
+            seed = int(module.params.get("seed", 1))
+        except (TypeError, ValueError):
+            seed = 1
+        seed = max(0, seed)
 
         st = self._state.setdefault(
             module.id,
-            {"idx": -1, "cv": 0.0, "prev_clock": False, "prev_reset": False},
+            {"idx": -1, "cv": 0.0, "prev_clock": False, "prev_reset": False,
+             "asc": True, "rng": None, "seed": seed},
         )
         idx = int(st["idx"])
         cur_cv = float(st["cv"])
         prev_clock = bool(st["prev_clock"])
         prev_reset = bool(st["prev_reset"])
+        asc = bool(st.get("asc", True))
+        rng = st.get("rng")
+        if st.get("seed") != seed:
+            # A live seed change re-rolls the stream on the spot; the
+            # position is kept (only the dice are new).
+            rng = None
+            st["seed"] = seed
 
         gate_high = self._GATE_HIGH
         cv_out = np.empty(frames, dtype=np.float32)
@@ -4158,11 +4193,18 @@ class NumpyBackend(AudioBackend):
             r = bool(reset[n] > gate_high) if reset is not None else False
 
             if r and not prev_reset:
-                idx = -1  # next clock edge plays step 1
+                # Back to the pattern's start for this direction (the
+                # rule reads -1 as "before the start"), heading up, and
+                # the random stream restarts so the same phrase replays.
+                idx = -1
+                asc = True
+                rng = None
             prev_reset = r
 
             if c and not prev_clock:
-                idx = (idx + 1) % steps
+                if direction == "random" and rng is None and steps > 1:
+                    rng = np.random.default_rng(seed)
+                idx, asc = _seq_next_step_index(idx, steps, direction, asc, rng)
                 cur_cv = pitches[idx] / 12.0
             prev_clock = c
 
@@ -4173,6 +4215,8 @@ class NumpyBackend(AudioBackend):
         st["cv"] = cur_cv
         st["prev_clock"] = prev_clock
         st["prev_reset"] = prev_reset
+        st["asc"] = asc
+        st["rng"] = rng
         return {"cv": cv_out, "gate": gate_out}
 
     def _render_shift_random(self, module, frames: int, buffers, patch) -> dict:
