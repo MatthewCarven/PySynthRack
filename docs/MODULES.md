@@ -95,6 +95,7 @@ The full map:
 | `filter.resonance_cv` | `1.0` (`res_cv_depth`) | Q doublings | `resonance · 2^(d·mean cv)` (clipped 0.1…20); a `(V, F)` source gives every voice its own Q |
 | `lfo.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `drift.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)`, re-read per block; mono (a `(V, F)` source is averaged) |
+| `clock.bpm_cv` | `1.0` (`bpm_cv_depth`) | tempo doublings | `bpm · 2^(d·mean cv)`, block-rate; exponent clipped ±6 (×64) before the power; mono (a `(V, F)` source is averaged) |
 | `crossover.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
 | `vowel.vowel_cv` | `2.0` | vowels (0 = A … 4 = U) | `vowel + d·mean cv`, clamped 0…4 |
 | `sweep_eq.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
@@ -288,7 +289,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`adsr`](#adsr) | Modulation | `gate` (gate), `vel` (cv) → `cv` (cv) |
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
 | [`function_generator`](#function_generator) | Modulation | `trig` (gate), `rate_cv`,`rise_cv`,`fall_cv` (cv) → `out`,`out_inv` (cv), `eor`,`eoc` (gate) |
-| [`clock`](#clock) | Modulation | — → `out` (gate) |
+| [`clock`](#clock) | Modulation | `reset`,`run` (gate), `bpm_cv` (cv) → `out` (gate) |
 | [`sequencer`](#sequencer) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
 | [`fader_seq`](#fader_seq) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
 | [`shift_random`](#shift_random) | Modulation | `clock`,`write` (gate) → `cv` (cv), `gate` (gate) |
@@ -3383,15 +3384,20 @@ The **rise/fall function** — the west-coast module that is an envelope, an LFO
 #### `clock`
 
 The rack's **metronome**: a tempo turned into a steady gate pulse train. No
-input, no audio — it free-runs while the transport plays and emits a pulse on
-`out` that other modules step off (most obviously a [sequencer](#sequencer)'s
+audio — it free-runs while the transport plays and emits a pulse on `out`
+that other modules step off (most obviously a [sequencer](#sequencer)'s
 `clock`, but equally an [adsr](#adsr)/[ad_envelope](#ad_envelope) trigger or a
-[sample_hold](#sample_hold) `trig`).
+[sample_hold](#sample_hold) `trig`). Since the 2026-09-19 love pass it has a
+**transport** of its own: `run` (play/hold), `reset` (the downbeat) and
+`bpm_cv` (tempo).
 
 **Ports**
 
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
+| `reset` | in | gate | A **rising edge** restarts the period *at that sample*: the gate goes high on the reset sample itself and the following pulses count from it. A reset while the gate is already high just extends the pulse. |
+| `run` | in | gate | Unpatched → running (as always). Patched: runs while high, **held** while low — output low, phase frozen — so a downstream sequencer keeps its step. A rising edge is a reset too: the first pulse lands on the sample play starts. |
+| `bpm_cv` | in | cv | Tempo, `bpm · 2^(bpm_cv_depth · cv)` — doublings per unit, block-mean. |
 | `out` | out | gate | Pulse train at `bpm / 60 × division` Hz. |
 
 **Parameters**
@@ -3401,10 +3407,15 @@ input, no audio — it free-runs while the transport plays and emits a pulse on
 | `bpm` | `120.0` | 20…300 | Tempo in beats per minute. |
 | `division` | `4.0` | 0.25…16 | Pulses per beat — 1 = quarter, 2 = eighth, 4 = sixteenth notes. |
 | `pulse_width` | `0.5` | 0.01…0.99 | Duty cycle (fraction of each period the gate is high). |
+| `bpm_cv_depth` | `1.0` | 0…4 | Tempo **doublings per CV unit** on `bpm_cv` (1.0 = the 1 V/oct style: +1 doubles the tempo, −1 halves it). 0 disables the input without unpatching it. |
 
-**How it works.** A float64 phase accumulator carries across blocks so pulses stay phase-continuous (no drift, no seam). A fresh clock emits a rising edge on its first sample, so a downstream sequencer plays step 1 immediately.
+**How it works.** A float64 phase accumulator carries across blocks so pulses stay phase-continuous (no drift, no seam). The phase is evaluated at samples 1..n, so a fresh clock emits a rising edge on its first sample and a downstream sequencer plays step 1 immediately.
 
-**Patching.** `clock.out → sequencer.clock`. See `examples/sequencer_melody.json`.
+**The transport.** A `reset` edge splits the block into segments (the [lfo](#lfo)'s `reset` idiom) and every segment after an edge starts from phase 0 — exactly what a brand-new clock does on its first block — so *a reset is a fresh clock from that sample*: sample-accurate, block-size independent, and the next pulses are the fresh clock's (5512, 11024, 16537… samples later at the default 8 Hz). With `run` patched the clock only advances while `run` is high; a held sample advances nothing and emits nothing, so a sequencer parks on its step and resumes on the sample `run` rises, which is itself a reset — "play" starts on the downbeat. A `reset` edge while held zeros the phase but emits nothing until `run` rises (which zeros it again, so a held reset is inaudible by itself — the sequencer's own `reset` is the jack that rewinds a stopped pattern). `bpm_cv` is block-rate like every block-mean CV here: the tempo is `bpm · 2^(depth · mean cv)` per block, exponent clipped to ±6 (×64) *before* the power so a runaway CV can never raise in the audio thread. Gates are mono: a `(V, F)` source on `reset` or `run` collapses to any-voice-high; a `(V, F)` source on `bpm_cv` is averaged. All three unpatched (or a `run` cable that never falls and a `reset` cable that never rises) is the pre-love-pass pulse train, bit-exact.
+
+> **A sample of slop, honestly.** The free-running phase accumulator is a float: at a tempo whose period is a whole number of samples (120 BPM × 1 = 22050) the crossing lands exactly *on* a sample boundary (phase 1.0 at sample 22049 in exact arithmetic, so the pulse is due at 22049) and the rounding of `phase + inc · n` decides whether that sample or the next one goes high — so between block sizes (64 vs 512) an edge can land one sample apart. A reset or run edge realigns everything to its own sample exactly. At the default 8 Hz (5512.5-sample period) the crossing is always half a sample from the grid and the sequences agree exactly across block sizes; the tests pin exact there and ±1 on the integer-period case.
+
+**Patching.** `clock.out → sequencer.clock`. See `examples/sequencer_melody.json`. A slow, wide-pulse `clock` into `run` is a play/hold transport (`examples/clock_transport.json`: two bars on, one bar off); a bar-rate `clock` into `reset` *and* the sequencer's `reset` nails the phrase to the bar line; a [drift](#drift) into `bpm_cv` at a small depth (0.02–0.05) is a tempo that breathes.
 
 #### `sequencer`
 
@@ -5023,6 +5034,14 @@ loads in the app. Notable ones referenced above:
   [`burst`](#burst) into a rimshot with `env → vel`), plus a slow
   [`lfo`](#lfo) into the snare [`euclidean`](#euclidean)'s `fills_cv`
   so the backbeat breathes from 2 fills to 6 and back.
+- `clock_transport.json` — the transport: a 117 BPM sixteenth [`clock`](#clock)
+  whose `run` is a slow, wide-pulse clock (40 × ¼, `pulse_width` 0.66: two
+  bars on, one bar held), whose `reset` is a bar-rate clock that also rewinds
+  the [`sequencer`](#sequencer) — a 12-step figure of three broken chords that
+  the bar-line reset turns into *A B C A* per bar — and whose `bpm_cv` is a
+  slow [`drift`](#drift) at 0.03 doublings/unit (±2%: the tempo breathes,
+  the downbeat still lands on the sample). Into a [`pluck`](#pluck) and a
+  little reverb. Eight modules.
 - `chord_legato_inversions.json` — a held gate with roots walking under it: the
   [`chord`](#chord)'s `retrig` re-strums a maj7 in first inversion 20 ms apart on
   every root step, and the [`arpeggiator`](#arpeggiator) below it runs on its

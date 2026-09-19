@@ -2658,7 +2658,7 @@ class NumpyBackend(AudioBackend):
         if module.TYPE == "key_trigger":
             return self._render_key_trigger(module, frames)
         if module.TYPE == "clock":
-            return self._render_clock(module, frames)
+            return self._render_clock(module, frames, buffers, patch)
         if module.TYPE in ("sequencer", "fader_seq"):
             # fader_seq is the Sequencer with a different front panel —
             # identical param contract, one engine (see modules/fader_seq.py).
@@ -4087,7 +4087,13 @@ class NumpyBackend(AudioBackend):
     # integer (same pattern as _MAX_VOICES).
     _SEQ_MAX_STEPS = 16
 
-    def _render_clock(self, module, frames: int) -> np.ndarray:
+    # ``bpm_cv``'s exponent is clipped here BEFORE ``2 **`` -- x64 either
+    # way is already past any musical tempo, and the filter pass found
+    # that ``2.0 ** (depth * cv)`` on an absurd CV (a cv_math product
+    # gone wild) raises OverflowError in the audio thread.
+    _BPM_CV_EXP_LIMIT = 6.0
+
+    def _render_clock(self, module, frames: int, buffers=None, patch=None) -> np.ndarray:
         """Tempo-driven gate pulse train, fully vectorized.
 
         Pulse frequency is ``bpm / 60 * division`` Hz. A float64 phase
@@ -4095,10 +4101,74 @@ class NumpyBackend(AudioBackend):
         (no drift, no seam at block boundaries); the gate is high for the
         first ``pulse_width`` fraction of each unit phase period. Returns a
         mono ``(frames,)`` gate buffer.
+
+        The phase is evaluated at samples 1..frames of each segment, so a
+        fresh clock at phase 0 emits a rising edge on its very first
+        sample (the downstream sequencer then plays step 1 immediately).
+
+        The transport (love pass, 2026-09-19) -- three optional inputs,
+        read only when ``buffers``/``patch`` are given (unit tests still
+        call with two arguments and get the free-running clock):
+
+          * ``reset`` (gate): a rising edge restarts the period AT that
+            sample. The block is rendered in segments between edges (the
+            LFO's ``reset`` idiom): every segment after the first starts
+            from phase 0 evaluated at samples 1..n -- exactly what a
+            brand-new clock does on its first block -- so a reset IS a
+            fresh clock from that sample: the gate goes high on the reset
+            sample itself and the following pulses count from it. A reset
+            while the gate is already high just extends the pulse. The
+            previous reset sample is carried in state so an edge that
+            straddles a block boundary counts exactly once.
+          * ``run`` (gate): unpatched = running. Patched: the clock runs
+            while it is high and is HELD while low -- output low and the
+            phase frozen (a held sample advances nothing), so a downstream
+            sequencer keeps its step. A rising edge on ``run`` is a reset
+            too: the first pulse lands on the sample play starts, the
+            downbeat. A reset edge while held zeros the phase and emits
+            nothing until run rises (which re-zeros it, so the held reset
+            is inaudible by itself -- the sequencer's own ``reset`` is the
+            jack that rewinds a stopped pattern).
+          * ``bpm_cv`` (cv) + ``bpm_cv_depth``: tempo doublings per unit,
+            ``bpm * 2 ** (depth * mean cv)``, block-rate like every
+            block-mean CV here (a ``(V, F)`` source is averaged). The
+            exponent is clipped to +/-``_BPM_CV_EXP_LIMIT`` before the
+            power and a non-finite mean is read as 0.
+
+        Gates are mono: a ``(V, F)`` source on ``reset`` or ``run`` is
+        collapsed by ``_input_buffer`` to its voice sum, i.e. any-voice-
+        high (the house rule).
+
+        Bit-exactness at default is by construction: with no edges the
+        block is one segment, ``np.mod(phase0 + inc * arange(1, F + 1),
+        1)`` and ``np.mod(phase0 + inc * F, 1)`` -- the pre-love-pass
+        code, operation for operation. A ``run`` cable that is high from
+        sample 0 is one edge there, and phase 0 from sample 0 IS the fresh
+        clock, so that too is bit-exact (both pinned in tests/test_clock.py).
         """
         bpm = max(1e-6, float(module.params.get("bpm", 120.0)))
         division = max(1e-6, float(module.params.get("division", 4.0)))
         pw = min(0.999, max(0.001, float(module.params.get("pulse_width", 0.5))))
+
+        reset = run = bpm_cv = None
+        if buffers is not None and patch is not None:
+            reset = self._input_buffer(patch, buffers, module.id, "reset")
+            run = self._input_buffer(patch, buffers, module.id, "run")
+            # Uncollapsed so a (V, F) CV is averaged, not summed V times.
+            bpm_cv = self._input_buffer(
+                patch, buffers, module.id, "bpm_cv", collapse=False
+            )
+
+        if bpm_cv is not None and bpm_cv.size > 0:
+            depth = float(module.params.get("bpm_cv_depth", 1.0))
+            # float64 on purpose (the resonance_cv lesson): a float32
+            # mean times a Python float stays float32 under numpy's
+            # weak-scalar rule and lands the tempo an ulp off.
+            expo = depth * float(np.mean(np.asarray(bpm_cv, dtype=np.float64)))
+            if not np.isfinite(expo):
+                expo = 0.0
+            expo = max(-self._BPM_CV_EXP_LIMIT, min(self._BPM_CV_EXP_LIMIT, expo))
+            bpm = bpm * 2.0 ** expo
 
         freq = bpm / 60.0 * division  # pulses per second
         inc = freq / self.sample_rate
@@ -4106,15 +4176,53 @@ class NumpyBackend(AudioBackend):
         st = self._state.setdefault(module.id, {"phase": 0.0})
         phase0 = float(st.get("phase", 0.0))
 
-        # Phase at samples 1..frames (so a fresh clock at phase 0 emits a
-        # rising edge on the very first sample — the downstream sequencer
-        # then plays step 1 immediately).
-        n = np.arange(1, frames + 1, dtype=np.float64)
-        frac = np.mod(phase0 + inc * n, 1.0)
-        gate = (frac < pw).astype(np.float32)
+        # Restart edges this block: every reset edge, plus every run rise.
+        # ``_lfo_reset_edges`` is the generic carried-across-blocks
+        # rising-edge finder; ``running`` is the per-sample hold mask
+        # (None = unpatched = always running).
+        edges = np.zeros(0, dtype=np.intp)
+        running = None
+        if reset is not None:
+            edges, st["reset_prev"] = self._lfo_reset_edges(
+                reset, st.get("reset_prev", False), frames
+            )
+        if run is not None:
+            running = np.asarray(run[:frames]) > self._GATE_HIGH
+            run_edges, st["run_prev"] = self._lfo_reset_edges(
+                run, st.get("run_prev", False), frames
+            )
+            if run_edges.size:
+                edges = np.union1d(edges, run_edges).astype(np.intp)
 
-        st["phase"] = float(np.mod(phase0 + inc * frames, 1.0))
-        return gate
+        # One vectorized ramp per segment. ``cnt`` is how many samples the
+        # phase has advanced at each sample of the segment, counting the
+        # sample itself: 1..n free-running, or the running count under a
+        # ``run`` gate (a held sample repeats the previous count, so the
+        # phase freezes). cumsum of a 0/1 mask is exact, so a run cable
+        # that never falls yields the very same ramp as no cable.
+        ramp = np.arange(1, frames + 1, dtype=np.float64)
+        frac = np.empty(frames, dtype=np.float64)
+        bounds = [0, *(int(e) for e in edges), frames]
+        seg_start = phase0
+        end_phase = phase0
+        for a, b in zip(bounds[:-1], bounds[1:]):
+            n = b - a
+            if running is None:
+                cnt = ramp[:n]
+                adv = n
+            else:
+                cnt = np.cumsum(running[a:b], dtype=np.float64)
+                adv = float(cnt[-1]) if n else 0.0
+            frac[a:b] = np.mod(seg_start + inc * cnt, 1.0)
+            end_phase = np.mod(seg_start + inc * adv, 1.0)
+            # Every segment after the first begins at a restart edge.
+            seg_start = 0.0
+
+        gate = frac < pw
+        if running is not None:
+            gate &= running
+        st["phase"] = float(end_phase)
+        return gate.astype(np.float32)
 
     def _render_sequencer(self, module, frames: int, buffers, patch) -> dict:
         """Clock-driven step sequencer → 1V/oct ``cv`` + ``gate``.

@@ -347,8 +347,10 @@ class TestRerollDividerExample:
             cap.setdefault(module.id, []).append(np.asarray(r["gate"]).copy())
             return r
 
-        def spy_clk(module, frames):
-            r = orig_clk(module, frames)
+        def spy_clk(module, frames, buffers=None, patch_ref=None):
+            # The clock's dispatch passes buffers/patch since its
+            # transport (reset/run/bpm_cv) landed on 2026-09-19.
+            r = orig_clk(module, frames, buffers, patch_ref)
             cap.setdefault(module.id, []).append(np.asarray(r).copy())
             return r
 

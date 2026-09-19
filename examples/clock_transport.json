@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "next_id": 9,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "SIXTEENTHS - the phrase clock; run from PLAY, reset from DOWNBEAT, bpm_cv from BREATH (117 nominal so the drift never overruns the bar)",
+      "params": { "bpm": 117.0, "division": 4.0, "pulse_width": 0.5, "bpm_cv_depth": 0.03 } },
+    { "id": 2, "type": "clock", "name": "PLAY - the transport gate: a 3-bar cycle at 40 x 1/4, high for two bars (play), low for one (hold)",
+      "params": { "bpm": 40.0, "division": 0.25, "pulse_width": 0.66 } },
+    { "id": 3, "type": "clock", "name": "DOWNBEAT - one tick per bar of 4/4 at 120; resets the phrase clock AND the sequencer so the figure restarts on the bar line",
+      "params": { "bpm": 120.0, "division": 0.25, "pulse_width": 0.05 } },
+    { "id": 4, "type": "drift", "name": "BREATH - a slow smooth wander into bpm_cv; 0.03 doublings per unit = +/-2% tempo, push and pull",
+      "params": { "mode": "smooth", "rate": 0.15, "glide": 1.0, "step": 0.25, "depth": 1.0, "bipolar": true, "cv_depth": 1.0, "seed": 7 } },
+    { "id": 5, "type": "sequencer", "name": "FIGURE - three broken chords (Cm, Eb, Fm), 12 steps; the bar-line reset makes it A B C A per bar",
+      "params": { "steps": 12, "direction": "forward",
+        "step1_pitch": 0.0,   "step1_on": true,  "step2_pitch": 7.0,   "step2_on": true,
+        "step3_pitch": 12.0,  "step3_on": true,  "step4_pitch": 7.0,   "step4_on": true,
+        "step5_pitch": 3.0,   "step5_on": true,  "step6_pitch": 10.0,  "step6_on": true,
+        "step7_pitch": 15.0,  "step7_on": true,  "step8_pitch": 10.0,  "step8_on": true,
+        "step9_pitch": 5.0,   "step9_on": true,  "step10_pitch": 12.0, "step10_on": true,
+        "step11_pitch": 17.0, "step11_on": true, "step12_pitch": 12.0, "step12_on": true } },
+    { "id": 6, "type": "pluck", "name": "STRING - a pluck per pulse; short decay so the hold bar is a real rest",
+      "params": { "decay": 0.9, "damping": 0.45, "color": 0.8, "position": 0.2, "level": 0.7 } },
+    { "id": 7, "type": "reverb", "name": "a little air",
+      "params": { "size": 0.5, "decay": 0.4, "damping": 0.4, "mix": 0.2 } },
+    { "id": 8, "type": "stereo_speaker_output", "name": "Output", "params": { "gain": 0.9 } }
+  ],
+  "cables": [
+    { "src_module_id": 2, "src_port": "out",   "dst_module_id": 1, "dst_port": "run" },
+    { "src_module_id": 3, "src_port": "out",   "dst_module_id": 1, "dst_port": "reset" },
+    { "src_module_id": 4, "src_port": "cv",    "dst_module_id": 1, "dst_port": "bpm_cv" },
+    { "src_module_id": 1, "src_port": "out",   "dst_module_id": 5, "dst_port": "clock" },
+    { "src_module_id": 3, "src_port": "out",   "dst_module_id": 5, "dst_port": "reset" },
+    { "src_module_id": 5, "src_port": "cv",    "dst_module_id": 6, "dst_port": "pitch_cv" },
+    { "src_module_id": 5, "src_port": "gate",  "dst_module_id": 6, "dst_port": "trigger" },
+    { "src_module_id": 6, "src_port": "out",   "dst_module_id": 7, "dst_port": "in" },
+    { "src_module_id": 7, "src_port": "out_l", "dst_module_id": 8, "dst_port": "in_l" },
+    { "src_module_id": 7, "src_port": "out_r", "dst_module_id": 8, "dst_port": "in_r" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [340, 200], "2": [30, 60], "3": [30, 300], "4": [30, 540],
+      "5": [640, 200], "6": [940, 200], "7": [1220, 200], "8": [1500, 200]
+    }
+  }
+}

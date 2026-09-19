@@ -1120,7 +1120,18 @@ class App:
                 return
 
         if module.TYPE == "clock":
-            # Tempo metronome: bpm, pulses-per-beat division, duty cycle.
+            # Tempo metronome: bpm, pulses-per-beat division, duty cycle,
+            # and ``bpm_cv_depth`` -- tempo doublings per CV unit on
+            # ``bpm_cv`` (1.0 = the 1 V/oct style: +1 doubles the tempo),
+            # presented like the filter's ``res_cv_depth`` drag (0..4).
+            # ``reset`` / ``run`` / ``bpm_cv`` are jacks, no widget.
+            if param_name == "bpm_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f dbl/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
             if param_name == "bpm":
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
