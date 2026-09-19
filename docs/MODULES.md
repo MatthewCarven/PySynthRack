@@ -3930,10 +3930,25 @@ unity (decode ≡ input, bit-close), **2** doubles the side — wider than
 the room. `width_cv` adds per sample (clamped 0..2): an LFO breathes
 the field, an envelope ducks width on transients. Mono-friendly: one
 patched input **is** the mid (level preserved, not halved; width
-inert) — a free passthrough. Stateless and exact. **Ports**: `in_l`,
-`in_r` (audio), `width_cv` (cv) → `mid`, `side`, `out_l`, `out_r`
-(audio). **Params**: `width` 0..2 (1). See
-`examples/mid_side_breathe.json`.
+inert) — a free passthrough.
+
+**Bass mono** — `side_hp` is the move every mastering chain makes: a
+12 dB/oct highpass (RBJ, Q 0.707 — the mastering norm) on the *side*
+signal only, applied before `width` and before the decode, so
+everything below the corner collapses to the middle. A wide pad's
+detune smears its low end across the field and hollows the mono sum;
+with the corner at 120 Hz the sub and the kick stay dead centre and
+solid in mono while the pad above them stays exactly as wide as
+`width` says. `mid` is untouched; `side`, `out_l` and `out_r` all
+carry the filtered side (`S′ = HP(S)`, `L′/R′ = M ± width·S′`). One
+octave under the corner the side is down 12 dB, two octaves 24 dB.
+**0 = off** — the filter is not run at all and the module is the
+stateless, bit-exact pair above; when on the corner lives in 20..500 Hz.
+State carries across blocks (block-size independent), coefficients are
+rebuilt only when the corner moves. **Ports**: `in_l`, `in_r` (audio),
+`width_cv` (cv) → `mid`, `side`, `out_l`, `out_r` (audio). **Params**:
+`width` 0..2 (1); `side_hp` Hz, 0 = off, 20..500 when on (0). See
+`examples/mid_side_breathe.json` and `examples/mid_side_bass_mono.json`.
 
 ---
 
@@ -4807,6 +4822,7 @@ loads in the app. Notable ones referenced above:
 - `pitch_shifter_shimmer.json` — the built-in shimmer loop: a slow pluck at C3 into +12 with `feedback` 0.75, through a hall — each pluck blooms into an octave cloud.
 - `pitch_shifter_harmonizer.json` — a stereo major triad from one module: `semitones` +4, `harmony` +7, `spread` 1 → third left, fifth right, root centred.
 - `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.
+- `mid_side_bass_mono.json` — bass mono: a wide [`supersaw`](#supersaw) pad (`spread` 0.9) and a 55 Hz sub summed into each channel, through [`mid_side`](#mid_side) at `width` 1.6 with `side_hp` 120 — the pad's detune would otherwise smear the sub across the field; with the corner in, the sub sits dead centre and the pad stays wide.
 - `lfo_retrigger.json` — the key-synced tremolo: a 90 BPM sequencer melody through an ADSR VCA and then a 7 Hz [`lfo`](#lfo) VCA, with the sequencer's `gate` also into the LFO's `reset` and `phase` 0.25 — every note opens at the top of the tremolo and pulses down from there, instead of landing wherever the cycle happened to be.
 - `filter_resonance_sweep.json` — the [`filter`](#filter)'s `resonance_cv`: a saw through a lowpass, a 0.5 Hz LFO on `cutoff_cv` and a 0.11 Hz triangle on `resonance_cv` (`res_cv_depth` 1.5, so the Q breathes between 0.7 and 5.7) — the peak sharpens and softens on its own nine-second cycle, whatever the cutoff is doing.
 - `organ_leslie.json` — the pairing: a self-playing maj7 organ through the [`rotary`](#rotary), a 5 BPM clock on `fast` flipping the Leslie between chorale and tremolo every six seconds so the horn and drum chase each other.

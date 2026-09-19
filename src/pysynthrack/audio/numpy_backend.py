@@ -16820,13 +16820,71 @@ class NumpyBackend(AudioBackend):
             "not_a": (~a).astype(np.float32),
         }
 
+    # mid_side ``side_hp`` (bass mono): the corner of the side-only
+    # highpass is held to this range when the param is on; 0 is off.
+    _MID_SIDE_HP_MIN_HZ = 20.0
+    _MID_SIDE_HP_MAX_HZ = 500.0
+
+    def _mid_side_side_hp(self, module_id, freq, side):
+        """One block of the bass-mono highpass over the side signal.
+
+        The RBJ highpass (Q 0.707, the shared ``_vocoder_hp_coeffs``
+        design -- 12 dB/oct, the mastering norm) with its coefficients
+        cached under the module's state and rebuilt only when ``freq``
+        moves. The carried state is the raw DF-I history (x1, x2, y1,
+        y2), not lfilter's ``zf``: a live corner change then applies
+        the new coefficients to the same last two samples (DF-I
+        semantics, no restart click). The history is folded into the
+        transposed-DF-II ``zi`` in scipy's OWN association order,
+        ``(b1*x1 + (b2*x2 - a2*y2)) - a1*y1`` -- that, and not the
+        house ``b1*x1 + b2*x2 - a1*y1 - a2*y2`` (off by ~1e-13 in
+        float64), is what makes a 64-block render bit-exact with a
+        512-block one.
+        """
+        st = self._state.setdefault(module_id, {})
+        if st.get("hp_freq") != freq:
+            st["hp_b"], st["hp_a"] = self._vocoder_hp_coeffs(freq)
+            st["hp_freq"] = freq
+            st.setdefault("hp_hist", (0.0, 0.0, 0.0, 0.0))
+        n = side.shape[0]
+        if n == 0:
+            return side
+        b = st["hp_b"]
+        a = st["hp_a"]
+        x1, x2, y1, y2 = st["hp_hist"]
+        zi = np.array(
+            [
+                (b[1] * x1 + (b[2] * x2 - a[2] * y2)) - a[1] * y1,
+                b[2] * x1 - a[2] * y1,
+            ],
+            dtype=np.float64,
+        )
+        out = lfilter(b, a, side, zi=zi)[0]
+        if n >= 2:
+            st["hp_hist"] = (
+                float(side[-1]), float(side[-2]), float(out[-1]), float(out[-2])
+            )
+        else:
+            st["hp_hist"] = (float(side[-1]), x1, float(out[-1]), y1)
+        return out
+
     def _render_mid_side(self, module, frames: int, buffers, patch) -> dict:
-        """M/S encode/decode + width (see modules/mid_side.py).
+        """M/S encode/decode + width + bass mono (see modules/mid_side.py).
 
         Standard sum/difference pair; ``width_cv`` adds per sample with
         the final width clamped 0..2. One patched input is treated as
         the mid itself (level preserved, width inert) rather than a
-        half-level L+0 pair — the mono-passthrough contract. Stateless.
+        half-level L+0 pair — the mono-passthrough contract.
+
+        ``side_hp`` > 0 runs ``_mid_side_side_hp`` over the SIDE only,
+        before ``width`` and before the decode: everything under the
+        corner collapses to the middle, ``mid`` is untouched, and
+        ``side``/``out_l``/``out_r`` all carry the filtered side. At 0
+        the filter is not called at all -- the module is the stateless
+        sum/difference pair it always was, bit-exact -- and any filter
+        history is dropped so a corner switched back on starts from
+        rest rather than resuming a stale tail. Mono passthrough and
+        silence drop it for the same reason: the side was zero.
         """
         in_l = self._input_buffer(patch, buffers, module.id, "in_l")
         in_r = self._input_buffer(patch, buffers, module.id, "in_r")
@@ -16837,18 +16895,34 @@ class NumpyBackend(AudioBackend):
         except (TypeError, ValueError):
             width = 1.0
         width = min(2.0, max(0.0, width))
+        try:
+            side_hp = float(module.params.get("side_hp", 0.0))
+        except (TypeError, ValueError):
+            side_hp = 0.0
+        if side_hp > 0.0:
+            side_hp = min(
+                self._MID_SIDE_HP_MAX_HZ, max(self._MID_SIDE_HP_MIN_HZ, side_hp)
+            )
+        else:
+            side_hp = 0.0
 
         if in_l is None and in_r is None:
+            self._state.pop(module.id, None)
             zeros = np.zeros(frames, dtype=np.float32)
             return {"mid": zeros, "side": zeros, "out_l": zeros, "out_r": zeros}
         if in_l is None or in_r is None:
             # Mono: the one input IS the mid; width has nothing to act on.
+            self._state.pop(module.id, None)
             mono = (in_l if in_l is not None else in_r).astype(np.float32)
             zeros = np.zeros(frames, dtype=np.float32)
             return {"mid": mono, "side": zeros, "out_l": mono, "out_r": mono}
 
         mid = (in_l.astype(np.float64) + in_r) * 0.5
         side = (in_l.astype(np.float64) - in_r) * 0.5
+        if side_hp > 0.0:
+            side = self._mid_side_side_hp(module.id, side_hp, side)
+        else:
+            self._state.pop(module.id, None)
         if width_cv is not None:
             w = np.clip(width + width_cv.astype(np.float64), 0.0, 2.0)
         else:

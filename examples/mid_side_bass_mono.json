@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "next_id": 8,
+  "modules": [
+    {
+      "id": 1,
+      "type": "oscillator",
+      "name": "pad saw A",
+      "params": {
+        "waveform": "saw_blep",
+        "freq": 220.0,
+        "amp": 0.22
+      }
+    },
+    {
+      "id": 2,
+      "type": "oscillator",
+      "name": "pad saw B (13 cents sharp)",
+      "params": {
+        "waveform": "saw_blep",
+        "freq": 221.7,
+        "amp": 0.22
+      }
+    },
+    {
+      "id": 3,
+      "type": "oscillator",
+      "name": "SUB - 55 Hz sine, wants to stay in the middle",
+      "params": {
+        "waveform": "sine",
+        "freq": 55.0,
+        "amp": 0.4
+      }
+    },
+    {
+      "id": 4,
+      "type": "mixer",
+      "name": "bus (pad + sub)",
+      "params": {
+        "gain1": 1.0,
+        "gain2": 1.0,
+        "gain3": 1.0,
+        "master": 0.8
+      }
+    },
+    {
+      "id": 5,
+      "type": "chorus",
+      "name": "the widener - smears EVERYTHING wide, sub included",
+      "params": {
+        "rate": 0.4,
+        "depth": 0.6,
+        "voices": 4,
+        "mix": 0.5
+      }
+    },
+    {
+      "id": 6,
+      "type": "mid_side",
+      "name": "BASS MONO - side_hp 120: below it collapses to the middle",
+      "params": {
+        "width": 1.6,
+        "side_hp": 120.0
+      }
+    },
+    {
+      "id": 7,
+      "type": "stereo_speaker_output",
+      "name": "Output - sub centred + solid in mono, pad wide (set side_hp 0 to hear the smear)",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",   "dst_module_id": 4, "dst_port": "in1" },
+    { "src_module_id": 2, "src_port": "out",   "dst_module_id": 4, "dst_port": "in2" },
+    { "src_module_id": 3, "src_port": "out",   "dst_module_id": 4, "dst_port": "in3" },
+    { "src_module_id": 4, "src_port": "out",   "dst_module_id": 5, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "out_l", "dst_module_id": 6, "dst_port": "in_l" },
+    { "src_module_id": 5, "src_port": "out_r", "dst_module_id": 6, "dst_port": "in_r" },
+    { "src_module_id": 6, "src_port": "out_l", "dst_module_id": 7, "dst_port": "in_l" },
+    { "src_module_id": 6, "src_port": "out_r", "dst_module_id": 7, "dst_port": "in_r" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [60, 80],
+      "2": [60, 300],
+      "3": [60, 520],
+      "4": [360, 300],
+      "5": [640, 300],
+      "6": [920, 300],
+      "7": [1220, 300]
+    }
+  }
+}

@@ -3084,6 +3084,15 @@ class App:
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
+            if param_name == "side_hp":
+                # Bass mono: highpass corner on the side only. 0 = off
+                # (the backend holds anything above 0 to 20..500 Hz).
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=0.0, max_value=500.0, format="%.0f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
 
         if module.TYPE == "octaver":
             # Sub-octave mixer: dry/sub1/sub2 levels + the subs' LP tone.
