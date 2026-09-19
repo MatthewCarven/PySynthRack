@@ -739,6 +739,93 @@ same session.
       anyone is playing). Decide whether that asymmetry should be
       documented as-is or changed; do not change it silently.
 
+## Five more love passes in parallel (2026-09-19, evening)
+
+Matthew: "pick out another 5 modules for extra love and lets run
+subagents on them". Same recipe as the morning batch with per-module
+scratch folders; five worktrees, cherry-picked in landing order (one
+appendix-bullet conflict, both kept). Suite **3909 → 4019**, 141
+examples. Ears/eyes items are in the listening checklist above.
+
+- [x] **`supersaw` — `detune_cv` + `detune_cv_depth` — SHIPPED
+      2026-09-19 (221b676).** Block-rate by design (the detune is a
+      per-block frequency table; a block-to-block ratio change is a
+      slope change, never a click); per-voice from a `(V, F)` source
+      came free (the `mult` table grows a voice axis); the 1/sqrt(sum
+      g^2) normalisation never depended on the detune, so the CV path
+      inherits the no-pumping contract (0.18 max/min RMS across the
+      sweep, the knob's own wobble). Depth is bipolar -2..2 (a falling
+      riser costs nothing). 10 reference renders bit-exact. 13 → 26
+      tests. Example `supersaw_detune_rise.json` (banked): a gate-mode
+      fg sweeps 0.05 → 0.95 over 7.5 s while two lowpasses open.
+- [x] **`mid_side` — `side_hp` (bass mono) — SHIPPED 2026-09-19
+      (1c5b8ab).** The 2026-08-03 follow-up. A 12 dB/oct RBJ highpass
+      (Q 0.707) on the SIDE only, before width and the decode; `mid`
+      untouched; 0 = the filter is never CALLED (pinned with a
+      raise-if-called monkeypatch). Measured on a 60 Hz + 1 kHz tone on
+      `in_l` with the corner at 120: L-R at 60 Hz -12.3 dB (a Q-0.707
+      2-pole is exactly -12.3 dB an octave under — the spec's "> 15"
+      was wrong, pinned > 10 at 60 and > 15 at 40), 1 kHz -0.00 dB.
+      State-carry lesson: scipy's own association of the DF-I
+      recurrence is float64-exact where the house history->zi rebuild
+      is off by 1e-13; 1/64/4096-sample blocks pinned bit-exact with
+      512. 13 → 28 tests. Example `mid_side_bass_mono.json` (banked):
+      a chorused pad + 55 Hz sub — the chorus smears the sub into the
+      side (L-R/L+R 0.37 in 40–70 Hz), `side_hp` 120 brings it to
+      0.076 (-13.8 dB, theory -13.7) with the pad's width untouched.
+      `mid_side_breathe.json` (Matthew's favourite) bit-exact unchanged.
+- [x] **`sequencer` — `direction` + `seed` — SHIPPED 2026-09-19
+      (9d9c5fe).** forward | backward | pendulum | random, one pure
+      helper `next_step_index` in the module that the renderer calls
+      at each edge and the tests call directly. Pendulum plays the
+      turnaround once (steps 5 → 1 2 3 4 5 4 3 2; steps 1 → 1 1 1);
+      random draws one `integers(steps)` per edge (none at steps 1);
+      **`reset` drops the Generator as well as rewinding, so a reset
+      REPLAYS the same random phrase** — a random line is loopable per
+      bar; reset lands on step 1 (forward/pendulum, heading up) or on
+      `steps` (backward); a mid-run `steps` shrink treats the playing
+      step as the new last step. `fader_seq` inherits both params by
+      contract (its DEFAULT_PARAMS IS the sequencer's) and its panel
+      grew the combo + seed. 5 reference renders bit-exact; the
+      default is also pinned against a verbatim copy of the old inner
+      loop. 13 → 41 tests. Example `sequencer_pendulum.json` (banked).
+      Test lesson: `rng.bit_generator.state` before/after proves "no
+      draw was consumed".
+- [x] **`pluck` — `vel` — SHIPPED 2026-09-19 (61259c1).** A knobless
+      multiplier on the BURST, latched at the trigger edge, the loop
+      untouched (0.5 renders as exactly half of the same string —
+      linear loop); a re-pluck adds a burst scaled by its own vel;
+      voice-aware like the other jacks. Design decision from a probe:
+      every hit also relocks the pitch and clears the allpass state,
+      and that clear alone steps the output by 7–18% of the ring — an
+      audible tick on a hit that should make no sound — so `vel <= 0`
+      is a SILENT hit that leaves the string bit-exactly as it was.
+      23 reference renders bit-exact. 21 → 34 tests. Example
+      `pluck_velocity.json` (banked): hit peaks track the velocity bus
+      within +-0.01, corr 0.975. Follow-ons: velocity → `color` (needs
+      its own depth knob); and the question whether a hit should clear
+      the allpass at all (changes every reference render — a recipe
+      job of its own).
+- [x] **`delay` — `freeze` gate — SHIPPED 2026-09-19 (02b7d6f).** The
+      echo hangs: unity recirculation, `tone` bypassed, input muted
+      from the line, dry/mix untouched. THE FINDING: a unity loop
+      through the fractional linear-interp read is NOT lossless —
+      9–11 dB lost in 10 s at any fraction (the two-tap lowpass eats
+      the top octave) — so while held the read snaps to `round(time)`
+      samples (latched per voice at the rising edge; `time_cv` and the
+      knob stop moving it while held) and the loop is `buf[n] = buf[n -
+      D]` bit for bit: energy conserved to 1e-9 dB over 10 s. One 10 ms
+      `_gate_ramp_env` crossfades gain, bypass, mute AND read position
+      (the position slides half a sample at most). 7 reference renders
+      bit-exact; 64 vs 512 bit-exact. 22 → 43 tests. Example
+      `delay_freeze_stutter.json` (banked). Test lessons: the reverb's
+      click reference is TAUTOLOGICAL at the rise of a lossless loop
+      (the loop captures the ramp's own writes and repeats them) — pin
+      per edge, pre-only at the rise, max(pre, post) at the fall, and
+      self-test the tripwire with the ramp collapsed; and lag-D
+      correlation doesn't prove a stutter (an ordinary echo correlates
+      at lag D) — persistence at lag k·D for k = 3..8 does.
+
 ## The keep-list, continued (2026-09-19, later)
 
 - [x] **`cv_recorder` — SHIPPED 2026-09-19, module #98.** CV &
@@ -787,12 +874,17 @@ sampler examples need it).
 - [ ] `possibility_selector_kit.json` — whether x which drums + the harp. EYES: cells paint one hue per output (red / blue / green / purple), amber for `?` and subsets; right-click a cell opens FOUR checkboxes (never seen in a window yet).
 - [ ] `possibility_reroll_divider.json` — kick and snare hold a take for four bars then re-decide on bar 5; the hat re-deals every bar.
 
-*The love passes (five so far, five more in flight):*
+*The love passes (ten):*
 - [ ] `lfo_retrigger.json` — every note opens at the top of its tremolo (unpatch `sequencer.gate -> lfo.reset` to hear it go back to drifting). EYES: drag the `phase` slider on a running LFO — it re-anchors live.
 - [ ] `filter_resonance_sweep.json` — the peak breathes on its own cycle whatever the cutoff does. EYES: `res_cv_depth` reads "dbl/unit" beside `cv_depth`'s "oct/unit".
 - [ ] `oscillator_pwm.json` — the PWM pad. No pumping at the width extremes (DC-compensated), no zipper under the faster LFO. EYES: `pulse_width` slider + `pw_cv_depth` on the oscillator panel.
 - [ ] `adsr_velocity.json` — accents loud-loud-mid-soft-soft-soft-mid-loud, hard notes brighter too. Then the live one: `midi_input.velocity_cv -> adsr.vel` on the real keyboard.
 - [ ] `reverb_freeze_pad.json` — the Cmaj7 strum hangs as a pad between strikes. Is the 10 ms catch fast enough; is the bypassed-damping pad too bright?
+- [ ] `sequencer_pendulum.json` — the pendulum line on eighths against a `random` hat bar that REPLAYS every reset (its step pitches are the accents). EYES: the `direction` combo + `seed` on the sequencer node and above the fader bank on `fader_seq`.
+- [ ] `delay_freeze_stutter.json` — the 187.5 ms dotted-sixteenth hold reads as a tumbling beat-repeat, the phrase over it clearly dry. Freeze a sustained tone whose period doesn't divide the delay: the lap seam should be a smooth wobble, not a tick.
+- [ ] `supersaw_detune_rise.json` — the riser: does the exponential rise open late enough; does the filter's 2.8-octave sweep want more or less? EYES: `detune_cv_depth` is bipolar (-2..2 "det/unit") so a negative depth is a falling riser.
+- [ ] `mid_side_bass_mono.json` — toggle `side_hp` 120 vs 0 live: the sub should snap to the middle and the pad should NOT narrow. (`mid_side_breathe.json` is bit-exact unchanged.)
+- [ ] `pluck_velocity.json` — do the accents breathe; is 0.3 too quiet a floor? Then `midi_input.velocity_cv -> pluck.vel` on the keyboard.
 
 *Still owed from earlier sessions:*
 - [ ] `fg_eor_swell_strike.json` — swell then strike, one gesture? Is the 12 s starter poke audible?

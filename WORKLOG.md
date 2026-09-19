@@ -115,8 +115,12 @@ already three light before slice 2 added one -- count with
 > oscillator PWM, adsr `vel`, reverb `freeze` — five examples banked.
 > Suite **3886**, 135 examples. Then **`cv_recorder`, module #98** — the
 > modulation looper; `cv_recorder_layers.json` (banked). Suite
-> **3909**, 136 examples. Keep-list left: vowel, freeze, autopan,
-> midi_output, subpatch containers, snapshot morph.
+> **3909**, 136 examples. Then **five more love passes in parallel**:
+> supersaw `detune_cv`, mid_side `side_hp`, sequencer `direction`,
+> pluck `vel`, delay `freeze` — five examples banked. Suite **4019**,
+> 141 examples. The listening checklist is at the top of TODO.md.
+> Keep-list left: vowel, freeze, autopan, midi_output, subpatch
+> containers, snapshot morph.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -166,6 +170,64 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-19 — five more love passes in parallel
+
+Matthew: "Ok Claude pick out another 5 modules for extra love and lets
+run subagents on them please" — and, mid-flight, "can I get a todo of
+what I need to test next session?" (the listening checklist, now at
+the top of TODO.md, 7ddf627). Same recipe as the morning batch with
+the one process fix applied — per-module scratch folders — and it
+held: no overwritten scripts, five clean reports, one appendix-bullet
+conflict on the way in. Full suite on the merged main: **4019
+passed**, 141 examples.
+
+**What landed** (each with tests, docs, an example, reference renders
+bit-exact at the default):
+
+* **supersaw `detune_cv`** (221b676) — the trance riser. Block-rate by
+  design (the detune is a per-block frequency table, so a ratio change
+  is a slope change, never a click); per-voice came free; the amp
+  normalisation never depended on the detune, so the sweep does not
+  pump. Depth is bipolar — a falling riser for nothing.
+* **mid_side `side_hp`** (1c5b8ab) — bass mono, the 08-03 follow-up on
+  Matthew's favourite module. 12 dB/oct RBJ on the side only; at 0 the
+  filter is never called (pinned by a raise-if-called monkeypatch, not
+  a 0 Hz filter). The spec's "> 15 dB at 60 Hz under 120" was wrong —
+  a Q-0.707 2-pole is −12.3 dB an octave under by definition; the
+  agent measured exactly that and pinned the true numbers.
+* **sequencer `direction`** (9d9c5fe) — forward/backward/pendulum/
+  random with a seed, one pure helper the renderer and the tests
+  share; `reset` restarts the random stream so a random phrase
+  REPLAYS per bar; `fader_seq` inherited both by contract.
+* **pluck `vel`** (61259c1) — latched at the trigger edge on the
+  burst only, the loop untouched. A probe found every hit's allpass
+  clear ticks 7–18% of the ring, so a zero-velocity hit is silent AND
+  leaves the string bit-exactly alone — the honest reading of "keeps
+  ringing as it was".
+* **delay `freeze`** (02b7d6f) — the echo hangs. The finding: a unity
+  loop through a fractional linear-interp read loses 9–11 dB in 10 s
+  at ANY fraction (the two-tap lowpass eats the top octave), so the
+  held read snaps to `round(time)` samples and the loop is bit-for-bit
+  lossless (1e-9 dB over 10 s); the 10 ms ramp slides the read
+  position too, half a sample at most.
+
+**Lessons this batch added.** (1) Two hold gates, two different
+physics: the reverb's Hadamard tank is lossless at unity by
+construction; the delay's interpolated read is not — the same
+one-paragraph spec got two right answers because both agents
+MEASURED before designing. (2) A click tripwire can be tautological:
+at the rise of a lossless loop the loop captures the ramp's own
+writes and repeats them, so any switch "passes" — pin per edge and
+self-test the tripwire with the ramp collapsed. (3) A spec's numeric
+threshold is a hypothesis, not a requirement — when the filter's own
+definition says −12.3 dB, pin −12.3 dB. (4) `rng.bit_generator.state`
+before/after is the cheap proof that no draw was consumed. (5)
+`Path.write_text` on Windows turns an LF file CRLF — two agents hit
+it and normalised before committing; patch scripts write bytes or
+`newline="\n"`.
 
 ---
 
