@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "next_id": 9,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "eighths at 112 - one pluck per pulse",
+      "params": { "bpm": 112.0, "division": 2.0, "pulse_width": 0.5 } },
+    { "id": 2, "type": "sequencer", "name": "the line - a C minor climb to the Eb above and back (semitones from C4)",
+      "params": { "steps": 8,
+        "step1_pitch": 0.0,  "step1_on": true, "step2_pitch": 7.0,  "step2_on": true,
+        "step3_pitch": 10.0, "step3_on": true, "step4_pitch": 12.0, "step4_on": true,
+        "step5_pitch": 15.0, "step5_on": true, "step6_pitch": 12.0, "step6_on": true,
+        "step7_pitch": 10.0, "step7_on": true, "step8_pitch": 7.0,  "step8_on": true } },
+    { "id": 3, "type": "shift_random", "name": "VELOCITY BOX - a looping 8-step accent pattern; probability 0 locks it, ~0.1 lets it drift",
+      "params": { "probability": 0.1, "length": 8, "range": 1.0, "bipolar": false, "seed": 11 } },
+    { "id": 4, "type": "cv_scale", "name": "x0.7 - the accent span", "params": { "scale": 0.7 } },
+    { "id": 5, "type": "cv_offset", "name": "+0.3 - the softest pick still speaks (vel 0.3..1.0)", "params": { "offset": 0.3 } },
+    { "id": 6, "type": "pluck", "name": "STRING with vel_color 0.8 - a soft pick is duller as well as quieter (color 0.8 at vel 1.0, 0.24 at vel 0.3); the accents ring bright, the ring-down is the same",
+      "params": { "decay": 0.9, "damping": 0.45, "color": 0.8, "vel_color": 0.8, "position": 0.2, "level": 0.7 } },
+    { "id": 7, "type": "reverb", "name": "a little air",
+      "params": { "size": 0.5, "decay": 0.4, "damping": 0.4, "mix": 0.2 } },
+    { "id": 8, "type": "stereo_speaker_output", "name": "Output", "params": { "gain": 0.9 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",   "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 1, "src_port": "out",   "dst_module_id": 3, "dst_port": "clock" },
+    { "src_module_id": 3, "src_port": "cv",    "dst_module_id": 4, "dst_port": "in" },
+    { "src_module_id": 4, "src_port": "out",   "dst_module_id": 5, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "out",   "dst_module_id": 6, "dst_port": "vel" },
+    { "src_module_id": 2, "src_port": "cv",    "dst_module_id": 6, "dst_port": "pitch_cv" },
+    { "src_module_id": 2, "src_port": "gate",  "dst_module_id": 6, "dst_port": "trigger" },
+    { "src_module_id": 6, "src_port": "out",   "dst_module_id": 7, "dst_port": "in" },
+    { "src_module_id": 7, "src_port": "out_l", "dst_module_id": 8, "dst_port": "in_l" },
+    { "src_module_id": 7, "src_port": "out_r", "dst_module_id": 8, "dst_port": "in_r" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 240], "2": [300, 60], "3": [300, 420], "4": [560, 420], "5": [820, 420],
+      "6": [1080, 200], "7": [1360, 200], "8": [1640, 200]
+    }
+  }
+}

@@ -19,6 +19,16 @@ as it was, mono broadcasts / voiced latches per row / a voiced bus on a
 mono pluck takes the loudest voice, single voice ≡ mono, block-size
 independence with the trigger mid-stream, the widget sweep, the example.
 
+Velocity colour (the 2026-09-20 love pass): ``vel_color`` darkens a soft
+hit's burst -- MEASURED as the spectral centroid of the first 50 ms (a
+0.3-velocity hit at C4, ``color`` 0.8, ``vel_color`` 1: 3540 Hz against
+5782 Hz at full velocity), a full hit is bit-exact with the knob off,
+``vel_color`` 0 is the shipped path, a hit renders bit-exactly as a plain
+hit at the effective colour (the formula, with both clamps), the loop is
+untouched (t60 and loop state at damping 0, a re-pluck's tail slope),
+block-size independence with hits mid-stream, per-voice latching, the
+widget, the example.
+
 Pitch/decay tests run at 44100 Hz (they measure real frequencies);
 plumbing tests run fast at SR 1000.
 """
@@ -587,6 +597,246 @@ def test_block_size_independent_with_vel_mid_stream():
     assert np.abs(out_big[912:976]).max() > np.abs(out_big[848:912]).max()
 
 
+# ----- vel_color -------------------------------------------------------------
+
+
+def _centroid(sig, sr=44100):
+    """Hann-windowed magnitude-spectrum centroid in Hz -- the house
+    brightness observable (centroid, not flatness)."""
+    w = np.hanning(len(sig))
+    spec = np.abs(np.fft.rfft(sig * w))
+    f = np.fft.rfftfreq(len(sig), 1.0 / sr)
+    return float((f * spec).sum() / (spec.sum() + 1e-20))
+
+
+def _one_hit(vel, params, n_blocks=6, block=512, cv=0.0, sr=44100):
+    """One hit at sample 0 (velocity ``vel``; None = no vel cable),
+    ``n_blocks`` long. Six blocks of 512 is ~70 ms -- the first 50 ms
+    (the burst and its first laps round the loop) is what the centroid
+    tests window."""
+    step = _driver(params, sr=sr, block=block, vel=vel is not None)
+    out = []
+    for i in range(n_blocks):
+        trig = np.zeros(block, dtype=np.float32)
+        if i == 0:
+            trig[0] = 1.0
+        pitch = np.full(block, cv, dtype=np.float32)
+        if vel is None:
+            out.append(step(pitch, trig))
+        else:
+            out.append(step(pitch, trig, np.full(block, vel, dtype=np.float32)))
+    return np.concatenate(out)
+
+
+_N50 = int(0.05 * 44100)
+
+
+def test_vel_color_soft_hit_is_duller():
+    """The feature, measured: at ``vel_color`` 1 a 0.3-velocity hit's
+    first 50 ms has a lower spectral centroid than a full hit's --
+    3540 Hz vs 5782 Hz measured at C4 with ``color`` 0.8 (ratio 0.61),
+    pinned below 0.75. At ``vel_color`` 0 the two hits are the same burst
+    scaled, so the centroid ratio is 1 (to float noise). Halfway
+    (``vel_color`` 0.5) sits between (measured 4460 Hz)."""
+    soft = _centroid(_one_hit(0.3, {"color": 0.8, "vel_color": 1.0})[:_N50])
+    full = _centroid(_one_hit(1.0, {"color": 0.8, "vel_color": 1.0})[:_N50])
+    assert 3000.0 < soft < 4000.0, soft
+    assert 5300.0 < full < 6300.0, full
+    assert soft / full < 0.75
+    half = _centroid(_one_hit(0.3, {"color": 0.8, "vel_color": 0.5})[:_N50])
+    assert soft < half < full
+    off_soft = _centroid(_one_hit(0.3, {"color": 0.8, "vel_color": 0.0})[:_N50])
+    off_full = _centroid(_one_hit(1.0, {"color": 0.8, "vel_color": 0.0})[:_N50])
+    assert np.isclose(off_soft, off_full, rtol=1e-3)
+    assert np.isclose(off_full, full, rtol=1e-12)
+
+
+def test_vel_color_full_hit_is_bit_exact_with_the_knob_off():
+    """The anchor: the formula is ``color + vel_color * (vel - 1)``, and
+    at vel 1.0 that is ``color + 0.0`` -- ``color`` itself in IEEE. So a
+    bus holding 1.0 renders bit-for-bit the same at ``vel_color`` 1 as at
+    0, and so does an UNPATCHED ``vel`` (the knob cannot change a patch
+    with no velocity source). Mono with a re-pluck and a pitch step, then
+    a (2, F) string."""
+    on = {"decay": 3.0, "color": 0.5, "vel_color": 1.0}
+    off = {"decay": 3.0, "color": 0.5, "vel_color": 0.0}
+    assert np.array_equal(_two_hit_render(1.0, params=on), _two_hit_render(1.0, params=off))
+    assert np.array_equal(_two_hit_render(None, params=on), _two_hit_render(None, params=off))
+
+    plain = _driver({"decay": 1.0, "vel_color": 0.0}, sr=1000, block=64, vel=True)
+    knob = _driver({"decay": 1.0, "vel_color": 1.0}, sr=1000, block=64, vel=True)
+    for i in range(12):
+        trig = np.zeros((2, 64), dtype=np.float32)
+        pitch = np.zeros((2, 64), dtype=np.float32)
+        pitch[1] = 0.5 if i < 6 else -0.5
+        if i == 0:
+            trig[0, 3] = 1.0
+        if i in (2, 6):
+            trig[1, 40] = 1.0
+        ones = np.ones((2, 64), dtype=np.float32)
+        assert np.array_equal(plain(pitch, trig, ones), knob(pitch, trig, ones))
+
+
+def test_vel_color_zero_is_the_shipped_path():
+    """``vel_color`` 0 (the default) with ANY velocity is what shipped:
+    the key absent and the key at 0.0 render bit-exactly the same for a
+    soft re-pluck (the reference-render recipe pinned the shipped code
+    itself before the change; this keeps the default honest)."""
+    absent = {"decay": 3.0, "color": 0.5}
+    zero = {"decay": 3.0, "color": 0.5, "vel_color": 0.0}
+    assert np.array_equal(_two_hit_render(0.4, params=absent), _two_hit_render(0.4, params=zero))
+
+
+@pytest.mark.parametrize(
+    "color, vel_color, vel",
+    [(0.8, 1.0, 0.3), (0.7, 0.8, 0.55), (0.5, 1.0, 0.3), (0.8, 1.0, 1.5)],
+)
+def test_vel_color_hit_equals_a_plain_hit_at_the_effective_colour(color, vel_color, vel):
+    """The contract pinned literally: a hit at (color, vel_color, vel)
+    is bit-exact with a plain hit (``vel_color`` 0) at the same velocity
+    whose ``color`` IS ``clamp(color + vel_color * (vel - 1), 0, 1)`` --
+    the same float expression, so the same exciter. The third case
+    clamps at 0 (0.5 - 0.7), the fourth at 1 (a hit above full velocity
+    brightens, to the ceiling)."""
+    scale = float(np.float32(vel))  # the bus is float32; the edge read is its value
+    eff = min(1.0, max(0.0, color + vel_color * (scale - 1.0)))
+    if color == 0.5:
+        assert eff == 0.0
+    if vel == 1.5:
+        assert eff == 1.0
+    a = _one_hit(vel, {"color": color, "vel_color": vel_color, "decay": 2.0})
+    b_ = _one_hit(vel, {"color": eff, "vel_color": 0.0, "decay": 2.0})
+    assert np.array_equal(a, b_)
+    assert np.any(a != 0.0)
+
+
+def test_vel_color_leaves_the_loop_alone():
+    """Only the exciter sees the colour. At ``damping`` 0 the loop gain
+    is frequency-independent, so the t60 of a 0.3-velocity hit is the
+    same to the hop with ``vel_color`` 1 as with 0 (measured 0.5108 s
+    both, ``decay`` 0.5), the tail's log-RMS slope agrees within 1%, the
+    carried loop state (``g``, ``ap_c``, ``n_int``) is identical, and a
+    re-pluck's ring-down slope after the second hit agrees too. (At
+    ``damping`` > 0 the ENVELOPE does differ -- a duller burst has less
+    HF for the damping to eat -- which is the burst meeting the loop, not
+    the loop changing; hence the damping-0 pin.)"""
+    sr, hop = 44100, 1024
+
+    def rms_env(sig):
+        return np.array(
+            [np.sqrt(np.mean(sig[i : i + hop] ** 2)) for i in range(0, len(sig) - hop, hop)]
+        )
+
+    def t60_of(sig):
+        rms = rms_env(sig)
+        ref = rms[:4].max()
+        below = np.flatnonzero(rms < ref * 10 ** (-60.0 / 20.0))
+        assert len(below), "never decayed 60 dB"
+        return below[0] * hop / sr
+
+    def slope(sig, lo, hi):
+        rms = rms_env(sig)
+        seg = np.log(rms[lo:hi] + 1e-30)
+        return float(np.polyfit(np.arange(len(seg)), seg, 1)[0])
+
+    outs, states = [], []
+    for vc in (0.0, 1.0):
+        params = {"decay": 0.5, "damping": 0.0, "color": 0.8, "vel_color": vc}
+        step = _driver(params, sr=sr, block=512, vel=True)
+        out = []
+        for i in range(int(1.2 * sr / 512)):
+            trig = np.zeros(512, dtype=np.float32)
+            if i == 0:
+                trig[0] = 1.0
+            out.append(step(np.zeros(512, dtype=np.float32), trig,
+                            np.full(512, 0.3, dtype=np.float32)))
+        outs.append(np.concatenate(out))
+        st = step.backend._state[step.module.id]
+        states.append((st["g"].copy(), st["ap_c"].copy(), st["n_int"].copy()))
+    assert not np.array_equal(outs[0], outs[1])  # the burst DID change
+    assert abs(t60_of(outs[0]) - t60_of(outs[1])) <= hop / sr
+    assert abs(t60_of(outs[1]) - 0.5) / 0.5 < 0.10
+    s0, s1 = slope(outs[0], 4, 20), slope(outs[1], 4, 20)
+    assert s0 < 0 and abs(s1 - s0) / abs(s0) < 0.01, (s0, s1)
+    for a, b_ in zip(states[0], states[1]):
+        assert np.array_equal(a, b_)
+
+    # A re-pluck on the ringing string: hit 0 full, hit 1 at 0.3 (block 20,
+    # sample 100); the slope of the ring-down after hit 1 is the same.
+    base = {"decay": 0.5, "damping": 0.0, "color": 0.8}
+    two_off = _two_hit_render(0.3, params={**base, "vel_color": 0.0}, n_blocks=60)
+    two_on = _two_hit_render(0.3, params={**base, "vel_color": 1.0}, n_blocks=60)
+    assert not np.array_equal(two_off, two_on)
+    after = 20 * 512 + 100
+    s_off = slope(two_off[after:], 4, 20)
+    s_on = slope(two_on[after:], 4, 20)
+    assert s_off < 0 and abs(s_on - s_off) / abs(s_off) < 0.01, (s_off, s_on)
+
+
+def test_vel_color_block_size_independent_mid_stream():
+    """The mid-stream twin of the vel test with the colour live: a ramp
+    bus (the value AT the edge is what colours the hit), a hit at 5, a
+    silent hit at 812 and a soft hit at 912; ``vel_color`` 1. 2x512 ==
+    16x64 to the bit, and the soft hit is really a duller one (its burst
+    differs from the ``vel_color`` 0 render)."""
+    F = 1024
+    trig = np.zeros(F, dtype=np.float32)
+    trig[[5, 300 + 512, 400 + 512]] = 1.0
+    vel = np.linspace(0.2, 1.4, F).astype(np.float32)
+    vel[300 + 512] = -1.0
+    pitch = np.full(F, -3.0, dtype=np.float32)
+    params = {"decay": 4.0, "color": 0.8, "vel_color": 1.0}
+    big = _driver(params, sr=1000, block=512, vel=True)
+    small = _driver(params, sr=1000, block=64, vel=True)
+    off = _driver({**params, "vel_color": 0.0}, sr=1000, block=512, vel=True)
+    out_big = np.concatenate(
+        [big(pitch[i : i + 512], trig[i : i + 512], vel[i : i + 512])
+         for i in range(0, F, 512)]
+    )
+    out_small = np.concatenate(
+        [small(pitch[i : i + 64], trig[i : i + 64], vel[i : i + 64])
+         for i in range(0, F, 64)]
+    )
+    out_off = np.concatenate(
+        [off(pitch[i : i + 512], trig[i : i + 512], vel[i : i + 512])
+         for i in range(0, F, 512)]
+    )
+    assert np.array_equal(out_big, out_small)
+    assert not np.array_equal(out_big, out_off)
+    assert np.abs(out_big[-64:]).max() > 1e-3  # never reached the floor
+
+
+def test_vel_color_latches_per_voice():
+    """Two strings hit together with a (2, F) bus at 0.3 / 1.0 and
+    ``vel_color`` 1: voice 0 is duller (centroid ratio < 0.75, the same
+    figure as mono), voice 1 is bit-exact with the ``vel_color`` 0 render
+    (a full hit is a full hit), and voice 0 is bit-exact with a MONO
+    string at 0.3 (single voice ≡ mono, colour included)."""
+    sr, block = 44100, 512
+
+    def render(vel_color):
+        step = _driver({"color": 0.8, "vel_color": vel_color}, sr=sr, block=block, vel=True)
+        out = []
+        for i in range(6):
+            trig = np.zeros((2, block), dtype=np.float32)
+            if i == 0:
+                trig[:, 0] = 1.0
+            pitch = np.zeros((2, block), dtype=np.float32)
+            vel = np.ones((2, block), dtype=np.float32)
+            vel[0] = 0.3
+            out.append(step(pitch, trig, vel))
+        return np.concatenate(out, axis=1)
+
+    on, off = render(1.0), render(0.0)
+    assert on.shape == (2, 6 * block)
+    c0, c1 = _centroid(on[0, :_N50]), _centroid(on[1, :_N50])
+    assert c0 / c1 < 0.75, (c0, c1)
+    assert np.array_equal(on[1], off[1])
+    assert not np.array_equal(on[0], off[0])
+    mono = _one_hit(0.3, {"color": 0.8, "vel_color": 1.0})
+    assert np.array_equal(on[0], mono)
+
+
 # ----- widgets ---------------------------------------------------------------
 
 
@@ -617,6 +867,7 @@ def test_every_param_gets_a_bounded_widget(monkeypatch):
         assert hits, (name, labels)
         assert w[hits[0]][0] != "add_input_text", (name, w[hits[0]])
     assert w["decay"][1].endswith(" s")
+    assert w["vel_color"][0] == "add_slider_float"  # 0..1, beside color
     assert "vel" not in w  # a jack, not a knob
 
 
@@ -674,4 +925,66 @@ def test_the_velocity_example_accents_each_hit():
     assert np.all(np.abs(peaks / plain - vels) < 0.05)
     assert np.corrcoef(peaks, vels)[0, 1] > 0.9
     assert peaks.max() > 1.8 * peaks.min()
+    assert vels.min() >= 0.3 and vels.max() <= 1.0
+
+
+def test_the_velocity_color_example_dulls_the_soft_picks():
+    """examples/pluck_velocity_color.json: the accent loop into ``vel``
+    with ``vel_color`` 0.8. Rendered as shipped and again with the knob
+    forced to 0 (the pitch confound removed -- the line's own centroid
+    swings 3650..5190 Hz note to note), each hit's first-50 ms centroid
+    ratio (with / without) tracks its velocity: measured 0.61 at vel 0.36
+    up to 0.96 at 0.92, correlation 0.97 over 14 hits; pinned every
+    ratio < 0.98, the soft picks (< 0.5) under 0.8, correlation > 0.9.
+    Peak 0.40 (pinned 0.3..0.8), 8 modules."""
+    from pysynthrack.io_patch import load_patch
+
+    path = Path(__file__).resolve().parent.parent / "examples" / "pluck_velocity_color.json"
+
+    def render(vel_color):
+        patch = load_patch(path)
+        seq = next(m for m in patch if m.TYPE == "sequencer")
+        off = next(m for m in patch if m.TYPE == "cv_offset")
+        pl = next(m for m in patch if m.TYPE == "pluck")
+        if vel_color is not None:
+            pl.params["vel_color"] = vel_color
+        np.random.seed(0)
+        b = NumpyBackend(sample_rate=44100, block_size=512)
+        b.compile(patch)
+        outs, vels, gates = [], [], []
+        orig = b._render_pluck
+
+        def spy(module, frames, buffers, p):
+            vb = buffers.get((off.id, "out"))
+            vels.append(np.zeros(frames) if vb is None else np.asarray(vb).copy())
+            gates.append(np.asarray(buffers[(seq.id, "gate")]).copy())
+            r = orig(module, frames, buffers, p)
+            outs.append(np.asarray(r).copy())
+            return r
+
+        b._render_pluck = spy
+        peak = 0.0
+        for _ in range(int(44100 * 4 / 512)):
+            out, _devices = b.render_block_multi(512)
+            assert out is not None and np.all(np.isfinite(out))
+            peak = max(peak, float(np.abs(out).max()))
+        assert 0.3 < peak < 0.8, peak
+        return (np.concatenate(outs), np.concatenate(vels),
+                np.concatenate(gates) > 0.5)
+
+    patch = load_patch(path)
+    assert len(patch) <= 12
+    assert next(m for m in patch if m.TYPE == "pluck").params["vel_color"] == 0.8
+    shipped, vel, gate = render(None)
+    plain, _, _ = render(0.0)
+    edges = np.flatnonzero(gate[1:] & ~gate[:-1]) + 1
+    assert len(edges) >= 12
+    vels = np.array([vel[e] for e in edges])
+    ratios = np.array(
+        [_centroid(shipped[e : e + _N50]) / _centroid(plain[e : e + _N50]) for e in edges]
+    )
+    assert np.all(ratios < 0.98), ratios
+    assert ratios.min() < 0.7
+    assert np.any(vels < 0.5) and ratios[vels < 0.5].max() < 0.8
+    assert np.corrcoef(ratios, vels)[0, 1] > 0.9
     assert vels.min() >= 0.3 and vels.max() <= 1.0

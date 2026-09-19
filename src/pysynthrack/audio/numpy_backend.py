@@ -15547,6 +15547,20 @@ class NumpyBackend(AudioBackend):
         by ~7-18% of the ring's amplitude (measured), an audible tick on
         a hit that is supposed to make no sound. So a silent hit leaves
         the string exactly as it was and only advances the hit counter.
+
+        ``vel_color`` (2026-09-20, love pass): the pick's SPECTRUM follows
+        the velocity too. The effective colour of a hit is
+        ``clamp(color + vel_color * (vel - 1), 0, 1)``, computed at the
+        edge from the SAME latched ``scale`` the burst is multiplied by,
+        so it is per voice and per hit for free and can never move
+        mid-note. The formula is anchored at vel 1.0 on purpose: a full
+        hit (or an unpatched ``vel``) is ``color + 0.0``, which IS
+        ``color`` in IEEE, so the knob cannot change the sound of a patch
+        with no velocity source -- ``vel_color`` only ever DULLS a soft
+        hit (and brightens a hit above 1.0, to the clamp). Only the
+        exciter's one-pole sees it; the loop -- decay, damping, tuning --
+        stays untouched, so a soft hit is quieter AND duller and still
+        rings down exactly the same way.
         """
         pitch = self._input_buffer(
             patch, buffers, module.id, "pitch_cv", collapse=False
@@ -15585,6 +15599,12 @@ class NumpyBackend(AudioBackend):
         decay = min(30.0, max(0.1, decay))
         damping = min(1.0, max(0.0, float(module.params.get("damping", 0.5))))
         color = min(1.0, max(0.0, float(module.params.get("color", 0.7))))
+        # vel_color: how far a soft hit's burst darkens from ``color``
+        # (0 = off, the shipped sound). Applied per hit at the edge below,
+        # beside the latched velocity it rides on.
+        vel_color = min(
+            1.0, max(0.0, float(module.params.get("vel_color", 0.0)))
+        )
         position = min(1.0, max(0.0, float(module.params.get("position", 0.2))))
         level = float(module.params.get("level", 0.5))
 
@@ -15693,7 +15713,18 @@ class NumpyBackend(AudioBackend):
                         (self._PLUCK_SEED, module.id, v, int(st["hits"][v]))
                     )
                     st["hits"][v] += 1
-                    burst = _pluck_exciter(n_int, color, position, rng)
+                    hit_color = color
+                    if v_row is not None and vel_color > 0.0:
+                        # The pick's spectrum follows the latched
+                        # velocity: a soft hit's burst is lowpassed
+                        # harder, in proportion. Anchored at 1.0 so a
+                        # full hit is ``color + 0.0`` -- bit-exactly
+                        # ``color`` -- and the knob is inert without a
+                        # velocity source. Clamped like ``color`` itself.
+                        hit_color = min(
+                            1.0, max(0.0, color + vel_color * (scale - 1.0))
+                        )
+                    burst = _pluck_exciter(n_int, hit_color, position, rng)
                     if v_row is not None:
                         # The burst scales; the loop does not, so a soft
                         # hit rings down the same way.

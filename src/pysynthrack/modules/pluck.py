@@ -38,15 +38,30 @@ deterministic and testable sample-for-sample.
 velocity that moves mid-note changes nothing until the next pluck, and
 ``scale = max(0, vel[edge])``. Only the burst scales; the loop is
 untouched, so a soft hit is a quieter pluck that rings down in exactly
-the same time and colour — how a real string behaves when picked
-gently (the pick's *spectrum* does not change with velocity here; that
-is a follow-on idea, not built). ``midi_input.velocity_cv → vel`` is
-the point: a harder key plays louder, per voice. A non-positive
-velocity is a **silent hit** — the string keeps ringing exactly as it
-was (no burst, and none of the pitch relock / allpass clear a hit
-performs either, which alone would tick audibly); the hit counter still
-advances. Unpatched, the render is bit-for-bit what it was before the
-input existed.
+the same time — how a real string behaves when picked gently.
+``midi_input.velocity_cv → vel`` is the point: a harder key plays
+louder, per voice. A non-positive velocity is a **silent hit** — the
+string keeps ringing exactly as it was (no burst, and none of the pitch
+relock / allpass clear a hit performs either, which alone would tick
+audibly); the hit counter still advances. Unpatched, the render is
+bit-for-bit what it was before the input existed.
+
+**Velocity colour.** A real pick's *spectrum* follows the velocity too
+— a gentle stroke is duller as well as quieter — and ``vel_color``
+(0..1, default 0) is how much of that the string does. The effective
+colour of a hit is ``clamp(color + vel_color · (vel − 1), 0, 1)``,
+computed at the same edge and from the same latched velocity the burst
+is scaled by, so it is per voice and per hit and never moves mid-note.
+The formula is anchored at velocity **1.0**: a full hit (or an
+unpatched ``vel``) is exactly ``color`` whatever the knob says, so
+``vel_color`` cannot change the sound of a patch with no velocity
+source — it only ever *dulls* a softer hit, in proportion (at
+``vel_color`` 1 and ``color`` 0.8, a 0.3-velocity pick is coloured
+0.1; a hit above 1.0 brightens, to the clamp). Only the exciter's
+lowpass sees it: the loop — decay, damping, tuning — is untouched (t60
+identical at ``damping`` 0, measured), so a soft hit rings down the
+same way; at higher damping a duller burst simply has less HF for the
+loop to eat, which is the string being a string.
 
 Voice-awareness: shape follows the inputs — mono ``(F,)`` in gives mono
 out, ``(V, F)`` gives per-voice strings with no crosstalk. ``vel``
@@ -70,6 +85,8 @@ Params:
   * ``decay``: t60-style ring time in seconds, 0.1..30. Default 2.
   * ``damping``: loop lowpass blend 0..1. Default 0.5.
   * ``color``: exciter spectrum, 0 soft .. 1 bright. Default 0.7.
+  * ``vel_color``: how much a soft hit darkens ``color``, 0..1; a hit
+    at velocity 1.0 is always exactly ``color``. Default 0 (off).
   * ``position``: pick-position comb, 0 off .. 1. Default 0.2.
   * ``level``: output level 0..1. Default 0.5.
 """
@@ -89,6 +106,10 @@ class Pluck(Module):
             two-point average, nylon-ish). Default 0.5.
         color: Exciter spectrum, 0 (lowpassed thumb) .. 1 (white-noise
             plectrum). Default 0.7.
+        vel_color: How much a soft hit darkens ``color``, 0..1 -- the
+            hit's colour is ``clamp(color + vel_color * (vel - 1))``;
+            a full-velocity (or unpatched) hit is exactly ``color``.
+            Default 0.
         position: Pick-position comb on the exciter (fraction of the
             period); 0 disables. Default 0.2.
         level: Output level. Default 0.5.
@@ -107,6 +128,7 @@ class Pluck(Module):
         "decay": 2.0,
         "damping": 0.5,
         "color": 0.7,
+        "vel_color": 0.0,
         "position": 0.2,
         "level": 0.5,
     }

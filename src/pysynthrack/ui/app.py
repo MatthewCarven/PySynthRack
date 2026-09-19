@@ -3571,8 +3571,10 @@ class App:
         if module.TYPE == "pluck":
             # Karplus–Strong string. ``decay`` is a real t60 in seconds
             # (pitch-independent); ``damping`` darkens the loop; ``color``
-            # brightens the exciter (thumb → plectrum); ``position`` is
-            # the pick-position comb; ``level`` trims the output.
+            # brightens the exciter (thumb → plectrum); ``vel_color`` is
+            # how far a soft hit darkens it (inert without a ``vel``
+            # source); ``position`` is the pick-position comb; ``level``
+            # trims the output.
             if param_name == "decay":
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=0.05,
@@ -3580,7 +3582,7 @@ class App:
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
-            if param_name in ("damping", "color", "position", "level"):
+            if param_name in ("damping", "color", "vel_color", "position", "level"):
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
                     min_value=0.0, max_value=1.0, format="%.2f",
