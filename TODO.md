@@ -767,6 +767,42 @@ same session.
       in the patch (today it lives in backend state and is lost on
       Stop — the honest gap for a *performance* capture).
 
+## Listening session checklist (banked, 2026-09-19)
+
+Everything that shipped since the last quiet room, in the order that
+makes sense to sit through. Load the file, press Start, and the note in
+brackets says what to listen or look for. Tick as you go; anything that
+sounds wrong, one line here is enough and Claude takes it from there.
+(The slice-3 sampler and older items are still in "Later / wishlist".)
+
+**First run `python examples/samples/generate_samples.py` once** (the
+sampler examples need it).
+
+*The new modules (six):*
+- [ ] `bowed_cello.json` — does it read as a bowed string? Try `pressure` 0.8 (crunch), `position` 0.06 (sul ponticello), `body` 0 with the scope (the raw sawtooth). The 88% gates should re-bow without a gap.
+- [ ] `wind_duet.json` — flute over reed. Flute `breath` 0.8 should go sharp and airy; reed `breath` 0.05 must NOT speak and 1.0 should choke — both on purpose. Is the flute a flute?
+- [ ] `drift_wander.json` — the filter breathes with no corners (the scope shows the wander); the pluck lands exactly when the wander turns; the drone's 36-cent walk reads as an old oscillator, not vibrato. Try `glide` 0 (pure S&H) and `walk` with `step` 0.05.
+- [ ] `cv_math_delayed_vibrato.json` — no wobble at each note's attack, full at the sustain (scope on the `mult` jack). Move the filter's cable from `max` to `min` / `avg` / `diff`.
+- [ ] `cv_recorder_layers.json` — the loop that moves the filter changes every OTHER bar and never piles up. Then the real test: unpatch `in`, cable a `constant` 1.0 into `rec`, and turn the `value` slider — your gesture should come back every bar.
+- [ ] `possibility_selector_kit.json` — whether x which drums + the harp. EYES: cells paint one hue per output (red / blue / green / purple), amber for `?` and subsets; right-click a cell opens FOUR checkboxes (never seen in a window yet).
+- [ ] `possibility_reroll_divider.json` — kick and snare hold a take for four bars then re-decide on bar 5; the hat re-deals every bar.
+
+*The love passes (five so far, five more in flight):*
+- [ ] `lfo_retrigger.json` — every note opens at the top of its tremolo (unpatch `sequencer.gate -> lfo.reset` to hear it go back to drifting). EYES: drag the `phase` slider on a running LFO — it re-anchors live.
+- [ ] `filter_resonance_sweep.json` — the peak breathes on its own cycle whatever the cutoff does. EYES: `res_cv_depth` reads "dbl/unit" beside `cv_depth`'s "oct/unit".
+- [ ] `oscillator_pwm.json` — the PWM pad. No pumping at the width extremes (DC-compensated), no zipper under the faster LFO. EYES: `pulse_width` slider + `pw_cv_depth` on the oscillator panel.
+- [ ] `adsr_velocity.json` — accents loud-loud-mid-soft-soft-soft-mid-loud, hard notes brighter too. Then the live one: `midi_input.velocity_cv -> adsr.vel` on the real keyboard.
+- [ ] `reverb_freeze_pad.json` — the Cmaj7 strum hangs as a pad between strikes. Is the 10 ms catch fast enough; is the bypassed-damping pad too bright?
+
+*Still owed from earlier sessions:*
+- [ ] `fg_eor_swell_strike.json` — swell then strike, one gesture? Is the 12 s starter poke audible?
+- [ ] `krell_feedback.json` + `envelope_follower_wah.json` — the real krell self-patch and the self-wah (alive since the door). EYES: the closing cable paints AMBER and thicker, the toolbar reads `loops 1`, drawing a loop live puts "Loop closed: ..." in the status bar.
+- [ ] `granular_cloud.json` / `granular_haze.json` / `granular_freeze.json` (tap F to freeze) / `granular_beat_repeat.json` — the sideband on held notes: "granular" or "out of tune"? Does the freeze edge click? Is `mix` 0.6 right on the beat repeat?
+- [ ] `organ_leslie.json` — THE pairing; does the drum's lag behind the horn read as a Leslie?
+- [ ] `pitch_shifter_shimmer.json` + `pitch_shifter_harmonizer.json` — the octave bloom; the stereo triad (wide, or just split?).
+- [ ] `chord_legato_inversions.json`, `slew_clocked_glide.json` (change the BPM while it plays), `clock_divider_swing.json` (RE-LISTEN — the fills_cv cable was dead until 09-16; the snare should breathe 2 -> 6 fills over ~30 s), `drum_dynamics.json`, `modal_mallets.json` (xy scope draws a cloud when `spread` is up).
+- [ ] Sampler: `sampler_mellotron.json`, `sampler_scrub.json`; EYES on the sampler's `mode` dropdown (one_shot / gated / loop — `gated` was unreachable until 08-30) and its waveform face; `midi_input.velocity_cv -> sampler.vel` on the keyboard.
+
 ## Five love passes in parallel (2026-09-19)
 
 Matthew: "i've banked a bit of credit this session like can i get you to
