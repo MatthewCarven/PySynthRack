@@ -120,8 +120,12 @@ already three light before slice 2 added one -- count with
 > pluck `vel`, delay `freeze` — five examples banked. Suite **4019**,
 > 141 examples. The listening checklist is at the top of TODO.md.
 > Then **`vowel`, module #99** — the formant filter; `vowel_talk.json`
-> (banked). Suite **4045**, 142 examples. Keep-list left: freeze,
-> autopan, midi_output, subpatch containers, snapshot morph.
+> (banked). Suite **4045**, 142 examples. Then **a third batch of five
+> love passes in parallel**: noise `brown`/`seed`/`amp_cv`, sample_hold
+> `mode`/`prob`/`glide`, clock `reset`/`run`/`bpm_cv`, organ `vibrato`
+> (the scanner), tape `stop` — five examples banked. Suite **4206**,
+> 147 examples. Keep-list left: freeze, autopan, midi_output, subpatch
+> containers, snapshot morph — the next module is #100.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -171,6 +175,115 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-19 — a third batch of five love passes in parallel
+
+Matthew: "Ok choose another 5 modules that could use some love I
+should have enough to cover it". Same recipe, third time: five
+subagents in their own worktrees, per-module scratch folders, reference
+renders captured before any edit, the feature OFF at its default and
+pinned bit-exact, cherry-picked onto main in landing order (one
+conflict — an adjacent import line — both kept). Full suite on the
+merged main: **4206 passed**, 147 examples. One process note: the
+worktrees branched from the last PUSHED commit (69b81a2), one behind
+main's vowel, so the agents' suite counts were ~26 low; harmless, the
+count comes from the merged main.
+
+The picks, and why: two utilities that sit in almost every patch (the
+clock had no inputs at all; the S&H had no params at all), a source
+whose lack of a seed has cost a `np.random.seed` in every test that
+touched it, the showpiece effect the tape module was missing, and the
+instrument Matthew called beautiful.
+
+**What landed** (each with tests, docs, an example, reference renders
+bit-exact at the default):
+
+* **noise `brown` + `violet`, `seed`, `amp_cv`** (e095a07). Brown is
+  a LEAKY integrator of the white (a 10 Hz corner, so it rolls off at
+  −6 dB/oct from 20 Hz up but cannot wander off as DC); its RMS-match
+  scale is derived, not fitted — the stationary variance of a leaky
+  integrator is σ²/(1−a²), so `sqrt(1−a²)` (0.0534 at 44.1 k; measured
+  0.0541 ± 0.0011 over 8 seeds × 20 s, brown's RMS living in its
+  lowest octaves). Violet was the promised two-liner. Measured slopes
+  −5.85 / +6.15 dB/oct. `seed` 0 is today's free-running global rng;
+  N is a private `default_rng(N)` — the seed alone is the key, so two
+  modules with one seed are deliberately the same stream (correlated
+  stereo, documented as the feature it is). `amp_cv` is knobless by
+  the house rule; a `(V, F)` cv broadcasts ONE stream with per-voice
+  level. All ten noise-bearing examples bit-exact. 26 → 73 tests.
+* **sample_hold `mode`, `prob` + `seed`, `glide`** (9cd61a9). Track-
+  and-hold is the same forward-fill keyed on the last HIGH sample
+  instead of the last edge; "sometimes" is the bernoulli convention —
+  one draw per edge in time order, consumed only when 0 < prob < 1, so
+  prob 1 never touches the rng (pinned via `bit_generator.state`) and
+  prob 0 never samples; the voice path draws per edge per voice,
+  time-major. Glide is the slew's one-pole premise, landing on 0.99 at
+  exactly `glide·sr` samples; 0 calls no filter. **Test lesson: the
+  agent guessed a pinned count (104) before measuring — the real
+  `default_rng(3).random(200) < 0.5` count is 95. Compute the literal,
+  never guess it.** 24 → 62 tests.
+* **clock `reset`, `run`, `bpm_cv`** (03c69a3). The block renders in
+  segments between restart edges (the LFO's idiom, `_lfo_reset_edges`
+  reused as-is) and every segment after an edge starts from phase 0 —
+  which is exactly what a fresh clock does on its first block, so **a
+  reset IS a fresh clock from that sample**: measured edges 3000,
+  8512, 14024 = 3000 + the free-running clock's own. `run` low holds
+  (output low, the carried phase provably untouched); a run rise is a
+  reset too, so play starts on the downbeat. `bpm_cv` clips the
+  exponent to ±6 BEFORE the power (the filter pass's overflow lesson).
+  Block size: at 8 Hz the whole gate stream is bit-exact 64 vs 512
+  with edges mid-stream; at an integer-period tempo one edge sat a
+  sample apart (62052 vs 62053) — pinned ±1 and documented as a
+  sample of slop, honestly. 14 reference renders (12 clock-driven
+  examples) bit-exact. Test lesson: a reset placed INSIDE a pulse
+  produces no rising edge (it extends the pulse) — compute the pulse
+  windows before asserting on edges. 8 → 26 tests.
+* **organ `vibrato` — the scanner** (27f6a9a). off | v1 v2 v3 | c1 c2
+  c3 over the finished `(V, F)` voice sum, one ring per voice, ONE
+  scanner phase for the whole console — an integer sample counter, so
+  the sweep is bit-exact across any block split. 412 rpm → 6.87 Hz;
+  0.35 / 0.7 / 1.1 ms peak-to-peak; **measured V1 ±14, V2 ±27, V3 ±41
+  cents at 6.83 Hz against a hypothesis of 13 / 26 / 40.6 — the
+  constants stayed.** C is `0.5·(dry + scanned)`, the comb between
+  them being the chorus. Every knob switch crossfades dry, wet and
+  depth on one 40 ms integer ramp (a hard depth change is a real
+  click); the fade back to `off` ends at exactly `1.0·dry` and drops
+  the state. Lone-8′ pin survives. **Finding (pre-existing):** the
+  organ's own partial phase accumulator drifts a float32 ulp between
+  64 and 512 after ~0.55 s — the existing pin spans 4096 frames. An
+  integer-count phase would fix it but changes render bits: its own
+  pass. 18 → 33 tests.
+* **tape `stop` — the tape-stop** (aedd1b9). Speed 1 → 0 over
+  `stop_time` (linear — a coasting motor; Hilbert IF 329.9 / 219.8 /
+  109.9 Hz at ¼ ½ ¾ of the ramp on 440), the wet level follows the
+  speed (a head's EMF ∝ tape speed; 0.749 / 0.499 / 0.250 measured)
+  to exact silence, spin-up on the fall, `_gate_ramp_env` integer
+  counts, no click. The physics as specced: the lag is the running
+  sum of the speed deficit, reset to 0 at a restart that finds the
+  head stationary (silent, so inaudible), so after a cycle the wet
+  runs `start_time/2` behind the dry (cross-correlated 11024.5
+  samples after one, two, three cycles — bounded, not accumulating).
+  **Three exactness lessons, all measured:** (1) a carried running
+  sum must be `cumsum([carry, e…])[1:]` — `carry + cumsum(e)` regroups
+  the additions; (2) subtracting a half-sample lag from a ring index
+  rounds at the INDEX's magnitude, which differs per block size, and
+  flips float32 ties at 3.5% of samples — apply whole samples and the
+  fraction separately; (3) a longer ring alone shifts the shipped
+  read by an ulp for the same reason, so the arithmetic keeps running
+  in the pre-stop index space and only the lookup uses the long ring —
+  that is what made "patched-but-never-risen == unpatched" bit-exact
+  in the modulated case. **Finding (pre-existing):** the shipped
+  wow/flutter read and the sat → bump chain are block-exact only to a
+  float32 ulp at rare samples (4 in 4 s) — documented, pinned to an
+  ulp, a follow-on that moves the reference renders. 25 → 47 tests.
+
+**Five examples banked:** `noise_brown_surf.json`,
+`sample_hold_sometimes.json`, `clock_transport.json`,
+`organ_scanner.json`, `tape_stop_drop.json` — on the listening
+checklist. **Fifteen love passes in a day.** Suite **4206**, 147
+examples, 99 modules.
 
 ---
 

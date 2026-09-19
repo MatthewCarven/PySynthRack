@@ -739,6 +739,99 @@ same session.
       anyone is playing). Decide whether that asymmetry should be
       documented as-is or changed; do not change it silently.
 
+## A third batch of five love passes in parallel (2026-09-19, night)
+
+Matthew: "Ok choose another 5 modules that could use some love I should
+have enough to cover it". Same recipe, five worktrees, cherry-picked in
+landing order (one conflict, an adjacent import line, both kept). Suite
+**4045 → 4206**, 147 examples. Ears/eyes items are in the listening
+checklist below.
+
+- [x] **`noise` — `brown` + `violet`, `seed`, `amp_cv` — SHIPPED
+      2026-09-19 (e095a07).** Brown = a leaky integrator of the white
+      (10 Hz corner) scaled by the exact `sqrt(1 - a^2)`; violet = the
+      first difference. Measured slopes -5.85 / +6.15 dB/oct, RMS vs
+      white +0.08 / +0.03 dB. `seed` 0 = the free-running global rng
+      (today); N = a private `default_rng(N)`, the seed alone the key
+      (two modules, one seed = one stream — correlated stereo on
+      purpose). `amp_cv` knobless; a `(V, F)` cv broadcasts one stream
+      with per-voice level. Ten examples bit-exact. 26 → 73 tests.
+      Example `noise_brown_surf.json` (banked). Follow-ons: a `corner`
+      knob (2–40 Hz) on brown for wind-vs-thunder if the 10 Hz leak
+      reads wrong; a stereo-pair example (same seed L/R = mono,
+      different = wide).
+- [x] **`sample_hold` — `mode`, `prob` + `seed`, `glide` — SHIPPED
+      2026-09-19 (9cd61a9).** Track-and-hold (follows while high,
+      holds the sample before the fall); "sometimes" (one draw per edge
+      per voice, time-major, consumed only when 0 < prob < 1 — prob 1
+      and prob 0 never touch the rng); glide = the slew's one-pole
+      premise, 0.99 at exactly `glide*sr` samples, 0 calls no filter.
+      A live flip to `track` under a held gate follows in the next
+      block. Seven reference renders bit-exact; 64 vs 512 exact in
+      both paths. 24 → 62 tests. Example `sample_hold_sometimes.json`
+      (banked; the glide sits BEFORE the quantizer, so each change is a
+      50 ms zip through the scale — ears on whether it wants to be
+      after). Follow-ons: `prob_cv` (needs a depth); a live `prob`
+      change mid-window keeps the old verdict (documented, harmless).
+- [x] **`clock` — `reset`, `run`, `bpm_cv` + `bpm_cv_depth` —
+      SHIPPED 2026-09-19 (03c69a3).** A reset IS a fresh clock from
+      that sample (edges 3000, 8512, 14024 = 3000 + the free-running
+      clock's own); a reset inside a pulse extends it; `run` low holds
+      with the phase untouched and a run rise is a reset (play on the
+      downbeat); a reset while held zeros the phase and waits.
+      `bpm_cv`: `bpm * 2^(depth * mean cv)`, exponent clipped to ±6
+      BEFORE the power (1e6 pins at x64, finite). 14 reference renders
+      bit-exact. Block size: bit-exact at 8 Hz; at an integer-period
+      tempo one edge sits a sample apart (62052 vs 62053) — pinned ±1,
+      documented. `tests/test_possibility_seq.py`'s `_render_clock` spy
+      took the new 4-arg signature. 8 → 26 tests. Example
+      `clock_transport.json` (banked): two bars on / one held, the
+      bar-line reset audible as an A-B-C-A figure, a drift at 0.03
+      dbl/unit breathing 117.0–118.9 BPM. Follow-ons: `swing` on the
+      clock itself; `run` as a toggle (tap-on / tap-off).
+- [x] **`organ` — `vibrato` (the scanner) — SHIPPED 2026-09-19
+      (27f6a9a).** off | v1 v2 v3 | c1 c2 c3; one ring per voice, one
+      integer-counted scanner phase for the console (bit-exact across
+      block splits); 6.87 Hz, 0.35 / 0.7 / 1.1 ms p-p sine; measured
+      V1 ±14, V2 ±27, V3 ±41 cents (hypothesis 13 / 26 / 40.6 — kept).
+      C = 0.5 (dry + scanned). Every switch crossfades on a 40 ms
+      integer ramp (largest step 0.98–1.0x the steady signal's own);
+      the fade to off ends at exactly 1.0 dry and drops the state. Off
+      allocates nothing; lone-8' pin survives; eight reference renders
+      bit-exact. 18 → 33 tests. Example `organ_scanner.json` (banked).
+      Follow-ons: the scanner's rounded-triangle sweep (a sine ships);
+      a scanner phase that persists across off → on.
+- [ ] **`organ` — FINDING: the partial phase accumulator drifts a
+      float32 ulp between 64 and 512 after ~0.55 s** (pre-existing; the
+      existing pin spans 4096 frames). An integer-count phase like the
+      scanner's would make it exact but changes the render bits —
+      spec-on-pick, with the reference-render recipe.
+- [x] **`tape` — `stop` gate, `stop_time` / `start_time` — SHIPPED
+      2026-09-19 (aedd1b9).** Speed 1 → 0 linear over `stop_time`
+      (Hilbert IF 329.9 / 219.8 / 109.9 Hz at 1/4 1/2 3/4 on 440), wet
+      level follows the speed (0.749 / 0.499 / 0.250) to exact silence,
+      spin-up on the fall, `_gate_ramp_env` counts, a mid-ramp release
+      re-articulates, no click. Lag = the running sum of the deficit,
+      reset at a restart that finds the head stationary, so after a
+      cycle the wet runs `start_time/2` behind the dry (11024.5 samples
+      after one, two, three cycles — bounded); a release before the
+      halt keeps the lag, clamped to the ring's `(stop_n + start_n)/2`.
+      Hiss scaled by speed too. Neutral + patched = bit-exact `src`
+      until the first stop; seven reference renders bit-exact; the
+      stop's own rows bit-exact 64 vs 512. 25 → 47 tests. Example
+      `tape_stop_drop.json` (banked). Follow-ons: is linear the right
+      coast, or slow-then-fast; save the transport across Stop?
+- [ ] **`tape` — FINDING: the shipped wow/flutter read (`absidx -
+      delay`) and the sat → bump chain are block-exact only to a
+      float32 ulp at rare samples** (4 in 4 s, gate unpatched) — the
+      ring index rounds at its magnitude. Fix = split whole + fraction
+      as the stop read does; moves the reference renders by <= 1 ulp,
+      so its own pass with fresh references. The chorus core likely
+      shares it.
+- [ ] **Recipe note:** agent worktrees branch from the last PUSHED
+      commit, not main's HEAD — push before a batch, or expect the
+      agents' suite counts to run low and an import-line conflict.
+
 ## The keep-list, continued (2026-09-19, night)
 
 - [x] **`vowel` — SHIPPED 2026-09-19, module #99.** Filters & EQ.
@@ -899,7 +992,12 @@ sampler examples need it).
 - [ ] `possibility_selector_kit.json` — whether x which drums + the harp. EYES: cells paint one hue per output (red / blue / green / purple), amber for `?` and subsets; right-click a cell opens FOUR checkboxes (never seen in a window yet).
 - [ ] `possibility_reroll_divider.json` — kick and snare hold a take for four bars then re-decide on bar 5; the hat re-deals every bar.
 
-*The love passes (ten):*
+*The love passes (fifteen):*
+- [ ] `noise_brown_surf.json` — brown noise as surf: does the 10 Hz leak read as waves, or does it want a `corner` knob? Switch `color` to violet (hiss) and set two seeds the same on a stereo pair. EYES: the four-item `color` combo + `seed` on the noise node; pluck's `color` slider unchanged.
+- [ ] `sample_hold_sometimes.json` — a random line that repeats notes (prob 0.6); the 50 ms glide is a zip through the scale — should it sit AFTER the quantizer instead? Flip `mode` to track with a long-pulse clock. EYES: the `mode` combo shows sample/track (not the filter's modes).
+- [ ] `clock_transport.json` — two bars on, one held, the A-B-C-A figure snapping to the bar line; is the ±2% breath gentle or a stumble (0.02 if so)? EYES: three new jacks on every clock node in 57 patches — panels still look right?
+- [ ] `organ_scanner.json` — the scanner on c3: is it a Hammond? Flip v1 / v3 / c1 live under a held chord — the 40 ms crossfade should be invisible. EYES: the `vibrato` combo.
+- [ ] `tape_stop_drop.json` — dive / halt / spin-up every 8 s. Is linear-in-speed the right coast, or does a slow-then-fast feel more like a deck? At `mix` 0.5 the doubling after a stop is the documented physics.
 - [ ] `lfo_retrigger.json` — every note opens at the top of its tremolo (unpatch `sequencer.gate -> lfo.reset` to hear it go back to drifting). EYES: drag the `phase` slider on a running LFO — it re-anchors live.
 - [ ] `filter_resonance_sweep.json` — the peak breathes on its own cycle whatever the cutoff does. EYES: `res_cv_depth` reads "dbl/unit" beside `cv_depth`'s "oct/unit".
 - [ ] `oscillator_pwm.json` — the PWM pad. No pumping at the width extremes (DC-compensated), no zipper under the faster LFO. EYES: `pulse_width` slider + `pw_cv_depth` on the oscillator panel.
