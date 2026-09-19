@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "next_id": 11,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "sixteenths",
+      "params": { "bpm": 112.0, "division": 4.0, "pulse_width": 0.5 }
+    },
+    {
+      "id": 2,
+      "type": "noise",
+      "name": "the dice",
+      "params": { "color": "white", "amp": 1.0 }
+    },
+    {
+      "id": 3,
+      "type": "cv_scale",
+      "name": "+-0.8 octaves of pitch",
+      "params": { "scale": 0.8 }
+    },
+    {
+      "id": 4,
+      "type": "sample_hold",
+      "name": "SOMETIMES - 3 ticks in 5 grab a new note, the rest hold; 50 ms zip between",
+      "params": { "mode": "sample", "prob": 0.6, "seed": 11, "glide": 0.05 }
+    },
+    {
+      "id": 5,
+      "type": "quantizer",
+      "name": "in tune - pentatonic minor",
+      "params": { "root": "C", "scale": "pentatonic minor", "hysteresis": 10.0, "transpose": -12.0 }
+    },
+    {
+      "id": 6,
+      "type": "oscillator",
+      "name": "voice",
+      "params": { "waveform": "saw_blep", "freq": 261.6256, "amp": 0.5 }
+    },
+    {
+      "id": 7,
+      "type": "adsr",
+      "name": "a pluck on every tick - held notes just re-articulate",
+      "params": { "attack": 0.005, "decay": 0.18, "sustain": 0.25, "release": 0.12 }
+    },
+    {
+      "id": 8,
+      "type": "vca",
+      "name": "vca",
+      "params": {}
+    },
+    {
+      "id": 9,
+      "type": "reverb",
+      "name": "a little room",
+      "params": { "size": 0.6, "decay": 0.5, "damping": 0.5, "mix": 0.25 }
+    },
+    {
+      "id": 10,
+      "type": "stereo_speaker_output",
+      "name": "out",
+      "params": {}
+    }
+  ],
+  "cables": [
+    { "src_module_id": 2, "src_port": "cv",    "dst_module_id": 3,  "dst_port": "in" },
+    { "src_module_id": 3, "src_port": "out",   "dst_module_id": 4,  "dst_port": "in" },
+    { "src_module_id": 1, "src_port": "out",   "dst_module_id": 4,  "dst_port": "trig" },
+    { "src_module_id": 4, "src_port": "out",   "dst_module_id": 5,  "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "out",   "dst_module_id": 6,  "dst_port": "freq_cv" },
+    { "src_module_id": 6, "src_port": "out",   "dst_module_id": 8,  "dst_port": "audio" },
+    { "src_module_id": 1, "src_port": "out",   "dst_module_id": 7,  "dst_port": "gate" },
+    { "src_module_id": 7, "src_port": "cv",    "dst_module_id": 8,  "dst_port": "cv" },
+    { "src_module_id": 8, "src_port": "out",   "dst_module_id": 9,  "dst_port": "in" },
+    { "src_module_id": 9, "src_port": "out_l", "dst_module_id": 10, "dst_port": "in_l" },
+    { "src_module_id": 9, "src_port": "out_r", "dst_module_id": 10, "dst_port": "in_r" }
+  ],
+  "ui": {
+    "node_positions": {
+      "2": [40, 40], "3": [320, 40], "4": [600, 40], "5": [960, 40], "6": [1240, 40],
+      "1": [40, 360], "7": [600, 360], "8": [1240, 360],
+      "9": [1520, 200], "10": [1800, 200]
+    }
+  }
+}

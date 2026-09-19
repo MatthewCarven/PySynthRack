@@ -79,6 +79,7 @@ from ..modules.wind import WIND_MODELS
 from ..modules.drift import DRIFT_MODES
 from ..modules.cv_recorder import CV_RECORDER_MODES
 from ..modules.vowel import VOWEL_VOICES
+from ..modules.samplehold import SAMPLE_HOLD_MODES
 from ..modules.compressor import DETECTOR_MODES
 from ..modules.distortion import DISTORTION_MODES
 from ..modules.meter import METER_MODES
@@ -3320,6 +3321,34 @@ class App:
                 )
                 return
 
+        if module.TYPE == "sample_hold":
+            # The S&H's love-pass knobs. ``mode`` hits the shared combo
+            # branch below (sample / track); ``prob`` is the chance an
+            # edge samples; ``seed`` its die; ``glide`` the output lag in
+            # seconds-to-99% (0 = a straight wire).
+            if param_name == "prob":
+                dpg.add_slider_float(
+                    label=f"{param_name} (chance an edge samples)",
+                    default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "seed":
+                dpg.add_drag_int(
+                    label=param_name, default_value=int(current), speed=1,
+                    min_value=0, max_value=999999,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "glide":
+                dpg.add_drag_float(
+                    label=f"{param_name} (lag, 0 = off)", default_value=float(current),
+                    speed=0.005, min_value=0.0, max_value=5.0, format="%.3f s",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "drift":
             # Smooth wandering random. ``rate`` is new values per second;
             # ``glide`` the fraction of each interval spent travelling (0 =
@@ -3615,6 +3644,8 @@ class App:
                 items = list(DRIFT_MODES)
             elif module.TYPE == "cv_recorder":
                 items = list(CV_RECORDER_MODES)
+            elif module.TYPE == "sample_hold":
+                items = list(SAMPLE_HOLD_MODES)
             else:
                 items = list(FILTER_MODES)
             dpg.add_combo(

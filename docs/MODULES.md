@@ -4298,11 +4298,66 @@ staircase. It discretises a signal in *time*: feed a wandering source
 for stepped/random melodies, or sample a slow modulator to stair-step
 it. The trigger is a `gate`, so `schmitt` (turn any LFO/CV into a
 clock), a keyboard/MIDI gate, or an ADSR gate all drive it. Unpatched
-`in` samples 0 (pure S&H — no internal noise; that's the Noise
-generator's job); unpatched `trig` holds the last value. No params.
-Shape-polymorphic: mono `(F,)` or per-voice `(V, F)` with per-voice held
-values, a mono partner broadcasting across the voice axis. See
-`examples/sample_hold_arp.json`.
+`in` samples 0 (pure S&H — no internal noise; that's the
+[`noise`](#noise) generator's job); unpatched `trig` holds the last
+value. Shape-polymorphic: mono `(F,)` or per-voice `(V, F)` with
+per-voice held values, a mono partner broadcasting across the voice
+axis. See `examples/sample_hold_arp.json`.
+
+**Love pass (2026-09-19) — three knobs, all off by default** (a patch
+saved before today renders bit-identically):
+
+*Track.* `mode` `track` is the *other* classic S&H, track-and-hold:
+while `trig` is **high** the output *follows* `in`, and on the falling
+edge it holds the last value it saw. The gate's width becomes part of
+the sound — a [`clock`](#clock) with `pulse_width` 0.5 into track mode
+rides the LFO for the first half of every step and freezes its tail for
+the second; a long gate from a keyboard lets a filter sweep through
+while the key is down and parks it on release. Same vectorised
+forward-fill as sample mode, keyed on the last *high* sample instead of
+the last *edge*.
+
+*Sometimes.* `prob` (0…1) is the chance that a rising edge actually
+samples; a losing edge is ignored and the old value keeps holding — a
+random melody that repeats notes, a clock that grabs a new filter
+setting only now and then. The die is `seed`'s private generator (the
+[`bernoulli_gate`](#bernoulli_gate) convention): one draw per edge, in
+time order, consumed **only when 0 < `prob` < 1** — at 1 there is
+nothing to decide and the rng is never touched, at 0 nothing ever
+samples. Changing `seed` re-rolls. Per voice, it is one die per edge
+*per voice* (a shared clock into a four-voice chord is four independent
+decisions — each note sometimes holds), drawn time-major and
+voice-minor within a sample so a block split never reorders them. In
+`track` mode the die is thrown at the window's rising edge and decides
+the **whole window**: a losing window is skipped and the output holds
+straight through it.
+
+*Glide.* `glide` (seconds) is a one-pole lag on the output — the
+[`slew`](#slew)'s premise (99% of a step in `glide` seconds) without the
+second module: portamento between held pitches, a stepped random turned
+into a smooth wander. One lag per voice, carried across blocks
+(block-size exact). In `track` mode it lags the followed signal too — it
+is a lag on `out`, whatever `out` came from. 0 is a straight wire: no
+filter runs, and turning it on later primes the lag to the value the
+output is already sitting on rather than swooping up from 0. See
+`examples/sample_hold_sometimes.json`.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | cv | The signal to sample (or follow, in `track`). Unpatched → 0. |
+| `trig` | in | gate | The clock: samples on each rising edge (`sample`), or follows while high and holds at the fall (`track`). Unpatched → holds the last value. |
+| `out` | out | cv | The held value, through `glide` if set. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `mode` | `sample` | sample / track | Grab at the rising edge and hold, or follow while high and hold at the fall. |
+| `prob` | `1.0` | 0 … 1 | Chance a rising edge samples (in `track`, that the window runs). 1 = every edge, no draws; 0 = never. |
+| `seed` | `1` | ≥ 0 | The die for `prob`; change it to re-roll. |
+| `glide` | `0.0` | 0 … 5 s | One-pole lag on the output, seconds to 99% of a step. 0 = none (no filter runs). |
 
 #### `slew`
 
@@ -5026,6 +5081,7 @@ loads in the app. Notable ones referenced above:
 - `filter_resonance_sweep.json` — the [`filter`](#filter)'s `resonance_cv`: a saw through a lowpass, a 0.5 Hz LFO on `cutoff_cv` and a 0.11 Hz triangle on `resonance_cv` (`res_cv_depth` 1.5, so the Q breathes between 0.7 and 5.7) — the peak sharpens and softens on its own nine-second cycle, whatever the cutoff is doing.
 - `organ_leslie.json` — the pairing: a self-playing maj7 organ through the [`rotary`](#rotary), a 5 BPM clock on `fast` flipping the Leslie between chorale and tremolo every six seconds so the horn and drum chase each other.
 - `krell_feedback.json` — the real krell self-patch: the [`function_generator`](#function_generator) in `trigger` mode with its own `eoc` OR'd (through [`logic`](#logic)) with a 12-second starter pulse back into `trig`. The loop closes one block late — the feedback door, generalized 2026-09-16. Same dice, quantizer and voice as `krell_machine.json`, which runs the no-latency `loop` mode version.
+- `sample_hold_sometimes.json` — the "sometimes" S&H: [`noise`](#noise) `cv` into a [`sample_hold`](#sample_hold) with `prob` 0.6 (`seed` 11) and `glide` 0.05, clocked at sixteenths, through a [`quantizer`](#quantizer) (pentatonic minor) into a saw voice with an [`adsr`](#adsr) on every tick — a random melody that repeats notes about two ticks in five, and because the glide sits *before* the quantizer every change is a 50 ms zip up or down the scale into the new note, a little [`reverb`](#reverb) behind it. Change the seed for a different set of repeats.
 - `fg_eor_swell_strike.json` — what `eor` is for: a slow [`function_generator`](#function_generator) (1.2 s up, 1.8 s down, cycling through the krell loop with a wandering `rate_cv`) swells a low saw through a filter and VCA, and at the **top** of every swell its `eor` fires a [`pluck`](#pluck) whose pitch a [`sample_hold`](#sample_hold) grabbed at that same instant — swell, then strike.
 - `granular_cloud.json` — a shift-register pluck melody into the [`granular`](#granular) at `pitch` +12, `density` 30, `size` 120 ms, `position` 0.15: every pluck gets an octave-up grain cloud trailing 300 ms behind it, through a hall.
 - `granular_haze.json` — the cloud proper: a pluck melody into the [`granular`](#granular) with `spray_time` 1 (asynchronous), `spray_pos` 0.22, `spray_pitch` 25 ct and `width` 1 — every note dissolves into a stereo haze a quarter-second behind itself; `seed` picks the cloud.

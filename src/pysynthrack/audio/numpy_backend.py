@@ -8202,33 +8202,194 @@ class NumpyBackend(AudioBackend):
         Conventions: an unpatched ``in`` is treated as 0 (pure S&H, no
         internal noise). An unpatched ``trig`` produces no edges, so the
         output simply holds its last value (0 at startup).
+
+        Love pass (2026-09-19), every knob OFF at its default so the
+        shipped render is untouched bit for bit:
+
+          * ``mode`` ``track``: track-and-hold -- the output FOLLOWS
+            ``in`` while the gate is high and holds the last value it
+            saw at the fall. The same forward-fill, keyed on the last
+            HIGH sample instead of the last rising edge.
+          * ``prob`` / ``seed``: a rising edge samples only if a private
+            seeded die (``np.random.default_rng(seed)`` in state, the
+            bernoulli convention) says so -- one draw per edge, in time
+            order, consumed ONLY when 0 < prob < 1 so prob 1 is
+            literally today's code (rng untouched) and prob 0 never
+            samples. The voice path throws one die per edge PER VOICE,
+            time-major / voice-minor within a sample, so a block split
+            never reorders the draws. In ``track`` mode the die is
+            thrown at the window's rising edge and decides the whole
+            window (a losing window keeps holding straight through).
+          * ``glide``: a one-pole lag on the output (the slew's
+            time-to-99% premise, :data:`_LN100`), run as a single
+            ``lfilter`` with the running value carried as ``zi`` per
+            voice -- bit-exact across block sizes. ``glide`` 0 runs no
+            filter at all (and drops the lag state, so re-enabling it
+            primes to the current held value instead of swooping from
+            0). In ``track`` mode the lag sits on the followed signal
+            too: it lags ``out``, whatever ``out`` came from.
         """
         in_buf = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
         trig_buf = self._input_buffer(patch, buffers, module.id, "trig", collapse=False)
+
+        mode = str(module.params.get("mode", "sample"))
+        if mode not in ("sample", "track"):
+            mode = "sample"
+        try:
+            prob = float(module.params.get("prob", 1.0))
+        except (TypeError, ValueError):
+            prob = 1.0
+        prob = min(1.0, max(0.0, prob))
+        try:
+            seed = int(module.params.get("seed", 1))
+        except (TypeError, ValueError):
+            seed = 1
+        seed = max(0, seed)
+        try:
+            glide = float(module.params.get("glide", 0.0))
+        except (TypeError, ValueError):
+            glide = 0.0
+        # None = no lag at all (the shipped path); else the one-pole
+        # coefficient whose step reaches 99% in ``glide`` seconds.
+        a_glide = (
+            None if glide <= 0.0
+            else float(np.exp(-self._LN100 / (glide * self.sample_rate)))
+        )
 
         # Voice dimension is set by whichever input carries the voice axis.
         v_in = in_buf.shape[0] if (in_buf is not None and in_buf.ndim == 2) else None
         v_trig = trig_buf.shape[0] if (trig_buf is not None and trig_buf.ndim == 2) else None
 
         if v_in is None and v_trig is None:
-            return self._render_sample_hold_mono(module, frames, in_buf, trig_buf)
+            return self._render_sample_hold_mono(
+                module, frames, in_buf, trig_buf, mode, prob, seed, a_glide
+            )
         V = v_in if v_in is not None else v_trig
-        return self._render_sample_hold_voice(module, frames, in_buf, trig_buf, V)
+        return self._render_sample_hold_voice(
+            module, frames, in_buf, trig_buf, V, mode, prob, seed, a_glide
+        )
 
-    def _render_sample_hold_mono(self, module, frames, in_buf, trig_buf) -> np.ndarray:
-        """Mono path -- scalar held value + held-gate carried across blocks."""
+    @staticmethod
+    def _sample_hold_rng(state, seed):
+        """The module's private die, (re)seeded when ``seed`` changes.
+
+        Lives in the per-module state so a mono<->voice reshape (which
+        clears the state) re-seeds too -- a reshape is a re-patch.
+        """
+        if state.get("seed") != seed:
+            state["seed"] = seed
+            state["rng"] = np.random.default_rng(seed)
+        return state["rng"]
+
+    @staticmethod
+    def _sample_hold_edge_keep(rising, prob, rng):
+        """Which raw rising edges win their ``prob`` draw.
+
+        Returns a bool array shaped like ``rising`` that is True at the
+        edges that sample. The die is thrown ONLY when 0 < prob < 1 --
+        prob 1 keeps every edge with the rng untouched (the default
+        must be bit-exact with the pre-love-pass render), prob 0 keeps
+        none. One draw per edge; a 2-D ``rising`` (V, F) is walked
+        time-major, voice-minor (``np.nonzero`` on the transpose), so
+        the draw sequence is a function of the edge history alone and
+        a block split cannot reorder it. ``rng.random(n)`` yields the
+        same doubles as n scalar ``rng.random()`` calls, so the
+        vectorised throw is the per-edge throw.
+        """
+        if prob >= 1.0:
+            return rising
+        if prob <= 0.0:
+            return np.zeros_like(rising)
+        keep = np.zeros_like(rising)
+        if rising.ndim == 1:
+            pos = np.flatnonzero(rising)
+            if pos.size:
+                keep[pos] = rng.random(pos.size) < prob
+        else:
+            ns, vs = np.nonzero(rising.T)          # sorted by n, then v
+            if ns.size:
+                keep[vs, ns] = rng.random(ns.size) < prob
+        return keep
+
+    @staticmethod
+    def _sample_hold_windows(g, rising, keep, carry, axis):
+        """Track mode: the samples that are inside a WINNING gate window.
+
+        A window is a run of high samples starting at a raw rising
+        edge; it is active iff that edge won its draw. ``carry`` is the
+        active flag of the window still open at the block start (per
+        voice for the 2-D case) -- a window that started in an earlier
+        block keeps its verdict. Forward-fill of the verdict over edge
+        positions, the module's usual trick.
+        """
+        n = g.shape[-1]
+        ar = np.arange(n) if axis == 0 else np.arange(n)[None, :]
+        evt = np.where(rising, ar, -1)
+        last = np.maximum.accumulate(evt, axis=axis)
+        if axis == 0:
+            verdict = np.where(last >= 0, keep[np.maximum(last, 0)], carry)
+        else:
+            verdict = np.where(
+                last >= 0, np.take_along_axis(keep, np.maximum(last, 0), axis=1),
+                carry[:, None],
+            )
+        return g & verdict
+
+    @staticmethod
+    def _sample_hold_lag(state, out, a, prime):
+        """``glide``: one-pole lag on the S&H output, per voice.
+
+        ``a`` None means glide is 0: return ``out`` untouched (no filter
+        runs -- the shipped path) and drop the lag state, so the next
+        time glide is turned on the lag PRIMES to the value the output
+        is sitting on (``prime``: the held value(s) from before this
+        block) rather than swooping up from 0. Otherwise one
+        ``lfilter`` over the block with ``zi = a * y[-1]``, which
+        reproduces the scalar recurrence's first sample exactly (the
+        slew's idiom), so a 64-block and a 512-block render agree bit
+        for bit. The running value, not zf, is carried: a live glide
+        change alters ``a`` and the right zi is then ``a_new * y[-1]``.
+        """
+        if a is None:
+            state.pop("lag", None)
+            return out
+        prime = np.asarray(prime, dtype=np.float64)
+        lag = state.get("lag")
+        if lag is None or np.shape(lag) != prime.shape:
+            lag = prime.copy()
+        x = out.astype(np.float64)
+        if x.ndim == 1:
+            y, _zf = lfilter([1.0 - a], [1.0, -a], x, zi=[a * float(lag)])
+            state["lag"] = np.float64(y[-1])
+        else:
+            y, _zf = lfilter([1.0 - a], [1.0, -a], x, axis=-1, zi=(a * lag)[:, None])
+            state["lag"] = y[:, -1].copy()
+        return y.astype(np.float32)
+
+    def _render_sample_hold_mono(
+        self, module, frames, in_buf, trig_buf, mode, prob, seed, a_glide
+    ) -> np.ndarray:
+        """Mono path -- scalar held value + held-gate carried across blocks.
+
+        ``track`` mode swaps the edge mask for the (winning-window) high
+        mask in the same forward-fill; ``prob`` thins the edges first;
+        ``glide`` lags whatever comes out. Every return path goes
+        through the lag so an unpatched clock still lets a glide finish.
+        """
         state = self._state.setdefault(module.id, {"held": 0.0, "prev_gate": False})
         # Drop voice-shaped state if it leaked from a previous voice call.
         if "held_arr" in state:
             state.clear()
             state["held"] = 0.0
             state["prev_gate"] = False
+        rng = self._sample_hold_rng(state, seed)
 
         held = float(state["held"])
 
         if trig_buf is None:
             # No clock -> no edges -> hold the last value across the block.
-            return np.full(frames, held, dtype=np.float32)
+            out = np.full(frames, held, dtype=np.float32)
+            return self._sample_hold_lag(state, out, a_glide, held)
 
         in_arr = (
             np.zeros(frames, dtype=np.float32)
@@ -8241,21 +8402,42 @@ class NumpyBackend(AudioBackend):
         g_prev[0] = bool(state["prev_gate"])
         g_prev[1:] = g[:-1]
         rising = g & ~g_prev                           # (F,) bool
+        keep = self._sample_hold_edge_keep(rising, prob, rng)
 
-        idx = np.where(rising, np.arange(frames), -1)
+        if mode == "track":
+            # Follow while inside a winning window; the fill below then
+            # holds the last followed sample through the low stretches.
+            # At prob 1 every window wins, so a window already open at
+            # the block start (a live flip to track under a held gate)
+            # is simply "the gate was high".
+            carry = (
+                bool(state["prev_gate"]) if prob >= 1.0
+                else bool(state.get("track_on", False))
+            )
+            active = self._sample_hold_windows(g, rising, keep, carry, axis=0)
+            state["track_on"] = bool(active[-1])
+            key = active
+        else:
+            key = keep
+
+        idx = np.where(key, np.arange(frames), -1)
         last = np.maximum.accumulate(idx)              # (F,) most-recent edge, -1 before any
         sampled = np.where(last >= 0, in_arr[np.maximum(last, 0)], held)
 
         state["held"] = float(sampled[-1])
         state["prev_gate"] = bool(g[-1])
-        return sampled.astype(np.float32)
+        return self._sample_hold_lag(state, sampled.astype(np.float32), a_glide, held)
 
-    def _render_sample_hold_voice(self, module, frames, in_buf, trig_buf, V) -> np.ndarray:
+    def _render_sample_hold_voice(
+        self, module, frames, in_buf, trig_buf, V, mode, prob, seed, a_glide
+    ) -> np.ndarray:
         """Voice path -- per-voice held values + per-voice held-gate.
 
         A mono input is broadcast across the V voice rows so a shared
         clock can sample per-voice sources, or per-voice clocks can
-        sample one shared source.
+        sample one shared source. The love-pass knobs are all per voice:
+        one ``prob`` die per edge per voice (time-major order), one
+        ``track`` window verdict per voice, one ``glide`` lag per voice.
         """
         state = self._state.setdefault(module.id, {})
         needs_reinit = (
@@ -8265,13 +8447,17 @@ class NumpyBackend(AudioBackend):
             state.clear()
             state["held_arr"] = np.zeros(V, dtype=np.float64)
             state["gate_arr"] = np.zeros(V, dtype=bool)
+            state["track_arr"] = np.zeros(V, dtype=bool)
+        rng = self._sample_hold_rng(state, seed)
 
         held_arr = state["held_arr"]                   # (V,)
+        prime = held_arr.copy()                        # the lag's seat if it has none
 
         if trig_buf is None:
-            return np.broadcast_to(
+            out = np.broadcast_to(
                 held_arr[:, None].astype(np.float32), (V, frames)
             ).copy()
+            return self._sample_hold_lag(state, out, a_glide, prime)
 
         if trig_buf.ndim == 1:
             trig_2d = np.broadcast_to(trig_buf, (V, frames))
@@ -8289,15 +8475,24 @@ class NumpyBackend(AudioBackend):
         prev_col = state["gate_arr"][:, None]          # (V, 1)
         g_prev = np.concatenate([prev_col, g[:, :-1]], axis=1)
         rising = g & ~g_prev                           # (V, F)
+        keep = self._sample_hold_edge_keep(rising, prob, rng)
 
-        idx = np.where(rising, np.arange(frames)[None, :], -1)
+        if mode == "track":
+            carry = state["gate_arr"] if prob >= 1.0 else state["track_arr"]
+            active = self._sample_hold_windows(g, rising, keep, carry, axis=1)
+            state["track_arr"] = active[:, -1].copy()
+            key = active
+        else:
+            key = keep
+
+        idx = np.where(key, np.arange(frames)[None, :], -1)
         last = np.maximum.accumulate(idx, axis=1)      # (V, F)
         sampled_vals = np.take_along_axis(in_2d, np.maximum(last, 0), axis=1)
         out = np.where(last >= 0, sampled_vals, held_arr[:, None])
 
         state["held_arr"] = out[:, -1].copy()
         state["gate_arr"] = g[:, -1].copy()
-        return out.astype(np.float32)
+        return self._sample_hold_lag(state, out.astype(np.float32), a_glide, prime)
 
     # ----- Crossover rendering --------------------------------------------
 
