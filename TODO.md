@@ -739,6 +739,121 @@ same session.
       anyone is playing). Decide whether that asymmetry should be
       documented as-is or changed; do not change it silently.
 
+## Ten follow-ons in parallel (2026-09-20, the fourth batch)
+
+Matthew: "Pick another 10 or items from the todo for existing modules
+and lets run a few together" — pushed first, so the worktrees branched
+from HEAD. Ten agents at once, cherry-picked in landing order (three
+conflicts: two helpers at one anchor, adjacent index rows, appendix
+bullets — both kept). Suite **4245 → 4536**, 156 examples. Ears/eyes
+items are in the listening checklist below.
+
+- [x] **`vowel` — `formant` + `formant_cv` — SHIPPED 2026-09-20
+      (8f3bdc5).** Constant-Q shift (bw scales with F). A's peak 342 /
+      661 / 1338 Hz at −12 / 0 / +12; Q 8.06 → 8.18 on the impulse
+      response while the −3 dB bandwidth doubles 31 → 61 Hz; cv +1 ==
+      knob +12 bit-exact; exponent clipped ±4; eight reference renders
+      bit-exact. 22 → 34 tests. Example `vowel_giant_child.json`.
+- [ ] **`vowel` — FINDING: `vowel_cv`'s block mean is float32-
+      accumulated**, so a constant non-dyadic CV differs by an ulp
+      between block sizes (0.29999998 over 64, 0.30000001 over 512).
+      `formant_cv` averages in float64; fixing `vowel_cv` the same way
+      moves the LFO-patched reference renders — its own recipe pass.
+      Probably true of every `float(np.mean(cv))` on a float32 buffer
+      in the rack: a sweep candidate.
+- [x] **`pluck` — `vel_color` — SHIPPED 2026-09-20 (e7eb4b5).**
+      `clamp(color + vel_color·(vel − 1), 0, 1)` at the edge, per voice;
+      anchored at vel 1.0 so the knob is inert without a velocity
+      source (bit-exact pin). Centroid 3540 vs 5782 Hz (vel 0.3 vs 1.0,
+      `vel_color` 1); the loop untouched (t60 0.5108 s both, damping
+      0). 25 reference renders bit-exact. 34 → 45 tests. Example
+      `pluck_velocity_color.json`. Follow-on idea: `vel_position`.
+- [x] **`lfo` — `seed` — SHIPPED 2026-09-20 (9b440f1).** 0 = the global
+      rng (today); N = a private generator consumed only at a wrap or a
+      reset edge; **a reset re-seeds it** (the same random phrase every
+      bar). Per-voice copies of one generator (a shared stream drawn
+      voice-major is block-size dependent); `rate_cv` exponent clipped.
+      19 reference renders bit-exact; an integer-period rate can put a
+      wrap a sample apart between block sizes (the float phase, every
+      waveform's trait — pinned ±1). 37 → 54 tests. Example
+      `lfo_random_replay.json`. Note: a `phase` knob move counts as a
+      reset and so re-seeds — decide whether that is wanted.
+- [x] **`sample_hold` — `prob_cv` + `prob_cv_depth` — SHIPPED 2026-09-20
+      (650f4e5).** The chance read at the edge's own sample; `prob` 0.5
+      + cv 0.5 == `prob` 1.0 draw for draw; a `(V, F)` cv promotes the
+      module to the voice path; 1e6 → 1, NaN → 0. Seven reference
+      renders bit-exact. 62 → 89 tests. Example
+      `sample_hold_prob_sweep.json` (a BIPOLAR LFO on prob_cv — a
+      unipolar one never reaches "stuck"). Test lesson: a prefix match
+      on a param name is not a match on the widget.
+- [x] **`clock` — `swing` — SHIPPED 2026-09-20 (85c3eef).** The
+      divider's convention (fraction of the period, the pulse keeps its
+      width); parity carried in state, zeroed on every restart edge;
+      odd pulses cut a sample before the next downbeat (the ceiling);
+      backend clamp 0.75 = the divider's, slider 0..0.5. 8 Hz / 0.33:
+      odd edges exactly 1819 late, even pulses bit-identical; 18
+      reference renders bit-exact. 26 → 39 tests. Example
+      `clock_swing.json` (the `div4` kick sits on even pulses only,
+      pinned; the divider's gate LENGTHS wobble on a swung input —
+      documented, triggers only). Follow-ons: `swing_cv`; the divider's
+      gate-length wobble.
+- [x] **CV-overflow audit — SHIPPED 2026-09-20 (a1b2530).**
+      `_pow2_clipped` (±64, NaN → 0) beside `_gate_ramp_env`; 23 call
+      sites routed (filter cutoff ×4, crossover, sweep_eq, motion_eq
+      freq + Q, chorus/flanger/phaser/drift rate, bitcrusher rate,
+      bowed/wind/organ/modal pitch, function_generator, slew,
+      pitch_shifter) + the sampler's pure-Python `playback_rate`
+      (`OCT_EXP_LIMIT`). Three "already clamped" paths read NaN as a
+      rail (Python `min`/`max` don't propagate NaN). 46 reference
+      renders bit-exact. `tests/test_cv_overflow.py`, 108 tests.
+- [ ] **NaN scrub for the LINEAR block-mean paths** — `bitcrusher.
+      bits_cv` does `int(round(bits))` and raises ValueError on a NaN
+      mean; motion_eq `gain_cv` and supersaw `detune_cv` clamps pass
+      NaN through the same `min`/`max` wart; `_q_cv_ratio` clips but
+      doesn't scrub. One `_finite_mean(cv)` helper and a sweep — the
+      same shape as the power fix (and the float64-mean finding above
+      could ride along).
+- [x] **`sequencer` (+ `fader_seq`) — `reverse` gate — SHIPPED
+      2026-09-20 (d1c13a6).** Read on the clock-edge sample, a per-edge
+      flag into `next_step_index(..., reverse=)`; pendulum heading kept
+      in the base frame; random untouched (same draw); reset unchanged,
+      the next edge moves in the effective direction (a reset with the
+      gate high lands on the reversed start — the mirror). 24 reference
+      renders bit-exact; the step SEQUENCE pinned 64 vs 512. 41 → 64
+      (+8 → 9 fader_seq) tests. Example `sequencer_reverse_bars.json`
+      (a palindrome). Docs note: a reverse source whose edges land ON
+      the clock's is a race between two float phases.
+- [x] **`reverb` + `delay` — `freeze` tickbox — SHIPPED 2026-09-20
+      (5a094f8, 30b8bb4).** `_freeze_gate_row`: cable OR tick, None when
+      neither is live (the pre-freeze code by construction). Ticking at
+      block k == a cable rising there, bit-exact, both delay paths. 33
+      reference renders bit-exact. 75 → 82 tests. No example (a panel
+      convenience).
+- [x] **`freeze` — `width` + `decay` — SHIPPED 2026-09-20 (ce8ca65).**
+      `out_l`/`out_r`; a deterministic QUADRATURE phase scatter per
+      peak region (the spec's random per-bin scatter moved partials up
+      to 16 dB — measured and rejected): corr(L, R) = cos(width·π/2),
+      every partial at the mono's level, the fold −3.01 dB; `out` the
+      untouched mono; `decay` = 10^(−3t/decay) from the integer count,
+      rebased on a knob turn, dropped at −90 dB. Bit-exact at default;
+      64 == 512 == 1000 with both live. 35 → 49 tests. Example
+      `freeze_wide_wash.json` (`size` 16384). Follow-ons: `width_cv`; a
+      seed-keyed which-partial-goes-left variant.
+- [x] **`cv_recorder` — `play`, `reverse`, `speed` — SHIPPED
+      2026-09-20 (69f3c4e).** The head is an integer in half-samples
+      (0.5x / 1x / 2x = 1 / 2 / 4 steps; reverse = the sign) — bit-exact
+      at every speed, 50 vs 250 with gate edges on odd samples; a
+      stopped head writes nothing; a sync tick snaps a stopped head to
+      0; record at 1x, play at any; a reversed take comes back
+      time-reversed. A pure-Python old-engine reference carries the
+      bit-exact pin. `speed` shares a name with the transient shaper's
+      shared combo branch (the `mode` shadowing shape) — the recorder's
+      combo sits in its TYPE block. 18 → 44 tests. Example
+      `cv_recorder_backwards.json` (`replace`; the loop is created on
+      the clock's SECOND tick, so the dividers are reset inside the
+      take). Follow-ons: a `speed` gate/CV; `play` as a one-shot;
+      save-in-patch (still the honest gap).
+
 ## The hundredth module (2026-09-20)
 
 - [x] **`freeze` — SHIPPED 2026-09-20, module #100.** Effects. Matthew:
@@ -1020,7 +1135,16 @@ sampler examples need it).
 - [ ] `possibility_selector_kit.json` — whether x which drums + the harp. EYES: cells paint one hue per output (red / blue / green / purple), amber for `?` and subsets; right-click a cell opens FOUR checkboxes (never seen in a window yet).
 - [ ] `possibility_reroll_divider.json` — kick and snare hold a take for four bars then re-decide on bar 5; the hat re-deals every bar.
 
-*The love passes (fifteen):*
+*The love passes (twenty-three):*
+- [ ] `vowel_giant_child.json` — giant → child over 25 s while the mouth talks; does constant-Q read as "the same vowel, a different throat"? EYES: the `formant` drag + `formant_cv_depth` in the vowel block.
+- [ ] `pluck_velocity_color.json` — the accents ring bright, the soft picks thud; A/B by flipping `vel_color` 0.8 → 0. Then `midi_input.velocity_cv -> pluck.vel` live.
+- [ ] `lfo_random_replay.json` — the same 12-step random wah every 2 s bar: does the written-down accident read musically? EYES: `seed` on the lfo node.
+- [ ] `sample_hold_prob_sweep.json` — the melody frees up around 5 s and gets stuck around 15 s, every 20 s. EYES: the `prob_cv_depth` drag and the new jack.
+- [ ] `clock_swing.json` — a 0.3 shuffle on the hats against a dead-straight `div4` kick; does it swing? EYES: the `swing (0.33 = triplet)` slider.
+- [ ] `sequencer_reverse_bars.json` — the palindrome: bar 1 up, bar 2 its mirror. Try `direction` pendulum on it (the gate turns it around at the bar lines). EYES: the third jack on both sequencer panels.
+- [ ] `freeze_wide_wash.json` — each phrase blooms into a wide wash that dies in six seconds; `width` 0 vs 0.8 on the chord pad — wide, or just louder? EYES: the two new jacks, `width`, `decay (0 = forever)`.
+- [ ] `cv_recorder_backwards.json` — the wobble freezes on each downbeat, alternate bars run backwards; flip `speed` to `2x` and `0.5x` live. EYES: `reverse (or gate)` + `speed (play; rec is 1x)`; a live checkbox flip mid-loop turns the loop around with no jump.
+- [ ] EYES only: the `freeze (or gate)` tickbox on the reverb and delay panels — tick with nothing patched, the pad / stutter hangs; untick, it releases.
 - [ ] `noise_brown_surf.json` — brown noise as surf: does the 10 Hz leak read as waves, or does it want a `corner` knob? Switch `color` to violet (hiss) and set two seeds the same on a stereo pair. EYES: the four-item `color` combo + `seed` on the noise node; pluck's `color` slider unchanged.
 - [ ] `sample_hold_sometimes.json` — a random line that repeats notes (prob 0.6); the 50 ms glide is a zip through the scale — should it sit AFTER the quantizer instead? Flip `mode` to track with a long-pulse clock. EYES: the `mode` combo shows sample/track (not the filter's modes).
 - [ ] `clock_transport.json` — two bars on, one held, the A-B-C-A figure snapping to the bar line; is the ±2% breath gentle or a stumble (0.02 if so)? EYES: three new jacks on every clock node in 57 patches — panels still look right?

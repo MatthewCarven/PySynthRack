@@ -128,8 +128,13 @@ already three light before slice 2 added one -- count with
 >
 > 2026-09-20: **`freeze`, module #100** — the spectral freeze, phase-
 > locked so the hold is stationary; `freeze_chord_pad.json` (banked).
-> Suite **4245**, 148 examples, **100 modules**. Keep-list left:
-> autopan, midi_output, subpatch containers, snapshot morph.
+> Suite **4245**, 148 examples, **100 modules**. Then **ten follow-ons
+> in parallel** (vowel formant, pluck vel_color, lfo seed, sample_hold
+> prob_cv, clock swing, the CV-overflow audit, sequencer reverse,
+> reverb/delay freeze tickboxes, freeze width+decay, cv_recorder
+> transport) — eight examples banked. Suite **4536**, 156 examples.
+> Keep-list left: autopan, midi_output, subpatch containers, snapshot
+> morph.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -179,6 +184,97 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-20 — ten follow-ons in parallel (the fourth batch)
+
+Matthew: "Pick another 10 or items from the todo for existing modules
+and lets run a few together ok please Claude?" — and he pushed first,
+so this batch's worktrees branched from main's HEAD (d557ea7) and the
+import-line conflict of batch 3 never happened. Ten agents at once,
+picked from the follow-on lists: nine love passes and one cross-cutting
+fix. All ten landed; cherry-picked in landing order; three conflicts
+(two new helpers inserted at the same spot beside `_gate_ramp_env`,
+adjacent index rows, appendix bullets — both kept each time). Full
+suite on the merged main: **4536 passed**, 156 examples. Eight
+examples banked. ~30 min wall-clock, ~2M tokens.
+
+**What landed** (each with tests, docs, reference renders bit-exact at
+the default):
+
+* **vowel `formant` + `formant_cv`** (8f3bdc5) — the child/giant knob,
+  constant-Q (bandwidths scale with the frequencies: "the same vowel, a
+  different throat"). A's peak 342 / 661 / 1338 Hz at −12 / 0 / +12;
+  Q 8.06 → 8.18 while the bandwidth doubles. **Finding:** `np.mean` of
+  a float32 buffer accumulates in float32, so a CONSTANT cv of 0.3
+  differs by an ulp between 64 and 512 samples; the new path averages
+  in float64; `vowel_cv`'s own mean is a follow-on (it moves renders).
+* **pluck `vel_color`** (e7eb4b5) — soft hits duller: `color +
+  vel_color·(vel − 1)`, anchored at vel 1 so the knob is inert without a
+  velocity source. Centroid 3540 vs 5782 Hz at vel 0.3 vs 1.0. The
+  agent sabotaged its own branch: 9 of 11 new tests bite.
+* **lfo `seed`** (9b440f1) — a seeded `random` that a `reset` replays
+  (the sequencer's precedent): the same random wah every bar. Per-voice
+  COPIES of one generator, because a shared stream drawn voice-major
+  is block-size dependent. 19 reference renders bit-exact.
+* **sample_hold `prob_cv`** (650f4e5) — the chance read AT THE EDGE'S
+  OWN SAMPLE, not a block mean (a block mean would make the verdict
+  depend on where the buffer boundaries fall); `prob` 0.5 + cv 0.5 IS
+  `prob` 1.0 draw for draw. Lesson: a prefix match on a param name is
+  not a match on the widget (`prob` matched `prob_cv_depth` first).
+* **clock `swing`** (85c3eef) — every second pulse late by `swing` of
+  the CURRENT period (so `bpm_cv` swings with the tempo for free);
+  even pulses bit-identical to the straight clock; a late pulse is cut
+  a sample before the next downbeat, never swallowing it. 8 Hz / 0.33:
+  odd edges exactly 1819 late. The divider's `/4` sits on even pulses
+  only. 18 reference renders bit-exact.
+* **the CV-overflow audit** (a1b2530) — `_pow2_clipped` beside
+  `_gate_ramp_env`, 23 call sites (filter cutoff ×4, crossover,
+  sweep_eq, motion_eq, chorus/flanger/phaser/drift rate, bitcrusher,
+  bowed/wind/organ/modal pitch, and the sampler's pure-Python
+  `playback_rate`, which really did raise at 1e6). **Finding:** three
+  "already clamped" paths read NaN as a RAIL — Python's `min`/`max`
+  don't propagate NaN, they hand back whichever bound sits first
+  (function_generator read −5 oct, pitch_shifter +36 st) — scrub before
+  you clamp. 46 reference renders bit-exact; 108 tests, self-tested by
+  swapping the bare power back (15 of 19 raise).
+* **sequencer `reverse` gate** (d1c13a6) — a per-edge flip, not a mode;
+  the pendulum's heading stays in the base frame (XOR the gate in and
+  out) so dropping the gate turns it around rather than leaping; random
+  untouched (same draw). `fader_seq` got the jack by hand and now pins
+  its full port list. 24 reference renders bit-exact. Lesson: two
+  float-phase clocks at related tempos race at coincident edges — the
+  example's reverse gate is an LFO square through a schmitt, offset
+  half an eighth before the bar line.
+* **reverb + delay `freeze` tickbox** (5a094f8, 30b8bb4) — one
+  `_freeze_gate_row` helper: cable OR tick, and None when neither is
+  live so the pre-freeze code runs by construction. Ticking at block k
+  is bit-for-bit a cable rising there. 33 reference renders bit-exact.
+* **freeze `width` + `decay`** (ce8ca65) — the hundredth's first love
+  pass, and a spec corrected by measurement: my random per-bin phase
+  scatter moves partials up to 16 dB (a lobe spans four bins — that is
+  what `smear` does). The agent shipped a deterministic QUADRATURE
+  scatter per peak region: corr(L, R) = cos(width·π/2) exactly (0.924 /
+  0.707 / 0.383 / 0.000 at 0.25 / 0.5 / 0.75 / 1), every partial at the
+  mono's level, the mono fold a fixed −3.01 dB. `decay` = 10^(−3t/decay)
+  from the integer count since birth, dropped at −90 dB; the "−60 dB at
+  2 s vs 0.2 s" hunch was −54 (0.2 s in, the layer is already 6 dB
+  down) — pin the law against the forever render.
+* **cv_recorder `play`, `reverse`, `speed`** (69f3c4e) — the head is
+  now an integer in HALF-samples (0.5x / 1x / 2x = 1 / 2 / 4 steps,
+  reverse = the sign), so every speed is bit-exact across block sizes;
+  a stopped head writes nothing; record at 1x, play at any; a reversed
+  take comes back time-reversed once released. A pure-Python
+  old-engine reference carries the bit-exact pin. Lesson: the loop is
+  created on the clock's SECOND tick, so a divider counting from tick 0
+  is a sixteenth off forever — reset the dividers inside the take.
+
+**Eight examples banked:** `vowel_giant_child`, `pluck_velocity_color`,
+`lfo_random_replay`, `sample_hold_prob_sweep`, `clock_swing`,
+`sequencer_reverse_bars`, `freeze_wide_wash`, `cv_recorder_backwards`.
+Twenty-five love passes in twenty-four hours. Suite **4536**, 156
+examples, 100 modules.
 
 ---
 
