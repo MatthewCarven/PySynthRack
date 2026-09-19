@@ -102,6 +102,7 @@ from .transient_shaper import TransientShaper
 from .vca import VCA
 from .vinyl import Vinyl
 from .vocoder import Vocoder
+from .vowel import Vowel
 
 __all__ = [
     "ADEnvelope",
@@ -198,6 +199,7 @@ __all__ = [
     "VCA",
     "Vinyl",
     "Vocoder",
+    "Vowel",
     "WarpingBufferedSpeakerOutput",
     "Waveshaper",
     "Wind",

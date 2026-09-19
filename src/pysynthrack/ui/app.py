@@ -78,6 +78,7 @@ from ..modules.wavetable_morph import WT_STACKS
 from ..modules.wind import WIND_MODELS
 from ..modules.drift import DRIFT_MODES
 from ..modules.cv_recorder import CV_RECORDER_MODES
+from ..modules.vowel import VOWEL_VOICES
 from ..modules.compressor import DETECTOR_MODES
 from ..modules.distortion import DISTORTION_MODES
 from ..modules.meter import METER_MODES
@@ -3246,6 +3247,48 @@ class App:
                 dpg.add_slider_float(
                     label=labels[param_name], default_value=float(current),
                     min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "vowel":
+            # Formant filter. ``vowel`` slides A > E > I > O > U (0..4);
+            # ``voice`` picks the formant table; ``resonance`` multiplies
+            # every formant's Q; ``gain`` is makeup in dB; ``cv_depth``
+            # is vowels per unit on vowel_cv. ``mix`` rides the generic
+            # slider.
+            if param_name == "vowel":
+                dpg.add_slider_float(
+                    label=f"{param_name} (A E I O U)", default_value=float(current),
+                    min_value=0.0, max_value=4.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "voice":
+                dpg.add_combo(
+                    label=param_name, items=list(VOWEL_VOICES),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "resonance":
+                dpg.add_drag_float(
+                    label=f"{param_name} (x table Q)", default_value=float(current),
+                    speed=0.01, min_value=0.25, max_value=4.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "gain":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.1,
+                    min_value=-12.0, max_value=24.0, format="%.1f dB",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f vow/unit",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

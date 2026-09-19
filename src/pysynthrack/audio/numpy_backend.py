@@ -2699,6 +2699,8 @@ class NumpyBackend(AudioBackend):
             return self._render_chord(module, frames, buffers, patch)
         if module.TYPE == "cv_math":
             return self._render_cv_math(module, frames, buffers, patch)
+        if module.TYPE == "vowel":
+            return self._render_vowel(module, frames, buffers, patch)
         if module.TYPE == "cv_recorder":
             return self._render_cv_recorder(module, frames, buffers, patch)
         if module.TYPE == "logic":
@@ -16955,6 +16957,92 @@ class NumpyBackend(AudioBackend):
         st["n"] = n0 + frames
 
         return {"out": out.astype(np.float32), "pos": pos.astype(np.float32)}
+
+    # ----- Vowel (formant filter) ---------------------------------------------
+
+    _VOWEL_RES_MIN = 0.25
+    _VOWEL_RES_MAX = 4.0
+
+    def _render_vowel(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Five-formant vowel filter (see modules/vowel.py).
+
+        ``vowel_formants(voice, vowel_eff)`` gives F1..F5 (Hz), linear
+        gains and bandwidths for the block's effective vowel (the knob
+        plus ``cv_depth`` x the block-mean CV, clamped 0..4); each
+        formant is an RBJ constant-peak bandpass with Q = F/BW x
+        ``resonance``, run by one ``lfilter`` call along the last axis
+        (so a ``(V, F)`` input is V parallel filters with ``zi`` of shape
+        (V, 2)) with the state carried across blocks. Coefficients are
+        rebuilt only when the (voice, vowel_eff, resonance) key changes.
+        The five outputs are summed with the table's gains, ``gain`` dB
+        applied, then ``out = dry (1 - mix) + wet mix``; at ``mix`` 0 the
+        input buffer is returned untouched -- the effects neutral.
+        """
+        from ..modules.vowel import N_FORMANTS, VOWEL_VOICES, vowel_formants
+
+        x_in = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        if x_in is None:
+            self._state.pop(module.id, None)
+            return np.zeros(frames, dtype=np.float32)
+
+        def fparam(name, default, lo, hi):
+            try:
+                v = float(module.params.get(name, default))
+            except (TypeError, ValueError):
+                v = default
+            return min(hi, max(lo, v))
+
+        mix = fparam("mix", 1.0, 0.0, 1.0)
+        if mix <= 0.0:
+            self._state.pop(module.id, None)
+            return x_in
+        vowel = fparam("vowel", 0.0, 0.0, 4.0)
+        voice = str(module.params.get("voice", "tenor"))
+        if voice not in VOWEL_VOICES:
+            voice = "tenor"
+        resonance = fparam("resonance", 1.0, self._VOWEL_RES_MIN, self._VOWEL_RES_MAX)
+        gain = 10.0 ** (fparam("gain", 6.0, -12.0, 24.0) / 20.0)
+        cv_depth = fparam("cv_depth", 2.0, -10.0, 10.0)
+        cv = self._input_buffer(patch, buffers, module.id, "vowel_cv")
+        if cv is not None:
+            vowel = min(4.0, max(0.0, vowel + cv_depth * float(np.mean(cv))))
+
+        voiced = x_in.ndim == 2
+        x = (x_in if voiced else x_in[None, :]).astype(np.float64)
+        V = x.shape[0]
+        sr = float(self.sample_rate)
+
+        st = self._state.get(module.id)
+        if st is None or st.get("V") != V:
+            st = self._state[module.id] = {
+                "V": V, "key": None, "coefs": None,
+                "zi": np.zeros((N_FORMANTS, V, 2), dtype=np.float64),
+            }
+        key = (voice, round(vowel, 6), round(resonance, 6))
+        if st["key"] != key:
+            freqs, gains, bws = vowel_formants(voice, vowel)
+            coefs = []
+            for k in range(N_FORMANTS):
+                f = min(freqs[k], 0.45 * sr)
+                q = max(0.1, (f / bws[k]) * resonance)
+                w0 = 2.0 * np.pi * f / sr
+                alpha = np.sin(w0) / (2.0 * q)
+                a0 = 1.0 + alpha
+                b = np.array([alpha / a0, 0.0, -alpha / a0])
+                a = np.array([1.0, -2.0 * np.cos(w0) / a0, (1.0 - alpha) / a0])
+                coefs.append((b, a, gains[k]))
+            st["key"] = key
+            st["coefs"] = coefs
+
+        wet = np.zeros_like(x)
+        for k, (b, a, g) in enumerate(st["coefs"]):
+            y, zf = lfilter(b, a, x, axis=-1, zi=st["zi"][k])
+            st["zi"][k] = zf
+            wet += g * y
+        wet *= gain
+        out = wet if mix >= 1.0 else x * (1.0 - mix) + wet * mix
+        result = out if voiced else out[0]
+        return result.astype(np.float32)
 
     def _render_cv_math(self, module, frames: int, buffers, patch) -> dict:
         """Two-in CV algebra (see modules/cv_math.py).

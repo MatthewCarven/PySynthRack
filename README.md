@@ -5,14 +5,14 @@ A modular software synthesizer in Python with a drag-cable node-graph UI. Think 
 ## Status: active development (pre-1.0)
 
 PySynthRack has grown well past its first prototype into a working instrument:
-**98 modules** across seven categories, a full CV/modulation system, MIDI,
+**99 modules** across seven categories, a full CV/modulation system, MIDI,
 recording, and a node editor with zoom, live meters, and per-patch layout
 persistence. It's still pre-1.0 — the patch format and APIs can shift — but you
 can build real patches in it today.
 
 ### What works
 
-- **98 modules** in seven Add-menu categories:
+- **99 modules** in seven Add-menu categories:
   - **Sources (22)** — oscillator (sine / saw / square / triangle, each in
     naive, PolyBLEP/PolyBLAMP `*_blep`, and wavetable `*_wt` flavours),
     supersaw, wavetable morph (with single-cycle WAV import), FM operator,
@@ -21,8 +21,9 @@ can build real patches in it today.
     hat drum voices, noise, computer-keyboard and CV keyboards, a CV-gate key
     bank, single-key triggers, MIDI input, a WAV/audio **file player with a
     queue**, and microphone input.
-  - **Filters & EQ (7)** — multimode resonant filter, Linkwitz-Riley crossover,
-    and parametric / sweep / motion / tilt EQ plus a loudness contour.
+  - **Filters & EQ (8)** — multimode resonant filter, Linkwitz-Riley crossover,
+    a five-formant vowel filter (A–E–I–O–U morph), and parametric / sweep /
+    motion / tilt EQ plus a loudness contour.
   - **Effects (23)** — delay, reverb, chorus, flanger, phaser, rotary (Leslie),
     distortion, waveshaper, bitcrusher, tape, vinyl (dust / crackle / rumble /
     wobble), convolution reverb (IR), ring modulator, frequency shifter, pitch
@@ -81,7 +82,7 @@ for the design write-up.
 src/pysynthrack/
 ├── core/            # Pure-Python model: Port, Module, Patch (no audio, no UI)
 ├── audio/           # AudioBackend interface + numpy (reference) / pyo backends
-├── modules/         # The 98 module type definitions — ports & params, no DSP
+├── modules/         # The 99 module type definitions — ports & params, no DSP
 ├── io_patch/        # JSON save / load
 ├── ui/              # DearPyGui app — node editor, palette, transport, meters
 ├── _crash.py        # Crash-log wiring (GUI + audio-thread hooks)

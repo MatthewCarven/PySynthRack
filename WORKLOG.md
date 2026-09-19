@@ -119,8 +119,9 @@ already three light before slice 2 added one -- count with
 > supersaw `detune_cv`, mid_side `side_hp`, sequencer `direction`,
 > pluck `vel`, delay `freeze` — five examples banked. Suite **4019**,
 > 141 examples. The listening checklist is at the top of TODO.md.
-> Keep-list left: vowel, freeze, autopan, midi_output, subpatch
-> containers, snapshot morph.
+> Then **`vowel`, module #99** — the formant filter; `vowel_talk.json`
+> (banked). Suite **4045**, 142 examples. Keep-list left: freeze,
+> autopan, midi_output, subpatch containers, snapshot morph.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -170,6 +171,42 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-19 — vowel: the shape without the buzz (module #99)
+
+Matthew: "vowel please Claude". Spec into MODULE_IDEAS first, built
+verbatim; prototyped in a scratch script before the module (the table,
+the morph, the levels) — the prototype's peaks landed on the table's
+F1s first time, and the module's did too.
+
+**What it is.** A voice is a buzz through a shape; the shape is the
+vowel. This is the shape without the buzz: five parallel RBJ
+constant-peak bandpasses at F1..F5 of a sung vowel, from the classic
+five-formant table — five voice types × A E I O U × frequency, level
+and bandwidth, the numbers every formant synth carries — and a
+continuous `vowel` knob 0..4 that slides between them (frequencies
+geometrically, bandwidths linearly, levels in dB; one pure helper,
+`vowel_formants`, the renderer and the tests share). `vowel_cv` moves
+it per block; `voice`, `resonance` (a Q multiplier on the table's
+bandwidths), `gain` (makeup — the bank is ~15 dB down on a saw, which
+is what a formant filter is), `mix` (0 = the input buffer itself,
+nothing runs — the effects neutral). Voice-aware like `filter`: one
+`lfilter` per formant along the last axis with `zi` of shape (V, 2),
+coefficients cached on the (voice, vowel, resonance) key, block-size
+exact at a constant vowel.
+
+**Measured.** White noise through tenor A/E/I/O/U peaks at
+666/397/285/378/361 Hz against F1s of 650/400/290/400/350; F2 shows
+as a local maximum in every vowel; `resonance` 0.5/1/2 gives
+peak-to-skirt 6.7/12.4/22.5; the A→E midpoint's F1 is √(650·400) =
+510 Hz. 22 tests. Example `vowel_talk.json` (banked): a wide supersaw
+on two long notes through the tenor table, a 0.09 Hz unipolar
+triangle on `vowel_cv` at depth 4 so the mouth slides A → U and back
+over eleven seconds — the first draft peaked at 0.27 with 8 dB of
+makeup; 14 dB brought it to 0.54. **Suite 4045**, 142 examples, **99
+modules.** One more and it's a hundred.
 
 ---
 

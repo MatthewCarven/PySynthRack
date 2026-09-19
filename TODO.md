@@ -739,6 +739,30 @@ same session.
       anyone is playing). Decide whether that asymmetry should be
       documented as-is or changed; do not change it silently.
 
+## The keep-list, continued (2026-09-19, night)
+
+- [x] **`vowel` — SHIPPED 2026-09-19, module #99.** Filters & EQ.
+      Matthew: "vowel please Claude". Spec into MODULE_IDEAS first,
+      built verbatim. The formant filter: five parallel RBJ constant-
+      peak bandpasses at F1..F5 of a sung vowel from the classic
+      five-formant table (five voice types x A E I O U x frequency /
+      level dB / bandwidth, the Csound numbers), `vowel` a continuous
+      0..4 knob (frequencies interpolate geometrically, bandwidths
+      linearly, levels in dB — the pure helper `vowel_formants`),
+      `vowel_cv` x `cv_depth` vowels per unit (block mean, clamped),
+      `voice`, `resonance` (a Q multiplier), `gain` dB makeup (the
+      bank is ~15 dB down on a saw), `mix` (0 = the input buffer itself,
+      nothing runs). Voice-aware like `filter` (lfilter along the last
+      axis, zi (5, V, 2)); coefficients cached on (voice, vowel,
+      resonance); block-size exact at a constant vowel. Measured: noise
+      through tenor A/E/I/O/U peaks at 666/397/285/378/361 Hz vs table
+      F1 650/400/290/400/350. 22 tests in `tests/test_vowel.py`.
+      Example `vowel_talk.json` (banked): a supersaw says A-E-I-O-U.
+      Suite **4045**, 142 examples, 99 modules. Follow-ons: a
+      `formant_cv` shift (all formants up/down together — a
+      child/giant knob); per-sample vowel_cv for audio-rate mouth
+      modulation; custom vowels (user F1..F5).
+
 ## Five more love passes in parallel (2026-09-19, evening)
 
 Matthew: "pick out another 5 modules for extra love and lets run
@@ -871,6 +895,7 @@ sampler examples need it).
 - [ ] `drift_wander.json` — the filter breathes with no corners (the scope shows the wander); the pluck lands exactly when the wander turns; the drone's 36-cent walk reads as an old oscillator, not vibrato. Try `glide` 0 (pure S&H) and `walk` with `step` 0.05.
 - [ ] `cv_math_delayed_vibrato.json` — no wobble at each note's attack, full at the sustain (scope on the `mult` jack). Move the filter's cable from `max` to `min` / `avg` / `diff`.
 - [ ] `cv_recorder_layers.json` — the loop that moves the filter changes every OTHER bar and never piles up. Then the real test: unpatch `in`, cable a `constant` 1.0 into `rec`, and turn the `value` slider — your gesture should come back every bar.
+- [ ] `vowel_talk.json` — the talking pad: does the supersaw say A-E-I-O-U as the LFO sweeps? Try `voice` soprano vs bass, `resonance` 2.5 (more vowel), and a noise source instead of the supersaw (a whisper). EYES: the `vowel (A E I O U)` slider and the `voice` combo.
 - [ ] `possibility_selector_kit.json` — whether x which drums + the harp. EYES: cells paint one hue per output (red / blue / green / purple), amber for `?` and subsets; right-click a cell opens FOUR checkboxes (never seen in a window yet).
 - [ ] `possibility_reroll_divider.json` — kick and snare hold a take for four bars then re-decide on bar 5; the hat re-deals every bar.
 

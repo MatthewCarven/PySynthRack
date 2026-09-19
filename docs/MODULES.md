@@ -95,6 +95,7 @@ The full map:
 | `lfo.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `drift.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)`, re-read per block; mono (a `(V, F)` source is averaged) |
 | `crossover.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
+| `vowel.vowel_cv` | `2.0` | vowels (0 = A … 4 = U) | `vowel + d·mean cv`, clamped 0…4 |
 | `sweep_eq.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
 | `motion_eq.band{i}_freq_cv` | `1.0` (shared) | octaves | `freq_i · 2^(d·mean cv)` |
 | `motion_eq.band{i}_gain_cv` | `6.0` (shared, `gain_cv_depth`) | dB | `gain_i + d·mean cv` (clamped ±24) |
@@ -251,6 +252,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`wavetable_morph`](#wavetable_morph) | Sources | `freq_cv`,`position_cv`,`amp_cv` (cv) → `out` (audio) |
 | [`filter`](#filter) | Filters & EQ | `in` (audio), `cutoff_cv` (cv), `resonance_cv` (cv) → `out` (audio) |
 | [`crossover`](#crossover) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
+| [`vowel`](#vowel) | Filters & EQ | `in` (audio), `vowel_cv` (cv) → `out` (audio) |
 | [`parametric_eq`](#parametric_eq) | Filters & EQ | `in` (audio) → `out` (audio) |
 | [`sweep_eq`](#sweep_eq) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `out` (audio) |
 | [`motion_eq`](#motion_eq) | Filters & EQ | `in` (audio), `band{i}_freq_cv`, `band{i}_gain_cv`, `band{i}_q_cv` ×4 (cv) → `out` (audio) |
@@ -1445,6 +1447,61 @@ Splits one audio input into **low** and **high** bands at a chosen frequency
 `freq_cv` to sweep the split point (1 V/oct × `cv_depth`, block-mean like
 the [Filter](#filter)'s `cutoff_cv`) for dynamic band-splitting — see
 `examples/crossover_sweep.json`.
+
+#### `vowel`
+
+A **formant filter** — five resonances shaped like a sung vowel. A voice
+is a buzz (the vocal folds) through a shape (the throat and mouth), and
+the shape is what makes a vowel: a handful of resonances, *formants*, at
+frequencies the mouth's geometry sets. This module is the shape without
+the buzz, applied to whatever you feed it — a [`supersaw`](#supersaw)
+becomes a choir, [`noise`](#noise) a whisper, a drum loop something that
+talks. The [`vocoder`](#vocoder) measures a shape from a real voice; this
+one carries the shapes already and lets you slide between them.
+
+The shapes are the classic five-formant table — frequency, level and
+bandwidth of F1–F5 for A, E, I, O, U, for five voice types — the numbers
+every formant synthesizer (and the Csound manual) carry. `vowel` is a
+continuous 0..4 knob: 0 is A, 1 E, 2 I, 3 O, 4 U, and 1.5 is halfway
+from E to I (frequencies interpolate geometrically, bandwidths
+linearly, levels in dB). `vowel_cv` moves it — `cv_depth` vowels per
+unit, read per block — so a slow LFO is the talking-filter cliché and an
+envelope is a mouth opening on every note. `voice` picks the table;
+`resonance` multiplies every formant's Q (1 = the table's bandwidths;
+higher is narrower, more vowel, more ring); `gain` is makeup (a formant
+bank passes only what sits near its peaks, so the wet is ~15 dB down on
+a saw); `mix` blends the dry back in, and at 0 the filter is not run at
+all — the effects neutral, bit-exact dry.
+
+Five RBJ constant-peak bandpasses (Q = F/BW × `resonance`) in parallel,
+summed with the table's gains; coefficients are rebuilt only when the
+effective vowel, the voice or the resonance changes, and the biquads
+carry their state across blocks, so a render is block-size independent
+at a constant vowel. Voice-aware like [`filter`](#filter): a `(V, F)`
+input gives `(V, F)` out with one filter state per voice row, and a
+single voice row is bit-identical to mono. Measured: white noise through
+tenor A/E/I/O/U peaks at 666 / 397 / 285 / 378 / 361 Hz against table
+F1s of 650 / 400 / 290 / 400 / 350. Numpy backend only; silent stub
+under pyo. See `examples/vowel_talk.json`.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | audio | The source (voice-aware). Unpatched → silence. |
+| `vowel_cv` | in | cv | Adds `cv_depth` × mean CV to `vowel` per block; clamped 0…4. |
+| `out` | out | audio | The vowel. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `vowel` | `0.0` | 0 … 4 | A, E, I, O, U and everything between. |
+| `voice` | `tenor` | soprano / alto / countertenor / tenor / bass | The formant table. |
+| `resonance` | `1.0` | 0.25 … 4 | Q multiplier on every formant. |
+| `gain` | `6.0` | −12 … 24 dB | Makeup. |
+| `mix` | `1.0` | 0 … 1 | Dry/wet; 0 = bit-exact dry. |
+| `cv_depth` | `2.0` | 0 … 4 | Vowels per CV unit on `vowel_cv`. |
 
 #### `parametric_eq`
 
@@ -4808,6 +4865,11 @@ loads in the app. Notable ones referenced above:
   (vibrato LFO summed into `pitch_cv`, a 0.15 Hz LFO on `breath_cv` so
   the player breathes) over a `reed` line in the chalumeau register at
   half speed off a [`clock_divider`](#clock_divider), through a chamber.
+- `vowel_talk.json` — the talking pad: a wide [`supersaw`](#supersaw) on
+  two long notes through the [`vowel`](#vowel) filter (tenor, `resonance`
+  1.2) with a 0.09 Hz unipolar triangle on `vowel_cv` at `cv_depth` 4,
+  so the mouth slides A → E → I → O → U and back over eleven seconds;
+  an ADSR on a VCA, a hall, a scope on the vowel.
 - `cv_recorder_layers.json` — the modulation looper, clocked: sixteenths
   into [`cv_recorder`](#cv_recorder)'s `clock` with `length` 16 (a bar),
   a slow clock holding `rec` high every other bar, a 0.37 Hz triangle

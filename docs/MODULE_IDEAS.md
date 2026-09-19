@@ -32,7 +32,7 @@ Paste the preamble below plus one module spec as the task.
 Dynamics: `compressor` `limiter` `noise_gate` `transient_shaper` ·
 Pitch/frequency: `ring_mod` `freq_shifter` `bitcrusher` ·
 Character/space: `tape` `convolver` ·
-CV tools: `cv_math` `cv_recorder` `quantizer` `slew` `pitch_detector` ·
+CV tools: `cv_math` `cv_recorder` `quantizer` `slew` `pitch_detector` · Filters: `vowel` ·
 Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate` `burst` `arpeggiator` `chord` `chaos` `possibility_selector` `drift` ·
 Voices: `fm_op` `pluck` `bowed` `wind` `modal` `granular` `kick_drum`/`snare_drum`/`hat_drum` `sampler` `organ` ·
 Visual: `scope` `spectrum` ·
@@ -291,6 +291,53 @@ not Modulation where the one-liner sat.
   float32 out; stateless (two renders equal, no `_state` entry); the
   example (delayed vibrato via `mult`, a two-LFO `max` on a filter).
 - As built, verbatim. 13 tests. Example `cv_math_delayed_vibrato.json`.
+
+### `vowel` (S–M) — "Filters & EQ" — **SHIPPED 2026-09-19** (see TODO.md / WORKLOG.md) — the formant filter
+
+The keep-list's "formant filter bank with an A–E–I–O–U morph knob — the
+vocoder's expressive little cousin; pairs beautifully with `supersaw`".
+Five parallel resonant bandpasses at the formant frequencies of a sung
+vowel, the classic five-formant table (the one every formant synth and
+Csound's manual carry: F1–F5 frequency, level in dB and bandwidth for
+A E I O U, per voice type), and a knob that slides between the vowels.
+
+- Ports: `in` (audio, voice-aware like `filter`), `vowel_cv` (cv, block
+  mean, vowels per unit × `cv_depth`) → `out` (audio).
+- Params: `vowel` 0..4 (0.0 — 0 = A, 1 = E, 2 = I, 3 = O, 4 = U, and
+  everything in between) · `voice` soprano | alto | countertenor |
+  tenor | bass (tenor) · `resonance` 0.25..4 (1.0 — a multiplier on
+  every formant's Q, 1 = the table's bandwidths, higher = narrower,
+  more vowel, more ring) · `gain` dB −12..24 (6.0 — makeup; a formant
+  bank passes only what sits near its peaks, so the wet is ~15 dB down
+  on a saw) · `mix` 0..1 (1.0; 0 = bit-exact dry — the effects
+  neutral) · `cv_depth` (2.0 vowels per unit).
+- DSP: `vowel_formants(voice, v)` — a pure helper in the module — takes
+  the two neighbouring table rows and interpolates: frequencies
+  geometrically, bandwidths linearly, levels linearly in dB; the
+  renderer builds five RBJ constant-peak bandpasses (Q = F/BW ·
+  `resonance`) from it once per block (coefficients cached on the
+  (voice, vowel_eff, resonance) key), runs them with `lfilter` and
+  carried `zi` (per voice row for a `(V, F)` input — one call per
+  formant along the last axis), sums them with the table's linear
+  gains, applies `gain`, then `out = dry·(1−mix) + wet·mix`. At `mix`
+  0 nothing runs. The table lives in the module file as data
+  (`FORMANTS[voice][vowel] = (freqs, dBs, bandwidths)`).
+- Neutral / contracts: `mix` 0 bit-exact dry; unpatched `in` → silence,
+  no state; `vowel` clamps 0..4, so a CV past U holds U; single voice
+  row ≡ mono; block-size independent at a constant vowel (lfilter zi).
+- Tests: registration; the table's shape (5 voices × 5 vowels × 3 × 5,
+  F1 < F2 < … everywhere, level 0 dB on F1); the helper's geometric
+  midpoint (tenor A→E at 0.5: F1 = √(650·400)); white noise through
+  each vowel puts the spectral peak within ±15% of that vowel's F1 and
+  a local maximum near F2; `vowel_cv` +1 at depth 2 == `vowel` + 2
+  bit-exact; `resonance` sharpens (peak/skirt monotone); `gain` +6 dB
+  doubles; `mix` 0 bit-exact dry, 0.5 = the half blend; voice-aware
+  `(V, F)` in/out and single row ≡ mono; block-size independence; the
+  clamp; the voice combo offers the five voices; widget sweep; the
+  example (`vowel_talk.json` — a supersaw through the vowel with a
+  slow LFO on `vowel_cv`: the talking pad).
+- As built, verbatim. 22 tests. Example `vowel_talk.json` (makeup 14 dB
+  on the supersaw — the bank really is ~15 dB down).
 
 ### `quantizer` (M) — "CV & Utilities" — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
@@ -1152,10 +1199,11 @@ full specs above.
   LR4 crossover, per-rotor Doppler fractional delay + cos-of-angle AM,
   counter-rotating horn and drum with their own exponential spin-up /
   coast-down, two virtual mics, `fast` gate. `organ_leslie.json`.
-- `vowel` (S–M) — formant filter bank with an A–E–I–O–U morph knob.
+- ~~`vowel` (S–M)~~ — formant filter bank with an A–E–I–O–U morph knob.
   The vocoder's expressive little cousin; pairs beautifully with
   `supersaw`. (Cousin of `wavetable_morph`'s vowel *stack* — that one
-  IS the source, this one filters any source.)
+  IS the source, this one filters any source.) **Picked and SHIPPED
+  2026-09-19 — full spec under CV tools.**
 - `freeze` (M) — spectral freeze: FFT a moment, hold it forever as a
   pad. A different animal from `granular`'s time-domain freeze.
 - `autopan` (S) — there's no dedicated panner anywhere in the rack.
