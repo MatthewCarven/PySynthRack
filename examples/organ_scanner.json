@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "next_id": 7,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "clock - one chord a second, gap for the perc",
+      "params": {
+        "bpm": 60.0,
+        "division": 1.0,
+        "pulse_width": 0.85
+      }
+    },
+    {
+      "id": 2,
+      "type": "sequencer",
+      "name": "two-bar root walk (Dm Gm Cm Cm Am Dm Gm Cm)",
+      "params": {
+        "steps": 8,
+        "direction": "forward",
+        "seed": 1,
+        "step1_pitch": -10.0,
+        "step2_pitch": -5.0,
+        "step3_pitch": -12.0,
+        "step4_pitch": -12.0,
+        "step5_pitch": -15.0,
+        "step6_pitch": -10.0,
+        "step7_pitch": -5.0,
+        "step8_pitch": -12.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "chord",
+      "name": "m7 voicing, first inversion",
+      "params": {
+        "preset": "m7",
+        "strum": 0.0,
+        "spread": false,
+        "inversion": 1
+      }
+    },
+    {
+      "id": 4,
+      "type": "organ",
+      "name": "ORGAN - 888 000 000, vibrato C3: the scanner chorus",
+      "params": {
+        "bar1": 8,
+        "bar2": 8,
+        "bar3": 8,
+        "bar4": 0,
+        "bar5": 0,
+        "bar6": 0,
+        "bar7": 0,
+        "bar8": 0,
+        "bar9": 0,
+        "click": 0.4,
+        "perc": "2nd",
+        "perc_decay": "fast",
+        "perc_level": 0.7,
+        "vibrato": "c3",
+        "level": 0.16
+      }
+    },
+    {
+      "id": 5,
+      "type": "reverb",
+      "name": "a little room",
+      "params": {
+        "size": 0.5,
+        "decay": 0.4,
+        "damping": 0.5,
+        "mix": 0.25
+      }
+    },
+    {
+      "id": 6,
+      "type": "stereo_speaker_output",
+      "name": "out",
+      "params": {}
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "cv",
+      "dst_module_id": 3,
+      "dst_port": "pitch_cv"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "pitch_cv",
+      "dst_module_id": 4,
+      "dst_port": "pitch_cv"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "gate",
+      "dst_module_id": 4,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out_l",
+      "dst_module_id": 6,
+      "dst_port": "in_l"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out_r",
+      "dst_module_id": 6,
+      "dst_port": "in_r"
+    }
+  ],
+  "ui": {}
+}

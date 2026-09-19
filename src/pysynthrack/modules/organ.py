@@ -42,6 +42,35 @@ fundamental puts the 1' bar past any reasonable sample rate) — masked,
 never aliased. Tonewheel top-octave *foldback* is a possible later
 authenticity extra.
 
+The scanner is the third tonewheel signature: ``vibrato`` is the
+console's six-way knob. The hardware is a short tapped delay line swept
+by a rotating capacitor pickup on a 412 rpm motor — **~6.87 Hz**, the
+one rate every Hammond vibrato ever had — and V1/V2/V3 switch in more of
+the line (peak-to-peak sweep 0.35 / 0.7 / 1.1 ms, a sine here where the
+real pickup traces a rounded triangle), so the pitch wobbles about
+±13 / ±26 / ±41 cents (measured, not just predicted: a sinusoidal delay
+of half-swing ``A`` deviates the pitch ratio by ``2*pi*f*A`` at its
+peak). C1/C2/C3 are the *same* swept signal mixed with the un-delayed
+dry in equal parts, ``0.5 * (dry + scanned)`` — the chorus: the
+scanned copy sits a fraction of a millisecond behind the dry, so the
+sum is a comb whose notches sweep with the scanner, and averaging
+keeps the fundamental's level where V left it instead of jumping 6 dB.
+The line starts at (almost) zero delay for every setting, as the real
+scanner starts at tap 0, so the chorus thins to near-dry at the top of
+each sweep and deepens on the way down.
+
+The scanner takes the **finished voice sum** — partials, key click and
+percussion (``level`` is already folded into the partial gains, so
+before/after it is the same algebra). One mechanism per organ, as on
+the console: a single scanner phase shared by every voice, each voice
+row in its own delay ring so voices never cross-talk (the percussion
+strike on row 0 rides through row 0's ring). ``off`` touches nothing —
+no ring, no state, bit-exact with the pre-scanner organ. Every switch
+(off → V, V1 → V3, V → C, anything → off) crossfades gains and sweep
+depth over a ~40 ms integer-counted ramp, so flipping the knob under a
+held chord is click-free; the line is dropped once the fade back to
+dry has finished.
+
 Voice-awareness follows the inputs (the ``pluck`` contract): mono
 ``(F,)`` pitch/gate give mono out; ``(V, F)`` give per-voice organs.
 Pitch is read per block (mean) — vibrato tracks at block rate. Phases,
@@ -61,6 +90,8 @@ Params:
   * ``perc_decay``: ``fast`` (~0.3 s) | ``slow`` (~1.0 s). Default
     ``fast``.
   * ``perc_level``: percussion strike level 0..1. Default 0.7.
+  * ``vibrato``: the scanner — ``off`` | ``v1`` | ``v2`` | ``v3`` |
+    ``c1`` | ``c2`` | ``c3``. Default ``off``.
   * ``level``: output level 0..1. Default 0.5.
 """
 from __future__ import annotations
@@ -81,6 +112,10 @@ ORGAN_DEFAULT_BARS = (8, 8, 8, 0, 0, 0, 0, 0, 0)
 
 PERC_MODES = ("off", "2nd", "3rd")
 PERC_DECAYS = ("fast", "slow")
+# The scanner knob: three vibrato depths, and the same three depths mixed
+# with the dry as chorus. The digit is the depth index; the letter is
+# whether the dry comes along.
+ORGAN_VIBRATO = ("off", "v1", "v2", "v3", "c1", "c2", "c3")
 
 
 def _default_params() -> dict:
@@ -93,6 +128,7 @@ def _default_params() -> dict:
             "perc": "off",
             "perc_decay": "fast",
             "perc_level": 0.7,
+            "vibrato": "off",
             "level": 0.5,
         }
     )
@@ -110,6 +146,8 @@ class Organ(Module):
         perc: Percussion register, off | 2nd | 3rd. Default off.
         perc_decay: Percussion decay, fast | slow. Default fast.
         perc_level: Percussion strike level, 0..1. Default 0.7.
+        vibrato: The scanner, off | v1 | v2 | v3 | c1 | c2 | c3.
+            Default off.
         level: Output level, 0..1. Default 0.5.
 
     Ports:

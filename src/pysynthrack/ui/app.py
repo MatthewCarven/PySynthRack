@@ -49,6 +49,7 @@ from ..modules.chaos import CHAOS_SYSTEMS
 from ..modules.organ import (
     ORGAN_BARS,
     ORGAN_FOOTAGES,
+    ORGAN_VIBRATO,
     PERC_DECAYS,
     PERC_MODES,
 )
@@ -2744,6 +2745,16 @@ class App:
             if param_name == "perc_decay":
                 dpg.add_combo(
                     label=param_name, items=list(PERC_DECAYS),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            # ``vibrato`` is the scanner's six-way knob (off / v1..v3 /
+            # c1..c3) -- its own combo, not named ``mode`` on purpose (the
+            # shared mode branch would hand it the filter's list).
+            if param_name == "vibrato":
+                dpg.add_combo(
+                    label=param_name, items=list(ORGAN_VIBRATO),
                     default_value=str(current),
                     width=120, callback=self._on_param_changed, user_data=user_data,
                 )

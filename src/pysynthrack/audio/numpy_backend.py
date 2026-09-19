@@ -17951,6 +17951,17 @@ class NumpyBackend(AudioBackend):
     _ORGAN_CLICK_AMP = 0.15  # click peak scale at click = 1
     _ORGAN_PERC_T60 = {"fast": 0.3, "slow": 1.0}
     _ORGAN_PERC_RATIO = {"2nd": 2.0, "3rd": 3.0}
+    # The scanner (see modules/organ.py): a 412 rpm motor sweeps the line
+    # once per turn. Peak-to-peak sweep per depth index (v1/c1, v2/c2,
+    # v3/c3) -- tuned by measurement, V3 lands at +/-41 cents. The line
+    # centre is the half-swing plus a margin (never below 2 samples, so a
+    # read never crosses the write head); every switch crossfades gains
+    # and depth over an integer-counted ramp.
+    _ORGAN_SCAN_HZ = 412.0 / 60.0
+    _ORGAN_SCAN_SWING_MS = (0.35, 0.70, 1.10)
+    _ORGAN_SCAN_MARGIN_S = 1e-4
+    _ORGAN_SCAN_FADE_S = 0.04
+    _ORGAN_SCAN_MIN_BLOCK = 4096  # ring headroom: never resized by a short block
 
     def _render_organ(self, module, frames: int, buffers, patch) -> np.ndarray:
         """Nine-drawbar additive organ (see modules/organ.py).
@@ -17983,8 +17994,12 @@ class NumpyBackend(AudioBackend):
         this block (masked, never aliased); the constant-RMS
         normaliser uses the unmasked gains so masking never makes the
         remaining partials louder.
+
+        The scanner (``vibrato``) runs last, over the finished ``(V, F)``
+        voice sum, in ``_organ_scanner``; at ``off`` with no line alive
+        it is never called, so the pre-scanner render is untouched.
         """
-        from ..modules.organ import ORGAN_BARS, ORGAN_RATIOS
+        from ..modules.organ import ORGAN_BARS, ORGAN_RATIOS, ORGAN_VIBRATO
 
         pitch = self._input_buffer(
             patch, buffers, module.id, "pitch_cv", collapse=False
@@ -18177,8 +18192,117 @@ class NumpyBackend(AudioBackend):
             self._organ_perc_pour(st, out[0], 0, frames, perc_g)
         st["prev_any"] = bool(any_high[-1])
 
+        # --- the scanner vibrato / chorus ------------------------------
+        vib = str(p.get("vibrato", "off"))
+        if vib not in ORGAN_VIBRATO:
+            vib = "off"
+        if vib != "off" or "scan_buf" in st:
+            out = self._organ_scanner(st, out, vib, frames, sr)
+
         out32 = out.astype(np.float32)
         return out32 if voiced else out32[0]
+
+    def _organ_scanner(self, st, out, vib, frames, sr):
+        """The Hammond scanner over the finished voice sum ``out`` (V, F).
+
+        A modulated fractional delay, the chorus/tape idiom: write the
+        whole block into a per-voice ring, then read linear-interpolated
+        taps at ``absidx - delay(t)``. There is no feedback, so every
+        read lands on a sample already written, the whole read
+        vectorises over (V, F), and the render is block-size exact. The
+        scanner phase is an integer sample counter (``scan_n``, also the
+        write index) -- ``phase = (n * f / sr) % 1`` depends only on
+        ``n``, so it is bit-exact across any block split where a float
+        phase accumulator would not be. One counter for all voices: one
+        scanner per console.
+
+        ``delay = A * (1 + sin) + margin`` -- the line starts at (almost)
+        zero delay for every depth, the way the real pickup starts at
+        tap 0, and ``A`` is the half-swing of the setting. Three values
+        crossfade on any switch -- dry gain, wet gain, ``A`` -- along one
+        integer-counted linear ramp (the gate-ramp idiom: ``from + (to -
+        from) * count / R``, snapping to ``to`` exactly at ``R``). V
+        settings target ``(0, 1, A)``, C settings ``(0.5, 0.5, A)``, and
+        ``off`` targets ``(1, 0, A)`` -- the line then keeps running
+        until the fade completes, at which point ``1.0 * dry + 0.0 * wet``
+        IS the dry, bit for bit, and the state is dropped. A fresh line
+        rests at ``(1, 0, A)`` too, so switching on from off fades the
+        wet in over the zeroed ring rather than reading a hole.
+        """
+        V = out.shape[0]
+        swings = self._ORGAN_SCAN_SWING_MS
+        a_max = 0.5 * swings[-1] * sr / 1000.0
+        margin = max(2.0, sr * self._ORGAN_SCAN_MARGIN_S)
+        fade = max(1, int(round(sr * self._ORGAN_SCAN_FADE_S)))
+        span = int(np.ceil(2.0 * a_max + margin)) + 4
+
+        if vib != "off":
+            a = 0.5 * swings[int(vib[1]) - 1] * sr / 1000.0
+            g = 0.5 if vib[0] == "c" else 1.0
+            target = np.array([1.0 - g, g, a], dtype=np.float64)
+        else:
+            target = None
+
+        buf = st.get("scan_buf")
+        if buf is None or buf.shape[1] < span + frames:
+            # Sized for the deepest setting and a generous block, so
+            # neither a depth change nor a short last block reallocates;
+            # only a block LONGER than any before grows it (zeroed ring,
+            # a one-off hole -- the app never changes block size
+            # mid-run).
+            L = span + max(frames, self._ORGAN_SCAN_MIN_BLOCK)
+            buf = np.zeros((V, L), dtype=np.float64)
+            rest = np.array(
+                [1.0, 0.0, target[2] if target is not None else 0.0]
+            )
+            st["scan_buf"] = buf
+            st["scan_n"] = 0
+            st["scan_cur"] = rest.copy()
+            st["scan_from"] = rest.copy()
+            st["scan_to"] = rest.copy()
+            st["scan_count"] = fade
+        if target is None:
+            # Fade back to dry; the depth stays where it was.
+            target = np.array([1.0, 0.0, float(st["scan_to"][2])])
+        if not np.array_equal(target, st["scan_to"]):
+            st["scan_from"] = st["scan_cur"].copy()
+            st["scan_to"] = target
+            st["scan_count"] = 0
+
+        frm = st["scan_from"]
+        to = st["scan_to"]
+        n = np.arange(1, frames + 1, dtype=np.int64)
+        cnt = np.minimum(fade, int(st["scan_count"]) + n)
+        u = cnt / fade
+        vals = np.where(
+            cnt[None, :] >= fade,
+            to[:, None],
+            frm[:, None] + (to - frm)[:, None] * u[None, :],
+        )  # (3, F): dry gain, wet gain, half-swing in samples
+        st["scan_count"] = int(cnt[-1])
+        st["scan_cur"] = vals[:, -1].copy()
+        dry_g, wet_g, a_t = vals
+
+        L = buf.shape[1]
+        n0 = int(st["scan_n"])
+        absidx = n0 + np.arange(frames, dtype=np.int64)
+        ph = (absidx * (self._ORGAN_SCAN_HZ / sr)) % 1.0
+        delay = a_t * (1.0 + np.sin(2.0 * np.pi * ph)) + margin
+        np.clip(delay, 2.0, float(L - 2), out=delay)
+
+        buf[:, absidx % L] = out
+        rp = absidx - delay
+        i0 = np.floor(rp).astype(np.int64)
+        frac = rp - i0
+        wet = buf[:, i0 % L] * (1.0 - frac) + buf[:, (i0 + 1) % L] * frac
+        st["scan_n"] = n0 + frames
+
+        res = dry_g * out + wet_g * wet
+        if vib == "off" and st["scan_count"] >= fade:
+            for key in ("scan_buf", "scan_n", "scan_cur", "scan_from",
+                        "scan_to", "scan_count"):
+                st.pop(key, None)
+        return res
 
     def _organ_perc_pour(self, st, row, start, end, perc_g) -> None:
         """Render the percussion strike into ``row[start:end]``, carrying

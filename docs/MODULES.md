@@ -1362,18 +1362,50 @@ tonewheel signature: a fast-decaying extra harmonic that fires **only
 on a key struck from silence** — one shared generator, so legato lines
 and chord additions do *not* re-fire it (the strike lands on voice
 row 0; monophonic hardware). Partials at/above Nyquist are masked,
-never aliased. Pitch reads per block (vibrato tracks at block rate);
-phases, ramps, click tails and the percussion strike all carry across
-blocks — bit-exact at any block size.
+never aliased. Pitch reads per block (external vibrato tracks at block
+rate); phases, ramps, click tails and the percussion strike all carry
+across blocks — bit-exact at any block size.
+
+**The scanner** (`vibrato`, 2026-09-19) is the third tonewheel
+signature, the console's six-way knob. The hardware is a short tapped
+delay line swept by a rotating capacitor pickup on a 412 rpm motor —
+**~6.87 Hz**, the one rate every Hammond vibrato ever had — and
+V1/V2/V3 switch in more of the line: peak-to-peak sweep 0.35 / 0.7 /
+1.1 ms (a sine sweep here; the real pickup traces a rounded triangle),
+so the pitch wobbles **±13 / ±26 / ±41 cents** (measured on the
+module's own output via the analytic signal, not just predicted: a
+sinusoidal delay of half-swing *A* deviates the pitch ratio by
+2π·f·A at its peak). C1/C2/C3 are the *same* swept signal mixed with
+the un-delayed dry in equal parts — `0.5 · (dry + scanned)` — which is
+why C is a **chorus**: the scanned copy sits a fraction of a
+millisecond behind the dry, so their sum is a comb whose notches sweep
+with the scanner, and averaging keeps the fundamental's level where V
+left it instead of jumping 6 dB. The line starts at (almost) zero delay
+for every setting, as the real scanner starts at tap 0, so the chorus
+thins to near-dry at the top of each sweep and deepens on the way
+down. It takes the **finished voice sum** — partials, key click and
+percussion (`level` is folded into the partial gains, so before/after
+it is the same algebra); one mechanism per organ: a single scanner
+phase shared by every voice, each voice row in its own delay ring so
+voices never cross-talk (the row-0 percussion strike rides through).
+`off` touches nothing — no ring, no state, bit-exact with the
+pre-scanner organ (pinned). Every switch (off → V, V1 → V3, V → C,
+anything → off) crossfades gains and sweep depth over a ~40 ms
+integer-counted ramp, so flipping the knob under a held chord is
+click-free (pinned on a shared block boundary: the largest step around
+a switch is no bigger than the steady signal's own); the line is
+dropped once the fade back to dry completes.
 
 **Ports**: `pitch_cv` (cv, 1 V/oct, C4 = 0 V; unpatched → C4), `gate`
 (gate; unpatched → silence) → `out` (audio). **Params**: `bar1`..`bar9`
 0..8 (888000000) · `click` 0..1 (0.3) · `perc` off/2nd/3rd (off) ·
 `perc_decay` fast ≈0.3 s / slow ≈1 s · `perc_level` 0..1 (0.7) ·
-`level` 0..1 (0.5). The node draws the bars as a vertical fader bank
-(faders-up = louder — a deliberate deviation from pulled-out-is-louder
-hardware). Pair it with [`chorus`](#chorus) for the scanner shimmer —
-see `examples/organ_jazz.json`.
+`vibrato` off/v1/v2/v3/c1/c2/c3 (off) · `level` 0..1 (0.5). The node
+draws the bars as a vertical fader bank (faders-up = louder — a
+deliberate deviation from pulled-out-is-louder hardware). The built-in
+scanner is the Hammond's own; the [`chorus`](#chorus) module after it is
+a different, wider thing — see `examples/organ_scanner.json` for the
+former and `examples/organ_jazz.json` for the latter.
 
 #### `supersaw`
 
@@ -5099,6 +5131,7 @@ loads in the app. Notable ones referenced above:
 - `sequencer_pendulum.json` — the [`sequencer`](#sequencer)'s `direction`: a five-step [`pluck`](#pluck) line in `pendulum` (an 8-note period, `1 2 3 4 5 4 3 2`) against a second sequencer in `random` (`seed` 7) gating a [`hat`](#hat) on sixteenths, with a [`clock_divider`](#clock_divider) at /16 resetting both every bar — so the "random" hat pattern is one reproducible bar, replayed.
 - `filter_resonance_sweep.json` — the [`filter`](#filter)'s `resonance_cv`: a saw through a lowpass, a 0.5 Hz LFO on `cutoff_cv` and a 0.11 Hz triangle on `resonance_cv` (`res_cv_depth` 1.5, so the Q breathes between 0.7 and 5.7) — the peak sharpens and softens on its own nine-second cycle, whatever the cutoff is doing.
 - `organ_leslie.json` — the pairing: a self-playing maj7 organ through the [`rotary`](#rotary), a 5 BPM clock on `fast` flipping the Leslie between chorale and tremolo every six seconds so the horn and drum chase each other.
+- `organ_scanner.json` — the [`organ`](#organ)'s own `vibrato` at **C3**: a two-bar m7 vamp (Dm Gm Cm Cm Am Dm Gm Cm, one chord a second from a [`chord`](#chord) in first inversion) on the 888 000 000 jazz registration with `perc` 2nd, through a little [`reverb`](#reverb). The scanner chorus is the un-delayed organ averaged with its 6.87 Hz-swept copy — the comb between them is the shimmer; flip `vibrato` to `v3` to hear the sweep alone, or `off` for the dry organ (every switch crossfades, so do it under a held chord).
 - `krell_feedback.json` — the real krell self-patch: the [`function_generator`](#function_generator) in `trigger` mode with its own `eoc` OR'd (through [`logic`](#logic)) with a 12-second starter pulse back into `trig`. The loop closes one block late — the feedback door, generalized 2026-09-16. Same dice, quantizer and voice as `krell_machine.json`, which runs the no-latency `loop` mode version.
 - `sample_hold_sometimes.json` — the "sometimes" S&H: [`noise`](#noise) `cv` into a [`sample_hold`](#sample_hold) with `prob` 0.6 (`seed` 11) and `glide` 0.05, clocked at sixteenths, through a [`quantizer`](#quantizer) (pentatonic minor) into a saw voice with an [`adsr`](#adsr) on every tick — a random melody that repeats notes about two ticks in five, and because the glide sits *before* the quantizer every change is a 50 ms zip up or down the scale into the new note, a little [`reverb`](#reverb) behind it. Change the seed for a different set of repeats.
 - `fg_eor_swell_strike.json` — what `eor` is for: a slow [`function_generator`](#function_generator) (1.2 s up, 1.8 s down, cycling through the krell loop with a wandering `rate_cv`) swells a low saw through a filter and VCA, and at the **top** of every swell its `eor` fires a [`pluck`](#pluck) whose pitch a [`sample_hold`](#sample_hold) grabbed at that same instant — swell, then strike.
