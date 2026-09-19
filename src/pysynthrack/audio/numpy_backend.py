@@ -8422,9 +8422,32 @@ class NumpyBackend(AudioBackend):
             primes to the current held value instead of swooping from
             0). In ``track`` mode the lag sits on the followed signal
             too: it lags ``out``, whatever ``out`` came from.
+
+        Love pass (2026-09-20) -- the chance becomes a jack:
+
+          * ``prob_cv`` / ``prob_cv_depth``: at every rising edge the
+            effective probability is ``clip(prob + depth * cv[edge], 0,
+            1)``, read at the EDGE'S OWN SAMPLE, not as a block mean --
+            the decision is made once per edge, so the CV at that
+            instant is the honest value (a block mean would let a CV
+            that moved after the edge vote on it, and would make the
+            verdict depend on where the block boundaries fall). The draw
+            rule is unchanged: a die is consumed only when 0 < p < 1 at
+            that edge, so a CV that pins p at 1 leaves the generator
+            untouched (``prob`` 0.5 with +0.5 at depth 1 IS ``prob`` 1.0,
+            draw for draw) and an unpatched jack IS the scalar path,
+            operation for operation. A non-finite CV sample reads as 0
+            (p = ``prob``). A ``(V, F)`` CV is read per voice at that
+            voice's edge and carries the voice axis the way ``in`` and
+            ``trig`` do; a mono CV broadcasts; a ``(V', F)`` CV whose V'
+            disagrees with the module's is averaged to mono. In ``track``
+            mode the open window's verdict is the die at its edge
+            (``track_on``), as for any 0 < ``prob`` < 1 -- the "every
+            window wins" shortcut only holds while the chance is static.
         """
         in_buf = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
         trig_buf = self._input_buffer(patch, buffers, module.id, "trig", collapse=False)
+        cv_buf = self._input_buffer(patch, buffers, module.id, "prob_cv", collapse=False)
 
         mode = str(module.params.get("mode", "sample"))
         if mode not in ("sample", "track"):
@@ -8440,6 +8463,12 @@ class NumpyBackend(AudioBackend):
             seed = 1
         seed = max(0, seed)
         try:
+            depth = float(module.params.get("prob_cv_depth", 1.0))
+        except (TypeError, ValueError):
+            depth = 1.0
+        if not np.isfinite(depth):
+            depth = 1.0
+        try:
             glide = float(module.params.get("glide", 0.0))
         except (TypeError, ValueError):
             glide = 0.0
@@ -8453,14 +8482,17 @@ class NumpyBackend(AudioBackend):
         # Voice dimension is set by whichever input carries the voice axis.
         v_in = in_buf.shape[0] if (in_buf is not None and in_buf.ndim == 2) else None
         v_trig = trig_buf.shape[0] if (trig_buf is not None and trig_buf.ndim == 2) else None
+        v_cv = cv_buf.shape[0] if (cv_buf is not None and cv_buf.ndim == 2) else None
 
-        if v_in is None and v_trig is None:
+        if v_in is None and v_trig is None and v_cv is None:
             return self._render_sample_hold_mono(
-                module, frames, in_buf, trig_buf, mode, prob, seed, a_glide
+                module, frames, in_buf, trig_buf, mode, prob, seed, a_glide,
+                cv_buf, depth,
             )
-        V = v_in if v_in is not None else v_trig
+        V = v_in if v_in is not None else (v_trig if v_trig is not None else v_cv)
         return self._render_sample_hold_voice(
-            module, frames, in_buf, trig_buf, V, mode, prob, seed, a_glide
+            module, frames, in_buf, trig_buf, V, mode, prob, seed, a_glide,
+            cv_buf, depth,
         )
 
     @staticmethod
@@ -8476,7 +8508,7 @@ class NumpyBackend(AudioBackend):
         return state["rng"]
 
     @staticmethod
-    def _sample_hold_edge_keep(rising, prob, rng):
+    def _sample_hold_edge_keep(rising, prob, rng, cv=None, depth=1.0):
         """Which raw rising edges win their ``prob`` draw.
 
         Returns a bool array shaped like ``rising`` that is True at the
@@ -8489,20 +8521,52 @@ class NumpyBackend(AudioBackend):
         a block split cannot reorder it. ``rng.random(n)`` yields the
         same doubles as n scalar ``rng.random()`` calls, so the
         vectorised throw is the per-edge throw.
+
+        ``cv`` (``prob_cv``, ``(F,)`` or ``(V, F)``) makes the chance
+        per edge: ``p = clip(prob + depth * cv[edge], 0, 1)`` at each
+        edge's own sample, a non-finite sample reading as ``prob``.
+        Only the edges with 0 < p < 1 draw, in the same order, so a CV
+        that pins p at 1 (or 0) consumes nothing and a CV sitting at 0
+        is the scalar path draw for draw. Only the edge samples of the
+        CV are ever touched -- O(edges), not O(F).
         """
-        if prob >= 1.0:
-            return rising
-        if prob <= 0.0:
-            return np.zeros_like(rising)
+        if cv is None:
+            if prob >= 1.0:
+                return rising
+            if prob <= 0.0:
+                return np.zeros_like(rising)
+            keep = np.zeros_like(rising)
+            if rising.ndim == 1:
+                pos = np.flatnonzero(rising)
+                if pos.size:
+                    keep[pos] = rng.random(pos.size) < prob
+            else:
+                ns, vs = np.nonzero(rising.T)          # sorted by n, then v
+                if ns.size:
+                    keep[vs, ns] = rng.random(ns.size) < prob
+            return keep
+
         keep = np.zeros_like(rising)
         if rising.ndim == 1:
             pos = np.flatnonzero(rising)
-            if pos.size:
-                keep[pos] = rng.random(pos.size) < prob
+            if not pos.size:
+                return keep
+            sel = (pos,)
+            at_edge = cv[pos]
         else:
-            ns, vs = np.nonzero(rising.T)          # sorted by n, then v
-            if ns.size:
-                keep[vs, ns] = rng.random(ns.size) < prob
+            ns, vs = np.nonzero(rising.T)              # sorted by n, then v
+            if not ns.size:
+                return keep
+            sel = (vs, ns)
+            at_edge = cv[vs, ns] if cv.ndim == 2 else cv[ns]
+        p = prob + depth * at_edge.astype(np.float64)
+        p = np.where(np.isfinite(p), p, prob)
+        p = np.clip(p, 0.0, 1.0)
+        win = p >= 1.0                                 # certain: no draw
+        need = (p > 0.0) & (p < 1.0)
+        if need.any():
+            win[need] = rng.random(int(need.sum())) < p[need]
+        keep[sel] = win
         return keep
 
     @staticmethod
@@ -8561,14 +8625,16 @@ class NumpyBackend(AudioBackend):
         return y.astype(np.float32)
 
     def _render_sample_hold_mono(
-        self, module, frames, in_buf, trig_buf, mode, prob, seed, a_glide
+        self, module, frames, in_buf, trig_buf, mode, prob, seed, a_glide,
+        cv_buf=None, depth=1.0,
     ) -> np.ndarray:
         """Mono path -- scalar held value + held-gate carried across blocks.
 
         ``track`` mode swaps the edge mask for the (winning-window) high
-        mask in the same forward-fill; ``prob`` thins the edges first;
-        ``glide`` lags whatever comes out. Every return path goes
-        through the lag so an unpatched clock still lets a glide finish.
+        mask in the same forward-fill; ``prob`` (per edge through
+        ``prob_cv`` when patched) thins the edges first; ``glide`` lags
+        whatever comes out. Every return path goes through the lag so an
+        unpatched clock still lets a glide finish.
         """
         state = self._state.setdefault(module.id, {"held": 0.0, "prev_gate": False})
         # Drop voice-shaped state if it leaked from a previous voice call.
@@ -8596,16 +8662,18 @@ class NumpyBackend(AudioBackend):
         g_prev[0] = bool(state["prev_gate"])
         g_prev[1:] = g[:-1]
         rising = g & ~g_prev                           # (F,) bool
-        keep = self._sample_hold_edge_keep(rising, prob, rng)
+        # Handed over as is: only its edge samples are ever read.
+        keep = self._sample_hold_edge_keep(rising, prob, rng, cv_buf, depth)
 
         if mode == "track":
             # Follow while inside a winning window; the fill below then
             # holds the last followed sample through the low stretches.
-            # At prob 1 every window wins, so a window already open at
-            # the block start (a live flip to track under a held gate)
-            # is simply "the gate was high".
+            # At a static prob 1 every window wins, so a window already
+            # open at the block start (a live flip to track under a held
+            # gate) is simply "the gate was high". With prob_cv patched
+            # the open window's verdict is whatever its edge rolled.
             carry = (
-                bool(state["prev_gate"]) if prob >= 1.0
+                bool(state["prev_gate"]) if (cv_buf is None and prob >= 1.0)
                 else bool(state.get("track_on", False))
             )
             active = self._sample_hold_windows(g, rising, keep, carry, axis=0)
@@ -8623,7 +8691,8 @@ class NumpyBackend(AudioBackend):
         return self._sample_hold_lag(state, sampled.astype(np.float32), a_glide, held)
 
     def _render_sample_hold_voice(
-        self, module, frames, in_buf, trig_buf, V, mode, prob, seed, a_glide
+        self, module, frames, in_buf, trig_buf, V, mode, prob, seed, a_glide,
+        cv_buf=None, depth=1.0,
     ) -> np.ndarray:
         """Voice path -- per-voice held values + per-voice held-gate.
 
@@ -8632,6 +8701,11 @@ class NumpyBackend(AudioBackend):
         sample one shared source. The love-pass knobs are all per voice:
         one ``prob`` die per edge per voice (time-major order), one
         ``track`` window verdict per voice, one ``glide`` lag per voice.
+        ``prob_cv`` is per voice too: a ``(V, F)`` CV gives each voice
+        its own chance at its own edge (and can be the input that puts
+        the module on this path), a mono CV is one chance for every
+        voice, and a ``(V', F)`` CV of the wrong V' is averaged to mono
+        rather than crashing the audio thread on a broadcast.
         """
         state = self._state.setdefault(module.id, {})
         needs_reinit = (
@@ -8669,10 +8743,17 @@ class NumpyBackend(AudioBackend):
         prev_col = state["gate_arr"][:, None]          # (V, 1)
         g_prev = np.concatenate([prev_col, g[:, :-1]], axis=1)
         rising = g & ~g_prev                           # (V, F)
-        keep = self._sample_hold_edge_keep(rising, prob, rng)
+        if cv_buf is not None and cv_buf.ndim == 2 and cv_buf.shape[0] != V:
+            cv = cv_buf.mean(axis=0)                   # the wrong V: averaged
+        else:
+            cv = cv_buf                                # None, (F,) or (V, F)
+        keep = self._sample_hold_edge_keep(rising, prob, rng, cv, depth)
 
         if mode == "track":
-            carry = state["gate_arr"] if prob >= 1.0 else state["track_arr"]
+            carry = (
+                state["gate_arr"] if (cv is None and prob >= 1.0)
+                else state["track_arr"]
+            )
             active = self._sample_hold_windows(g, rising, keep, carry, axis=1)
             state["track_arr"] = active[:, -1].copy()
             key = active

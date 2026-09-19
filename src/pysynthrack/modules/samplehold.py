@@ -55,6 +55,27 @@ a patch saved before today renders bit-identically:
     sits on the followed signal too (it is a lag on ``out``, wherever
     ``out`` came from). 0 is a straight wire — no filter runs.
 
+Love pass (2026-09-20) — the chance becomes a jack:
+
+  * ``prob_cv`` + ``prob_cv_depth`` — at every rising edge the
+    effective chance is ``clamp(prob + depth * cv, 0, 1)``, the CV read
+    **at the edge's own sample**, not averaged over the block: the
+    decision is made once per edge, so the voltage at that instant is
+    the honest value (a block mean would let a CV that moved *after*
+    the edge vote on it, and would change the verdict with the buffer
+    size). ``prob_cv_depth`` is probability units per CV unit, default
+    1 — a unipolar 0..1 LFO at depth 1 sweeps the chance from ``prob``
+    to ``prob`` + 1, a bipolar one at depth 0.5 rocks it ±0.5; negative
+    depth inverts. The draw rule is unchanged: a die is consumed only
+    when 0 < chance < 1 *at that edge*, so a CV that pins the chance at
+    1 leaves the generator untouched (``prob`` 0.5 with +0.5 at depth 1
+    is ``prob`` 1.0 draw for draw) and an unpatched jack is exactly
+    today's render. A slow LFO into ``prob_cv`` walks a random melody
+    from "stuck on one note" to "free" and back; an envelope into it
+    makes the S&H eager at the start of a note and lazy at its tail. A
+    non-finite CV sample reads as 0. In ``track`` mode the die at the
+    window's rising edge decides the window, as today.
+
 Ports:
   * ``in`` (cv): the signal to sample. Unpatched is treated as 0, so
     an unpatched SampleHold simply holds 0 (pure S&H — no internal
@@ -62,6 +83,8 @@ Ports:
   * ``trig`` (gate): the clock. Each rising edge (crossing the
     backend's gate threshold upward) takes one sample. Unpatched means
     no triggers, so the output holds its last value (0 at startup).
+  * ``prob_cv`` (cv): modulates ``prob`` per edge (see above).
+    Unpatched, the chance is exactly ``prob``.
   * ``out`` (cv): the held value.
 
 Params:
@@ -69,6 +92,7 @@ Params:
   * ``prob``: chance an edge samples, 0..1. Default 1.
   * ``seed``: the die for ``prob`` (non-negative int). Default 1.
   * ``glide``: output lag, seconds to 99% of a step. Default 0.
+  * ``prob_cv_depth``: probability units per ``prob_cv`` unit. Default 1.
 
 Voice-awareness:
   Shape-polymorphic on its inputs, per the v0.4 convention. Mono
@@ -81,7 +105,11 @@ Voice-awareness:
   one die per edge PER VOICE (a shared clock into four voices is four
   independent decisions — a chord where each note sometimes holds),
   drawn in time order and voice order within a sample so a block split
-  never reorders them; ``glide`` carries one lag per voice.
+  never reorders them; ``glide`` carries one lag per voice; a ``(V, F)``
+  ``prob_cv`` gives each voice its own chance at its own edge (and, like
+  ``in`` and ``trig``, is enough on its own to put the module on the
+  voice path — one source, one clock, four dice with four different
+  odds), while a mono ``prob_cv`` is one chance shared by every voice.
 """
 from __future__ import annotations
 
@@ -105,10 +133,15 @@ class SampleHold(Module):
         seed: RNG seed for ``prob``. Default 1.
         glide: One-pole lag on the output, seconds to 99% of a step;
             0 = none. Default 0.0.
+        prob_cv_depth: Probability units per unit of ``prob_cv``
+            (``clamp(prob + depth * cv, 0, 1)``, read at each edge).
+            Default 1.0.
 
     Ports:
         in (in, cv): signal to sample. Unpatched is treated as 0.
         trig (in, gate): clock; samples on each rising edge.
+        prob_cv (in, cv): per-edge modulation of ``prob``. Unpatched,
+            the chance is exactly ``prob``.
         out (out, cv): the held value.
     """
 
@@ -119,9 +152,11 @@ class SampleHold(Module):
         "prob": 1.0,
         "seed": 1,
         "glide": 0.0,
+        "prob_cv_depth": 1.0,
     }
     INPUT_PORTS = [
         Port("in", "in", "cv"),
         Port("trig", "in", "gate"),
+        Port("prob_cv", "in", "cv"),
     ]
     OUTPUT_PORTS = [Port("out", "out", "cv")]

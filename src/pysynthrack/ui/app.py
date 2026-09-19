@@ -3442,7 +3442,17 @@ class App:
             # The S&H's love-pass knobs. ``mode`` hits the shared combo
             # branch below (sample / track); ``prob`` is the chance an
             # edge samples; ``seed`` its die; ``glide`` the output lag in
-            # seconds-to-99% (0 = a straight wire).
+            # seconds-to-99% (0 = a straight wire); ``prob_cv_depth`` is
+            # probability units per ``prob_cv`` unit (1 = a 0..1 CV sweeps
+            # the whole chance; negative inverts), the supersaw's
+            # ``detune_cv_depth`` drag.
+            if param_name == "prob_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.01,
+                    min_value=-2.0, max_value=2.0, format="%.2f p/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
             if param_name == "prob":
                 dpg.add_slider_float(
                     label=f"{param_name} (chance an edge samples)",

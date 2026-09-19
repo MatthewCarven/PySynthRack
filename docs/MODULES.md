@@ -119,6 +119,7 @@ The full map:
 | `bowed.pressure_cv` / `bowed.velocity_cv` | `1.0` (shared) | level (0…1) | `pressure/velocity + d·cv[n]`, per sample, clamped 0…1; mono, shared by every voice |
 | `wind.breath_cv` | `1.0` | level (0…1) | `breath + d·cv[n]`, per sample, clamped 0…1; mono, shared by every voice |
 | `granular.position_cv` | `1.0` (`position_cv_depth`) | fraction of the buffer | `position + d·cv[onset]`, read at each grain's onset and latched for that grain; clamped 0…1; a `(V, F)` source is averaged |
+| `sample_hold.prob_cv` | `1.0` (`prob_cv_depth`) | probability (0…1, the knob's unit) | `clip(prob + d·cv[edge], 0, 1)`, read at each rising edge's own sample and decided there (a die is drawn only where 0 < p < 1, so a CV that pins p at 1 consumes none); a `(V, F)` source is one chance per voice at that voice's edge; a non-finite sample reads as 0 |
 | `supersaw.detune_cv` | `1.0` (`detune_cv_depth`) | detune (0…1, the knob's unit) | `clip(detune + d·mean cv, 0, 1)`, block-rate; a `(V, F)` source on a voice-aware stack gives every voice its own detune, a `(V, F)` source on a mono stack is averaged |
 | `delay.time_cv` | `50.0` | ms | `time + d·cv` |
 | `loudness.level_cv` | `1.0` | level (0…1) | `level + d·mean cv` |
@@ -128,8 +129,9 @@ The full map:
 | `mixer.gain{i}_cv` | — (multiplier) | linear, per-sample | `in_i · gain_i · cv_i` |
 
 (Converters whose entire job is a CV mapping — `cv_to_frequency`, the bridges,
-`cv_scale`/`cv_offset`, sample_hold, schmitt, sequencer — are out of scope:
-their params *are* the mapping.)
+`cv_scale`/`cv_offset`, sample_hold's `in`, schmitt, sequencer — are out of
+scope: their params *are* the mapping. A converter's *side* input is not —
+`sample_hold.prob_cv` modulates a knob, so it gets a depth like any other.)
 
 ### Cabling rules
 
@@ -318,7 +320,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`cv_offset`](#cv_offset) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`cv_math`](#cv_math) | CV & Utilities | `a`,`b` (cv) → `min`,`max`,`avg`,`diff`,`mult`,`rect`,`inv` (cv) |
 | [`cv_recorder`](#cv_recorder) | CV & Utilities | `in` (cv), `clock`,`rec`,`clear` (gate) → `out`,`pos` (cv) |
-| [`sample_hold`](#sample_hold) | CV & Utilities | `in` (cv), `trig` (gate) → `out` (cv) |
+| [`sample_hold`](#sample_hold) | CV & Utilities | `in`, `prob_cv` (cv), `trig` (gate) → `out` (cv) |
 | [`slew`](#slew) | CV & Utilities | `in`, `rise_cv`, `fall_cv` (cv), `clock` (gate) → `out` (cv) |
 | [`quantizer`](#quantizer) | CV & Utilities | `in` (cv), `gate` (gate) → `out` (cv), `changed` (gate) |
 | [`chord`](#chord) | CV & Utilities | `pitch_cv` (cv), `gate` (gate) → `pitch_cv` (cv), `gate` (gate, both (4, F)), `changed` (gate, mono) |
@@ -4616,12 +4618,38 @@ filter runs, and turning it on later primes the lag to the value the
 output is already sitting on rather than swooping up from 0. See
 `examples/sample_hold_sometimes.json`.
 
+**Love pass (2026-09-20) — the chance becomes a jack.** `prob_cv` +
+`prob_cv_depth` (probability units per CV unit, default 1): at every
+rising edge the effective chance is `clip(prob + depth · cv, 0, 1)`,
+with the CV read **at the edge's own sample** — not a block mean. The
+decision is made once per edge, so the voltage at that instant is the
+honest value; a block mean would let a CV that moved *after* the edge
+vote on it, and would make the verdict depend on where the buffer
+boundaries fall (the per-edge read is bit-exact 64 vs 512 with a moving
+CV). The draw rule is unchanged — a die is consumed only when 0 < chance
+< 1 *at that edge* — so a CV that pins the chance at 1 leaves the
+generator untouched (`prob` 0.5 with +0.5 at depth 1 is `prob` 1.0
+draw for draw), a CV at 0 is the unpatched render draw for draw, and
+an unpatched jack is exactly the shipped code. A unipolar 0..1 LFO at
+depth 1 sweeps the chance from `prob` to `prob` + 1; a bipolar one at
+depth 0.5 rocks it ±0.5; negative depth inverts; a non-finite sample
+reads as 0. Per voice: a `(V, F)` CV gives each voice its own chance at
+its own edge (and, like `in` and `trig`, is enough on its own to put the
+module on the voice path — one source, one clock, four dice with four
+different odds), a mono CV is one chance shared by every voice. In
+`track` mode the die at the window's rising edge decides the window, as
+before. A slow LFO into `prob_cv` walks a random melody from "stuck on
+one note" to "free" and back; an envelope into it makes the S&H eager
+at the start of a note and lazy at its tail. See
+`examples/sample_hold_prob_sweep.json`.
+
 **Ports**
 
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | cv | The signal to sample (or follow, in `track`). Unpatched → 0. |
 | `trig` | in | gate | The clock: samples on each rising edge (`sample`), or follows while high and holds at the fall (`track`). Unpatched → holds the last value. |
+| `prob_cv` | in | cv | Modulates `prob` per edge: `clip(prob + prob_cv_depth · cv, 0, 1)`, the CV read at the edge's own sample. Unpatched → the chance is exactly `prob`. A `(V, F)` source is one chance per voice. |
 | `out` | out | cv | The held value, through `glide` if set. |
 
 **Parameters**
@@ -4632,6 +4660,7 @@ output is already sitting on rather than swooping up from 0. See
 | `prob` | `1.0` | 0 … 1 | Chance a rising edge samples (in `track`, that the window runs). 1 = every edge, no draws; 0 = never. |
 | `seed` | `1` | ≥ 0 | The die for `prob`; change it to re-roll. |
 | `glide` | `0.0` | 0 … 5 s | One-pole lag on the output, seconds to 99% of a step. 0 = none (no filter runs). |
+| `prob_cv_depth` | `1.0` | −2 … 2 p/unit | Probability units per unit of `prob_cv` (1 = a 0..1 CV sweeps the whole chance; negative inverts; 0 disables without unpatching). |
 
 #### `slew`
 
@@ -5373,6 +5402,7 @@ loads in the app. Notable ones referenced above:
 - `organ_scanner.json` — the [`organ`](#organ)'s own `vibrato` at **C3**: a two-bar m7 vamp (Dm Gm Cm Cm Am Dm Gm Cm, one chord a second from a [`chord`](#chord) in first inversion) on the 888 000 000 jazz registration with `perc` 2nd, through a little [`reverb`](#reverb). The scanner chorus is the un-delayed organ averaged with its 6.87 Hz-swept copy — the comb between them is the shimmer; flip `vibrato` to `v3` to hear the sweep alone, or `off` for the dry organ (every switch crossfades, so do it under a held chord).
 - `krell_feedback.json` — the real krell self-patch: the [`function_generator`](#function_generator) in `trigger` mode with its own `eoc` OR'd (through [`logic`](#logic)) with a 12-second starter pulse back into `trig`. The loop closes one block late — the feedback door, generalized 2026-09-16. Same dice, quantizer and voice as `krell_machine.json`, which runs the no-latency `loop` mode version.
 - `sample_hold_sometimes.json` — the "sometimes" S&H: [`noise`](#noise) `cv` into a [`sample_hold`](#sample_hold) with `prob` 0.6 (`seed` 11) and `glide` 0.05, clocked at sixteenths, through a [`quantizer`](#quantizer) (pentatonic minor) into a saw voice with an [`adsr`](#adsr) on every tick — a random melody that repeats notes about two ticks in five, and because the glide sits *before* the quantizer every change is a 50 ms zip up or down the scale into the new note, a little [`reverb`](#reverb) behind it. Change the seed for a different set of repeats.
+- `sample_hold_prob_sweep.json` — the chance as a jack: a seeded [`noise`](#noise) into a [`sample_hold`](#sample_hold) at `prob` 0.5 (`glide` 0.03), clocked at eighths, through a [`quantizer`](#quantizer) (pentatonic minor) into a saw voice with an [`adsr`](#adsr) on every tick — and a slow bipolar sine [`lfo`](#lfo) (0.05 Hz) on `prob_cv` at depth 0.5, so the chance rides 0.5 → 1 → 0.5 → 0 → 0.5 every 20 s: the melody drifts from "free" (every tick a new note, around 5 s) to "stuck on one note" (around 15 s) and back, a little [`reverb`](#reverb) behind it. Every source is seeded, so it renders identically twice with no global seeding.
 - `fg_eor_swell_strike.json` — what `eor` is for: a slow [`function_generator`](#function_generator) (1.2 s up, 1.8 s down, cycling through the krell loop with a wandering `rate_cv`) swells a low saw through a filter and VCA, and at the **top** of every swell its `eor` fires a [`pluck`](#pluck) whose pitch a [`sample_hold`](#sample_hold) grabbed at that same instant — swell, then strike.
 - `granular_cloud.json` — a shift-register pluck melody into the [`granular`](#granular) at `pitch` +12, `density` 30, `size` 120 ms, `position` 0.15: every pluck gets an octave-up grain cloud trailing 300 ms behind it, through a hall.
 - `granular_haze.json` — the cloud proper: a pluck melody into the [`granular`](#granular) with `spray_time` 1 (asynchronous), `spray_pos` 0.22, `spray_pitch` 25 ct and `width` 1 — every note dissolves into a stereo haze a quarter-second behind itself; `seed` picks the cloud.

@@ -41,6 +41,34 @@ Love pass (2026-09-19) — ``mode`` / ``prob`` + ``seed`` / ``glide``:
     and every param gets a bounded widget (mocked dpg).
   - The example ``sample_hold_sometimes.json`` renders at a sane peak,
     repeats notes at about ``prob`` and stays in C pentatonic minor.
+
+Love pass (2026-09-20) — ``prob_cv`` + ``prob_cv_depth``:
+  - The jack ships OFF: a ``prob_cv`` cable carrying 0 (at any depth)
+    and a moving CV at depth 0 are both the unpatched render draw for
+    draw, and the unpatched render is the scalar path the tests above
+    already pin against the pure-Python model and ``default_rng``.
+  - The spec pins: ``prob`` 0.5 with +0.5 at depth 1 == ``prob`` 1.0
+    bit-exact AND the rng untouched; a CV of 1e6 clamps to 1 (every
+    edge, no draws, finite), -1e6 to 0; NaN reads as 0; negative depth
+    inverts.
+  - Read at the EDGE'S OWN SAMPLE: a CV that is +1 only on the even
+    edges' samples and -1 everywhere else (block mean ~ -1) samples
+    every even edge and no odd one, consuming no draws.
+  - A moving CV's decisions equal a hand model: draws only where
+    0 < p < 1, in time order, from ``default_rng(seed)``.
+  - Voice path: a ``(V, F)`` CV is one chance per voice at that voice's
+    edge (v0 pinned at 1 samples every edge, v1 at 0 never, v2 at 0.5
+    draws ALONE — its hits are the rng's first doubles); a ``(V, F)`` CV
+    on a mono in/trig promotes the module to the voice path; a mono CV
+    broadcasts; a CV of the wrong V is averaged to mono.
+  - Track mode: the die at the window's rising edge decides the window.
+  - Block-size independence, 64 vs 512, with edges mid-stream and a
+    moving CV, mono and voice, sample and track.
+  - UI: a bounded ``prob_cv_depth`` drag (p/unit); the CV-depth map row.
+  - The example ``sample_hold_prob_sweep.json`` renders identically
+    twice with no global seeding, at a sane peak, changes on every tick
+    where the sweep pins the chance near 1 and almost never where it
+    pins it near 0, and stays in C pentatonic minor.
 """
 from __future__ import annotations
 
@@ -79,8 +107,10 @@ class TestModel:
         patch = Patch()
         sh = patch.add_module("sample_hold")
         assert isinstance(sh, SampleHold)
-        # Every love-pass knob ships OFF.
-        assert sh.params == {"mode": "sample", "prob": 1.0, "seed": 1, "glide": 0.0}
+        # Every love-pass knob ships OFF (a depth of 1 on an unpatched jack is off).
+        assert sh.params == {
+            "mode": "sample", "prob": 1.0, "seed": 1, "glide": 0.0, "prob_cv_depth": 1.0,
+        }
 
     def test_modes_registered(self):
         assert SAMPLE_HOLD_MODES == ("sample", "track")
@@ -92,6 +122,7 @@ class TestModel:
         assert [(p.name, p.signal_kind) for p in sh.input_ports] == [
             ("in", "cv"),
             ("trig", "gate"),
+            ("prob_cv", "cv"),
         ]
         assert [(p.name, p.signal_kind) for p in sh.output_ports] == [("out", "cv")]
 
@@ -828,12 +859,16 @@ class TestUI:
             hits = [lb for lb in labels if lb == name or lb.startswith(name + " ")]
             assert hits, (name, labels)
             assert w[hits[0]][0] != "add_input_text", (name, w[hits[0]])
-        prob = next(v for k, v in w.items() if k.startswith("prob"))
+        # "prob " with the space: "prob_cv_depth" is a drag, collected first.
+        prob = next(v for k, v in w.items() if k.startswith("prob "))
         assert prob[0] == "add_slider_float" and (prob[3], prob[4]) == (0.0, 1.0)
         glide = next(v for k, v in w.items() if k.startswith("glide"))
         assert glide[0] == "add_drag_float" and glide[1].endswith(" s")
         assert (glide[3], glide[4]) == (0.0, 5.0)
         assert w["seed"][0] == "add_drag_int" and w["seed"][3] == 0
+        depth = w["prob_cv_depth"]
+        assert depth[0] == "add_drag_float" and depth[1] == "%.2f p/unit"
+        assert (depth[3], depth[4]) == (-2.0, 2.0)
 
 
 # ----- Love pass: the example ---------------------------------------------------
@@ -885,4 +920,340 @@ class TestExample:
         assert ticks >= 50 and 0.4 < ratio < 0.85, (ticks, ratio)   # ~prob 0.6
         # every quantised pitch is in C pentatonic minor (0 3 5 7 10)
         st = np.round(np.concatenate(capq) * 12).astype(int) % 12
+        assert set(st.tolist()) <= {0, 3, 5, 7, 10}, sorted(set(st.tolist()))
+
+
+# ----- Love pass (2026-09-20): prob_cv ------------------------------------------
+
+
+def _make_cv(params=None):
+    """``_make`` plus a fake feeder on (99, cv) -> prob_cv."""
+    patch, sh, backend = _make(params)
+    patch.cables.append(Cable(99, "cv", sh.id, "prob_cv"))
+    return patch, sh, backend
+
+
+def _run_cv(backend, sh, patch, in_arr, trig_arr, cv_arr, block):
+    """``_run`` with a prob_cv buffer (1-D or (V, F)); None = the cable
+    is there but its source never rendered, which reads as unpatched."""
+    n = trig_arr.shape[-1]
+    outs = []
+    for s0 in range(0, n, block):
+        e = min(n, s0 + block)
+        buffers = {
+            (77, "out"): np.asarray(in_arr[..., s0:e], dtype=np.float32),
+            (88, "gate"): np.asarray(trig_arr[..., s0:e], dtype=np.float32),
+        }
+        if cv_arr is not None:
+            buffers[(99, "cv")] = np.asarray(cv_arr[..., s0:e], dtype=np.float32)
+        outs.append(backend._render_sample_hold(sh, e - s0, buffers, patch))
+    return np.concatenate(outs, axis=-1)
+
+
+def _run_cv_with(params, x, trig, cv, block=512):
+    patch, sh, backend = _make_cv(params)
+    return _run_cv(backend, sh, patch, x, trig, cv, block)
+
+
+def _rng_state(backend, sh):
+    return backend._state[sh.id]["rng"].bit_generator.state
+
+
+def _edges(trig):
+    g = trig > 0.5
+    return np.flatnonzero(g[1:] & ~g[:-1]) + 1
+
+
+class TestProbCV:
+    N = 200_000
+    X = np.sin(2 * np.pi * 2.3 * np.arange(N) / SR).astype(np.float32)
+    TRIG = _clock(N, 1000, 400, phase=-1)          # 200 edges, the first at 1
+    SWEEP = (0.6 * np.sin(2 * np.pi * 0.05 * np.arange(N) / SR)).astype(np.float32)
+
+    def test_plus_half_at_depth_one_is_prob_one_and_draws_nothing(self):
+        """The spec's pin: the CV pushes p to exactly 1 at every edge, so
+        every edge samples and the die is never thrown."""
+        patch, sh, backend = _make_cv({"prob": 0.5, "seed": 3})
+        out = _run_cv(backend, sh, patch, self.X, self.TRIG, np.full(self.N, 0.5), 512)
+        assert np.array_equal(out, _run_with({"prob": 1.0, "seed": 3}, self.X, self.TRIG))
+        assert np.array_equal(out, _model_sample_hold(self.X, self.TRIG))
+        assert _rng_state(backend, sh) == np.random.default_rng(3).bit_generator.state
+
+    def test_cv_at_zero_is_the_unpatched_render_draw_for_draw(self):
+        """The jack ships OFF: a cable carrying 0 changes nothing, and
+        the draw sequence is the unpatched one (pinned against
+        default_rng above), so the rng ends in the same state."""
+        patch, sh, backend = _make_cv({"prob": 0.5, "seed": 3})
+        out = _run_cv(backend, sh, patch, self.X, self.TRIG, np.zeros(self.N), 512)
+        p2, sh2, b2 = _make({"prob": 0.5, "seed": 3})
+        ref = _run(b2, sh2, p2, self.X, self.TRIG, 512)
+        assert np.array_equal(out, ref)
+        assert _rng_state(backend, sh) == _rng_state(b2, sh2)
+        assert int(_sampled_edges(out, self.TRIG).sum()) == 95      # the pinned count
+
+    def test_source_that_never_rendered_reads_as_unpatched(self):
+        patch, sh, backend = _make_cv({"prob": 0.5, "seed": 3})
+        out = _run_cv(backend, sh, patch, self.X, self.TRIG, None, 512)
+        assert np.array_equal(out, _run_with({"prob": 0.5, "seed": 3}, self.X, self.TRIG))
+
+    def test_depth_zero_disables_a_moving_cv(self):
+        out = _run_cv_with({"prob": 0.5, "seed": 3, "prob_cv_depth": 0.0},
+                           self.X, self.TRIG, self.SWEEP)
+        assert np.array_equal(out, _run_with({"prob": 0.5, "seed": 3}, self.X, self.TRIG))
+
+    def test_read_at_the_edge_sample_not_a_block_mean(self):
+        """+1 on the even edges' own samples, -1 everywhere else: the block
+        mean is ~ -1 (never sample), but the per-edge read pins the even
+        edges at 1 and the odd ones at 0 -- and neither side draws."""
+        cv = np.full(self.N, -1.0, np.float32)
+        edges = _edges(self.TRIG)
+        cv[edges[::2]] = 1.0
+        patch, sh, backend = _make_cv({"prob": 0.5, "seed": 3})
+        out = _run_cv(backend, sh, patch, self.X, self.TRIG, cv, 512)
+        hits = _sampled_edges(out, self.TRIG)
+        assert hits.size == 200 and hits[::2].all() and not hits[1::2].any()
+        assert _rng_state(backend, sh) == np.random.default_rng(3).bit_generator.state
+        # the same CV one sample late misses every edge: nothing samples
+        late = np.roll(cv, 1)
+        out2 = _run_cv_with({"prob": 0.5, "seed": 3}, self.X, self.TRIG, late)
+        assert np.all(out2 == 0.0)
+
+    def test_moving_cv_matches_the_hand_model(self):
+        """A +-0.6 sweep around prob 0.5: edges whose p lands on [1, ..)
+        sample without a draw, (.., 0] hold without one, and only the
+        edges in between consume the rng -- in time order."""
+        patch, sh, backend = _make_cv({"prob": 0.5, "seed": 3})
+        out = _run_cv(backend, sh, patch, self.X, self.TRIG, self.SWEEP, 512)
+        edges = _edges(self.TRIG)
+        p = np.clip(0.5 + self.SWEEP[edges].astype(np.float64), 0.0, 1.0)
+        need = (p > 0.0) & (p < 1.0)
+        expect = p >= 1.0
+        expect[need] = np.random.default_rng(3).random(int(need.sum())) < p[need]
+        assert np.array_equal(_sampled_edges(out, self.TRIG), expect)
+        assert 0 < int(need.sum()) < 200                      # both kinds of edge occurred
+        assert int(need.sum()) == 139
+        # and the rng advanced by exactly that many draws
+        rng = np.random.default_rng(3)
+        rng.random(int(need.sum()))
+        assert _rng_state(backend, sh) == rng.bit_generator.state
+
+    def test_clamp_is_finite(self):
+        patch, sh, backend = _make_cv({"prob": 0.5, "seed": 3})
+        out = _run_cv(backend, sh, patch, self.X, self.TRIG, np.full(self.N, 1e6), 512)
+        assert np.isfinite(out).all()
+        assert np.array_equal(out, _model_sample_hold(self.X, self.TRIG))
+        assert _rng_state(backend, sh) == np.random.default_rng(3).bit_generator.state
+        out = _run_cv_with({"prob": 0.5, "seed": 3}, self.X, self.TRIG, np.full(self.N, -1e6))
+        assert np.all(out == 0.0)
+
+    def test_non_finite_cv_reads_as_zero(self):
+        for bad in (np.nan, np.inf, -np.inf):
+            out = _run_cv_with({"prob": 0.5, "seed": 3}, self.X, self.TRIG, np.full(self.N, bad))
+            assert np.array_equal(out, _run_with({"prob": 0.5, "seed": 3}, self.X, self.TRIG)), bad
+
+    def test_negative_depth_inverts(self):
+        out = _run_cv_with({"prob": 0.5, "seed": 3, "prob_cv_depth": -1.0},
+                           self.X, self.TRIG, np.full(self.N, 0.5))
+        assert np.all(out == 0.0)                              # p = 0.5 - 0.5
+        out = _run_cv_with({"prob": 0.5, "seed": 3, "prob_cv_depth": -1.0},
+                           self.X, self.TRIG, np.full(self.N, -0.5))
+        assert np.array_equal(out, _model_sample_hold(self.X, self.TRIG))
+
+    def test_depth_scales(self):
+        # depth 0.5 with +1 == depth 1 with +0.5 == prob 1
+        a = _run_cv_with({"prob": 0.5, "seed": 3, "prob_cv_depth": 0.5},
+                         self.X, self.TRIG, np.full(self.N, 1.0))
+        assert np.array_equal(a, _model_sample_hold(self.X, self.TRIG))
+
+    def test_track_mode_the_die_at_the_edge_decides_the_window(self):
+        cv = np.full(self.N, -1.0, np.float32)
+        edges = _edges(self.TRIG)
+        cv[edges[::2]] = 1.0
+        out = _run_cv_with({"mode": "track", "prob": 0.5, "seed": 3}, self.X, self.TRIG, cv)
+        held = np.float32(0.0)
+        for k, s0 in enumerate(edges.tolist()):
+            win = slice(s0, s0 + 400)
+            low = slice(s0 + 400, s0 + 1000)
+            if k % 2 == 0:
+                assert np.array_equal(out[win], self.X[win])   # followed
+                held = self.X[s0 + 399]
+            else:
+                assert np.all(out[win] == held)                # skipped whole
+            assert np.all(out[low] == held)
+
+
+class TestProbCVVoice:
+    N = 30000
+    X = np.sin(2 * np.pi * 2.3 * np.arange(N) / SR).astype(np.float32)
+    XV = np.stack([X, -X, 0.5 * X])
+    TRIG = _clock(N, 1000, 400, phase=-1)          # 30 shared edges
+    CVV = np.stack([np.full(N, 0.5), np.full(N, -0.5), np.zeros(N)]).astype(np.float32)
+
+    def test_voice_cv_is_one_chance_per_voice_at_its_own_edge(self):
+        """v0 pinned at 1 samples every edge, v1 at 0 never, and v2 at
+        0.5 draws ALONE: its hits are default_rng(5)'s first 30 doubles."""
+        patch, sh, backend = _make_cv({"prob": 0.5, "seed": 5})
+        out = _run_cv(backend, sh, patch, self.XV, self.TRIG, self.CVV, 512)
+        assert out.shape == (3, self.N)
+        assert _sampled_edges(out[0], self.TRIG).all()
+        assert not _sampled_edges(out[1], self.TRIG).any()
+        assert np.array_equal(_sampled_edges(out[2], self.TRIG),
+                              np.random.default_rng(5).random(30) < 0.5)
+        rng = np.random.default_rng(5)
+        rng.random(30)
+        assert _rng_state(backend, sh) == rng.bit_generator.state
+
+    def test_voice_cv_alone_promotes_to_the_voice_path(self):
+        """Mono in + mono trig + a (V, F) CV: one source, one clock, three
+        dice with three different odds -> (V, F) out."""
+        out = _run_cv_with({"prob": 0.5, "seed": 5}, self.X, self.TRIG, self.CVV)
+        assert out.shape == (3, self.N)
+        assert _sampled_edges(out[0], self.TRIG).all()
+        assert not _sampled_edges(out[1], self.TRIG).any()
+        assert np.array_equal(out[0], _model_sample_hold(self.X, self.TRIG))
+
+    def test_mono_cv_broadcasts_to_every_voice(self):
+        patch, sh, backend = _make_cv({"prob": 0.5, "seed": 5})
+        out = _run_cv(backend, sh, patch, self.XV, self.TRIG, np.full(self.N, 0.5), 512)
+        for v in range(3):
+            assert np.array_equal(out[v], _model_sample_hold(self.XV[v], self.TRIG))
+        assert _rng_state(backend, sh) == np.random.default_rng(5).bit_generator.state
+
+    def test_wrong_voice_count_is_averaged(self):
+        """A (2, F) CV of +1 / -1 on a 3-voice module averages to 0: the
+        unpatched voice render, draw for draw."""
+        cv2 = np.stack([np.full(self.N, 1.0), np.full(self.N, -1.0)]).astype(np.float32)
+        out = _run_cv_with({"prob": 0.5, "seed": 5}, self.XV, self.TRIG, cv2)
+        assert out.shape == (3, self.N)
+        assert np.array_equal(out, _run_with({"prob": 0.5, "seed": 5}, self.XV, self.TRIG))
+
+    def test_per_voice_clocks_and_a_moving_voice_cv_match_the_hand_model(self):
+        """Edges interleave in time; the draw order is (sample, voice)
+        and only the edges with 0 < p < 1 draw."""
+        t0 = _clock(self.N, 1000, 300, phase=-1)
+        t1 = _clock(self.N, 1300, 300, phase=-1)
+        tv = np.stack([t0, t1])
+        sweep = (0.6 * np.sin(2 * np.pi * 0.5 * np.arange(self.N) / SR)).astype(np.float32)
+        cvv = np.stack([sweep, -sweep])
+        out = _run_cv_with({"prob": 0.5, "seed": 5}, self.XV[:2], tv, cvv)
+        events = []
+        for v, t in enumerate((t0, t1)):
+            for e in _edges(t).tolist():
+                events.append((e, v))
+        events.sort()
+        p = np.array([np.clip(0.5 + float(cvv[v, e]), 0.0, 1.0) for e, v in events])
+        need = (p > 0.0) & (p < 1.0)
+        verdict = p >= 1.0
+        verdict[need] = np.random.default_rng(5).random(int(need.sum())) < p[need]
+        expect = {0: [], 1: []}
+        for (e, v), d in zip(events, verdict):
+            expect[v].append(bool(d))
+        for v in range(2):
+            assert np.array_equal(_sampled_edges(out[v], tv[v]), np.array(expect[v])), v
+        assert 0 < int(need.sum()) < len(events)
+
+
+class TestProbCVBlockSize:
+    N = _N
+    SWEEP = (0.6 * np.sin(2 * np.pi * 0.7 * np.arange(N) / SR)).astype(np.float32)
+    PARAMS = [
+        {"prob": 0.5, "seed": 3},
+        {"mode": "track", "prob": 0.5, "seed": 9},
+        {"mode": "track", "prob": 0.5, "glide": 0.01, "seed": 9},
+        {"prob": 0.5, "seed": 3, "glide": 0.02, "prob_cv_depth": 0.8},
+    ]
+
+    @pytest.mark.parametrize("params", PARAMS, ids=[str(p) for p in PARAMS])
+    def test_mono_64_vs_512_with_a_moving_cv(self, params):
+        a = _run_cv_with(params, _X, _TRIG, self.SWEEP, 64)
+        b = _run_cv_with(params, _X, _TRIG, self.SWEEP, 512)
+        assert np.array_equal(a, b)
+        assert np.count_nonzero(np.diff(a)) > 0
+
+    @pytest.mark.parametrize("params", PARAMS, ids=[str(p) for p in PARAMS])
+    def test_voice_64_vs_512_with_a_moving_voice_cv(self, params):
+        xv = np.stack([_X, -_X, 0.5 * _X])
+        tv = np.stack([_clock(_N, 1000, 400), _clock(_N, 1300, 100), _clock(_N, 700, 350)])
+        cvv = np.stack([self.SWEEP, -self.SWEEP, 0.3 * self.SWEEP])
+        a = _run_cv_with(params, xv, tv, cvv, 64)
+        b = _run_cv_with(params, xv, tv, cvv, 512)
+        assert a.shape == (3, _N)
+        assert np.array_equal(a, b)
+
+
+class TestProbCVDocs:
+    def test_depth_map_row_is_documented(self):
+        import re
+        md = (Path(__file__).resolve().parent.parent / "docs" / "MODULES.md").read_text(
+            encoding="utf-8"
+        )
+        assert re.search(r"^\| `sample_hold\.prob_cv` \| `1\.0` \(`prob_cv_depth`\)", md, re.M)
+        assert re.search(r"^\| `prob_cv` \| in \| cv \|", md, re.M)
+        assert re.search(r"^\| `prob_cv_depth` \| `1\.0` \|", md, re.M)
+
+
+class TestProbSweepExample:
+    def _render(self, seconds):
+        from pysynthrack.io_patch import load_patch
+
+        path = Path(__file__).resolve().parent.parent / "examples" / "sample_hold_prob_sweep.json"
+        patch = load_patch(path)
+        b = NumpyBackend(sample_rate=SR, block_size=512)
+        b.compile(patch)
+        cap, capq = [], []
+        orig, origq = b._render_sample_hold, b._render_quantizer
+
+        def spy(m, f, bu, p):
+            r = orig(m, f, bu, p)
+            cap.append(np.asarray(r).copy())
+            return r
+
+        def spyq(m, f, bu, p):
+            r = origq(m, f, bu, p)
+            capq.append(np.asarray(r["out"]).copy())
+            return r
+
+        b._render_sample_hold, b._render_quantizer = spy, spyq
+        master = []
+        for _ in range(int(SR * seconds / 512)):
+            out, _devices = b.render_block_multi(512)
+            assert out is not None and np.all(np.isfinite(out))
+            master.append(np.asarray(out).copy())
+        return patch, np.concatenate(master), np.concatenate(cap), np.concatenate(capq)
+
+    def test_renders_identically_twice_with_no_global_seeding(self):
+        """Every source in the patch is seeded (the noise's own ``seed``),
+        so two cold renders agree bit for bit without np.random.seed."""
+        _p, m1, h1, _q = self._render(3)
+        _p, m2, h2, _q = self._render(3)
+        assert np.array_equal(m1, m2) and np.array_equal(h1, h2)
+
+    def test_melody_frees_up_and_gets_stuck_with_the_sweep(self):
+        patch, master, held, quant = self._render(18)
+        sh = next(m for m in patch if m.TYPE == "sample_hold")
+        assert sh.params["prob"] == 0.5 and sh.params["prob_cv_depth"] == 0.5
+        assert sh.params["glide"] == 0.03
+        lfo = next(m for m in patch if m.TYPE == "lfo")
+        assert lfo.params["rate"] == 0.05 and lfo.params["bipolar"] is True
+        nz = next(m for m in patch if m.TYPE == "noise")
+        assert int(nz.params["seed"]) != 0
+        assert len(list(patch)) <= 12
+        peak = float(np.abs(master).max())
+        assert 0.3 < peak < 0.8, peak
+        clk = next(m for m in patch if m.TYPE == "clock")
+        period = SR * 60.0 / (float(clk.params["bpm"]) * float(clk.params["division"]))
+        ticks = int(held.size // period)
+        t = np.arange(1, ticks) * period / SR
+        changed = np.array([
+            abs(float(held[int(round(k * period)) + 400]) - float(held[int(round(k * period)) - 1])) > 1e-4
+            for k in range(1, ticks)
+        ])
+        # a 0.05 Hz sine from phase 0: p = 0.5 + 0.5 sin -> above 0.85 on
+        # 2.5..7.5 s, below 0.15 on 12.5..17.5 s
+        free = changed[(t >= 2.5) & (t < 7.5)]
+        stuck = changed[(t >= 12.5) & (t < 17.5)]
+        assert free.size >= 15 and free.mean() > 0.8, (free.size, free.mean())
+        assert stuck.size >= 15 and stuck.mean() < 0.3, (stuck.size, stuck.mean())
+        # every quantised pitch is in C pentatonic minor (0 3 5 7 10)
+        st = np.round(quant * 12).astype(int) % 12
         assert set(st.tolist()) <= {0, 3, 5, 7, 10}, sorted(set(st.tolist()))
