@@ -31,6 +31,29 @@ Use cases:
   * A long, dark tail (`decay` up, `damping` up) behind a sparse melody.
   * A short, bright ambience (`decay` down, `damping` down) to glue a
     patch together without washing it out.
+  * The shimmer-pad trick: play a chord, hold ``freeze``, and the chord
+    hangs as a pad you can play over.
+
+Freeze:
+  While the ``freeze`` gate is high the tank **holds its tail as a pad**:
+  the recirculation runs at exactly unity gain with the damping low-pass
+  bypassed, and the input is muted from the tank — so whatever was
+  ringing at the moment of the freeze keeps ringing, unchanged, for as
+  long as the gate is held. The feedback matrix is orthonormal, so a
+  unity loop is lossless by construction: the held tail neither decays
+  nor grows (measured over 10 s of freeze: the energy in circulation
+  conserved to within 0.01 dB, the output RMS within ±0.35 dB of the
+  level caught — a fixed tap's share of that energy shifts as the lines
+  mix). The dry path through ``mix`` is untouched, so notes played over
+  a frozen tail are heard dry — and, since they never reach the tank,
+  the pad does not pile up. When the gate falls, ``decay`` and ``damping``
+  resume and the held tail decays away like any other. The switch is per
+  sample: an integer-count 10 ms ramp from each gate edge crossfades the
+  loop gain, the damping and the input mute, so a freeze landing anywhere
+  in a block is click-free and lands on the same sample at any block
+  size (an abrupt switch would be captured by the lossless loop and click
+  forever — the other reason the ramp exists). Unpatched, the module is
+  bit-exact with the pre-freeze render.
 
 Ports:
   * ``in`` (audio): the signal to reverberate. A polyphonic (voice-aware)
@@ -42,6 +65,9 @@ Ports:
     the tail over a phrase, or LFO the air in the room. Optional.
   * ``mix_cv`` (cv): added to ``mix`` (× ``cv_depth``) — envelope-driven
     reverb throws / wet ducking. Optional.
+  * ``freeze`` (gate): high (> 0.5) holds the tail as a pad (see Freeze
+    above). A polyphonic ``(V, F)`` gate collapses to any-voice-high.
+    Unpatched -> never frozen.
   * ``out_l`` (audio): left channel (dry + decorrelated wet tap A).
   * ``out_r`` (audio): right channel (dry + decorrelated wet tap B).
 
@@ -80,6 +106,10 @@ class Reverb(Module):
         decay_cv (in, cv): added to ``decay``, scaled by ``cv_depth``.
         damping_cv (in, cv): added to ``damping``, scaled by ``cv_depth``.
         mix_cv (in, cv): added to ``mix``, scaled by ``cv_depth``.
+        freeze (in, gate): high holds the tail as a pad -- unity loop,
+            damping bypassed, input muted from the tank (dry still
+            passes). ``(V, F)`` collapses to any-voice-high. Unpatched
+            -> never frozen (bit-exact with the pre-freeze render).
         out_l (out, audio): left channel.
         out_r (out, audio): right channel.
     """
@@ -98,6 +128,7 @@ class Reverb(Module):
         Port("decay_cv", "in", "cv"),
         Port("damping_cv", "in", "cv"),
         Port("mix_cv", "in", "cv"),
+        Port("freeze", "in", "gate"),
     ]
     OUTPUT_PORTS = [
         Port("out_l", "out", "audio"),

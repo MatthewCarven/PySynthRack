@@ -71,6 +71,7 @@ class TestModel:
             ("decay_cv", "cv"),
             ("damping_cv", "cv"),
             ("mix_cv", "cv"),
+            ("freeze", "gate"),   # 2026-09-19 love pass
         ]
 
     def test_reverb_cv_depth_default(self):

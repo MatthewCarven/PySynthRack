@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "next_id": 12,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "STRIKE - one chord every 6 s; high for the first 0.72 s", "params": { "bpm": 10.0, "division": 1.0, "pulse_width": 0.12 } },
+    { "id": 2, "type": "chord", "name": "the chord - a strummed C major 7", "params": { "preset": "custom", "interval_1": 0.0, "interval_2": 4.0, "interval_3": 7.0, "interval_4": 11.0, "enable_1": true, "enable_2": true, "enable_3": true, "enable_4": true, "strum": 35.0, "spread": false, "inversion": 0, "retrig": false } },
+    { "id": 3, "type": "pluck", "name": "four strings - the burst that fills the tank", "params": { "decay": 2.5, "damping": 0.4, "color": 0.8, "position": 0.18, "level": 0.9 } },
+    { "id": 4, "type": "logic", "name": "FREEZE = NOT strike - the pad hangs between strikes", "params": {} },
+    { "id": 5, "type": "clock", "name": "LINE - eighths at 90", "params": { "bpm": 90.0, "division": 2.0, "pulse_width": 0.5 } },
+    { "id": 6, "type": "sequencer", "name": "the line - played dry over the frozen pad", "params": { "steps": 8,
+        "step1_pitch": 12.0, "step1_on": true,  "step2_pitch": 16.0, "step2_on": true,
+        "step3_pitch": 19.0, "step3_on": false, "step4_pitch": 23.0, "step4_on": true,
+        "step5_pitch": 24.0, "step5_on": true,  "step6_pitch": 19.0, "step6_on": false,
+        "step7_pitch": 16.0, "step7_on": true,  "step8_pitch": 14.0, "step8_on": true } },
+    { "id": 7, "type": "pluck", "name": "the line's string - quieter, shorter", "params": { "decay": 0.9, "damping": 0.5, "color": 0.7, "position": 0.25, "level": 0.35 } },
+    { "id": 8, "type": "mixer", "name": "chord + line", "params": { "gain1": 1.0, "gain2": 1.0, "gain3": 1.0, "gain4": 1.0, "master": 1.0 } },
+    { "id": 9, "type": "reverb", "name": "THE HALL - freeze holds the tail as a pad; the line still passes dry", "params": { "size": 0.9, "decay": 0.9, "damping": 0.35, "mix": 0.75, "cv_depth": 1.0 } },
+    { "id": 10, "type": "left_speaker_output", "name": "Left", "params": { "gain": 1.0 } },
+    { "id": 11, "type": "right_speaker_output", "name": "Right", "params": { "gain": 1.0 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",      "dst_module_id": 2,  "dst_port": "gate" },
+    { "src_module_id": 2, "src_port": "pitch_cv", "dst_module_id": 3,  "dst_port": "pitch_cv" },
+    { "src_module_id": 2, "src_port": "gate",     "dst_module_id": 3,  "dst_port": "trigger" },
+    { "src_module_id": 1, "src_port": "out",      "dst_module_id": 4,  "dst_port": "a" },
+    { "src_module_id": 4, "src_port": "not_a",    "dst_module_id": 9,  "dst_port": "freeze" },
+    { "src_module_id": 5, "src_port": "out",      "dst_module_id": 6,  "dst_port": "clock" },
+    { "src_module_id": 6, "src_port": "cv",       "dst_module_id": 7,  "dst_port": "pitch_cv" },
+    { "src_module_id": 6, "src_port": "gate",     "dst_module_id": 7,  "dst_port": "trigger" },
+    { "src_module_id": 3, "src_port": "out",      "dst_module_id": 8,  "dst_port": "in1" },
+    { "src_module_id": 7, "src_port": "out",      "dst_module_id": 8,  "dst_port": "in2" },
+    { "src_module_id": 8, "src_port": "out",      "dst_module_id": 9,  "dst_port": "in" },
+    { "src_module_id": 9, "src_port": "out_l",    "dst_module_id": 10, "dst_port": "in" },
+    { "src_module_id": 9, "src_port": "out_r",    "dst_module_id": 11, "dst_port": "in" }
+  ]
+}

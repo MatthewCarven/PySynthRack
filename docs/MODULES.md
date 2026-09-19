@@ -260,7 +260,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`granular`](#granular) | Effects | `in` (audio), `position_cv` (cv), `freeze` (gate) → `out`, `out_l`, `out_r` (audio) |
 | [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv) → `out` (audio) |
-| [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv) → `out_l`,`out_r` (audio) |
+| [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv), `freeze` (gate) → `out_l`,`out_r` (audio) |
 | [`compressor`](#compressor) | Effects | `in`,`sidechain` (audio), `threshold_cv` (cv) → `out` (audio), `gr` (cv) |
 | [`limiter`](#limiter) | Effects | `in` (audio) → `out` (audio) |
 | [`noise_gate`](#noise_gate) | Effects | `in`,`sidechain` (audio) → `out` (audio), `open` (cv) |
@@ -1836,6 +1836,7 @@ what the ear reads as width.
 | `decay_cv` | in | cv | Added to `decay` (× `cv_depth`) — animate the tail length. Optional. |
 | `damping_cv` | in | cv | Added to `damping` (× `cv_depth`) — darken/brighten the tail over a phrase. Optional. |
 | `mix_cv` | in | cv | Added to `mix` (× `cv_depth`) — envelope-driven reverb throws / wet ducking. Optional. |
+| `freeze` | in | gate | (2026-09-19) High (> 0.5) **holds the tail as a pad**: unity loop, damping bypassed, input muted from the tank (the dry path still passes). A `(V, F)` gate collapses to any-voice-high. Unpatched → never frozen, bit-exact with the pre-freeze render. |
 | `out_l` | out | audio | Left channel (dry + decorrelated wet). |
 | `out_r` | out | audio | Right channel (dry + decorrelated wet). |
 
@@ -1860,6 +1861,33 @@ in a big hall, spread across both speakers).
 `damping` up) for an ambient wash behind a sparse line; short + bright for
 a subtle glue. Pure sustained tones can still ring a touch — v1 has no
 tail modulation yet.
+
+**Freeze** (2026-09-19 love pass). Play a chord, hold `freeze`, and the
+chord hangs as a pad you can play over — the shimmer-pad trick. While the
+gate is high the tank recirculates at **exactly unity gain** with the
+damping low-pass bypassed and the input muted from the tank, so whatever
+was ringing at the moment of the freeze keeps ringing, unchanged, for as
+long as the gate is held. The feedback matrix is orthonormal, so the unity
+loop is lossless by construction rather than by tuning: the energy in
+circulation is conserved to within 0.01 dB over 10 s of freeze (pinned),
+and the output RMS wanders no more than ±0.35 dB around the level that
+was caught (a fixed ±1 tap's share of the energy shifts as the lines mix)
+— it neither decays nor grows. The dry path through `mix` never sees the
+gate: notes played over a frozen tail are heard dry, and because they
+never reach the tank the pad does not pile up. When the gate falls,
+`decay` and `damping` resume and the held tail decays away like any
+other. The switch is per sample — an integer-count **10 ms ramp** from
+each gate edge crossfades the loop gain, the damping bypass and the input
+mute together — so a freeze landing anywhere in a block is click-free
+(steps across the edge no larger than the tail's own; an abrupt switch
+would be *captured* by the lossless loop and click forever, which is the
+other reason the ramp exists) and lands on the same sample at any block
+size. The damping one-pole keeps tracking the raw read while bypassed, so
+its state is warm the moment the gate falls. Feed it a
+[`key_trigger`](#key_trigger) latch to freeze by hand, a slow
+[`clock`](#clock) (or its [`logic`](#logic) `not_a`) to freeze between
+strikes, or a [`function_generator`](#function_generator) `eoc` chain for
+timed holds. See `examples/reverb_freeze_pad.json`.
 
 #### `compressor`
 
@@ -4690,5 +4718,6 @@ loads in the app. Notable ones referenced above:
 - `granular_freeze.json` — **tap F** to freeze: a [`key_trigger`](#key_trigger) latch on the [`granular`](#granular)'s `freeze` holds the last two seconds of a pluck melody while a slow triangle [`lfo`](#lfo) on `position_cv` scans them; tap again to release and recording resumes with no hole.
 - `granular_beat_repeat.json` — the drum machine into a [`granular`](#granular) cutting exact 125 ms slices (`density` 32 × `size` 62.5 ms), a [`shift_random`](#shift_random) at sixteenths on `position_cv` picking the slice point and a 15 BPM clock on `freeze`: two seconds recording, two seconds held and re-cut, forever.
 - `adsr_velocity.json` — accents: a [`shift_random`](#shift_random) clocked alongside the sequencer, scaled into 0.3…1.0, into [`adsr`](#adsr)`.vel` — every step's velocity is read at its gate edge and scales the whole note; the same envelope opens a filter, so hard notes are brighter as well as louder.
+- `reverb_freeze_pad.json` — the shimmer-pad trick: a strummed Cmaj7 of four [`pluck`](#pluck) strings every six seconds into a big [`reverb`](#reverb) (`size` 0.9, `decay` 0.9, `mix` 0.75), the strike [`clock`](#clock)'s [`logic`](#logic) `not_a` holding the reverb's `freeze` between strikes so the chord hangs as a pad, and a quieter sequenced pluck line playing over it — heard dry through `mix`, never piling into the tank.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `stereo_hard_pan.json` — left/right speaker sinks.

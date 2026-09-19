@@ -8971,6 +8971,11 @@ class NumpyBackend(AudioBackend):
     # sample rate at render time.
     _REVERB_BASE = (1103, 1321, 1543, 1759, 1987, 2203, 2423, 2647)
     _REVERB_OUT = 0.30   # wet output trim (tuned so wet ~ dry level)
+    # Freeze blend ramp (s): the loop gain, the damping bypass and the
+    # input mute all follow the ``freeze`` gate through one linear ramp
+    # this long from each edge -- short enough to catch the moment, long
+    # enough that the switch is inaudible inside the tail.
+    _REVERB_FREEZE_RAMP_S = 0.010
     _CHORUS_MAX_MS = 40.0  # longest chorus delay (ms); sizes the ring
 
     # ----- Compressor rendering -------------------------------------------
@@ -9659,11 +9664,26 @@ class NumpyBackend(AudioBackend):
         processed in hops no longer than the shortest line -- within a hop
         every read predates the hop's writes, so it vectorizes, and the
         damping one-pole runs via ``lfilter`` with its state carried.
+
+        ``freeze`` (gate): while high the tank holds its tail as a pad.
+        A per-sample blend ``f`` (0 = normal, 1 = frozen) follows the
+        gate through an integer-count ramp (``_gate_ramp_env``, so the
+        edge lands on the same sample at any block size) and, per sample,
+        crossfades the damped read back toward the raw read, lifts every
+        line's decay gain toward exactly 1.0 and mutes the injection.
+        The Hadamard matrix is orthonormal, so the unity loop is lossless:
+        the held tail neither decays nor grows. The damping one-pole keeps
+        tracking the raw read while bypassed, so its state is warm the
+        moment the gate falls. Unpatched, the hop loop below is the
+        pre-freeze code verbatim (bit-exact); the dry path never sees the
+        gate at all.
         """
         src = self._input_buffer(patch, buffers, module.id, "in")
         if src is None:
             z = np.zeros(frames, dtype=np.float32)
             return {"out_l": z, "out_r": z.copy()}
+        # A (V, F) gate collapses to the house sum: any voice high freezes.
+        fz_gate = self._input_buffer(patch, buffers, module.id, "freeze")
 
         sr = self.sample_rate
         size = float(module.params.get("size", 0.5))
@@ -9718,6 +9738,12 @@ class NumpyBackend(AudioBackend):
             state["lpz"] = np.zeros(N, dtype=np.float64)
             state["dbuf"] = np.zeros((4, Ld), dtype=np.float64)
             state["dwp"] = 0
+            # freeze ramp: (gate at the last sample, on/off counts since
+            # the last edge, level at the last falling edge)
+            state["fz_prev"] = False
+            state["fz_on"] = 0
+            state["fz_off"] = 0
+            state["fz_env"] = 0.0
 
         buf = state["buf"]
         wp = int(state["write_idx"])
@@ -9726,6 +9752,20 @@ class NumpyBackend(AudioBackend):
         if frames == 0:
             e = np.empty(0, dtype=np.float32)
             return {"out_l": e, "out_r": e.copy()}
+
+        # --- freeze blend: one 0..1 row per block, or None when the gate
+        # is unpatched (the hop loop then runs its pre-freeze code).
+        f = None
+        if fz_gate is not None and fz_gate.shape[0] == frames:
+            gt = fz_gate > self._GATE_HIGH
+            ramp_n = max(1, int(round(self._REVERB_FREEZE_RAMP_S * sr)))
+            f, fz_on, fz_off, fz_env = self._gate_ramp_env(
+                gt, bool(state["fz_prev"]), int(state["fz_on"]),
+                int(state["fz_off"]), float(state["fz_env"]), ramp_n, ramp_n)
+            state["fz_prev"] = bool(gt[-1])
+            state["fz_on"] = fz_on
+            state["fz_off"] = fz_off
+            state["fz_env"] = fz_env
 
         x = src.astype(np.float64)
 
@@ -9785,8 +9825,19 @@ class NumpyBackend(AudioBackend):
                 zi=(lpz * (1.0 - a))[:, np.newaxis],
             )[0]
             lpz = Sd[:, -1].copy()
-            fb = A @ (g[:, np.newaxis] * Sd)                          # (N, c)
             xin = xd[pos:pos + c]
+            gl = g[:, np.newaxis]
+            if f is not None and np.any(f[pos:pos + c]):
+                # Frozen or ramping: per sample, the damped read slides
+                # back to the raw read, every line's gain to exactly 1.0
+                # and the injection to silence. A convex blend of a
+                # signal and its own low-pass never exceeds the signal,
+                # so the loop gain is <= 1 on the way in as well.
+                fh = f[pos:pos + c][np.newaxis, :]
+                Sd = Sd + (S - Sd) * fh
+                gl = gl + (1.0 - gl) * fh
+                xin = xin * (1.0 - fh[0])
+            fb = A @ (gl * Sd)                                        # (N, c)
             buf[rows[:, None], idx % Lmax] = xin[np.newaxis, :] + fb
             wp += c
             pos += c
