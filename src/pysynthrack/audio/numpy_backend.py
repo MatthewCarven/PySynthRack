@@ -4990,6 +4990,15 @@ class NumpyBackend(AudioBackend):
             use case: one LFO modulates every voice's filter equally).
           * No cutoff_cv -> static cutoff from the param.
 
+        resonance_cv (love pass 2026-09-19) follows the same three-way
+        split on the Q: ``Q_eff = resonance * 2 ** (res_cv_depth *
+        mean cv)``, clipped to the (0.1, 20) legal range by the same
+        clamp the param goes through. A (V, F) source gives V Qs (and
+        forces the per-voice coefficient path even when the cutoff is
+        shared), an (F,) source one shared Q, and unpatched leaves the
+        Q exactly ``resonance`` -- the render is bit-identical to the
+        pre-love-pass module.
+
         Both paths run through ``scipy.signal.lfilter`` (filter
         vectorization slices 3+4, 2026-06-12): the serial time
         recurrence executes in C. The voice path filters all V rows in
@@ -5010,10 +5019,17 @@ class NumpyBackend(AudioBackend):
         cutoff_cv = self._input_buffer(
             patch, buffers, module.id, "cutoff_cv", collapse=False
         )
+        resonance_cv = self._input_buffer(
+            patch, buffers, module.id, "resonance_cv", collapse=False
+        )
 
         if src_buf.ndim == 2:
-            return self._render_filter_voice(module, frames, src_buf, cutoff_cv)
-        return self._render_filter_mono(module, frames, src_buf, cutoff_cv)
+            return self._render_filter_voice(
+                module, frames, src_buf, cutoff_cv, resonance_cv
+            )
+        return self._render_filter_mono(
+            module, frames, src_buf, cutoff_cv, resonance_cv
+        )
 
     def _filter_coeffs(self, mode, cutoff, q):
         """Compute RBJ biquad coefficients for one cutoff/Q pair.
@@ -5058,7 +5074,38 @@ class NumpyBackend(AudioBackend):
         a2n = a2 / a0
         return b0, b1, b2, a1n, a2n
 
-    def _render_filter_mono(self, module, frames, src_buf, cutoff_cv):
+    # The Q only matters inside its (0.1, 20) clamp -- log2(200) ~ 7.6
+    # doublings end to end -- so the exponent is clipped to +/-64
+    # before it hits ``2 **``. That never changes an in-range answer
+    # (2 ** 64 * 0.1 is far past the rail) but keeps a pathological CV
+    # (a cv_math product gone wild) from raising OverflowError in the
+    # audio thread; the clamp then pins the Q at the rail as promised.
+    _Q_CV_EXP_LIMIT = 64.0
+
+    def _q_cv_ratio(self, module, cv_mean):
+        """``2 ** (res_cv_depth * cv_mean)``: the resonance_cv multiplier.
+
+        Scalar in, scalar out (a (V,) array in gives a (V,) array out --
+        the voice path's per-voice Qs). Depth 0 returns exactly 1.0, so
+        ``q * ratio`` is bit-identical to ``q`` -- "depth 0 disables the
+        input without unpatching it". The exponent is taken in float64
+        on purpose: a float32 block-mean times a Python float stays
+        float32 under numpy's weak-scalar rule, and 2 ** 0.5 in float32
+        put a per-voice Q one float32 ulp away from the mono path's.
+        """
+        depth = float(module.params.get("res_cv_depth", 1.0))
+        expo = np.clip(
+            depth * np.asarray(cv_mean, dtype=np.float64),
+            -self._Q_CV_EXP_LIMIT,
+            self._Q_CV_EXP_LIMIT,
+        )
+        if np.ndim(expo) == 0:
+            return float(2.0 ** float(expo))
+        return np.power(2.0, expo)
+
+    def _render_filter_mono(
+        self, module, frames, src_buf, cutoff_cv, resonance_cv=None
+    ):
         """Mono fast path -- single biquad via ``scipy.signal.lfilter``.
 
         Filter vectorization slice 3: the per-sample Python loop is
@@ -5107,6 +5154,14 @@ class NumpyBackend(AudioBackend):
             cv_depth = float(module.params.get("cv_depth", 1.0))
             cutoff = cutoff * float(2.0 ** (cv_depth * float(np.mean(cutoff_cv))))
 
+        # CV-modulate the Q the same way: doublings per CV unit scaled
+        # by ``res_cv_depth`` -- ``q *= 2 ** (res_cv_depth * mean(cv))``.
+        # _filter_coeffs clips the result to (0.1, 20), so a runaway CV
+        # pins the Q at the rail instead of blowing the biquad up. Left
+        # untouched when unpatched, so today's renders stay bit-exact.
+        if resonance_cv is not None and resonance_cv.size > 0:
+            q = q * self._q_cv_ratio(module, float(np.mean(resonance_cv)))
+
         coeffs = self._filter_coeffs(mode, cutoff, q)
         if coeffs is None:
             return src_buf.astype(np.float32)  # unknown mode -> passthrough
@@ -5139,7 +5194,9 @@ class NumpyBackend(AudioBackend):
 
         return out64.astype(np.float32)
 
-    def _render_filter_voice(self, module, frames, src_buf, cutoff_cv):
+    def _render_filter_voice(
+        self, module, frames, src_buf, cutoff_cv, resonance_cv=None
+    ):
         """Voice-aware path -- V parallel biquads via lfilter, ``(V, F)``.
 
         Filter vectorization slice 4. Two shapes:
@@ -5147,10 +5204,12 @@ class NumpyBackend(AudioBackend):
         * Shared coefficients (static cutoff, or a mono/macro
           cutoff_cv): one lfilter call filters all V rows along the
           time axis with ``zi`` of shape (V, 2) -- the 46x spike case.
-        * Per-voice coefficients ((V, F) cutoff_cv -> V cutoffs):
-          lfilter cannot vary coefficients across rows, so V
-          independent single-row calls. Each row's recurrence still
-          runs in C; smaller but real win.
+        * Per-voice coefficients ((V, F) cutoff_cv -> V cutoffs, or
+          (V, F) resonance_cv -> V Qs, or both): lfilter cannot vary
+          coefficients across rows, so V independent single-row
+          calls. Each row's recurrence still runs in C; smaller but
+          real win. Whichever of the two is NOT per-voice stays a
+          scalar and broadcasts across the (V,) coefficient arrays.
 
         State design is the mono path's, vectorized (see
         ``_render_filter_mono``): persisted state is the raw DF-I
@@ -5184,21 +5243,46 @@ class NumpyBackend(AudioBackend):
         q = float(module.params.get("resonance", 0.707))
 
         # Per-voice cutoff when cutoff_cv is (V, F): each voice gets
-        # its own block-mean. Otherwise single shared cutoff.
+        # its own block-mean. Otherwise single shared cutoff. The Q
+        # splits the same way on resonance_cv; either one being
+        # per-voice takes the per-voice coefficient path.
         per_voice_cutoff = (
             cutoff_cv is not None
             and cutoff_cv.ndim == 2
             and cutoff_cv.shape[0] == V
             and cutoff_cv.size > 0
         )
+        per_voice_q = (
+            resonance_cv is not None
+            and resonance_cv.ndim == 2
+            and resonance_cv.shape[0] == V
+            and resonance_cv.size > 0
+        )
 
         cv_depth = float(module.params.get("cv_depth", 1.0))
-        if per_voice_cutoff:
-            cv_block_mean = cutoff_cv.mean(axis=1)  # (V,)
-            cutoff_per_voice = base_cutoff * np.power(2.0, cv_depth * cv_block_mean)
+        if per_voice_cutoff or per_voice_q:
             sr = self.sample_rate
-            cutoff_per_voice = np.clip(cutoff_per_voice, 20.0, sr * 0.45)
-            q_clamped = max(0.1, min(q, 20.0))
+            if per_voice_cutoff:
+                cv_block_mean = cutoff_cv.mean(axis=1)  # (V,)
+                cutoff_per_voice = base_cutoff * np.power(2.0, cv_depth * cv_block_mean)
+                cutoff_per_voice = np.clip(cutoff_per_voice, 20.0, sr * 0.45)
+            else:
+                # Shared cutoff (static, or a macro (F,) cutoff_cv) as
+                # a scalar; it broadcasts against the per-voice Q.
+                cutoff = base_cutoff
+                if cutoff_cv is not None and cutoff_cv.size > 0:
+                    cutoff = cutoff * float(2.0 ** (cv_depth * float(np.mean(cutoff_cv))))
+                cutoff_per_voice = max(20.0, min(cutoff, sr * 0.45))
+            if per_voice_q:
+                q_clamped = np.clip(
+                    q * self._q_cv_ratio(module, resonance_cv.mean(axis=1)),
+                    0.1,
+                    20.0,
+                )  # (V,)
+            else:
+                if resonance_cv is not None and resonance_cv.size > 0:
+                    q = q * self._q_cv_ratio(module, float(np.mean(resonance_cv)))
+                q_clamped = max(0.1, min(q, 20.0))
 
             w0 = 2.0 * np.pi * cutoff_per_voice / sr  # (V,)
             cos_w0 = np.cos(w0)
@@ -5220,6 +5304,8 @@ class NumpyBackend(AudioBackend):
             else:
                 return src_buf.astype(np.float32)  # unknown -> passthrough
 
+            # a0 is (V,) whichever side varied, so every coefficient
+            # comes out (V,) and the per-row lfilter loop below runs.
             a0 = 1.0 + alpha
             a1 = -2.0 * cos_w0
             a2 = 1.0 - alpha
@@ -5234,6 +5320,8 @@ class NumpyBackend(AudioBackend):
                 # mean() over whatever shape: 1D collapses to scalar,
                 # 2D shouldn't reach here but be safe.
                 cutoff = cutoff * float(2.0 ** (cv_depth * float(np.mean(cutoff_cv))))
+            if resonance_cv is not None and resonance_cv.size > 0:
+                q = q * self._q_cv_ratio(module, float(np.mean(resonance_cv)))
             coeffs = self._filter_coeffs(mode, cutoff, q)
             if coeffs is None:
                 return src_buf.astype(np.float32)

@@ -90,6 +90,7 @@ The full map:
 | `oscillator.amp_cv` | — (multiplier) | linear | `amp · cv[n]` |
 | `vca.cv` | — (multiplier) | linear | `audio · cv · gain` |
 | `filter.cutoff_cv` | `1.0` | octaves | `cutoff · 2^(d·mean cv)` |
+| `filter.resonance_cv` | `1.0` (`res_cv_depth`) | Q doublings | `resonance · 2^(d·mean cv)` (clipped 0.1…20); a `(V, F)` source gives every voice its own Q |
 | `lfo.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `drift.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)`, re-read per block; mono (a `(V, F)` source is averaged) |
 | `crossover.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
@@ -246,7 +247,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`organ`](#organ) | Sources | `pitch_cv` (cv), `gate` (gate) → `out` (audio) |
 | [`supersaw`](#supersaw) | Sources | `freq_cv`,`amp_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`wavetable_morph`](#wavetable_morph) | Sources | `freq_cv`,`position_cv`,`amp_cv` (cv) → `out` (audio) |
-| [`filter`](#filter) | Filters & EQ | `in` (audio), `cutoff_cv` (cv) → `out` (audio) |
+| [`filter`](#filter) | Filters & EQ | `in` (audio), `cutoff_cv` (cv), `resonance_cv` (cv) → `out` (audio) |
 | [`crossover`](#crossover) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
 | [`parametric_eq`](#parametric_eq) | Filters & EQ | `in` (audio) → `out` (audio) |
 | [`sweep_eq`](#sweep_eq) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `out` (audio) |
@@ -1311,7 +1312,7 @@ Modules that take audio in and shape it.
 #### `filter`
 
 A resonant biquad filter (Robert Bristow-Johnson coefficients) — lowpass,
-highpass, or bandpass, with CV-modulatable cutoff.
+highpass, or bandpass, with CV-modulatable cutoff *and* resonance.
 
 **Ports**
 
@@ -1319,6 +1320,7 @@ highpass, or bandpass, with CV-modulatable cutoff.
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to filter. |
 | `cutoff_cv` | in | cv | Sweeps the cutoff, `cv_depth` octaves per CV unit (default 1.0 = 1 V/oct: `cutoff · 2^(cv_depth·cv)`). Patch an envelope or LFO here for sweeps. |
+| `resonance_cv` | in | cv | Sweeps the Q, `res_cv_depth` doublings per CV unit (`resonance · 2^(res_cv_depth·cv)`, block mean, clipped to the 0.1…20 legal range). +1 doubles the peak's Q, −1 halves it; an envelope here makes the peak swell and relax with the note. Voice-aware like `cutoff_cv`: a `(V, F)` source gives every voice its own Q. |
 | `out` | out | audio | Filtered signal. |
 
 **Parameters**
@@ -1329,9 +1331,15 @@ highpass, or bandpass, with CV-modulatable cutoff.
 | `cutoff` | `1000.0` | ~20…20000 Hz | Corner/center frequency when `cutoff_cv` is unpatched. |
 | `resonance` | `0.707` | ~0.1…15 | Q. `0.707` is flat (no peak); higher emphasises the cutoff and can self-oscillate-ish. |
 | `cv_depth` | `1.0` | 0…4 oct/unit | Octaves the cutoff moves per `cutoff_cv` unit. Default 1 V/oct (pre-2026-07-02 fixed behaviour); 0 disables. |
+| `res_cv_depth` | `1.0` | 0…4 dbl/unit | Q doublings per `resonance_cv` unit (the [`motion_eq`](#motion_eq) `q_cv_depth` convention). Default 1 = cv +1 doubles the Q; 0 disables without unpatching. Unpatched, the Q is exactly `resonance`. |
 
 **Patching.** Classic: `oscillator → filter → vca`, with an `adsr → cutoff_cv`
 for a filter sweep. See `examples/filter_envelope.json`, `examples/wah.json`.
+Put a second, slower modulator on `resonance_cv` and the peak *breathes* —
+sharp and whistling at the top of the cycle, soft and round at the bottom —
+independently of where the cutoff is; `examples/filter_resonance_sweep.json`
+does exactly that with two LFOs. A runaway CV can't blow the filter up: the
+Q pins at 20 (or 0.1) and stays there.
 
 #### `crossover`
 
@@ -4619,6 +4627,7 @@ loads in the app. Notable ones referenced above:
 - `pitch_shifter_harmonizer.json` — a stereo major triad from one module: `semitones` +4, `harmony` +7, `spread` 1 → third left, fifth right, root centred.
 - `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.
 - `lfo_retrigger.json` — the key-synced tremolo: a 90 BPM sequencer melody through an ADSR VCA and then a 7 Hz [`lfo`](#lfo) VCA, with the sequencer's `gate` also into the LFO's `reset` and `phase` 0.25 — every note opens at the top of the tremolo and pulses down from there, instead of landing wherever the cycle happened to be.
+- `filter_resonance_sweep.json` — the [`filter`](#filter)'s `resonance_cv`: a saw through a lowpass, a 0.5 Hz LFO on `cutoff_cv` and a 0.11 Hz triangle on `resonance_cv` (`res_cv_depth` 1.5, so the Q breathes between 0.7 and 5.7) — the peak sharpens and softens on its own nine-second cycle, whatever the cutoff is doing.
 - `organ_leslie.json` — the pairing: a self-playing maj7 organ through the [`rotary`](#rotary), a 5 BPM clock on `fast` flipping the Leslie between chorale and tremolo every six seconds so the horn and drum chase each other.
 - `krell_feedback.json` — the real krell self-patch: the [`function_generator`](#function_generator) in `trigger` mode with its own `eoc` OR'd (through [`logic`](#logic)) with a 12-second starter pulse back into `trig`. The loop closes one block late — the feedback door, generalized 2026-09-16. Same dice, quantizer and voice as `krell_machine.json`, which runs the no-latency `loop` mode version.
 - `fg_eor_swell_strike.json` — what `eor` is for: a slow [`function_generator`](#function_generator) (1.2 s up, 1.8 s down, cycling through the krell loop with a wandering `rate_cv`) swells a low saw through a filter and VCA, and at the **top** of every swell its `eor` fires a [`pluck`](#pluck) whose pitch a [`sample_hold`](#sample_hold) grabbed at that same instant — swell, then strike.

@@ -12,6 +12,15 @@ Tone-wise:
 
 Cutoff is clamped to (20 Hz, 0.45 * sample_rate) and Q to (0.1, 20) to
 keep the filter numerically stable across param edits.
+
+Both knobs take CV. ``cutoff_cv`` sweeps the corner in octaves per unit
+(``cv_depth``, 1 V/oct by default); ``resonance_cv`` (love pass,
+2026-09-19) sweeps the Q in *doublings* per unit (``res_cv_depth``), the
+same exponential law, so an envelope on it makes the peak swell and relax
+with the note instead of sitting at one fixed sharpness. Both are read as
+a block mean (one coefficient set per block) and both land inside the
+clamps above -- a runaway CV pins the Q at 20, it never blows the filter
+up.
 """
 from __future__ import annotations
 
@@ -33,6 +42,11 @@ class Filter(Module):
         cv_depth: Octaves the cutoff moves per unit of ``cutoff_cv``.
             Default 1.0 = 1 V/oct (the pre-cv_depth fixed behaviour, so
             old patches sound identical); 0 disables the CV.
+        res_cv_depth: Q doublings per unit of ``resonance_cv`` --
+            ``Q_eff = resonance * 2 ** (res_cv_depth * mean(cv))``, then
+            clipped to the (0.1, 20) legal range. Default 1.0 (cv +1
+            doubles the Q, -1 halves it); 0 disables the CV without
+            unpatching it. Unpatched, the Q is exactly ``resonance``.
     """
 
     TYPE = "filter"
@@ -42,6 +56,7 @@ class Filter(Module):
         "cutoff": 1000.0,
         "resonance": 0.707,
         "cv_depth": 1.0,
+        "res_cv_depth": 1.0,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),
@@ -52,5 +67,12 @@ class Filter(Module):
         # recomputation cheap; for audio-rate cutoff modulation we'd
         # need per-sample coefs.
         Port("cutoff_cv", "in", "cv"),
+        # Resonance CV: Q doublings per CV unit, scaled by
+        # ``res_cv_depth`` -- ``resonance * 2 ** (res_cv_depth *
+        # mean(cv_block))``, clipped to the (0.1, 20) legal Q. Same
+        # block-mean trade-off as cutoff_cv, and the same voice
+        # treatment: a (V, F) source gives every voice its own Q, an
+        # (F,) source is one Q shared by every voice.
+        Port("resonance_cv", "in", "cv"),
     ]
     OUTPUT_PORTS = [Port("out", "out", "audio")]

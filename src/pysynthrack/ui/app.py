@@ -1527,6 +1527,21 @@ class App:
                 )
                 return
 
+        if module.TYPE == "filter":
+            # The biquad. ``mode`` is the shared combo below; ``cutoff``,
+            # ``resonance`` and ``cv_depth`` (oct/unit on cutoff_cv) ride
+            # the generic numeric fallbacks at the bottom. Only the
+            # resonance_cv scaler needs its own unit: Q doublings per CV
+            # unit, the motion_eq ``q_cv_depth`` convention, presented
+            # exactly like the cutoff's ``cv_depth`` drag (0..4, default 1).
+            if param_name == "res_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f dbl/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "sweep_eq":
             # A single CV-swept resonant band (auto-wah / envelope filter).
             # ``mode`` (bandpass/lowpass/peak) is handled by the shared mode
