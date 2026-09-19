@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "next_id": 10,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "Clock (90 BPM)",
+      "params": {"bpm": 90.0, "division": 1.0, "pulse_width": 0.6}
+    },
+    {
+      "id": 2,
+      "type": "sequencer",
+      "name": "Melody",
+      "params": {
+        "steps": 8,
+        "step1_pitch": 0.0, "step1_on": true,
+        "step2_pitch": 3.0, "step2_on": true,
+        "step3_pitch": 7.0, "step3_on": true,
+        "step4_pitch": 10.0, "step4_on": true,
+        "step5_pitch": 12.0, "step5_on": true,
+        "step6_pitch": 7.0, "step6_on": false,
+        "step7_pitch": 5.0, "step7_on": true,
+        "step8_pitch": -2.0, "step8_on": true
+      }
+    },
+    {
+      "id": 3,
+      "type": "oscillator",
+      "name": "Saw (C3)",
+      "params": {"waveform": "saw", "freq": 130.81, "amp": 0.5}
+    },
+    {
+      "id": 4,
+      "type": "filter",
+      "name": "Tone",
+      "params": {"mode": "lowpass", "cutoff": 1600.0, "resonance": 0.9, "cv_depth": 1.0}
+    },
+    {
+      "id": 5,
+      "type": "adsr",
+      "name": "Note env",
+      "params": {"attack": 0.005, "decay": 0.15, "sustain": 0.7, "release": 0.12}
+    },
+    {
+      "id": 6,
+      "type": "vca",
+      "name": "Note VCA",
+      "params": {"gain": 1.0}
+    },
+    {
+      "id": 7,
+      "type": "lfo",
+      "name": "Tremolo (key-synced)",
+      "params": {
+        "waveform": "sine",
+        "rate": 7.0,
+        "depth": 1.0,
+        "bipolar": false,
+        "cv_depth": 1.0,
+        "phase": 0.25
+      }
+    },
+    {
+      "id": 8,
+      "type": "vca",
+      "name": "Tremolo VCA",
+      "params": {"gain": 1.0}
+    },
+    {
+      "id": 9,
+      "type": "speaker_output",
+      "name": "speaker_output",
+      "params": {"gain": 0.8}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "clock"},
+    {"src_module_id": 2, "src_port": "cv", "dst_module_id": 3, "dst_port": "freq_cv"},
+    {"src_module_id": 2, "src_port": "gate", "dst_module_id": 5, "dst_port": "gate"},
+    {"src_module_id": 2, "src_port": "gate", "dst_module_id": 7, "dst_port": "reset"},
+    {"src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "in"},
+    {"src_module_id": 4, "src_port": "out", "dst_module_id": 6, "dst_port": "audio"},
+    {"src_module_id": 5, "src_port": "cv", "dst_module_id": 6, "dst_port": "cv"},
+    {"src_module_id": 6, "src_port": "out", "dst_module_id": 8, "dst_port": "audio"},
+    {"src_module_id": 7, "src_port": "cv", "dst_module_id": 8, "dst_port": "cv"},
+    {"src_module_id": 8, "src_port": "out", "dst_module_id": 9, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 80], "2": [280, 80], "3": [40, 340], "4": [300, 340],
+      "5": [560, 80], "6": [560, 340], "7": [560, 560], "8": [820, 340],
+      "9": [1080, 340]
+    }
+  }
+}

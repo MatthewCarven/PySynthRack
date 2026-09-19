@@ -6131,6 +6131,19 @@ class NumpyBackend(AudioBackend):
         once per cycle when the phase wraps past 1.0, with per-voice
         S&H values in the voice branch so independently-clocked voices
         roll their own randoms on their own wrap edges.
+
+        ``reset`` (gate, 2026-09-19): a rising edge restarts the phase
+        at the ``phase`` param ON THAT SAMPLE -- the block is rendered
+        in segments between edges, each segment a vectorized ramp from
+        its own start phase, so a keyboard gate into ``reset`` gives
+        every note a vibrato/tremolo that begins at the same place.
+        ``phase`` is also where the free-running LFO starts, and moving
+        the knob re-anchors the phase there at the next block (an
+        implicit edge at sample 0), so the slider is audible without a
+        cable. Unpatched ``reset`` + ``phase`` 0.0 is one segment
+        starting from the carried phase: the pre-love-pass ramp,
+        bit-exact. The ``random`` waveform rolls a fresh value on a
+        reset edge as well as on a wrap.
         """
         # collapse=False so a voice-aware (V, F) rate_cv reaches us
         # with the voice axis intact. ``buffers``/``patch`` are None
@@ -6138,30 +6151,92 @@ class NumpyBackend(AudioBackend):
         # rate_cv is unavailable -- same back-compat trick we use on
         # _render_oscillator.
         rate_cv = None
+        reset = None
         if buffers is not None and patch is not None:
             rate_cv = self._input_buffer(
                 patch, buffers, module.id, "rate_cv", collapse=False
             )
+            # Also uncollapsed: the voice path resets each voice from
+            # its own row; the mono path collapses it itself (sum ->
+            # any-voice-high, the house rule from _input_buffer).
+            reset = self._input_buffer(
+                patch, buffers, module.id, "reset", collapse=False
+            )
 
         if rate_cv is not None and rate_cv.ndim == 2:
-            return self._render_lfo_voice(module, frames, rate_cv)
-        return self._render_lfo_mono(module, frames, rate_cv)
+            return self._render_lfo_voice(module, frames, rate_cv, reset)
+        return self._render_lfo_mono(module, frames, rate_cv, reset)
 
-    def _render_lfo_mono(self, module, frames, rate_cv):
+    @staticmethod
+    def _lfo_phase_segments(start, phase0, edges, frames, phase_inc):
+        """Phase ramp for one block, restarted at ``phase0`` on each edge.
+
+        ``edges`` are the sample indices (ascending) where a reset
+        lands; the ramp before the first edge continues from ``start``.
+        Returns ``(phases, end_phase)`` where ``end_phase`` is the phase
+        the NEXT block continues from. With no edges this is exactly the
+        one-segment expression the LFO always used --
+        ``(start + arange(frames) * inc) % 1`` and
+        ``(start + frames * inc) % 1`` -- which is what keeps the
+        unpatched render bit-exact.
+        """
+        ramp = np.arange(frames, dtype=np.float64)
+        phases = np.empty(frames, dtype=np.float64)
+        bounds = [0, *(int(e) for e in edges), frames]
+        seg_start = start
+        end_phase = start
+        for a, b in zip(bounds[:-1], bounds[1:]):
+            n = b - a
+            phases[a:b] = (seg_start + ramp[:n] * phase_inc) % 1.0
+            end_phase = (seg_start + n * phase_inc) % 1.0
+            # Every segment after the first begins at a reset edge.
+            seg_start = phase0
+        return phases, float(end_phase)
+
+    def _lfo_reset_edges(self, reset_row, prev_high, frames):
+        """Rising-edge sample indices of one gate row, carried across blocks.
+
+        Returns ``(edges, last_high)``; ``prev_high`` is the row's level
+        at the end of the previous block so an edge that straddles a
+        block boundary still counts exactly once.
+        """
+        high = np.asarray(reset_row[:frames]) > self._GATE_HIGH
+        if high.size == 0:
+            return np.zeros(0, dtype=np.intp), bool(prev_high)
+        prev = np.empty_like(high)
+        prev[0] = prev_high
+        prev[1:] = high[:-1]
+        return np.flatnonzero(high & ~prev), bool(high[-1])
+
+    def _render_lfo_mono(self, module, frames, rate_cv, reset=None):
         """Mono fast path -- scalar phase, vectorized phase ramp.
 
-        Unchanged from the pre-slice-3b.2 implementation; the scalar
-        ramp + waveshape is exactly the same so every existing LFO test
-        passes bit-for-bit identically.
+        The scalar ramp + waveshape is the pre-slice-3b.2 code; the
+        reset gate only splits the ramp into segments (see
+        ``_lfo_phase_segments``), so with ``reset`` unpatched every
+        existing LFO test passes bit-for-bit identically.
         """
-        state = self._state.setdefault(
-            module.id, {"phase": 0.0, "random_value": 0.0}
-        )
+        # ``phase`` wraps (1.0 is 0.0 again; -0.25 is 0.75) so a
+        # hand-edited patch can't park the ramp outside a cycle.
+        phase0 = float(module.params.get("phase", 0.0)) % 1.0
+        fresh = {
+            "phase": phase0,
+            "random_value": 0.0,
+            # First block rolls the S&H value regardless of where the
+            # phase starts (the old ``phase == 0 and value == 0`` test
+            # never fired for a non-zero ``phase``).
+            "random_fresh": True,
+            "reset_prev": False,
+            "phase_param": phase0,
+        }
+        state = self._state.setdefault(module.id, dict(fresh))
         # If state belongs to the voice branch (different keys),
         # discard and reinit to mono shape.
         if "phase_arr" in state:
             state.clear()
-            state.update({"phase": 0.0, "random_value": 0.0})
+            state.update(fresh)
+        for key, value in fresh.items():
+            state.setdefault(key, value)
 
         waveform = str(module.params.get("waveform", "sine"))
         rate = float(module.params.get("rate", 4.0))
@@ -6187,8 +6262,26 @@ class NumpyBackend(AudioBackend):
 
         phase_inc = rate / sr
         start_phase = state["phase"]
-        phases = (start_phase + np.arange(frames, dtype=np.float64) * phase_inc) % 1.0
-        new_phase = (start_phase + frames * phase_inc) % 1.0
+
+        # Reset edges this block. A (V, F) gate on the mono path sums
+        # to any-voice-high, exactly as _input_buffer would collapse it.
+        edges = np.zeros(0, dtype=np.intp)
+        if reset is not None and frames > 0:
+            if reset.ndim == 2:
+                reset = reset.sum(axis=0)
+            edges, state["reset_prev"] = self._lfo_reset_edges(
+                reset, state["reset_prev"], frames
+            )
+        # A moved ``phase`` knob is a reset by decree at sample 0, so
+        # the slider is audible on a free-running LFO too.
+        if state["phase_param"] != phase0 and frames > 0:
+            state["phase_param"] = phase0
+            if edges.size == 0 or edges[0] != 0:
+                edges = np.concatenate([[0], edges]).astype(np.intp)
+
+        phases, new_phase = self._lfo_phase_segments(
+            start_phase, phase0, edges, frames, phase_inc
+        )
 
         if waveform == "sine":
             wave = np.sin(2.0 * np.pi * phases)
@@ -6199,15 +6292,20 @@ class NumpyBackend(AudioBackend):
         elif waveform == "saw":
             wave = 2.0 * phases - 1.0
         elif waveform == "random":
-            # Sample-and-hold: detect each phase wrap and re-roll.
+            # Sample-and-hold: detect each phase wrap and re-roll. A
+            # reset edge rolls too (once, even when the jump to
+            # ``phase0`` also reads as a wrap).
             if frames > 0:
                 diffs = np.diff(np.concatenate([[start_phase], phases]))
+                is_reset = np.zeros(frames, dtype=bool)
+                is_reset[edges] = True
                 wave = np.empty(frames, dtype=np.float64)
                 current = state["random_value"]
-                if start_phase == 0.0 and state["random_value"] == 0.0:
+                if state["random_fresh"]:
                     current = float(np.random.uniform(-1.0, 1.0))
+                    state["random_fresh"] = False
                 for i in range(frames):
-                    if diffs[i] < 0.0:
+                    if diffs[i] < 0.0 or is_reset[i]:
                         current = float(np.random.uniform(-1.0, 1.0))
                     wave[i] = current
                 state["random_value"] = current
@@ -6225,7 +6323,7 @@ class NumpyBackend(AudioBackend):
 
         return (wave * depth).astype(np.float32)
 
-    def _render_lfo_voice(self, module, frames, rate_cv):
+    def _render_lfo_voice(self, module, frames, rate_cv, reset=None):
         """Voice-aware path -- V independent phase accumulators.
 
         ``rate_cv`` is ``(V, F)``. Each voice gets its own block-mean
@@ -6241,11 +6339,15 @@ class NumpyBackend(AudioBackend):
 
         Per-voice phase persists across blocks rather than resetting on
         retrigger -- mirrors the oscillator voice-path policy and
-        avoids click on rate jumps. For ``random`` waveform each voice
-        carries its own sample-and-hold value, re-rolled on its own
-        phase wrap (independently-clocked voices roll independently).
+        avoids click on rate jumps -- unless the patch says otherwise
+        through ``reset``: a ``(V, F)`` gate resets each voice from its
+        own row, a mono gate resets every voice. For ``random`` waveform
+        each voice carries its own sample-and-hold value, re-rolled on
+        its own phase wrap (independently-clocked voices roll
+        independently) and on its own reset edges.
         """
         V = rate_cv.shape[0]
+        phase0 = float(module.params.get("phase", 0.0)) % 1.0
         state = self._state.setdefault(module.id, {})
 
         # Reinit if state belongs to the mono branch or the voice
@@ -6256,8 +6358,14 @@ class NumpyBackend(AudioBackend):
         )
         if needs_reinit:
             state.clear()
-            state["phase_arr"] = np.zeros(V, dtype=np.float64)
+            state["phase_arr"] = np.full(V, phase0, dtype=np.float64)
             state["random_arr"] = np.zeros(V, dtype=np.float64)
+            state["random_fresh_arr"] = np.ones(V, dtype=bool)
+            state["reset_prev_arr"] = np.zeros(V, dtype=bool)
+            state["phase_param"] = phase0
+        state.setdefault("random_fresh_arr", np.ones(V, dtype=bool))
+        state.setdefault("reset_prev_arr", np.zeros(V, dtype=bool))
+        state.setdefault("phase_param", phase0)
 
         waveform = str(module.params.get("waveform", "sine"))
         base_rate = float(module.params.get("rate", 4.0))
@@ -6290,6 +6398,40 @@ class NumpyBackend(AudioBackend):
         ) % 1.0  # (V, F)
         new_phase = (start_phase + frames * phase_inc_per_voice) % 1.0
 
+        # Reset edges, per voice. A mono gate is broadcast to every row;
+        # a (V, F) gate resets each voice from its own row (a foreign
+        # voice count -- not a real patching -- collapses to
+        # any-voice-high and broadcasts). Rows with an edge get their
+        # ramp rebuilt in segments; the rest keep the broadcast ramp,
+        # so the common no-reset block costs nothing extra.
+        edges_per_voice = [np.zeros(0, dtype=np.intp)] * V
+        if reset is not None and frames > 0:
+            if reset.ndim == 2 and reset.shape[0] != V:
+                reset = reset.sum(axis=0)
+            reset2d = (
+                reset[:, :frames] if reset.ndim == 2
+                else np.broadcast_to(reset[:frames], (V, frames))
+            )
+            prev_arr = state["reset_prev_arr"]
+            for v in range(V):
+                edges_per_voice[v], prev_arr[v] = self._lfo_reset_edges(
+                    reset2d[v], prev_arr[v], frames
+                )
+        if state["phase_param"] != phase0 and frames > 0:
+            # The moved knob: every voice re-anchors at sample 0.
+            state["phase_param"] = phase0
+            edges_per_voice = [
+                e if (e.size and e[0] == 0)
+                else np.concatenate([[0], e]).astype(np.intp)
+                for e in edges_per_voice
+            ]
+        reset_rows = [v for v in range(V) if edges_per_voice[v].size]
+        for v in reset_rows:
+            phases[v], new_phase[v] = self._lfo_phase_segments(
+                float(start_phase[v]), phase0, edges_per_voice[v],
+                frames, float(phase_inc_per_voice[v]),
+            )
+
         if waveform == "sine":
             wave = np.sin(2.0 * np.pi * phases)
         elif waveform == "triangle":
@@ -6305,16 +6447,20 @@ class NumpyBackend(AudioBackend):
             # depends on its own prior value on the wrap edges).
             wave = np.empty((V, frames), dtype=np.float64)
             random_arr = state["random_arr"]
+            fresh_arr = state["random_fresh_arr"]
             for v in range(V):
                 row_phases = phases[v]
                 row_start = float(start_phase[v])
                 current = float(random_arr[v])
                 if frames > 0:
-                    if row_start == 0.0 and current == 0.0:
+                    if fresh_arr[v]:
                         current = float(np.random.uniform(-1.0, 1.0))
+                        fresh_arr[v] = False
                     diffs = np.diff(np.concatenate([[row_start], row_phases]))
+                    is_reset = np.zeros(frames, dtype=bool)
+                    is_reset[edges_per_voice[v]] = True
                     for i in range(frames):
-                        if diffs[i] < 0.0:
+                        if diffs[i] < 0.0 or is_reset[i]:
                             current = float(np.random.uniform(-1.0, 1.0))
                         wave[v, i] = current
                     random_arr[v] = current

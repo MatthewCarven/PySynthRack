@@ -278,7 +278,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`flanger`](#flanger) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`phaser`](#phaser) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`vocoder`](#vocoder) | Effects | `mod`,`carrier` (audio) → `out` (audio) |
-| [`lfo`](#lfo) | Modulation | `rate_cv` (cv) → `cv` (cv) |
+| [`lfo`](#lfo) | Modulation | `rate_cv` (cv), `reset` (gate) → `cv` (cv) |
 | [`adsr`](#adsr) | Modulation | `gate` (gate) → `cv` (cv) |
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
 | [`function_generator`](#function_generator) | Modulation | `trig` (gate), `rate_cv`,`rise_cv`,`fall_cv` (cv) → `out`,`out_inv` (cv), `eor`,`eoc` (gate) |
@@ -3629,11 +3629,61 @@ See `examples/logic_offbeat_drums.json`.
 
 #### `lfo`
 
-_To document._ Low-frequency oscillator as a `cv` source (sine/tri/square/
-saw/random), with optional `rate_cv` for FM-of-modulation (`cv_depth`
-octaves per CV unit, default 1.0 = 1 V/oct, 0 disables). Params:
-`waveform`, `rate`, `depth`, `bipolar`, `cv_depth`. See
-`examples/vibrato.json`, `examples/keyboard_tremolo.json`.
+Low-frequency oscillator as a `cv` source: `sine`, `triangle`, `square`,
+`saw` or `random` (sample-and-hold — a fresh value once per cycle) at
+`rate` Hz, scaled by `depth`. **Unipolar by default** (`0 … depth`), which
+is the shape a [`vca`](#vca) wants — a sine here into `vca.cv` is a
+tremolo that "just works"; `bipolar` swings `−depth … +depth` for pitch
+and cutoff modulation. `rate_cv` is FM-of-modulation: `cv_depth` octaves
+per CV unit (1 V/oct by default, 0 disables), read as a block mean. The
+LFO is **voice-aware through its rate**: a `(V, F)` `rate_cv` (a poly
+envelope, say) gives every voice its own phase accumulator and a `(V, F)`
+output; a mono `rate_cv`, or none, keeps one phase and a mono output.
+
+**Retriggering** (2026-09-19). Free-running, a tremolo lands on each note
+wherever its cycle happens to be — the first note swells, the next one
+dips, and the ear hears the difference as unevenness. Patch the voice's
+gate into `reset` (`cv_keyboard.gate → lfo.reset`, or a sequencer's
+`gate`) and every rising edge restarts the phase at `phase` **on that
+very sample**, not at the next block boundary: the block is rendered in
+segments between edges, so a note that starts mid-block still gets its
+LFO from the top. `phase` is in cycles: 0.25 on a sine is the peak (the
+tremolo opens *with* the note and dips from there), 0.5 on a saw is the
+zero crossing, 0 on a square is the top of the high half. It is also the
+free-running start, and moving the knob re-anchors a free-running LFO at
+the next block, so the slider is audible without a cable. On the
+per-voice path a `(V, F)` gate resets each voice from its own row and a
+mono gate resets every voice together; on the mono path a `(V, F)` gate
+collapses to any-voice-high, the house rule. The `random` waveform rolls
+a fresh value on a reset edge as well as on a wrap, so a retriggered S&H
+starts every note on a new step. Unpatched `reset` at `phase` 0 is
+exactly the old free-run (bit-exact).
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `rate_cv` | in | cv | `cv_depth` octaves per unit on the rate, block-mean. A `(V, F)` source switches the LFO to one phase per voice. |
+| `reset` | in | gate | Rising edge: restart the phase at `phase` on that sample. `(V, F)` per voice on the voice path; any-voice-high on the mono path. |
+| `cv` | out | cv | The wave, `0 … depth` (unipolar) or `±depth` (bipolar). `(V, F)` when `rate_cv` is. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `waveform` | `sine` | sine / triangle / square / saw / random | Shape; `random` is sample-and-hold. |
+| `rate` | `4.0` | 0.01 … 120 Hz | Cycles per second (clamped internally to 0.001 Hz … 0.45 × sample rate). |
+| `depth` | `1.0` | 0 … 1 | Output amplitude. |
+| `bipolar` | `false` | — | Off: `0 … depth`. On: `−depth … +depth`. |
+| `cv_depth` | `1.0` | 0 … 4 oct/unit | Octaves the rate moves per unit of `rate_cv`. |
+| `phase` | `0.0` | 0 … 1 cyc | Start phase: the free-running start and where `reset` jumps to. Wraps. |
+
+**Patching.** `lfo.cv → vca.cv` for tremolo, `lfo.cv → oscillator.freq_cv`
+(bipolar, `depth` ≈ 0.03) for vibrato, `lfo.cv → filter.cutoff_cv` for
+wah; `lfo.cv → schmitt.in` turns it into a clock. See
+`examples/vibrato.json`, `examples/keyboard_tremolo.json`,
+`examples/lfo_retrigger.json` (key-synced tremolo) and
+`examples/schmitt_lfo_clock.json`.
 
 ---
 
@@ -4568,6 +4618,7 @@ loads in the app. Notable ones referenced above:
 - `pitch_shifter_shimmer.json` — the built-in shimmer loop: a slow pluck at C3 into +12 with `feedback` 0.75, through a hall — each pluck blooms into an octave cloud.
 - `pitch_shifter_harmonizer.json` — a stereo major triad from one module: `semitones` +4, `harmony` +7, `spread` 1 → third left, fifth right, root centred.
 - `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.
+- `lfo_retrigger.json` — the key-synced tremolo: a 90 BPM sequencer melody through an ADSR VCA and then a 7 Hz [`lfo`](#lfo) VCA, with the sequencer's `gate` also into the LFO's `reset` and `phase` 0.25 — every note opens at the top of the tremolo and pulses down from there, instead of landing wherever the cycle happened to be.
 - `organ_leslie.json` — the pairing: a self-playing maj7 organ through the [`rotary`](#rotary), a 5 BPM clock on `fast` flipping the Leslie between chorale and tremolo every six seconds so the horn and drum chase each other.
 - `krell_feedback.json` — the real krell self-patch: the [`function_generator`](#function_generator) in `trigger` mode with its own `eoc` OR'd (through [`logic`](#logic)) with a 12-second starter pulse back into `trig`. The loop closes one block late — the feedback door, generalized 2026-09-16. Same dice, quantizer and voice as `krell_machine.json`, which runs the no-latency `loop` mode version.
 - `fg_eor_swell_strike.json` — what `eor` is for: a slow [`function_generator`](#function_generator) (1.2 s up, 1.8 s down, cycling through the krell loop with a wandering `rate_cv`) swells a low saw through a filter and VCA, and at the **top** of every swell its `eor` fires a [`pluck`](#pluck) whose pitch a [`sample_hold`](#sample_hold) grabbed at that same instant — swell, then strike.
