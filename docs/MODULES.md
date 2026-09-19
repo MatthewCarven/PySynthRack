@@ -2136,7 +2136,7 @@ what the ear reads as width.
 | `decay_cv` | in | cv | Added to `decay` (× `cv_depth`) — animate the tail length. Optional. |
 | `damping_cv` | in | cv | Added to `damping` (× `cv_depth`) — darken/brighten the tail over a phrase. Optional. |
 | `mix_cv` | in | cv | Added to `mix` (× `cv_depth`) — envelope-driven reverb throws / wet ducking. Optional. |
-| `freeze` | in | gate | (2026-09-19) High (> 0.5) **holds the tail as a pad**: unity loop, damping bypassed, input muted from the tank (the dry path still passes). A `(V, F)` gate collapses to any-voice-high. Unpatched → never frozen, bit-exact with the pre-freeze render. |
+| `freeze` | in | gate | (2026-09-19) High (> 0.5) **holds the tail as a pad**: unity loop, damping bypassed, input muted from the tank (the dry path still passes). A `(V, F)` gate collapses to any-voice-high. ORed with the `freeze` tickbox. Unpatched and un-ticked → never frozen, bit-exact with the pre-freeze render. |
 | `out_l` | out | audio | Left channel (dry + decorrelated wet). |
 | `out_r` | out | audio | Right channel (dry + decorrelated wet). |
 
@@ -2149,6 +2149,7 @@ what the ear reads as width.
 | `damping` | `0.5` | 0 … 1 | High-frequency absorption in the tail, bright → dark. |
 | `mix` | `0.3` | 0 … 1 | Dry/wet balance. Dry is centred; wet is the stereo tail. |
 | `cv_depth` | `1.0` | 0 … 2 lvl/unit | Level units per CV unit, shared by `decay_cv`, `damping_cv` and `mix_cv`; 0 disables all three. `size` deliberately has no CV — sweeping delay-line lengths clicks. |
+| `freeze` | off | tickbox | (2026-09-20) Hold the tail from the panel — ORed with the `freeze` gate. Ticking is a rising edge at the first sample of the block it lands on (same 10 ms ramp, bit-exact with a gate rising there); clearing releases like a gate fall. |
 
 Patch the outputs into [`left_speaker_output`](#left_speaker_output) and
 [`right_speaker_output`](#right_speaker_output) for a wide tail. The
@@ -2188,6 +2189,18 @@ its state is warm the moment the gate falls. Feed it a
 [`clock`](#clock) (or its [`logic`](#logic) `not_a`) to freeze between
 strikes, or a [`function_generator`](#function_generator) `eoc` chain for
 timed holds. See `examples/reverb_freeze_pad.json`.
+
+**The tickbox** (2026-09-20 love pass). The `freeze` tickbox on the panel
+is ORed with the gate — the [`granular`](#granular) / [`freeze`](#freeze)
+precedent — so you can hold the pad by hand with nothing patched.
+Ticking it is a rising edge at the first sample of the block it lands on
+(the same 10 ms ramp: bit for bit the hold a gate cable rising there
+would give, at 64 as at 512), and clearing it releases like a gate fall.
+Under a held cable it changes nothing; with a cable patched but low it
+holds exactly as the cable would. Off, with the gate unpatched, the
+module never enters the freeze machinery — still the pre-freeze code by
+construction (every shipped example with a reverb re-rendered
+bit-exact).
 
 #### `compressor`
 

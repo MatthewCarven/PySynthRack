@@ -55,6 +55,14 @@ Freeze:
   forever — the other reason the ramp exists). Unpatched, the module is
   bit-exact with the pre-freeze render.
 
+  The ``freeze`` **tickbox** on the panel is ORed with the gate (the
+  ``granular`` / ``freeze`` precedent), so you can hold from the panel
+  with nothing patched: ticking it is a rising edge at the first sample
+  of the block it lands on — the same 10 ms ramp, bit for bit the same
+  hold as a gate cable rising there — and clearing it releases like a
+  gate fall. With a gate patched the tick simply holds it high. Off, it
+  changes nothing: unpatched and un-ticked is still the pre-freeze code.
+
 Ports:
   * ``in`` (audio): the signal to reverberate. A polyphonic (voice-aware)
     source is summed to mono first — you reverberate the mix. Unpatched
@@ -67,7 +75,8 @@ Ports:
     reverb throws / wet ducking. Optional.
   * ``freeze`` (gate): high (> 0.5) holds the tail as a pad (see Freeze
     above). A polyphonic ``(V, F)`` gate collapses to any-voice-high.
-    Unpatched -> never frozen.
+    ORed with the ``freeze`` tickbox. Unpatched -> never frozen unless
+    ticked.
   * ``out_l`` (audio): left channel (dry + decorrelated wet tap A).
   * ``out_r`` (audio): right channel (dry + decorrelated wet tap B).
 
@@ -99,6 +108,11 @@ class Reverb(Module):
         cv_depth: Level units per CV unit, shared by ``decay_cv``,
             ``damping_cv`` and ``mix_cv``. Default 1.0; 0 disables all
             three.
+        freeze: The panel tickbox (default False), ORed with the
+            ``freeze`` gate -- hold the tail from the panel with nothing
+            patched. Ticking is a rising edge at the first sample of the
+            block it lands on (same ramp, same hold as a gate rising
+            there); clearing releases like a gate fall.
 
     Ports:
         in (in, audio): signal to reverberate (voice sources summed to
@@ -108,8 +122,9 @@ class Reverb(Module):
         mix_cv (in, cv): added to ``mix``, scaled by ``cv_depth``.
         freeze (in, gate): high holds the tail as a pad -- unity loop,
             damping bypassed, input muted from the tank (dry still
-            passes). ``(V, F)`` collapses to any-voice-high. Unpatched
-            -> never frozen (bit-exact with the pre-freeze render).
+            passes). ``(V, F)`` collapses to any-voice-high. ORed with
+            the ``freeze`` tickbox. Unpatched and un-ticked -> never
+            frozen (bit-exact with the pre-freeze render).
         out_l (out, audio): left channel.
         out_r (out, audio): right channel.
     """
@@ -122,6 +137,7 @@ class Reverb(Module):
         "damping": 0.5,
         "mix": 0.3,
         "cv_depth": 1.0,
+        "freeze": False,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),

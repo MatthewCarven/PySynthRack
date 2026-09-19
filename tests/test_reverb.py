@@ -23,6 +23,13 @@ Coverage:
     independence with the edge mid-stream; a (V, F) gate collapses to
     any-voice-high; finite/bounded at max settings; every param gets a
     bounded widget; the example plays.
+  - Freeze tickbox (2026-09-20 love pass): the ``freeze`` param ORed
+    with the gate -- ticked at block k with nothing patched it is a gate
+    cable rising at block k's first sample, bit-exact (twice over, and
+    at 64 as at 512); ticked under a held cable or with the cable low
+    it is the cable alone; un-ticked and unpatched never touches the
+    ramp state (the pre-freeze code by construction); the panel gets a
+    ``freeze (or gate)`` checkbox.
 """
 from __future__ import annotations
 
@@ -83,6 +90,7 @@ class TestModel:
             "damping": 0.5,
             "mix": 0.3,
             "cv_depth": 1.0,
+            "freeze": False,
         }
 
     def test_ports_and_kinds(self):
@@ -285,9 +293,12 @@ def _fz_rig(params=None, block=F, patched=True):
     return patch, src, clk, rv, b
 
 
-def _fz_run(rig, x, fz, block=F):
+def _fz_run(rig, x, fz, block=F, tick=None):
     """Drive the renderer block by block with an audio row and a gate row
-    (``fz`` None = the freeze buffer is never published)."""
+    (``fz`` None = the freeze buffer is never published). ``tick`` is a
+    list of ``(k0, k1)`` block ranges over which the ``freeze`` tickbox
+    is on -- toggled on the module's params before each block, the way
+    the panel writes it."""
     patch, src, clk, rv, b = rig
     n = (len(x) // block) * block
     ls, rs = [], []
@@ -296,6 +307,8 @@ def _fz_run(rig, x, fz, block=F):
         bufs = {(src.id, "out"): x[sl].astype(np.float32)}
         if fz is not None:
             bufs[(clk.id, "out")] = fz[sl].astype(np.float32)
+        if tick is not None:
+            rv.params["freeze"] = any(k0 <= k < k1 for k0, k1 in tick)
         o = b._render_reverb(rv, block, bufs, patch)
         ls.append(o["out_l"])
         rs.append(o["out_r"])
@@ -526,6 +539,72 @@ class TestFreeze:
         t = T_FZ + 4 * SR
         assert abs(_db(_rms(lf[t - W:t]), ref)) < 3.0   # held, not grown
 
+    # --- the freeze tickbox (2026-09-20 love pass) ---
+
+    def test_tickbox_is_a_gate_edge_at_the_block_boundary(self):
+        # The panel tickbox with nothing patched: ticked at block k it is
+        # a rising edge at block k's first sample -- ramp and all -- and
+        # cleared at block m it is a fall there. Twice over, so the second
+        # hold rises from the idle state the release hands back to.
+        # Bit-exact with a gate cable doing the same, and the tick at 64
+        # lands on the same sample as the tick at 512.
+        n = 6 * SR
+        x = _burst(n)
+        holds = [(90, 200), (260, 330)]                 # blocks of 512
+        fz = np.zeros(n, np.float32)
+        for k0, k1 in holds:
+            fz[k0 * F:k1 * F] = 1.0
+        cl, cr = _fz_run(_fz_rig(), x, fz)
+        patch, src, clk, rv, b = rig = _fz_rig(patched=False)
+        tl, tr = _fz_run(rig, x, None, tick=holds)
+        assert np.array_equal(tl, cl) and np.array_equal(tr, cr)
+        # it really holds: the level a second in is the level caught
+        t0 = holds[0][0] * F
+        t = t0 + SR
+        assert _hold_ref(tl, t0) > 1e-4
+        assert abs(_db(_rms(tl[t - W:t]), _hold_ref(tl, t0))) < 3.0
+        # ... and once the release ran out the machinery handed back:
+        # the off count stopped at the first block boundary past the ramp
+        assert b._state[rv.id]["fz_prev"] is False
+        assert b._state[rv.id]["fz_off"] == -(-RAMP // F) * F
+        # block-size independence of the tick edge
+        rig64 = _fz_rig(patched=False, block=64)
+        l64, r64 = _fz_run(rig64, x, None, block=64, tick=[(8 * a, 8 * b_) for a, b_ in holds])
+        m = min(len(l64), len(tl))
+        assert np.array_equal(l64[:m], tl[:m]) and np.array_equal(r64[:m], tr[:m])
+
+    def test_tickbox_is_ored_with_the_gate(self):
+        # Ticked under a held cable it changes nothing; ticked with the
+        # cable patched but low it holds exactly as the cable would.
+        n = 4 * SR
+        x = _burst(n)
+        k0, k1 = 90, 200
+        fz = _gate(n, k0 * F, k1 * F)
+        cl, cr = _fz_run(_fz_rig(), x, fz)
+        ul, ur = _fz_run(_fz_rig(), x, fz, tick=[(k0 + 20, k1 - 20)])
+        ll, lr = _fz_run(_fz_rig(), x, np.zeros(n, np.float32), tick=[(k0, k1)])
+        for l_, r_ in ((ul, ur), (ll, lr)):
+            assert np.array_equal(l_, cl) and np.array_equal(r_, cr)
+
+    def test_unticked_and_unpatched_never_enters_the_freeze_machinery(self):
+        # The ship-off pin for the tickbox: gate unpatched and the tick
+        # off (the default), the ramp state is never touched -- the hop
+        # loop is the pre-freeze code by construction. (The recipe ran
+        # outside the suite too: every shipped example with a reverb or
+        # a delay re-rendered bit-exact against reference renders
+        # captured before the tickbox existed.)
+        patch, src, clk, rv, b = rig = _fz_rig(patched=False)
+        assert rv.params["freeze"] is False
+        _fz_run(rig, _burst(2 * SR), None)
+        st = b._state[rv.id]
+        assert st["fz_prev"] is False and st["fz_on"] == 0
+        assert st["fz_off"] == 0 and st["fz_env"] == 0.0
+        # The tripwire can tell: a patched-but-low cable does walk the
+        # ramp (its off count grows), the unpatched module's never moves.
+        patch, src, clk, rv, b = rig = _fz_rig()
+        _fz_run(rig, _burst(2 * SR), np.zeros(2 * SR, np.float32))
+        assert b._state[rv.id]["fz_off"] > 0
+
 
 # ----- UI --------------------------------------------------------------------
 
@@ -557,6 +636,8 @@ def test_every_param_gets_a_bounded_widget(monkeypatch):
         assert hits, (name, labels)
         assert w[hits[0]][0] != "add_input_text", (name, w[hits[0]])
     assert "lvl/unit" in w["cv_depth"][1]
+    # the freeze tickbox: a labelled checkbox beside the gate jack
+    assert w["freeze (or gate)"][0] == "add_checkbox"
 
 
 # ----- example ---------------------------------------------------------------

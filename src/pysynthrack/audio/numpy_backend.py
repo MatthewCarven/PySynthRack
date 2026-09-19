@@ -10414,7 +10414,10 @@ class NumpyBackend(AudioBackend):
         tracking the raw read while bypassed, so its state is warm the
         moment the gate falls. Unpatched, the hop loop below is the
         pre-freeze code verbatim (bit-exact); the dry path never sees the
-        gate at all.
+        gate at all. The ``freeze`` param (the panel tickbox) is ORed
+        with the gate: on, the row is all-high from the first sample of
+        the block it is seen on (a rising edge there, ramp and all);
+        off again, it releases like a gate fall.
         """
         src = self._input_buffer(patch, buffers, module.id, "in")
         if src is None:
@@ -10491,12 +10494,18 @@ class NumpyBackend(AudioBackend):
             e = np.empty(0, dtype=np.float32)
             return {"out_l": e, "out_r": e.copy()}
 
-        # --- freeze blend: one 0..1 row per block, or None when the gate
-        # is unpatched (the hop loop then runs its pre-freeze code).
+        # --- freeze blend: one 0..1 row per block, or None when nothing
+        # asks for it (the hop loop then runs its pre-freeze code). The
+        # row is the gate cable ORed with the ``freeze`` tickbox
+        # (``_freeze_gate_row``): unpatched and un-ticked never enters
+        # here; the tick alone rises at sample 0 of the block it is seen
+        # on and, cleared, releases through the same ramp as a gate fall.
         f = None
-        if fz_gate is not None and fz_gate.shape[0] == frames:
-            gt = fz_gate > self._GATE_HIGH
-            ramp_n = max(1, int(round(self._REVERB_FREEZE_RAMP_S * sr)))
+        ramp_n = max(1, int(round(self._REVERB_FREEZE_RAMP_S * sr)))
+        gt = self._freeze_gate_row(
+            fz_gate, frames, bool(module.params.get("freeze", False)),
+            state, ramp_n)
+        if gt is not None:
             f, fz_on, fz_off, fz_env = self._gate_ramp_env(
                 gt, bool(state["fz_prev"]), int(state["fz_on"]),
                 int(state["fz_off"]), float(state["fz_env"]), ramp_n, ramp_n)
@@ -16353,6 +16362,39 @@ class NumpyBackend(AudioBackend):
         e = np.asarray(exponent)
         e = np.where(np.isfinite(e), e, 0.0)
         return np.power(2.0, np.clip(e, -limit, limit))
+
+    def _freeze_gate_row(self, gate, frames: int, tick: bool, state, ramp_n: int):
+        """The reverb's / delay's freeze row: the ``freeze`` gate cable
+        ORed with the ``freeze`` tickbox, or None when the pre-freeze
+        code should run instead.
+
+        Cable patched: the bool row (a ``(V, F)`` cable is already the
+        house sum), all-high while the tick is on. Cable unpatched:
+        all-high while the tick is on -- the first block it is seen on
+        carries a rising edge at sample 0, exactly like a cable rising
+        there, ramp and all -- and all-low while the ramp state is still
+        live (the tick was on at the block's last sample, or the release
+        from the last fall has not run out yet), so clearing the tick
+        releases like a gate fall. Otherwise None: the unpatched,
+        un-ticked module never enters the freeze machinery, so it is
+        bit-exact with the pre-freeze render by construction. ``state``
+        carries ``fz_prev`` / ``fz_off`` / ``fz_env`` as ``_gate_ramp_env``
+        left them; a run-out release (``fz_off >= ramp_n``) is the same
+        state a fresh module starts in as far as the next edge can tell.
+        """
+        if gate is not None and gate.shape[0] == frames:
+            gt = gate > self._GATE_HIGH
+            if tick:
+                gt = np.ones(frames, dtype=bool)
+            return gt
+        if tick:
+            return np.ones(frames, dtype=bool)
+        live = bool(state["fz_prev"]) or (
+            float(state["fz_env"]) > 0.0 and int(state["fz_off"]) < ramp_n
+        )
+        if live:
+            return np.zeros(frames, dtype=bool)
+        return None
 
     # ----- Wind rendering ------------------------------------------------------
 
