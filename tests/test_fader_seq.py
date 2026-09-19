@@ -3,7 +3,11 @@
 The engine is shared (the numpy backend routes both TYPEs through
 ``_render_sequencer``), so the load-bearing test here is the bit-identical
 A/B: same params, same clock, same output. Behavioural depth (stepping,
-rests, reset, wrap) lives in test_sequencer.py and applies verbatim.
+rests, reset, wrap, the ``reverse`` gate) lives in test_sequencer.py and
+applies verbatim. The port-contract test is the tripwire for a jack the
+original grows and this class forgets: ``reverse`` (2026-09-20) is on
+both lists, and ``test_reverse_gate_flips_the_fader_seq`` shows the
+inherited jack actually reaches this TYPE's render.
 """
 from __future__ import annotations
 
@@ -46,6 +50,8 @@ class TestFaderSeqModel:
         fs = [(p.name, p.direction, p.signal_kind) for p in FaderSeq.INPUT_PORTS + FaderSeq.OUTPUT_PORTS]
         sq = [(p.name, p.direction, p.signal_kind) for p in Sequencer.INPUT_PORTS + Sequencer.OUTPUT_PORTS]
         assert fs == sq
+        # ...and the list is the full one: the reverse jack is here too.
+        assert [p.name for p in FaderSeq.INPUT_PORTS] == ["clock", "reset", "reverse"]
 
     def test_default_scale_fits_fader_range(self):
         # The panel's faders span ±FADER_RANGE_ST; the factory C-major
@@ -137,3 +143,50 @@ class TestFaderSeqEngine:
         # After reset at 150, the clock at 200 plays step 1 again.
         assert out["cv"][200] == np.float32(0.0)
         assert np.all(out["gate"][200:204] == 1.0)
+
+    def test_reverse_gate_flips_the_fader_seq(self):
+        # The inherited jack on THIS type: a forward fader_seq with
+        # reverse held high plays its steps descending, a flip mid-phrase
+        # continues from the current step, and a reverse cable carrying
+        # zeros is bit-exact with no cable at all.
+        params = {"steps": 4, "direction": "forward"}
+        for i in range(1, 5):
+            params[f"step{i}_pitch"] = float(i)
+
+        def build(with_reverse):
+            patch = Patch()
+            fs = patch.add_module("fader_seq", params=dict(params))
+            clk = patch.add_module("clock")
+            patch.connect(clk.id, "out", fs.id, "clock")
+            rev = None
+            if with_reverse:
+                rev = patch.add_module("clock")
+                patch.connect(rev.id, "out", fs.id, "reverse")
+            return patch, fs, clk, rev
+
+        frames = 200
+        clock = _pulses(frames, [k * 20 for k in range(10)])
+
+        def played(out):
+            return [int(round(float(out["cv"][k * 20 + 1]) * 12)) for k in range(10)]
+
+        patch, fs, clk, rev = build(True)
+        b = _backend(patch)
+        high = np.ones(frames, dtype=np.float32)
+        out = b._render_module(fs, frames, {(clk.id, "out"): clock, (rev.id, "out"): high}, patch)
+        assert played(out) == [4, 3, 2, 1, 4, 3, 2, 1, 4, 3]
+
+        patch, fs, clk, rev = build(True)
+        b = _backend(patch)
+        flip = np.zeros(frames, dtype=np.float32)
+        flip[90:150] = 1.0                     # edges 5, 6, 7 reversed
+        out = b._render_module(fs, frames, {(clk.id, "out"): clock, (rev.id, "out"): flip}, patch)
+        assert played(out) == [1, 2, 3, 4, 1, 4, 3, 2, 3, 4]
+
+        patch_a, fs_a, clk_a, _ = build(False)
+        patch_b, fs_b, clk_b, rev_b = build(True)
+        out_a = _backend(patch_a)._render_module(fs_a, frames, {(clk_a.id, "out"): clock}, patch_a)
+        out_b = _backend(patch_b)._render_module(
+            fs_b, frames, {(clk_b.id, "out"): clock, (rev_b.id, "out"): np.zeros(frames, np.float32)}, patch_b)
+        assert np.array_equal(out_a["cv"], out_b["cv"])
+        assert np.array_equal(out_a["gate"], out_b["gate"])

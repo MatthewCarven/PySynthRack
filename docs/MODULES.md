@@ -318,8 +318,8 @@ signal-flow role (sources → processors → … → sinks).
 | [`ad_envelope`](#ad_envelope) | Modulation | `trig` (gate) → `cv` (cv) |
 | [`function_generator`](#function_generator) | Modulation | `trig` (gate), `rate_cv`,`rise_cv`,`fall_cv` (cv) → `out`,`out_inv` (cv), `eor`,`eoc` (gate) |
 | [`clock`](#clock) | Modulation | `reset`,`run` (gate), `bpm_cv` (cv) → `out` (gate) |
-| [`sequencer`](#sequencer) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
-| [`fader_seq`](#fader_seq) | Modulation | `clock`,`reset` (gate) → `cv` (cv), `gate` (gate) |
+| [`sequencer`](#sequencer) | Modulation | `clock`,`reset`,`reverse` (gate) → `cv` (cv), `gate` (gate) |
+| [`fader_seq`](#fader_seq) | Modulation | `clock`,`reset`,`reverse` (gate) → `cv` (cv), `gate` (gate) |
 | [`shift_random`](#shift_random) | Modulation | `clock`,`write` (gate) → `cv` (cv), `gate` (gate) |
 | [`possibility_seq`](#possibility_seq) | Modulation | `clock`,`reset`,`reroll` (gate) → `gate` (gate) |
 | [`possibility_selector`](#possibility_selector) | Modulation | `in`,`clock`,`reset`,`reroll` (gate) → `out1`–`out4` (gate) |
@@ -3698,6 +3698,7 @@ A clock-driven **step sequencer** — the self-playing centrepiece. On each `clo
 |------|-----|------|-------------|
 | `clock` | in | gate | Advance one step on each **rising edge**. First pulse plays step 1. |
 | `reset` | in | gate | A rising edge rewinds to the pattern's **start for the current `direction`** (step 1 in `forward`/`pendulum`, step `steps` in `backward`; `random` restarts its stream). Unpatched = free-running loop. |
+| `reverse` | in | gate | Read **on each clock edge**: while high, that step is taken in the reversed direction — `forward` steps as `backward`, `backward` as `forward`, `pendulum` turns around, `random` is unaffected. A per-edge flip, not a mode: it can rise or fall between any two edges and the pattern carries on from the current step the other way. Unpatched = never reversed (bit-exact with before). |
 | `cv` | out | cv | Current step's pitch as 1V/oct (`semitones / 12`, C4 = 0 V), **held** for the whole step (sample-and-hold) so a note stays in tune while its envelope rings out. |
 | `gate` | out | gate | High while the clock is high **and** the current step is enabled. A disabled step is a rest. |
 
@@ -3720,14 +3721,17 @@ A clock-driven **step sequencer** — the self-playing centrepiece. On each `clo
 
 **Reset** rewinds to the pattern's start *for the direction*: `forward` and `pendulum` play step 1 next (pendulum heading up), `backward` plays step `steps`, and `random` **restarts its stream too** — a reset replays the same random phrase from the top. That makes a "random" line loopable: patch a slow clock or a `clock_divider` into `reset` and the sequencer plays a reproducible phrase per bar, which a patch file recalls exactly (`seed` is saved with it). Switching direction live is seamless: `forward` leaves the pendulum heading up and `backward` leaves it heading down, so a switch to `pendulum` carries on the way you were going.
 
+**Reverse.** The `reverse` gate is the run-mode switch's live flip. It is sampled on the clock edge itself and handed to the same one rule as a per-edge flag: high = this step is taken the other way. `forward` counts down, `backward` counts up, the `pendulum` turns around from wherever it is — and turns around *again* when the gate drops, because its heading is kept in the base frame (the way it would be going with the gate low; the gate is XOR'd in and out), so there is never a jump: a flip mid-phrase continues from the **current** step in the new direction. `1 2 3 4` then gate up gives `3 2 1 8 7`, gate down again `8 1 2`. `random` ignores it entirely — the same draw is consumed, so the phrase is identical with the gate high or low. A `(V, F)` source on it collapses to any-voice-high, like `clock` and `reset` (the sequencer is mono). **With `reset`:** a reset still rewinds to *before the start*, unchanged; the next edge then moves in the effective direction, so a reset with the gate high lands on the **reversed start** — the last step in `forward`, step 1 in `backward`, the top of the `pendulum` heading down (the mirror image of the unreversed run). That is what makes a bar-line reset plus a bar-pair square into `reverse` play every other bar as a true mirror: `examples/sequencer_reverse_bars.json`. Read only at edges, so the sequence is block-size independent (pinned 64 vs 512 through real clocks). One thing to know when *patching* it: the gate is read on the edge sample, so a reverse source whose own edges land exactly on the clock's (a second `clock` at a related tempo) is a race between two float phases — give it edges that fall between the steps (the example's square is offset by half an eighth for exactly this reason).
+
 **Changing `steps` mid-run.** The playing step keeps sounding until the next clock. If it is now past the new end it is treated as the new *last* step on that clock: `forward` wraps to step 1, `backward` walks to step `steps − 1`, `pendulum` turns around. A step still inside the new length is untouched.
 
-**Patching.** `clock.out → sequencer.clock`; `sequencer.cv → oscillator.freq_cv`; `sequencer.gate → adsr.gate → vca.cv`; `oscillator.out → vca.audio → speaker`. See `examples/sequencer_melody.json`, and `examples/sequencer_pendulum.json` for a pendulum melody against a seeded `random` hat line. The `cv` is generic 1V/oct — patch it into a filter `cutoff_cv` or any CV input for stepped modulation instead of pitch.
+**Patching.** `clock.out → sequencer.clock`; `sequencer.cv → oscillator.freq_cv`; `sequencer.gate → adsr.gate → vca.cv`; `oscillator.out → vca.audio → speaker`. See `examples/sequencer_melody.json`, `examples/sequencer_pendulum.json` for a pendulum melody against a seeded `random` hat line, and `examples/sequencer_reverse_bars.json` for the `reverse` gate playing every other bar backwards. A keyboard gate ([`cv_keyboard`](#cv_keyboard) or a [`key_trigger`](#key_trigger) in `latch` mode) into `reverse` is a "flip it now" button. The `cv` is generic 1V/oct — patch it into a filter `cutoff_cv` or any CV input for stepped modulation instead of pitch.
 
 #### `fader_seq`
 
 The [`sequencer`](#sequencer) with a hardware-style **fader-bank panel** —
-same engine, same ports, same params, different front. Instead of 33
+same engine, same ports (`clock`, `reset` and the `reverse` gate), same
+params, different front. Instead of 33
 labelled parameter rows, the node draws sixteen **vertical pitch faders**
 side by side (Korg SQ-10 lineage) with nothing beneath each but its step
 number and an on/off tickbox; hover a fader for its note (`+7 st (G4)`).
@@ -3741,9 +3745,11 @@ heights *are* the tune.
 Faders are quantized to **integer semitones over ±12**; the shared engine
 accepts any float, so a hand-edited patch JSON can still go microtonal or
 beyond the panel range (the slider only clamps what the mouse does).
-Everything else — stepping, rests, reset, sample-and-hold `cv`, wrap at
-`steps` — behaves exactly as documented on [`sequencer`](#sequencer), and
-is pinned by a bit-identical A/B test. Pick whichever panel suits the
+Everything else — stepping, rests, reset, the `reverse` gate (a per-edge
+flip of the direction, read on the clock edge; see the original's
+**Reverse** paragraph), sample-and-hold `cv`, wrap at `steps` — behaves
+exactly as documented on [`sequencer`](#sequencer), and is pinned by a
+bit-identical A/B test (reversed as well as not). Pick whichever panel suits the
 patch; saved patches remember which one they used.
 
 #### `shift_random`
@@ -5452,5 +5458,6 @@ loads in the app. Notable ones referenced above:
 - `tape_stop_drop.json` — the tape-stop drop: an eighth-note saw riff ([`clock`](#clock) → [`sequencer`](#sequencer) → [`oscillator`](#oscillator) → [`adsr`](#adsr)/[`vca`](#vca)) on [`tape`](#tape) (`sat` 0.3, `wow` 0.15, `mix` 1), a 7.5 BPM clock's [`logic`](#logic) `not_a` pulling the tape's `stop` for the last 1.6 s of every 8 — the beat dives over `stop_time` 1.25 s, halts, and spins back up over `start_time` 0.6 s.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `freeze_chord_pad.json` — module #100, the spectral freeze: a bar clock plays four sus2 chords on the [`organ`](#organ) ([`sequencer`](#sequencer) → [`chord`](#chord)) for a second each; the clock's `not_a` through [`logic`](#logic) is the [`freeze`](#freeze) gate, so it rises the instant the chord's gate falls and the capture is the chord's sustain — held as a glassy pad (`smear` 0.25) for the rest of the bar, easing out under the next chord over a 300 ms `fade`. Try `smear` 1 (the wash), `pitch` −12 (a sub-pad), `size` 16384 (a longer, smoother moment).
+- `sequencer_reverse_bars.json` — the [`sequencer`](#sequencer)'s `reverse` gate: an eight-step [`pluck`](#pluck) line at eighths, a [`clock_divider`](#clock_divider) `divn` 8 resetting it on every bar line and a bar-pair square ([`lfo`](#lfo) 0.25 Hz, `phase` 17/32 so its edges fall half an eighth *before* the bar lines, through a [`schmitt`](#schmitt)) holding `reverse` high through every second bar — bar 1 climbs `0 3 7 10 12 15 14 19`, bar 2 is its exact mirror (a reset with the gate high lands on the last step), bar 3 climbs again: a palindrome, through a dotted-eighth [`delay`](#delay). Swap the sequencer's `direction` to `pendulum` and the same gate turns it around at the bar lines instead.
 - `noise_brown_surf.json` — surf: a seeded `brown` [`noise`](#noise) (seed 7, so the same tide every run) swelling under a 0.12 Hz unipolar sine on its knobless `amp_cv` (a [`cv_offset`](#cv_offset) of 0.2 keeps the trough from going silent) into a resonant 900 Hz lowpass [`filter`](#filter) — waves rolling in and drawing back every eight seconds. Five modules.
 - `stereo_hard_pan.json` — left/right speaker sinks.

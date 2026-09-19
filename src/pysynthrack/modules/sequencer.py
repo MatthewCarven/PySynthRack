@@ -35,6 +35,20 @@ a reset **replays the same random phrase**, which is what makes a
 last one on the next clock (forward wraps to 1, backward walks to
 `steps − 1`, pendulum turns around). All four orders share one pure rule,
 :func:`next_step_index`, so the tests can pin the exact sequences.
+
+`reverse` (gate in, 2026-09-20) is the run-mode switch's **live flip**:
+read at each clock edge, and while high the direction is reversed *for
+that step* — `forward` steps as `backward`, `backward` as `forward`, the
+`pendulum` turns around from wherever it is, `random` is unaffected. A
+gate that rises or falls mid-phrase just continues from the current step
+the other way (no jump, no reset), so a slow square into `reverse` plays
+every other bar backwards and a keyboard gate on it is a "flip it now"
+button. `reset` is unchanged — it rewinds to *before the start* — and the
+next edge then moves in the effective direction, so a reset with the
+gate high lands on the reversed start (the last step in `forward`, step 1
+in `backward`, the top of the `pendulum` heading down): a reset-plus-
+reverse at the bar line plays the bar as a true mirror
+(`examples/sequencer_reverse_bars.json`). Unpatched, nothing changes.
 """
 from __future__ import annotations
 
@@ -73,14 +87,30 @@ def _default_params() -> dict[str, object]:
     return params
 
 
+def _pendulum_step(idx: int, steps: int, ascending: bool) -> tuple[int, bool]:
+    """The pendulum's own move: climb, turn at the top, descend, turn at
+    the bottom; the turnaround steps play once. ``idx`` is a real step
+    (>= 0) inside ``steps``; the heading is the PHYSICAL one."""
+    if steps == 1:
+        return 0, True
+    if ascending:
+        if idx + 1 < steps:
+            return idx + 1, True
+        return idx - 1, False
+    if idx - 1 >= 0:
+        return idx - 1, False
+    return idx + 1, True
+
+
 def next_step_index(idx: int, steps: int, direction: str, ascending: bool = True,
-                    rng=None) -> tuple[int, bool]:
+                    rng=None, reverse: bool = False) -> tuple[int, bool]:
     """The one rule for "which step plays on the next clock".
 
     Pure, so the renderer and the tests call the same function. ``idx`` is
     the current 0-based step index, or ``-1`` for *before the start* (a
     fresh module, or just after a ``reset``); ``ascending`` is the
-    pendulum's heading. Returns ``(next_idx, ascending)``.
+    pendulum's heading; ``reverse`` is the ``reverse`` gate as read at
+    this clock edge. Returns ``(next_idx, ascending)``.
 
     * ``forward``: ``(idx + 1) % steps`` — from the start, step 1. Leaves
       the pendulum heading *up*.
@@ -96,6 +126,29 @@ def next_step_index(idx: int, steps: int, direction: str, ascending: bool = True
       ``steps == 1`` there is no choice to make and NO draw is consumed,
       so the stream is a pure function of the real decisions (house rule).
 
+    **``reverse``** flips the direction *for this one edge* — a per-edge
+    modifier, not a mode, so the gate can drop mid-phrase and the pattern
+    simply carries on the other way from the CURRENT step (no jump, no
+    reset). ``forward`` steps as ``backward`` and ``backward`` as
+    ``forward``; the ``pendulum`` runs the other way: it turns around from
+    wherever it is. ``random`` is unaffected (a reversed shuffle is a
+    shuffle; the same draw is consumed, so the phrase is identical with
+    the gate high or low). From *before the start* the reversed rule
+    lands on the reversed direction's start — ``forward`` on the last
+    step, ``backward`` on step 1, ``pendulum`` on the last step heading
+    down (the mirror image of the unreversed run) — which is what makes
+    a reset-plus-reverse at a bar line play the bar as a true mirror.
+
+    The returned heading is always in the **base frame** — the way the
+    pendulum would be heading with the gate low — so the renderer's
+    state never knows about the gate: the physical heading is ``ascending
+    XOR reverse`` on the way into the pendulum move and the result is
+    XOR'd back on the way out. A bounce while reversed therefore flips
+    the base heading too, which is exactly why dropping the gate after
+    the bounce turns the pendulum around again instead of leaping.
+    ``forward`` and ``backward`` set the heading as they always do (up /
+    down), reversed or not.
+
     **Mid-run ``steps`` change.** If ``idx`` is beyond the new end it is
     first clamped to the new last step, and the rule proceeds as though
     that step had just played: forward wraps to step 1, backward walks
@@ -108,20 +161,28 @@ def next_step_index(idx: int, steps: int, direction: str, ascending: bool = True
     idx = int(idx)
     if idx >= steps:
         idx = steps - 1
+    if reverse and direction != "random":
+        if direction == "backward":
+            return (idx + 1) % steps, False
+        if direction == "pendulum":
+            if idx < 0:
+                # The mirror image starts at the top, heading down —
+                # physically; in the base frame that is heading up.
+                return steps - 1, True
+            nxt, physical = _pendulum_step(idx, steps, not ascending)
+            return nxt, not physical
+        # forward (and unknown names) reversed: count down.
+        if idx < 0:
+            return steps - 1, True
+        return (idx - 1) % steps, True
     if direction == "backward":
         if idx < 0:
             return steps - 1, False
         return (idx - 1) % steps, False
     if direction == "pendulum":
-        if idx < 0 or steps == 1:
+        if idx < 0:
             return 0, True
-        if ascending:
-            if idx + 1 < steps:
-                return idx + 1, True
-            return idx - 1, False
-        if idx - 1 >= 0:
-            return idx - 1, False
-        return idx + 1, True
+        return _pendulum_step(idx, steps, ascending)
     if direction == "random":
         if steps == 1:
             return 0, ascending
@@ -151,10 +212,17 @@ class Sequencer(Module):
         step{i}_on: Whether step *i* fires its gate (``False`` = a rest —
             the step still consumes a clock tick).
 
+    Ports: ``clock`` and ``reset`` (gate in), ``reverse`` (gate in — read
+    at each clock edge; while high the step is taken in the reversed
+    direction, see :func:`next_step_index`), ``cv`` and ``gate`` out.
+    Gates are mono here: a ``(V, F)`` source on any of the three collapses
+    to any-voice-high.
+
     Runtime state (backend, not serialized): the current step index, the
-    pendulum heading, the random Generator (rebuilt from ``seed`` on a
-    seed change or a reset), the held cv level, and the previous
-    clock/reset levels for edge detection.
+    pendulum heading (always in the base frame — the ``reverse`` gate is
+    stateless), the random Generator (rebuilt from ``seed`` on a seed
+    change or a reset), the held cv level, and the previous clock/reset
+    levels for edge detection.
     """
 
     TYPE = "sequencer"
@@ -163,6 +231,7 @@ class Sequencer(Module):
     INPUT_PORTS = [
         Port("clock", "in", "gate"),
         Port("reset", "in", "gate"),
+        Port("reverse", "in", "gate"),
     ]
     OUTPUT_PORTS = [
         Port("cv", "out", "cv"),

@@ -4313,6 +4313,19 @@ class NumpyBackend(AudioBackend):
         falls. ``gate`` is high while the clock is high *and* the current
         step is enabled (a disabled step is a rest). Mono output.
 
+        ``reverse`` is a gate read ON the clock edge sample and handed to
+        the rule as a per-edge flag: high = take this step in the
+        reversed direction (forward as backward, backward as forward,
+        pendulum turning around; random unaffected). It is not state —
+        the stored pendulum heading stays in the base frame (the rule
+        XORs the gate in and out), so the gate can rise or fall between
+        any two edges and the pattern carries on from the current step
+        the other way. Read only at edges, so block-size independent for
+        the same reason the random stream is; a ``(V, F)`` source on it
+        collapses to any-voice-high via ``_input_buffer``'s sum, like
+        ``clock`` and ``reset``. Unpatched, the flag is False on every
+        edge and the render is bit-exact with the pre-reverse engine.
+
         ``random`` draws one ``integers(steps)`` per clock edge from a
         Generator seeded with ``seed``. The Generator lives in the module
         state and is built lazily on the first draw, rebuilt when ``seed``
@@ -4329,6 +4342,7 @@ class NumpyBackend(AudioBackend):
         """
         clock = self._input_buffer(patch, buffers, module.id, "clock")
         reset = self._input_buffer(patch, buffers, module.id, "reset")
+        reverse = self._input_buffer(patch, buffers, module.id, "reverse")
 
         steps = int(module.params.get("steps", 8))
         steps = max(1, min(self._SEQ_MAX_STEPS, steps))
@@ -4386,7 +4400,8 @@ class NumpyBackend(AudioBackend):
             if c and not prev_clock:
                 if direction == "random" and rng is None and steps > 1:
                     rng = np.random.default_rng(seed)
-                idx, asc = _seq_next_step_index(idx, steps, direction, asc, rng)
+                rv = bool(reverse[n] > gate_high) if reverse is not None else False
+                idx, asc = _seq_next_step_index(idx, steps, direction, asc, rng, rv)
                 cur_cv = pitches[idx] / 12.0
             prev_clock = c
 

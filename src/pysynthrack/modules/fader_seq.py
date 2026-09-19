@@ -14,11 +14,16 @@ want, and the original stays untouched.
 Engine sharing is by *contract*, not inheritance: this class publishes the
 exact same param names (``steps``, ``direction``, ``seed``,
 ``step{i}_pitch``, ``step{i}_on``) and
-ports (``clock``/``reset`` in, ``cv``/``gate`` out) as Sequencer, and the
-numpy backend routes both TYPEs through the one ``_render_sequencer``
-renderer. The param dict is imported from ``sequencer`` rather than copied
-so the contract cannot silently drift; behaviour is pinned by the
-bit-identical A/B test in ``tests/test_fader_seq.py``.
+ports (``clock``/``reset``/``reverse`` in, ``cv``/``gate`` out) as
+Sequencer, and the numpy backend routes both TYPEs through the one
+``_render_sequencer`` renderer. The param dict is imported from
+``sequencer`` rather than copied so the contract cannot silently drift;
+the port list is its own (a Port list is data, and a jack the original
+grows must be added here BY HAND — the port-contract test in
+``tests/test_fader_seq.py`` is the tripwire); behaviour is pinned by the
+bit-identical A/B test in the same file. The ``reverse`` gate
+(2026-09-20) arrived that way: the shared renderer reads it for both
+types, so a fader_seq flips live exactly as the original does.
 
 The faders are quantized to integer semitones over ±12 (the UI slider's
 doing — the engine happily renders any float a patch file supplies, so a
@@ -55,6 +60,10 @@ class FaderSeq(Module):
             ``semitones / 12``; 0 = C4). The panel's faders write integer
             semitones in [-12, +12]; the engine accepts any float.
         step{i}_on: Whether step *i* fires its gate (``False`` = rest).
+
+    Ports (identical contract too): ``clock`` / ``reset`` / ``reverse``
+    gates in, ``cv`` / ``gate`` out — ``reverse`` flips the direction for
+    the step taken at each clock edge it is high on (see ``sequencer``).
     """
 
     TYPE = "fader_seq"
@@ -63,6 +72,7 @@ class FaderSeq(Module):
     INPUT_PORTS = [
         Port("clock", "in", "gate"),
         Port("reset", "in", "gate"),
+        Port("reverse", "in", "gate"),
     ]
     OUTPUT_PORTS = [
         Port("cv", "out", "cv"),

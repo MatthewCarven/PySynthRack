@@ -15,6 +15,25 @@ pendulum / random) and ``seed``. The load-bearing claims:
 * ``random`` is a pure function of ``seed`` and the clock edges: covers
   every step, deterministic per seed, different across seeds, block-size
   independent, and a ``reset`` replays the same phrase.
+
+The 2026-09-20 love pass added the ``reverse`` gate (both types — the
+fader_seq's own port list carries it). The claims:
+
+* read ON the clock edge sample, a per-edge flip: forward steps as
+  backward, backward as forward, the pendulum turns around from wherever
+  it is (and turns around AGAIN when the gate drops — the heading is
+  stored in the base frame), random is unaffected (same draws, same
+  phrase). Pinned on the pure rule and edge-for-edge on the renderer.
+* a reset with the gate high lands on the reversed start (forward on the
+  last step, backward on step 1, pendulum on the top heading down).
+* unpatched, or a cable that never rises, is bit-exact with the shipped
+  engine: the recipe's 24 reference renders (16 sequencer-driven
+  examples + 8 synthetic patches, every direction, both types) were
+  ``np.array_equal`` after the change, and the in-file pin holds.
+* the STEP SEQUENCE is block-size independent through real clocks (64 vs
+  512) with reverse edges mid-stream — the clock's float phase moves an
+  edge by a sample between block sizes, so the pin compares the sequence
+  of steps at the gate edges, not the sample-aligned buffers.
 """
 from __future__ import annotations
 
@@ -77,14 +96,34 @@ def _numbered(direction, steps, seed=1, module_type="sequencer", **extra):
     return patch, seq, clk, rst
 
 
-def _steps_played(b, seq, clk, rst, clock, reset=None, chunk=None):
+def _numbered_rev(direction, steps, seed=1, module_type="sequencer", **extra):
+    """``_numbered`` plus a third clock cabled into ``reverse``. Returns
+    (patch, seq, clk, rst, rev)."""
+    patch, seq, clk, rst = _numbered(direction, steps, seed, module_type, **extra)
+    rev = patch.add_module("clock")
+    patch.connect(rev.id, "out", seq.id, "reverse")
+    return patch, seq, clk, rst, rev
+
+
+def _high(frames, spans):
+    """A mono gate buffer that is high on each half-open ``[a, b)`` span."""
+    buf = np.zeros(frames, dtype=np.float32)
+    for a, b in spans:
+        buf[a:b] = 1.0
+    return buf
+
+
+def _steps_played(b, seq, clk, rst, clock, reset=None, chunk=None, reverse=None, rev=None):
     """Render and return the step number at each clock edge (see
     ``_numbered``). ``chunk`` renders in that block size instead of one
-    call — for the block-size-independence claim."""
+    call — for the block-size-independence claim. ``reverse`` (with the
+    ``rev`` module from ``_numbered_rev``) feeds the reverse gate."""
     frames = len(clock)
     if reset is None:
         reset = np.zeros(frames, dtype=np.float32)
     buffers = {(clk.id, "out"): clock, (rst.id, "out"): reset}
+    if reverse is not None:
+        buffers[(rev.id, "out")] = reverse
     if chunk is None:
         cv = b._render_sequencer(seq, frames, buffers, seq_patch_of(b))["cv"]
     else:
@@ -103,12 +142,14 @@ def seq_patch_of(b):
     return b._patch
 
 
-def _walk(direction, steps, n, rng=None):
-    """Drive the pure rule ``n`` times from the start; 1-based steps."""
+def _walk(direction, steps, n, rng=None, reverse=False):
+    """Drive the pure rule ``n`` times from the start; 1-based steps.
+    ``reverse`` is one bool for every edge, or a per-edge list."""
+    revs = [reverse] * n if isinstance(reverse, bool) else list(reverse)
     idx, asc = -1, True
     out = []
-    for _ in range(n):
-        idx, asc = next_step_index(idx, steps, direction, asc, rng)
+    for k in range(n):
+        idx, asc = next_step_index(idx, steps, direction, asc, rng, revs[k])
         out.append(idx + 1)
     return out
 
@@ -135,7 +176,7 @@ class TestSequencerModel:
         patch = Patch()
         seq = patch.add_module("sequencer")
         assert [(p.name, p.signal_kind) for p in seq.input_ports] == [
-            ("clock", "gate"), ("reset", "gate")
+            ("clock", "gate"), ("reset", "gate"), ("reverse", "gate")
         ]
         assert [(p.name, p.signal_kind) for p in seq.output_ports] == [
             ("cv", "cv"), ("gate", "gate")
@@ -293,6 +334,91 @@ class TestNextStepIndex:
         # An index still inside the new length is untouched.
         assert next_step_index(1, 4, "forward") == (2, True)
         assert next_step_index(1, 4, "pendulum", True) == (2, True)
+
+
+class TestNextStepIndexReverse:
+    """``reverse`` on the pure rule — a per-edge flip, base-frame heading."""
+
+    def test_reverse_swaps_forward_and_backward(self):
+        assert _walk("forward", 5, 15, reverse=True) == _walk("backward", 5, 15)
+        assert _walk("backward", 5, 15, reverse=True) == _walk("forward", 5, 15)
+        assert _walk("forward", 5, 15, reverse=True) == [5, 4, 3, 2, 1] * 3
+
+    def test_reverse_pendulum_from_the_start_is_the_mirror_image(self):
+        plain = _walk("pendulum", 5, 16)
+        assert plain == [1, 2, 3, 4, 5, 4, 3, 2] * 2
+        assert _walk("pendulum", 5, 16, reverse=True) == [6 - s for s in plain]
+        # ...which reads: from the top, heading down, turnarounds once.
+        assert _walk("pendulum", 5, 16, reverse=True) == [5, 4, 3, 2, 1, 2, 3, 4] * 2
+        assert _walk("pendulum", 1, 4, reverse=True) == [1, 1, 1, 1]
+        assert _walk("pendulum", 2, 6, reverse=True) == [2, 1, 2, 1, 2, 1]
+
+    def test_a_flip_mid_phrase_continues_from_the_current_step(self):
+        # forward, 8 steps: 1 2 3 4 | gate up: 3 2 1 8 7 | gate down: 8 1 2
+        gate = [False] * 4 + [True] * 5 + [False] * 3
+        assert _walk("forward", 8, 12, reverse=gate) == [1, 2, 3, 4, 3, 2, 1, 8, 7, 8, 1, 2]
+        # backward, 5 steps: 5 4 | gate up: 5 1 2 | gate down: 1 5
+        gate = [False] * 2 + [True] * 3 + [False] * 2
+        assert _walk("backward", 5, 7, reverse=gate) == [5, 4, 5, 1, 2, 1, 5]
+
+    def test_reverse_pendulum_turns_around_and_turns_back_when_the_gate_drops(self):
+        # 1 2 3 | up: 2 1 2 3 | down: 2 1 2 3 4 — no leap either way; the
+        # bounce at 1 while reversed flipped the BASE heading, so dropping
+        # the gate afterwards turns it around again (the XOR frame).
+        gate = [False] * 3 + [True] * 4 + [False] * 5
+        assert _walk("pendulum", 5, 12, reverse=gate) == [1, 2, 3, 2, 1, 2, 3, 2, 1, 2, 3, 4]
+        gate = [False] * 3 + [True] * 6 + [False] * 4
+        assert _walk("pendulum", 4, 13, reverse=gate) == [1, 2, 3, 2, 1, 2, 3, 4, 3, 4, 3, 2, 1]
+
+    def test_the_returned_heading_is_in_the_base_frame(self):
+        # Step 3 heading up, reversed: physically down to step 2, and the
+        # base heading is still up (so the renderer's state never knows
+        # about the gate).
+        assert next_step_index(2, 5, "pendulum", True, reverse=True) == (1, True)
+        # At the bottom, reversed while heading up: physical down bounces
+        # to step 2 heading up — base heading DOWN.
+        assert next_step_index(0, 5, "pendulum", True, reverse=True) == (1, False)
+        # forward/backward set the heading as they always do, reversed or not.
+        assert next_step_index(2, 5, "forward", False, reverse=True) == (1, True)
+        assert next_step_index(2, 5, "backward", True, reverse=True) == (3, False)
+
+    def test_reverse_from_before_the_start_lands_on_the_reversed_start(self):
+        assert next_step_index(-1, 5, "forward", reverse=True) == (4, True)
+        assert next_step_index(-1, 5, "backward", reverse=True) == (0, False)
+        assert next_step_index(-1, 5, "pendulum", reverse=True) == (4, True)
+        assert next_step_index(-1, 1, "forward", reverse=True) == (0, True)
+        assert next_step_index(-1, 1, "pendulum", reverse=True) == (0, True)
+
+    def test_reverse_leaves_random_alone(self):
+        # Same draws consumed, same phrase, same generator state after.
+        a, b = np.random.default_rng(3), np.random.default_rng(3)
+        gate = [True, False] * 6
+        assert _walk("random", 5, 12, a, reverse=gate) == _walk("random", 5, 12, b)
+        assert a.bit_generator.state == b.bit_generator.state
+        # ...and reverse does not smuggle a draw into steps 1 either.
+        rng = np.random.default_rng(3)
+        before = rng.bit_generator.state
+        assert _walk("random", 1, 4, rng, reverse=True) == [1] * 4
+        assert rng.bit_generator.state == before
+
+    def test_reverse_with_an_index_past_the_end(self):
+        # steps shrank to 4 under step 8: clamp to the new last step, then
+        # the reversed rule. forward-reversed counts down from it,
+        # backward-reversed wraps to step 1, pendulum turns (same index
+        # either heading).
+        assert next_step_index(7, 4, "forward", reverse=True) == (2, True)
+        assert next_step_index(7, 4, "backward", reverse=True) == (0, False)
+        assert next_step_index(7, 4, "pendulum", True, reverse=True) == (2, True)
+        assert next_step_index(7, 4, "pendulum", False, reverse=True) == (2, True)
+
+    def test_reverse_false_is_the_shipped_rule(self):
+        # The keyword defaults off and the unreversed branches are the
+        # 2026-09-19 rule verbatim — the three-pass pins above are the
+        # proof; here the explicit False matches the default for every
+        # direction from the start and from a mid-pattern index.
+        for d in ("forward", "backward", "pendulum"):
+            assert _walk(d, 5, 12, reverse=False) == _walk(d, 5, 12)
+            assert next_step_index(2, 5, d, False, reverse=False) == next_step_index(2, 5, d, False)
 
 
 # ----- the renderer -----------------------------------------------------------
@@ -528,6 +654,206 @@ class TestSequencerDirection:
         assert int(round(float(outs[1]["cv"][2]) * 12)) == 5
 
 
+class TestSequencerReverse:
+    """The ``reverse`` gate on the renderer — measured step sequences."""
+
+    def test_forward_with_reverse_high_plays_the_steps_descending(self):
+        patch, seq, clk, rst, rev = _numbered_rev("forward", 5)
+        b = _backend(patch)
+        clock = _pulses(200, [k * 20 for k in range(10)])
+        high = np.ones(200, dtype=np.float32)
+        assert _steps_played(b, seq, clk, rst, clock, reverse=high, rev=rev) == [5, 4, 3, 2, 1] * 2
+
+    def test_backward_with_reverse_high_plays_ascending(self):
+        patch, seq, clk, rst, rev = _numbered_rev("backward", 5)
+        b = _backend(patch)
+        clock = _pulses(200, [k * 20 for k in range(10)])
+        high = np.ones(200, dtype=np.float32)
+        assert _steps_played(b, seq, clk, rst, clock, reverse=high, rev=rev) == [1, 2, 3, 4, 5] * 2
+
+    def test_a_flip_mid_phrase_continues_from_the_current_step(self):
+        # Edges at 0, 20, … 220; the gate rises between edges 4 and 5
+        # and falls between 8 and 9: 1 2 3 4 | 3 2 1 8 7 | 8 1 2.
+        patch, seq, clk, rst, rev = _numbered_rev("forward", 8)
+        b = _backend(patch)
+        clock = _pulses(240, [k * 20 for k in range(12)])
+        reverse = _high(240, [(70, 170)])
+        assert _steps_played(b, seq, clk, rst, clock, reverse=reverse, rev=rev) == [1, 2, 3, 4, 3, 2, 1, 8, 7, 8, 1, 2]
+
+    def test_pendulum_turns_around_and_turns_back(self):
+        patch, seq, clk, rst, rev = _numbered_rev("pendulum", 5)
+        b = _backend(patch)
+        clock = _pulses(240, [k * 20 for k in range(12)])
+        reverse = _high(240, [(50, 130)])       # edges 3..6 reversed
+        assert _steps_played(b, seq, clk, rst, clock, reverse=reverse, rev=rev) == [1, 2, 3, 2, 1, 2, 3, 2, 1, 2, 3, 4]
+
+    def test_random_is_unaffected_by_reverse(self):
+        clock = _pulses(24 * 20, [k * 20 for k in range(24)])
+        runs = []
+        for reverse in (np.zeros(480, np.float32), np.ones(480, np.float32), _high(480, [(30, 90), (150, 310)])):
+            patch, seq, clk, rst, rev = _numbered_rev("random", 6, seed=11)
+            runs.append(_steps_played(_backend(patch), seq, clk, rst, clock, reverse=reverse, rev=rev))
+        assert runs[0] == runs[1] == runs[2] == _walk("random", 6, 24, np.random.default_rng(11))
+        assert len(set(runs[0])) > 1
+
+    def test_reset_with_reverse_high_lands_on_the_reversed_start(self):
+        # Reset on 70 (between edges 3 and 4) with the gate already high:
+        # the next edge moves in the effective direction from before the
+        # start. forward -> the last step; backward -> step 1; pendulum ->
+        # the top heading down, and the gate dropping later turns it.
+        clock = _pulses(240, [k * 20 for k in range(12)])
+        reset = _pulses(240, [70])
+        reverse = _high(240, [(65, 175)])          # edges 4..8 reversed
+        expect = {
+            "forward": [1, 2, 3, 4, 8, 7, 6, 5, 4, 5, 6, 7],
+            "backward": [8, 7, 6, 5, 1, 2, 3, 4, 5, 4, 3, 2],
+            "pendulum": [1, 2, 3, 4, 8, 7, 6, 5, 4, 5, 6, 7],
+        }
+        for direction, want in expect.items():
+            patch, seq, clk, rst, rev = _numbered_rev(direction, 8)
+            b = _backend(patch)
+            assert _steps_played(b, seq, clk, rst, clock, reset, reverse=reverse, rev=rev) == want, direction
+        # ...and a reset with the gate LOW is exactly the shipped rule.
+        for direction in ("forward", "backward", "pendulum"):
+            patch, seq, clk, rst, rev = _numbered_rev(direction, 8)
+            b = _backend(patch)
+            zeros = np.zeros(240, np.float32)
+            patch2, seq2, clk2, rst2 = _numbered(direction, 8)
+            b2 = _backend(patch2)
+            assert (_steps_played(b, seq, clk, rst, clock, reset, reverse=zeros, rev=rev)
+                    == _steps_played(b2, seq2, clk2, rst2, clock, reset))
+
+    def test_reverse_is_read_on_the_edge_sample_only(self):
+        # High everywhere EXCEPT the edge samples: no effect at all.
+        # High ONLY on the edge samples: fully reversed.
+        patch, seq, clk, rst, rev = _numbered_rev("forward", 5)
+        b = _backend(patch)
+        clock = _pulses(200, [k * 20 for k in range(10)])
+        between = np.ones(200, dtype=np.float32)
+        between[[k * 20 for k in range(10)]] = 0.0
+        assert _steps_played(b, seq, clk, rst, clock, reverse=between, rev=rev) == [1, 2, 3, 4, 5] * 2
+        patch, seq, clk, rst, rev = _numbered_rev("forward", 5)
+        b = _backend(patch)
+        only = np.zeros(200, dtype=np.float32)
+        only[[k * 20 for k in range(10)]] = 1.0
+        assert _steps_played(b, seq, clk, rst, clock, reverse=only, rev=rev) == [5, 4, 3, 2, 1] * 2
+
+    def test_a_reverse_cable_that_never_rises_is_bit_exact_with_unpatched(self):
+        # The in-file half of the recipe: same clock, same reset, a
+        # reverse cable carrying zeros vs no cable — cv and gate byte for
+        # byte, every direction, rendered in two blocks so state carries.
+        frames = 600
+        clock = _pulses(frames, list(range(0, frames, 37)), width=6)
+        reset = _pulses(frames, [222, 480], width=9)
+        zeros = np.zeros(frames, dtype=np.float32)
+        for direction in SEQ_DIRECTIONS:
+            patch_a, seq_a, clk_a, rst_a = _numbered(direction, 6, seed=5, step3_on=False)
+            patch_b, seq_b, clk_b, rst_b, rev_b = _numbered_rev(direction, 6, seed=5, step3_on=False)
+            ba, bb = _backend(patch_a), _backend(patch_b)
+            half = frames // 2
+            outs_a, outs_b = [], []
+            for s0 in (0, half):
+                sl = slice(s0, s0 + half)
+                outs_a.append(ba._render_sequencer(
+                    seq_a, half, {(clk_a.id, "out"): clock[sl], (rst_a.id, "out"): reset[sl]}, patch_a))
+                outs_b.append(bb._render_sequencer(
+                    seq_b, half, {(clk_b.id, "out"): clock[sl], (rst_b.id, "out"): reset[sl],
+                                  (rev_b.id, "out"): zeros[sl]}, patch_b))
+            for key in ("cv", "gate"):
+                assert np.array_equal(
+                    np.concatenate([o[key] for o in outs_a]),
+                    np.concatenate([o[key] for o in outs_b]),
+                ), (direction, key)
+
+    def test_a_poly_reverse_gate_collapses_to_any_voice_high(self):
+        # ``_input_buffer`` sums a (V, F) gate; one voice high is > the
+        # gate threshold, so any-voice-high reverses — all voices low
+        # does not. The sequencer is mono; this is the documented rule.
+        clock = _pulses(200, [k * 20 for k in range(10)])
+        for voice_high, want in ((3, [5, 4, 3, 2, 1] * 2), (None, [1, 2, 3, 4, 5] * 2)):
+            patch, seq, clk, rst, rev = _numbered_rev("forward", 5)
+            b = _backend(patch)
+            poly = np.zeros((8, 200), dtype=np.float32)
+            if voice_high is not None:
+                poly[voice_high, :] = 1.0
+            assert _steps_played(b, seq, clk, rst, clock, reverse=poly, rev=rev) == want
+
+    def test_reverse_sequence_is_block_size_independent_through_real_clocks(self):
+        # A real 8 Hz clock steps the sequencer and a real 44 BPM (0.733
+        # Hz) clock drives reverse, rendered through the graph at 64 and
+        # 512. The clock's float phase lands an edge a sample apart
+        # between block sizes, so the pin is the SEQUENCE of steps at the
+        # gate edges — and it has to contain both ascending and
+        # descending runs (the flips happened mid-stream), or the test
+        # would pass vacuously. The slow rate is chosen so that after
+        # sample 0 no reverse transition comes within 500 samples of a
+        # fast edge (asserted below): a transition ON an edge would be a
+        # genuine race between two float phases, which is the patch
+        # author's problem, not the sequencer's — the first pick, 42 BPM,
+        # put a fall exactly on fast edge 40 (3.5 slow periods) and the
+        # sequences diverged there at 64 vs 512. The example's square
+        # keeps the same clearance by construction (phase 17/32).
+        fast_period, half = 0.125, 30.0 / 44.0
+        for n in range(1, int(6.0 / half) + 1):
+            t = n * half
+            assert abs(t - round(t / fast_period) * fast_period) * SR > 500
+        seqs = {}
+        for block in (64, 512):
+            patch = Patch()
+            params = {"steps": 8, "direction": "forward", "seed": 1}
+            for i in range(1, MAX_STEPS + 1):
+                params[f"step{i}_pitch"] = float(i)
+            seq = patch.add_module("sequencer", params=params)
+            fast = patch.add_module("clock", params={"bpm": 480.0, "division": 1.0, "pulse_width": 0.5})
+            slow = patch.add_module("clock", params={"bpm": 44.0, "division": 1.0, "pulse_width": 0.5})
+            patch.connect(fast.id, "out", seq.id, "clock")
+            patch.connect(slow.id, "out", seq.id, "reverse")
+            b = NumpyBackend(sample_rate=SR, block_size=block)
+            b.compile(patch)
+            cap = []
+            orig = b._render_sequencer
+
+            def spy(module, frames, buffers, p, _cap=cap, _orig=orig):
+                r = _orig(module, frames, buffers, p)
+                _cap.append((r["cv"].copy(), r["gate"].copy()))
+                return r
+
+            b._render_sequencer = spy
+            np.random.seed(0)
+            for _ in range(int(SR * 6.0 / block)):
+                b.render_block_multi(block)
+            cv = np.concatenate([c for c, _g in cap])
+            gate = np.concatenate([g for _c, g in cap])
+            edges = np.flatnonzero((gate[1:] > 0.5) & (gate[:-1] <= 0.5)) + 1
+            if gate[0] > 0.5:
+                edges = np.concatenate([[0], edges])
+            seqs[block] = [int(round(float(cv[e]) * 12)) for e in edges]
+        assert seqs[64] == seqs[512]
+        assert len(seqs[64]) >= 40
+        diffs = np.diff(seqs[64])
+        assert np.any(diffs == 1) and np.any(diffs == -1)
+        # The first step: both clocks rise on sample 0, so it is reversed
+        # (the last step) — deterministic at every block size.
+        assert seqs[64][0] == 8
+
+    def test_fader_seq_reverses_too(self):
+        # The inherited jack: the fader-bank twin reversed is bit-exact
+        # with the original reversed (one engine), and descending.
+        clock = _pulses(12 * 20, [k * 20 for k in range(12)])
+        reverse = _high(240, [(0, 110), (170, 240)])
+        outs = []
+        for module_type in ("sequencer", "fader_seq"):
+            patch, seq, clk, rst, rev = _numbered_rev("forward", 5, module_type=module_type)
+            b = _backend(patch)
+            zeros = np.zeros(240, dtype=np.float32)
+            o = b._render_module(seq, 240, {(clk.id, "out"): clock, (rst.id, "out"): zeros, (rev.id, "out"): reverse}, patch)
+            outs.append(o)
+        assert np.array_equal(outs[0]["cv"], outs[1]["cv"])
+        assert np.array_equal(outs[0]["gate"], outs[1]["gate"])
+        played = [int(round(float(outs[1]["cv"][k * 20 + 1]) * 12)) for k in range(12)]
+        assert played == [5, 4, 3, 2, 1, 5, 1, 2, 3, 2, 1, 5]
+
+
 # ----- UI ---------------------------------------------------------------------
 
 
@@ -546,21 +872,47 @@ def _widgets(monkeypatch, module_type):
     out = {}
     for k in kinds:
         for call in getattr(app_mod.dpg, k).call_args_list[before[k]:]:
-            out[str(call.kwargs.get("label"))] = (k, call.kwargs)
+            label = call.kwargs.get("label")
+            ud = call.kwargs.get("user_data")
+            if not label and isinstance(ud, tuple) and len(ud) == 2:
+                # The fader-bank panel's faders and tickboxes carry no
+                # label (the panel IS the label); key them by the param
+                # their user_data writes: (id, i) -> step{i}_pitch,
+                # (id, "step{i}_on") -> itself.
+                label = ud[1] if isinstance(ud[1], str) else f"step{ud[1]}_pitch"
+            out[str(label)] = (k, call.kwargs)
     return out
 
 
 class TestSequencerUI:
-    def test_every_param_gets_a_bounded_widget(self, monkeypatch):
-        w = _widgets(monkeypatch, "sequencer")
+    @pytest.mark.parametrize("module_type", ["sequencer", "fader_seq"])
+    def test_every_param_gets_a_bounded_widget(self, monkeypatch, module_type):
+        # Both types: every param has a bounded widget (no free text);
+        # the reverse jack needs no widget (it is a port, drawn from
+        # INPUT_PORTS like clock and reset).
+        w = _widgets(monkeypatch, module_type)
         labels = list(w)
-        for name in get_module_type("sequencer").DEFAULT_PARAMS:
+        for name in get_module_type(module_type).DEFAULT_PARAMS:
             hits = [lb for lb in labels if lb == name or lb.startswith(name + " ")]
             assert hits, (name, labels)
             assert w[hits[0]][0] != "add_input_text", (name, w[hits[0]])
         assert w["direction"][0] == "add_combo"
         assert w["seed"][0] == "add_drag_int"
         assert w["seed"][1]["min_value"] == 0
+        assert w["steps"][1]["max_value"] == MAX_STEPS
+        for i in range(1, MAX_STEPS + 1):
+            kind, kw = w[f"step{i}_pitch"]
+            assert kind in ("add_drag_float", "add_slider_int"), (module_type, i, kind)
+            assert kw["min_value"] < 0 < kw["max_value"]
+            assert w[f"step{i}_on"][0] == "add_checkbox"
+
+    def test_reverse_is_a_jack_on_both_types_and_ascii(self):
+        for module_type in ("sequencer", "fader_seq"):
+            ports = get_module_type(module_type).INPUT_PORTS
+            names = [p.name for p in ports]
+            assert names == ["clock", "reset", "reverse"], module_type
+            assert all(ord(ch) < 128 for ch in "".join(names))
+            assert next(p for p in ports if p.name == "reverse").signal_kind == "gate"
 
     def test_direction_combo_offers_the_directions(self, monkeypatch):
         # The contents, not the label (the mode-combo lesson).
@@ -636,3 +988,55 @@ class TestSequencerExample:
         assert bars[1] == bars[2]
         assert 4 <= len(bars[1]) < 16          # a pattern: hits AND rests
         assert len({v for _p, v in bars[1]}) >= 2  # accents
+
+
+    def test_the_reverse_bars_example_plays_a_palindrome(self):
+        # Eight steps of eighths; a /8 divider resets at every bar line
+        # and a bar-pair square (LFO -> schmitt, edges half an eighth
+        # BEFORE the bar lines so they never race the clock's) holds
+        # reverse high through every second bar. Bar 1 climbs the line,
+        # bar 2 is its exact mirror (the reset-plus-reverse rule lands on
+        # the last step), bar 3 climbs again — a palindrome, measured at
+        # the sequencer's gate edges.
+        from pysynthrack.io_patch import load_patch
+
+        path = Path(__file__).resolve().parent.parent / "examples" / "sequencer_reverse_bars.json"
+        patch = load_patch(path)
+        assert len(list(patch)) <= 12
+        seq = next(m for m in patch if m.TYPE == "sequencer")
+        assert seq.params["direction"] == "forward"
+        assert any(c.dst_module_id == seq.id and c.dst_port == "reverse" for c in patch.cables)
+        assert any(c.dst_module_id == seq.id and c.dst_port == "reset" for c in patch.cables)
+        b = NumpyBackend(sample_rate=44100, block_size=512)
+        b.compile(patch)
+        cap = []
+        orig = b._render_sequencer
+
+        def spy(module, frames, buffers, p):
+            r = orig(module, frames, buffers, p)
+            if module.id == seq.id:
+                cap.append((r["cv"].copy(), r["gate"].copy()))
+            return r
+
+        b._render_sequencer = spy
+        np.random.seed(0)
+        peak = 0.0
+        seconds = 8.5                         # four bars and a bit at 120 BPM
+        for _ in range(int(44100 * seconds / 512)):
+            out, _devices = b.render_block_multi(512)
+            assert out is not None and np.all(np.isfinite(out))
+            peak = max(peak, float(np.abs(out).max()))
+        assert 0.3 < peak < 0.8
+
+        cv = np.concatenate([c for c, _g in cap])
+        gate = np.concatenate([g for _c, g in cap])
+        edges = np.flatnonzero((gate[1:] > 0.5) & (gate[:-1] <= 0.5)) + 1
+        if gate[0] > 0.5:
+            edges = np.concatenate([[0], edges])
+        pitches = [int(round(float(cv[e]) * 12)) for e in edges]
+        line = [int(round(float(seq.params[f"step{i}_pitch"]))) for i in range(1, 9)]
+        assert len(pitches) >= 32
+        assert pitches[0:8] == line
+        assert pitches[8:16] == line[::-1]
+        assert pitches[16:24] == line
+        assert pitches[24:32] == line[::-1]
