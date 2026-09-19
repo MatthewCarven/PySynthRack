@@ -277,7 +277,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`ring_mod`](#ring_mod) | Effects | `in`,`carrier` (audio), `freq_cv` (cv) → `out` (audio) |
 | [`freq_shifter`](#freq_shifter) | Effects | `in` (audio), `shift_cv` (cv) → `out_up`,`out_down` (audio) |
 | [`bitcrusher`](#bitcrusher) | Effects | `in` (audio), `bits_cv`,`rate_cv` (cv) → `out` (audio) |
-| [`tape`](#tape) | Effects | `in` (audio) → `out` (audio) |
+| [`tape`](#tape) | Effects | `in` (audio), `stop` (gate) → `out` (audio) |
 | [`vinyl`](#vinyl) | Effects | `in` (audio) → `out` (audio) |
 | [`convolver`](#convolver) | Effects | `in` (audio) → `out_l`,`out_r` (audio) |
 | [`chorus`](#chorus) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
@@ -2714,6 +2714,7 @@ without combing.
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to tape. Voice-aware; a single voice row is bit-identical to mono. Unpatched → silence. |
+| `stop` | in | gate | The tape-stop. High = the head coasts to a halt over `stop_time` (pitch dives, level fades to silence); low = it spins back up over `start_time`. One transport for every voice: a `(V, F)` gate collapses to any-voice-high. Unpatched → the pre-stop code path exactly. |
 | `out` | out | audio | Taped (and dry-blended) signal. |
 
 **Parameters**
@@ -2727,13 +2728,20 @@ without combing.
 | `hiss` | `-80.0` | −80 (off) … −30 dB | Noise-floor level. Lives in the wet path, so it scales with `mix`. |
 | `bump` | `0.0` | 0 … 6 dB | Low-shelf head bump around 60 Hz. |
 | `mix` | `1.0` | 0 … 1 | Dry/wet. 0 = bit-exact dry passthrough. |
+| `stop_time` | `1.0` | 0.05 … 8 s | Seconds for the head to coast from full speed to a halt after `stop` rises (linear in speed). |
+| `start_time` | `0.5` | 0.05 … 8 s | Seconds for the head to spin back up to full speed after `stop` falls. |
 
 **How it works.** Signal flow is `in → wow/flutter/drift-modulated
 fractional delay → saturation → + hiss → head-bump low shelf → mix with
 the latency-matched dry`. The delay line reuses the chorus core (write
 the whole block, then read fractional taps behind the write head); with
 no feedback every read references an already-written sample, so the
-render vectorises and is **exactly block-size independent**. The
+render vectorises and is block-size independent — **to a float32 ulp at
+the odd sample** with wow/flutter/drift or `sat` + `bump` engaged (the
+fractional read `absidx − delay` rounds at the ring index's magnitude,
+which differs per block size, and the oversampled saturator into the
+shelf lands a rounding differently: measured, 4 samples in 4 s of noise
+at 64 vs 512; a follow-on), bit for bit otherwise. The
 wow/flutter LFOs carry their phase in state; the drift, flutter noise and
 hiss are each a *single* seeded generator drawn one sample per output
 sample and streamed through one-pole / biquad filters with carried state
@@ -2747,6 +2755,54 @@ Neutral is `wow = flutter = drift = sat = bump = 0` with `hiss` off — a
 turn a knob); `mix = 0` is likewise bit-exact dry. See
 `examples/tape_cassette.json` (a plucked riff run through a wobbly,
 saturated old cassette).
+
+**The tape-stop.** `stop` is the DJ / tape-stop gesture. On its rising
+edge the motor coasts down: the play head's speed ramps 1 → 0 over
+`stop_time` — **linear in speed** (a constant deceleration, so the pitch
+falls linearly; measured at a quarter, half and three quarters of the
+ramp) — and the audio dives to a halt; while the gate is held and the
+head is stationary the wet is **silent** (exactly: the level is the
+speed); on the falling edge the speed ramps 0 → 1 over `start_time` and
+the audio climbs back to pitch. The ramps are integer counts of samples
+from the gate edges (the reverb's and delay's `freeze` ramp), so an edge
+lands on the same sample at any block size, and a new edge mid-ramp
+re-articulates from the *current* speed — a short tap dips the pitch and
+recovers. The wet **level follows the speed** (a magnetic head's EMF is
+proportional to tape speed, so it is linear too): the stop fades to exact
+silence, the restart fades in, and both are per-sample, so there is no
+click (the largest sample step over a whole cycle is the signal's own).
+Tape hiss is on the tape, so a still head reads none of it either.
+
+*The physics, and the doubling.* The head reads a ring that keeps
+recording the live input. Reading at speed `s(t)` it falls behind live by
+the integral of `1 − s` — and at speeds ≤ 1 that lag can never shrink, so
+a full stop + start would leave the tape `(stop_time + start_time) / 2`
+behind for good, and every cycle would add more. A stationary head is
+silent, though, so the moment the restart begins the head is jumped back
+to live, inaudibly: **the lag resets to 0 at every restart, grows to
+`start_time / 2` during the spin-up and stays there until the next stop**
+— bounded, never accumulating (measured by cross-correlation: 11024.5
+samples, `(start_n − 1) / 2`, after one, two and three cycles at
+`start_time` 0.5). A real deck loses that time too. So
+**after a stop the wet runs `start_time / 2` behind the dry**: at
+`mix = 1` you simply hear the tape a little late; at `mix < 1` you hear a
+doubling, because the dry is live and never sees the gate. If the gate
+falls *before* the head has fully stopped the head is still audible, so
+there is no jump: the restart ramps up from the current speed and the lag
+is kept — repeated partial stops let the doubling grow, up to
+`(stop_time + start_time) / 2` (the ring's capacity), after which the
+head rides the ring's tail at normal speed until the next full stop
+resets it. The longer ring is allocated only while `stop` is patched
+(grown as the times rise, never shrunk); unpatched keeps today's ring and
+today's code path exactly. With `stop` patched, a **neutral** tape (all
+knobs at zero) is still a bit-exact passthrough until the first stop —
+the head reads the sample it just wrote (no nominal delay) while the ring
+records, so a stop that comes later has material; after a stop the wet is
+a fractional read `start_time / 2` behind live and no longer the
+passthrough. A patched gate that never rises is bit-exactly the unpatched
+render, neutral or modulated. See `examples/tape_stop_drop.json` (a
+saw riff on tape, a slow clock's `stop` diving it to a halt and spinning
+it back up every eight seconds).
 
 ---
 
@@ -5143,6 +5199,7 @@ loads in the app. Notable ones referenced above:
 - `reverb_freeze_pad.json` — the shimmer-pad trick: a strummed Cmaj7 of four [`pluck`](#pluck) strings every six seconds into a big [`reverb`](#reverb) (`size` 0.9, `decay` 0.9, `mix` 0.75), the strike [`clock`](#clock)'s [`logic`](#logic) `not_a` holding the reverb's `freeze` between strikes so the chord hangs as a pad, and a quieter sequenced pluck line playing over it — heard dry through `mix`, never piling into the tank.
 - `pluck_velocity.json` — picked accents: an eight-step C minor line into a [`pluck`](#pluck) whose `vel` is a [`shift_random`](#shift_random) accent loop clocked alongside the sequencer, scaled into 0.3…1.0 — each pick's velocity is read at its trigger edge and scales the burst, so the line breathes while every note rings down the same way (the live version is `midi_input.velocity_cv → vel`).
 - `delay_freeze_stutter.json` — the beat-repeat: a sixteenth-note [`pluck`](#pluck) phrase into a 187.5 ms (dotted-sixteenth) [`delay`](#delay), a 15 BPM [`clock`](#clock)'s [`logic`](#logic) `not_a` holding the delay's `freeze` for the second two seconds of every four — the last one-and-a-half notes stutter, tumbling against the grid, while the phrase carries on dry over the top through `mix`.
+- `tape_stop_drop.json` — the tape-stop drop: an eighth-note saw riff ([`clock`](#clock) → [`sequencer`](#sequencer) → [`oscillator`](#oscillator) → [`adsr`](#adsr)/[`vca`](#vca)) on [`tape`](#tape) (`sat` 0.3, `wow` 0.15, `mix` 1), a 7.5 BPM clock's [`logic`](#logic) `not_a` pulling the tape's `stop` for the last 1.6 s of every 8 — the beat dives over `stop_time` 1.25 s, halts, and spins back up over `start_time` 0.6 s.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `noise_brown_surf.json` — surf: a seeded `brown` [`noise`](#noise) (seed 7, so the same tide every run) swelling under a 0.12 Hz unipolar sine on its knobless `amp_cv` (a [`cv_offset`](#cv_offset) of 0.2 keeps the trough from going silent) into a resonant 900 Hz lowpass [`filter`](#filter) — waves rolling in and drawing back every eight seconds. Five modules.
 - `stereo_hard_pan.json` — left/right speaker sinks.

@@ -14001,6 +14001,73 @@ class NumpyBackend(AudioBackend):
     _TAPE_DRIFT_SEED = 0x7A9E0
     _TAPE_FLUT_SEED = 0x7A9E1
     _TAPE_HISS_SEED = 0x7A9E2
+    # The tape-stop transport: ``stop_time`` / ``start_time`` (s) are the
+    # motor's coast-down and spin-up, clamped to this range. The ring grows
+    # by half their sum when ``stop`` is patched (the lag a full cycle
+    # leaves the head behind live, see ``_tape_stop_transport``).
+    _TAPE_STOP_MIN_S = 0.05
+    _TAPE_STOP_MAX_S = 8.0
+
+    @classmethod
+    def _tape_stop_transport(cls, gt, st: dict, stop_n: int, start_n: int,
+                             cap: float):
+        """The tape-stop transport: per sample, the head's ``env`` (0 = full
+        speed, 1 = stationary) and its ``lag`` behind the live write head,
+        from the ``stop`` gate row ``gt`` (bools). Mutates ``st``.
+
+        ``env`` is ``_gate_ramp_env`` verbatim -- an integer-count linear
+        ramp 0 -> 1 over ``stop_n`` samples from a rising edge (a coasting
+        motor: constant deceleration, so the pitch falls linearly), 1 -> 0
+        over ``start_n`` from a falling edge, a new edge mid-ramp
+        re-articulating from the CURRENT level -- so the speed ``1 - env``
+        lands on the same sample at any block size. The lag is the physics:
+        a head reading at speed ``1 - env`` falls behind the live write by
+        ``env`` per sample, so ``lag`` is the running sum of ``env``. It is
+        carried across blocks by PREPENDING the carry to the block's
+        ``np.cumsum`` -- ``cumsum([carry, e...])[1:]`` is one long cumsum
+        bit for bit, where ``carry + cumsum(e)`` is not (it regroups the
+        additions and the fractions are not dyadic). A falling edge that
+        finds the head stationary (``env == 1.0`` at the sample before)
+        resets the lag to 0: the head is silent there, so the jump back to
+        live is inaudible -- and it is what keeps the lag bounded, ``(start_n
+        - 1) / 2`` after every full stop instead of accumulating (a real
+        deck loses that time too). A release before the halt keeps the lag
+        (the head is still audible), so repeated partial stops do
+        accumulate; the lag is clamped to ``cap`` (the ring's spare length)
+        per sample, which also stops it growing a sample per sample while
+        stationary. The clamp commutes with the running sum (``env >= 0``,
+        so the sum is monotone) and the carry stays unclamped, so the fold
+        is the same at any block size.
+        """
+        frames = len(gt)
+        prev = bool(st["stop_prev"])
+        env, on_c, off_c, env_off = cls._gate_ramp_env(
+            gt, prev, int(st["stop_on"]), int(st["stop_off"]),
+            float(st["stop_env_off"]), stop_n, start_n)
+        # Falling edges that find the head stationary restart the lag.
+        falls = np.flatnonzero(np.concatenate(([prev], gt[:-1])) & ~gt)
+        before = np.where(falls > 0, env[np.maximum(falls - 1, 0)],
+                          float(st["stop_env_last"]))
+        resets = falls[before >= 1.0].tolist()
+        lag = np.empty(frames, dtype=np.float64)
+        carry = float(st["stop_lag"])
+        pos = 0
+        for r in resets + [frames]:
+            if r > pos:
+                seg = np.cumsum(np.concatenate(([carry], env[pos:r])))[1:]
+                lag[pos:r] = seg
+                carry = float(seg[-1])
+            if r < frames:
+                carry = 0.0
+            pos = r
+        st["stop_prev"] = bool(gt[-1])
+        st["stop_on"] = on_c
+        st["stop_off"] = off_c
+        st["stop_env_off"] = env_off
+        st["stop_env_last"] = float(env[-1])
+        st["stop_lag"] = carry
+        np.minimum(lag, cap, out=lag)
+        return env, lag
 
     def _render_tape(self, module, frames: int, buffers, patch):
         """Tape character: wow/flutter/drift + saturation + hiss + head bump.
@@ -14023,10 +14090,34 @@ class NumpyBackend(AudioBackend):
         Neutral (``wow = flutter = drift = sat = bump = 0`` and ``hiss``
         off) short-circuits to a bit-exact passthrough with no state
         advance; ``mix <= 0`` is likewise bit-exact dry.
+
+        ``stop`` (gate): the tape-stop. A ``(V, F)`` gate collapses to the
+        house sum (any voice high stops the one transport every voice's ring
+        shares). While the gate is patched the ring records live and the
+        transport (``_tape_stop_transport``) yields a per-sample speed
+        ``1 - env`` and a ``lag``; the read sits ``lag`` samples further
+        behind the write head (a moving lag is the pitch dive / climb) and
+        the wet -- tap and hiss -- is scaled by the speed (a head's EMF is
+        proportional to tape speed: linear, so the stop fades to exact
+        silence and the restart fades in, per sample, click-free). The dry
+        never sees the gate: after a stop the wet runs the restart's lag
+        behind it. The ring is allocated ``(stop_n + start_n) / 2`` longer
+        only when ``stop`` is patched (grown, never shrunk, as the times
+        rise). Neutral with ``stop`` patched: no nominal delay, no clip
+        floor -- until a stop the head reads the sample it just wrote and
+        the block short-circuits to ``src`` bit-exactly (the ring still
+        records, so the stop has material); once a stop has happened the wet
+        is a fractional read ``lag`` behind live and no longer the
+        passthrough. Unpatched, or patched and never risen, every path
+        below is the pre-stop code verbatim; ``mix <= 0`` keeps its early
+        out, so the transport idles there (an edge that lands while the mix
+        is dry is seen when it comes back).
         """
         src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
         if src is None or src.size == 0:
             return np.zeros(frames, dtype=np.float32)
+        stop_gate = self._input_buffer(patch, buffers, module.id, "stop")
+        stop_patched = stop_gate is not None and stop_gate.shape[-1] == frames
 
         wow = min(max(float(module.params.get("wow", 0.0)), 0.0), 1.0)
         flutter = min(max(float(module.params.get("flutter", 0.0)), 0.0), 1.0)
@@ -14042,11 +14133,14 @@ class NumpyBackend(AudioBackend):
         mod_active = wow > 0.0 or flutter > 0.0 or drift > 0.0
         bump_active = bump_db > 0.0
 
+        neutral = not (mod_active or sat_active or hiss_active or bump_active)
+
         # Bit-exact dry: the blend keeps nothing wet, or the whole box is
         # neutral (a freshly added Tape is transparent). No state advance.
+        # A patched ``stop`` keeps a neutral box recording (below).
         if mix <= 0.0:
             return src
-        if not (mod_active or sat_active or hiss_active or bump_active):
+        if neutral and not stop_patched:
             return src
 
         was_mono = src.ndim == 1
@@ -14054,16 +14148,37 @@ class NumpyBackend(AudioBackend):
         v = x.shape[0]
         sr = self.sample_rate
 
-        D = int(round(self._TAPE_NOMINAL_MS * sr / 1000.0))
-        L = int(self._TAPE_MAX_MS * sr / 1000.0) + frames + 4
+        # Neutral + stop: no nominal delay -- the head reads what it just
+        # wrote, so the untouched output is the input itself.
+        D = 0 if neutral else int(round(self._TAPE_NOMINAL_MS * sr / 1000.0))
+        L_mod = int(self._TAPE_MAX_MS * sr / 1000.0) + frames + 4
+        L = L_mod
         comp = D + (_OS_LATENCY if sat_active else 0)      # dry latency comp
+        stop_n = start_n = 0
+        lag_cap = 0.0
+        if stop_patched:
+            t_stop = min(max(float(module.params.get("stop_time", 1.0)),
+                             self._TAPE_STOP_MIN_S), self._TAPE_STOP_MAX_S)
+            t_start = min(max(float(module.params.get("start_time", 0.5)),
+                              self._TAPE_STOP_MIN_S), self._TAPE_STOP_MAX_S)
+            stop_n = max(1, int(round(t_stop * sr)))
+            start_n = max(1, int(round(t_start * sr)))
+            # The lag at the halt of a full cycle is exactly (stop_n +
+            # start_n) / 2 samples (the previous restart's (start_n - 1) / 2
+            # plus the stop's (stop_n + 1) / 2); the ring holds that plus
+            # the interpolation pair.
+            lag_cap = float(math.ceil((stop_n + start_n) / 2.0))
+            L = L_mod + int(lag_cap) + 2
 
         state = self._state.setdefault(module.id, {})
         buf = state.get("buf")
+        if stop_patched and buf is not None and buf.shape[0] == v and buf.shape[1] > L:
+            L = buf.shape[1]                                # grown earlier: keep it
         if (buf is None or buf.shape != (v, L) or state.get("comp") != comp):
             state.clear()
             state["buf"] = np.zeros((v, L), dtype=np.float64)
             state["write_idx"] = 0
+            state["arith_idx"] = 0          # the read's index space (mod L_mod)
             state["wow_ph"] = 0.0
             state["flut_ph"] = 0.0
             state["flut_zi"] = np.zeros(1)
@@ -14076,6 +14191,15 @@ class NumpyBackend(AudioBackend):
             state["rng_drift"] = np.random.default_rng(self._TAPE_DRIFT_SEED + mid)
             state["rng_flut"] = np.random.default_rng(self._TAPE_FLUT_SEED + mid)
             state["rng_hiss"] = np.random.default_rng(self._TAPE_HISS_SEED + mid)
+            # stop transport: gate at the last sample, the ramp counts since
+            # the last edge, the level at the last falling edge, the env at
+            # the last sample and the (unclamped) lag carry.
+            state["stop_prev"] = False
+            state["stop_on"] = 0
+            state["stop_off"] = 0
+            state["stop_env_off"] = 0.0
+            state["stop_env_last"] = 0.0
+            state["stop_lag"] = 0.0
 
         if frames == 0:
             e = np.empty((v, 0), dtype=np.float32)
@@ -14084,6 +14208,19 @@ class NumpyBackend(AudioBackend):
         buf = state["buf"]
         wp = int(state["write_idx"])
         n = np.arange(frames, dtype=np.float64)
+
+        # --- the stop transport (one per module: every voice's ring shares
+        # it). ``env`` 0 = full speed .. 1 = stationary; ``lag`` samples
+        # the head trails the live write. Engaged only once a stop has
+        # happened (any lag): before that every path below runs the
+        # pre-stop code verbatim, so a patched-but-low gate is bit-exact.
+        stop_env = stop_lag = None
+        if stop_patched:
+            gt = stop_gate > self._GATE_HIGH
+            env_row, lag_row = self._tape_stop_transport(
+                gt, state, stop_n, start_n, lag_cap)
+            if np.any(lag_row):
+                stop_env, stop_lag = env_row, lag_row
 
         # --- modulation (shared across voices: one tape path) -------------
         # wow: slow sine.
@@ -14116,20 +14253,58 @@ class NumpyBackend(AudioBackend):
              + flutter * flut_s * flut_sig
              + drift * drift_s * drift_sig)                # (F,) samples
 
-        delay = D + m
-        np.clip(delay, self._TAPE_MIN_SAMP, float(L - 2), out=delay)
-
         # --- fractional-delay read (chorus core; no feedback) -------------
         absidx = wp + np.arange(frames)
         buf[:, absidx % L] = x
-        rp = absidx - delay                                # (F,)
+        state["write_idx"] = int((wp + frames) % L)
+        # The read's arithmetic runs in the pre-stop ring's index space
+        # (``aidx``, mod ``L_mod``): ``aidx - delay`` rounds at the index's
+        # magnitude, so a longer ring alone would move a blend by an ulp
+        # and flip a float32 rounding at the odd sample. Unpatched the two
+        # spaces coincide and this is the shipped arithmetic verbatim; the
+        # longer ring only changes where ``ri`` lands.
+        wa = int(state["arith_idx"])
+        aidx = wa + np.arange(frames)
+        state["arith_idx"] = int((wa + frames) % L_mod)
+        if neutral:
+            # Only a patched ``stop`` gets here. Until it has stopped once
+            # the head reads the sample it just wrote: the ring records and
+            # the block is the input, bit for bit.
+            if stop_lag is None:
+                return src
+            delay = np.zeros(frames, dtype=np.float64)
+        else:
+            delay = D + m
+            np.clip(delay, self._TAPE_MIN_SAMP, float(L_mod - 2), out=delay)
+        rp = aidx - delay                                  # (F,)
         i0 = np.floor(rp).astype(np.int64)
         frac = rp - i0
-        tap = (buf[:, i0 % L] * (1.0 - frac)
-               + buf[:, (i0 + 1) % L] * frac)              # (V, F)
-        state["write_idx"] = int((wp + frames) % L)
+        back = aidx - i0                                   # whole samples back
+        if stop_lag is not None:
+            # The head trails live by the transport's lag; a lag that grows
+            # by ``env`` per sample is a read advancing at ``1 - env``, and
+            # that is the pitch dive / climb. Never ahead of the write, and
+            # the ring was sized for the cap. Applied as whole samples and
+            # a fraction SEPARATELY, for the same reason as ``aidx``: a lag
+            # subtracted from an index would round at the index's magnitude
+            # (the ring index differs per block size), and at a half-sample
+            # lag that flips float32 ties. Measured.
+            lag_i = np.floor(stop_lag)
+            frac = frac - (stop_lag - lag_i)
+            back = back + lag_i.astype(np.int64)
+            under = frac < 0.0
+            frac[under] += 1.0
+            back[under] += 1
+        ri = absidx - back
+        tap = (buf[:, ri % L] * (1.0 - frac)
+               + buf[:, (ri + 1) % L] * frac)              # (V, F)
 
         wet = tap
+        if stop_env is not None:
+            # A head's EMF is proportional to tape speed: the wet follows the
+            # speed linearly, per sample, to exact silence at the halt.
+            speed = 1.0 - stop_env
+            wet = wet * speed[None, :]
         # --- saturation (4x-oversampled tanh) -----------------------------
         if sat_active:
             drive = sat * self._TAPE_SAT_DRIVE_MAX
@@ -14140,6 +14315,8 @@ class NumpyBackend(AudioBackend):
         if hiss_active:
             amp = 10.0 ** (min(hiss_db, self._TAPE_HISS_MAX_DB) / 20.0)
             hn = state["rng_hiss"].standard_normal(frames) * amp
+            if stop_env is not None:
+                hn = hn * speed                    # tape hiss: a still head reads none
             wet = wet + hn[None, :]
 
         # --- head-bump low shelf (~60 Hz), streaming per voice ------------

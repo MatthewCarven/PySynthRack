@@ -2465,7 +2465,9 @@ class App:
             # depths, sat is saturation drive — all 0..1; ``hiss`` is the
             # noise-floor level in dB (-80 = off .. -30 = max, per the
             # module's calibrated bed); ``bump`` is the ~60 Hz head-bump
-            # shelf in dB; ``mix`` is dry/wet (0 bit-exact dry).
+            # shelf in dB; ``mix`` is dry/wet (0 bit-exact dry);
+            # ``stop_time`` / ``start_time`` are the tape-stop's coast-down
+            # and spin-up in seconds (the ``stop`` gate jack drives them).
             if param_name in ("wow", "flutter", "drift", "sat"):
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
@@ -2491,6 +2493,13 @@ class App:
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
                     min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("stop_time", "start_time"):
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.01,
+                    min_value=0.05, max_value=8.0, format="%.2f s",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

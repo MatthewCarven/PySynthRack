@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "next_id": 10,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "RIFF - eighths at 92", "params": { "bpm": 92.0, "division": 2.0, "pulse_width": 0.5 } },
+    { "id": 2, "type": "sequencer", "name": "the riff - eight eighths, one rest", "params": { "steps": 8,
+        "step1_pitch": 0.0,  "step1_on": true,  "step2_pitch": 12.0, "step2_on": true,
+        "step3_pitch": 7.0,  "step3_on": true,  "step4_pitch": 10.0, "step4_on": false,
+        "step5_pitch": 3.0,  "step5_on": true,  "step6_pitch": 7.0,  "step6_on": true,
+        "step7_pitch": 0.0,  "step7_on": true,  "step8_pitch": 5.0,  "step8_on": true } },
+    { "id": 3, "type": "oscillator", "name": "the saw", "params": { "waveform": "saw", "freq": 130.81, "amp": 0.45 } },
+    { "id": 4, "type": "adsr", "name": "pluck env", "params": { "attack": 0.005, "decay": 0.2, "sustain": 0.4, "release": 0.15 } },
+    { "id": 5, "type": "vca", "name": "VCA", "params": {} },
+    { "id": 6, "type": "clock", "name": "DROP - 8 s cycle: 6.4 s playing, 1.6 s stopped", "params": { "bpm": 7.5, "division": 1.0, "pulse_width": 0.8 } },
+    { "id": 7, "type": "logic", "name": "STOP = NOT drop clock - the tape halts in the last fifth", "params": {} },
+    { "id": 8, "type": "tape", "name": "THE TAPE - stop dives it 1.25 s to a halt, start spins it back in 0.6 s", "params": {
+        "wow": 0.15, "flutter": 0.0, "drift": 0.0, "sat": 0.3, "hiss": -80.0, "bump": 0.0, "mix": 1.0,
+        "stop_time": 1.25, "start_time": 0.6 } },
+    { "id": 9, "type": "speaker_output", "name": "Output", "params": { "gain": 0.9 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",   "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "cv",    "dst_module_id": 3, "dst_port": "freq_cv" },
+    { "src_module_id": 2, "src_port": "gate",  "dst_module_id": 4, "dst_port": "gate" },
+    { "src_module_id": 3, "src_port": "out",   "dst_module_id": 5, "dst_port": "audio" },
+    { "src_module_id": 4, "src_port": "cv",    "dst_module_id": 5, "dst_port": "cv" },
+    { "src_module_id": 5, "src_port": "out",   "dst_module_id": 8, "dst_port": "in" },
+    { "src_module_id": 6, "src_port": "out",   "dst_module_id": 7, "dst_port": "a" },
+    { "src_module_id": 7, "src_port": "not_a", "dst_module_id": 8, "dst_port": "stop" },
+    { "src_module_id": 8, "src_port": "out",   "dst_module_id": 9, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 60], "2": [280, 60], "3": [40, 300], "4": [560, 60],
+      "5": [560, 300], "6": [40, 540], "7": [280, 540], "8": [820, 200], "9": [1080, 200]
+    }
+  }
+}
