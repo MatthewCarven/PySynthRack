@@ -2567,6 +2567,14 @@ class App:
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
+            if param_name == "freeze":
+                # The panel hold, ORed with the freeze gate (the granular
+                # / freeze precedent): tick to hang the echo by hand.
+                dpg.add_checkbox(
+                    label=f"{param_name} (or gate)", default_value=bool(current),
+                    callback=self._on_param_changed, user_data=user_data,
+                )
+                return
 
         if module.TYPE == "reverb":
             # Stereo FDN reverb: four 0..1 macro controls (size, decay,

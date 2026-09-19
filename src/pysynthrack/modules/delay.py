@@ -54,12 +54,22 @@ Freeze:
   block size. Unpatched, the module is bit-exact with the pre-freeze
   render.
 
+  The ``freeze`` **tickbox** on the panel is ORed with the gate (the
+  ``granular`` / ``freeze`` precedent), so you can hang the echo from
+  the panel with nothing patched: ticking it is a rising edge at the
+  first sample of the block it lands on — the same 10 ms ramp, the same
+  ``round(time)`` latch, bit for bit the same hold as a gate cable
+  rising there — and clearing it releases like a gate fall. With a gate
+  patched the tick simply holds it high. Off, it changes nothing:
+  unpatched and un-ticked is still the pre-freeze code.
+
 Ports:
   * ``in`` (audio): the signal to echo. Unpatched -> silence out.
   * ``time_cv`` (cv): added to ``time``, scaled by ``cv_depth``.
     Optional; unpatched means no modulation.
   * ``freeze`` (gate): high (> 0.5) hangs the echo (see Freeze above).
-    Optional; unpatched means never frozen.
+    ORed with the ``freeze`` tickbox. Optional; unpatched means never
+    frozen unless ticked.
   * ``out`` (audio): the dry+echo mix.
 
 Voice-awareness:
@@ -90,6 +100,11 @@ class Delay(Module):
             (high end rolled off each pass), high = bright/faithful.
         mix: Dry/wet balance, 0 (dry only) .. 1 (wet only).
         cv_depth: Milliseconds of delay time per unit of ``time_cv``.
+        freeze: The panel tickbox (default False), ORed with the
+            ``freeze`` gate -- hang the echo from the panel with nothing
+            patched. Ticking is a rising edge at the first sample of the
+            block it lands on (same ramp, same latch, same hold as a
+            gate rising there); clearing releases like a gate fall.
 
     Ports:
         in (in, audio): signal to echo. Unpatched -> silence.
@@ -97,8 +112,9 @@ class Delay(Module):
         freeze (in, gate): high hangs the echo -- unity loop, damping
             bypassed, input muted from the line, read pinned to whole
             samples (dry still passes). ``(V, F)`` collapses to
-            any-voice-high. Unpatched -> never frozen (bit-exact with
-            the pre-freeze render).
+            any-voice-high. ORed with the ``freeze`` tickbox. Unpatched
+            and un-ticked -> never frozen (bit-exact with the pre-freeze
+            render).
         out (out, audio): dry + echo mix.
     """
 
@@ -110,6 +126,7 @@ class Delay(Module):
         "tone": 0.5,
         "mix": 0.35,
         "cv_depth": 50.0,
+        "freeze": False,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),

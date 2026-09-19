@@ -28,7 +28,15 @@ Coverage:
     (the ship-off pin); block-size independent with the edge mid-stream
     (fast-only and mixed paths); a (V, F) gate collapses to any-voice-
     high; finite and never growing at runaway settings.
-  - UI: every param still gets a bounded widget (the gate adds none).
+  - Freeze tickbox (2026-09-20 love pass): the ``freeze`` param ORed
+    with the gate -- ticked at block k with nothing patched it is a gate
+    cable rising at block k's first sample, bit-exact (twice over, on
+    both paths, at 64 as at 512, the round(time) latch included); ticked
+    under a held cable or with the cable low it is the cable alone;
+    un-ticked and unpatched never touches the ramp state (the pre-freeze
+    code by construction).
+  - UI: every param gets a bounded widget; the tickbox is a labelled
+    ``freeze (or gate)`` checkbox.
   - Example: delay_freeze_stutter.json renders in range and stutters.
 """
 from __future__ import annotations
@@ -96,6 +104,7 @@ class TestModel:
             "tone": 0.5,
             "mix": 0.35,
             "cv_depth": 50.0,
+            "freeze": False,
         }
 
     def test_ports_and_signal_kinds(self):
@@ -390,9 +399,12 @@ def _fz_rig(params=None, block=F, patched=True, with_cv=False):
     return patch, src, clk, dl, b, cvs
 
 
-def _fz_run(rig, x, fz, block=F, cv=None):
+def _fz_run(rig, x, fz, block=F, cv=None, tick=None):
     """Drive the renderer block by block with an audio row and a gate row
-    (``fz`` None = the freeze buffer is never published)."""
+    (``fz`` None = the freeze buffer is never published). ``tick`` is a
+    list of ``(k0, k1)`` block ranges over which the ``freeze`` tickbox
+    is on -- toggled on the module's params before each block, the way
+    the panel writes it."""
     patch, src, clk, dl, b, cvs = rig
     n = (x.shape[-1] // block) * block
     ys = []
@@ -403,6 +415,8 @@ def _fz_run(rig, x, fz, block=F, cv=None):
             bufs[(clk.id, "out")] = fz[..., sl].astype(np.float32)
         if cv is not None:
             bufs[(cvs.id, "out")] = cv[..., sl].astype(np.float32)
+        if tick is not None:
+            dl.params["freeze"] = any(k0 <= k < k1 for k0, k1 in tick)
         ys.append(b._render_delay(dl, block, bufs, patch))
     return np.concatenate(ys, axis=-1)
 
@@ -738,6 +752,79 @@ class TestFreeze:
         t = T_FZ + 4 * SR
         assert abs(_db(_rms(yf[t - W:t]), ref)) < 3.0   # held, not grown
 
+    # --- the freeze tickbox (2026-09-20 love pass) ---
+
+    @pytest.mark.parametrize("time_ms", [300.37, 200 / SR * 1000.0])
+    def test_tickbox_is_a_gate_edge_at_the_block_boundary(self, time_ms):
+        # The panel tickbox with nothing patched: ticked at block k it is
+        # a rising edge at block k's first sample -- ramp, round(time)
+        # latch and all -- and cleared at block m it is a fall there.
+        # Twice over, so the second hold rises from the idle state the
+        # release hands back to. Bit-exact with a gate cable doing the
+        # same, and the tick at 64 lands on the same sample as the tick
+        # at 512. 300 ms: the fast path; 200 samples: the per-sample
+        # path at 512 and the fast path at 64.
+        params = dict(FZ_PARAMS, time=time_ms)
+        n = 6 * SR
+        # a tone under the burst keeps even the 4.5 ms loop sounding at
+        # the tick (its burst tail is gone within 50 ms of the burst)
+        x = _burst(n) + _tone(n, 330.0, 0.1)
+        holds = [(90, 200), (260, 330)]                 # blocks of 512
+        fz = np.zeros(n, np.float32)
+        for k0, k1 in holds:
+            fz[k0 * F:k1 * F] = 1.0
+        yc = _fz_run(_fz_rig(params), x, fz)
+        patch, src, clk, dl, b, _cvs = rig = _fz_rig(params, patched=False)
+        yt = _fz_run(rig, x, None, tick=holds)
+        assert np.array_equal(yt, yc)
+        assert float(b._state[dl.id]["fz_dly"][0]) == _held_samples(params)
+        # it really holds: the level a second in is the level caught
+        t0 = holds[0][0] * F
+        t = t0 + SR
+        assert _hold_ref(yt, t0) > 1e-3
+        assert abs(_db(_rms(yt[t - W:t]), _hold_ref(yt, t0))) < 3.0
+        # ... and once the release ran out the machinery handed back:
+        # the off count stopped at the first block boundary past the ramp
+        assert b._state[dl.id]["fz_prev"] is False
+        assert b._state[dl.id]["fz_off"] == -(-RAMP // F) * F
+        # block-size independence of the tick edge
+        rig64 = _fz_rig(params, patched=False, block=64)
+        y64 = _fz_run(rig64, x, None, block=64, tick=[(8 * a, 8 * b_) for a, b_ in holds])
+        m = min(len(y64), len(yt))
+        assert np.array_equal(y64[:m], yt[:m])
+
+    def test_tickbox_is_ored_with_the_gate(self):
+        # Ticked under a held cable it changes nothing; ticked with the
+        # cable patched but low it holds exactly as the cable would.
+        n = 4 * SR
+        x = _burst(n)
+        k0, k1 = 90, 200
+        fz = _gate(n, k0 * F, k1 * F)
+        yc = _fz_run(_fz_rig(), x, fz)
+        yu = _fz_run(_fz_rig(), x, fz, tick=[(k0 + 20, k1 - 20)])
+        yl = _fz_run(_fz_rig(), x, np.zeros(n, np.float32), tick=[(k0, k1)])
+        assert np.array_equal(yu, yc) and np.array_equal(yl, yc)
+
+    def test_unticked_and_unpatched_never_enters_the_freeze_machinery(self):
+        # The ship-off pin for the tickbox: gate unpatched and the tick
+        # off (the default), the ramp state is never touched -- both
+        # paths run the pre-freeze code by construction. (The recipe ran
+        # outside the suite too: every shipped example with a reverb or
+        # a delay re-rendered bit-exact against reference renders
+        # captured before the tickbox existed.)
+        for params in (FZ_PARAMS, dict(FZ_PARAMS, time=3.0)):
+            patch, src, clk, dl, b, _cvs = rig = _fz_rig(params, patched=False)
+            assert dl.params["freeze"] is False
+            _fz_run(rig, _burst(2 * SR), None)
+            st = b._state[dl.id]
+            assert st["fz_prev"] is False and st["fz_on"] == 0
+            assert st["fz_off"] == 0 and st["fz_env"] == 0.0 and st["fz_last"] == 0.0
+        # The tripwire can tell: a patched-but-low cable does walk the
+        # ramp (its off count grows), the unpatched module's never moves.
+        patch, src, clk, dl, b, _cvs = rig = _fz_rig()
+        _fz_run(rig, _burst(2 * SR), np.zeros(2 * SR, np.float32))
+        assert b._state[dl.id]["fz_off"] > 0
+
 
 # ----- UI --------------------------------------------------------------------
 
@@ -770,6 +857,8 @@ def test_every_param_gets_a_bounded_widget(monkeypatch):
         assert w[hits[0]][0] != "add_input_text", (name, w[hits[0]])
     assert w["time"][1].endswith(" ms")
     assert "ms/unit" in w["cv_depth"][1]
+    # the freeze tickbox: a labelled checkbox beside the gate jack
+    assert w["freeze (or gate)"][0] == "add_checkbox"
 
 
 # ----- example ---------------------------------------------------------------

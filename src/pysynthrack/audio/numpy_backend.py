@@ -11846,7 +11846,11 @@ class NumpyBackend(AudioBackend):
         never jumps mid-blend. The damping one-pole keeps tracking the raw
         read while bypassed, so it is warm the moment the gate falls. The
         dry path and ``mix`` never see the gate. Unpatched (or never
-        risen), both paths below run their pre-freeze code verbatim.
+        risen), both paths below run their pre-freeze code verbatim. The
+        ``freeze`` param (the panel tickbox) is ORed with the gate: on,
+        the row is all-high from the first sample of the block it is seen
+        on (a rising edge there, ramp and latch and all); off again, it
+        releases like a gate fall.
         """
         V = src.shape[0]
         sr = self.sample_rate
@@ -11911,11 +11915,16 @@ class NumpyBackend(AudioBackend):
         # --- freeze blend: one 0..1 row per block, or None when the gate
         # is unpatched or has not risen (both paths below then run their
         # pre-freeze code verbatim, so the feature ships bit-exact OFF).
+        # The row is the gate cable ORed with the ``freeze`` tickbox
+        # (``_freeze_gate_row``): unpatched and un-ticked never enters
+        # here; the tick alone rises at sample 0 of the block it is seen
+        # on and, cleared, releases through the same ramp as a gate fall.
         e = None
-        if fz is not None and fz.shape[0] == frames:
-            gt = fz > self._GATE_HIGH
+        ramp_n = max(1, int(round(self._DELAY_FREEZE_RAMP_S * sr)))
+        gt = self._freeze_gate_row(
+            fz, frames, bool(module.params.get("freeze", False)), state, ramp_n)
+        if gt is not None:
             prev = bool(state["fz_prev"])
-            ramp_n = max(1, int(round(self._DELAY_FREEZE_RAMP_S * sr)))
             env, fz_on, fz_off, fz_env = self._gate_ramp_env(
                 gt, prev, int(state["fz_on"]), int(state["fz_off"]),
                 float(state["fz_env"]), ramp_n, ramp_n)

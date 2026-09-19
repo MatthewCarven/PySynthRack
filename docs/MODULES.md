@@ -2058,7 +2058,7 @@ of staying digitally bright.
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to echo. Unpatched → silence. |
 | `time_cv` | in | cv | Added to `time`, scaled by `cv_depth`. Modulate for wow / dub throws. |
-| `freeze` | in | gate | (2026-09-19) High (> 0.5) **hangs the echo**: unity loop, damping bypassed, input muted from the line, read pinned to `round(time)` samples (the dry path still passes). A `(V, F)` gate collapses to any-voice-high. Unpatched → never frozen, bit-exact with the pre-freeze render. |
+| `freeze` | in | gate | (2026-09-19) High (> 0.5) **hangs the echo**: unity loop, damping bypassed, input muted from the line, read pinned to `round(time)` samples (the dry path still passes). A `(V, F)` gate collapses to any-voice-high. ORed with the `freeze` tickbox. Unpatched and un-ticked → never frozen, bit-exact with the pre-freeze render. |
 | `out` | out | audio | Dry + echo mix. |
 
 **Parameters**
@@ -2070,6 +2070,7 @@ of staying digitally bright.
 | `tone` | `0.5` | 0 … 1 | Feedback damping: low = dark repeats, high = bright/faithful. |
 | `mix` | `0.35` | 0 … 1 | Dry / wet balance. |
 | `cv_depth` | `50.0` | 0 … 2000 ms/unit | Milliseconds of delay time per unit of `time_cv`. |
+| `freeze` | off | tickbox | (2026-09-20) Hang the echo from the panel — ORed with the `freeze` gate. Ticking is a rising edge at the first sample of the block it lands on (same ramp, same `round(time)` latch, bit-exact with a gate rising there); clearing releases like a gate fall. |
 
 Shape-polymorphic like [Filter](#filter) / [Crossover](#crossover): a
 mono input runs one delay line; a voice-aware `(V, F)` input runs one
@@ -2119,6 +2120,18 @@ bypassed, so it is warm the moment the gate falls. Pulse it from a slow
 a [`key_trigger`](#key_trigger) latch to hold by hand, or a
 [`function_generator`](#function_generator) `eoc` chain. See
 `examples/delay_freeze_stutter.json`.
+
+**The tickbox** (2026-09-20 love pass). The `freeze` tickbox on the panel
+is ORed with the gate — the [`granular`](#granular) / [`freeze`](#freeze)
+precedent — so you can hang the echo by hand with nothing patched.
+Ticking it is a rising edge at the first sample of the block it lands on
+(the same 10 ms ramp, the same `round(time)` latch: bit for bit the hold
+a gate cable rising there would give, at 64 as at 512), and clearing it
+releases like a gate fall. Under a held cable it changes nothing; with a
+cable patched but low it holds exactly as the cable would. Off, with the
+gate unpatched, the module never enters the freeze machinery — still the
+pre-freeze code by construction (every shipped example with a delay
+re-rendered bit-exact).
 
 #### `reverb`
 
