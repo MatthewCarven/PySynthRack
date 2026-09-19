@@ -5605,6 +5605,24 @@ class NumpyBackend(AudioBackend):
     _PINK_A = (1.0, -2.494956002, 2.017265875, -0.522189400)
     _PINK_SCALE = 11.7027
 
+    # Brown (red) noise is white through a LEAKY integrator: a one-pole
+    # with its pole just under 1. A true integrator of white is a random
+    # walk with unbounded variance (it wanders off as DC); the leak puts
+    # a corner under it, and at 10 Hz that corner sits below anything
+    # audible, so from ~20 Hz up the tilt is the textbook -6 dB/oct.
+    # The pole is derived from the sample rate per render
+    # (1 - 2*pi*fc/sr) and the RMS-match scale falls out of the same
+    # number: a leaky integrator of white with variance s^2 has
+    # stationary variance s^2 / (1 - a^2), so sqrt(1 - a^2) brings it
+    # back to white's level -- 0.053362 at 44.1 kHz (measured 0.0541
+    # +- 0.0011 over 8 seeds x 20 s: brown's RMS is dominated by its
+    # lowest octaves, so even 20 s is a small sample of it).
+    _BROWN_CORNER_HZ = 10.0
+    # Violet is the first difference of white (+6 dB/oct). Its variance
+    # is exactly twice white's (two independent samples per output), so
+    # 1/sqrt(2) RMS-matches it (measured 0.70722 over 8 seeds x 20 s).
+    _VIOLET_SCALE = 0.7071067811865476
+
     # Integer phase codes for the vectorized state machine. The mono
     # fast path below still uses strings — we keep them separate so an
     # existing test that introspected the state (none do today, but they
@@ -8048,30 +8066,73 @@ class NumpyBackend(AudioBackend):
     # ----- Noise rendering ------------------------------------------------
 
     def _render_noise(self, module, frames: int, buffers=None, patch=None) -> dict:
-        """White or pink noise; same stream on the ``out`` and ``cv`` jacks.
+        """White / pink / brown / violet noise; same stream on ``out`` and ``cv``.
 
         ``white`` is uniform ``[-1, 1]`` per sample (hard-bounded,
-        bright). ``pink`` filters that white through the class-level
-        pinking IIR via ``scipy.signal.lfilter`` -- the filter state
-        ``zi`` is carried in ``self._state`` across blocks so the
-        spectrum stays continuous at block seams -- then scaled by
-        ``_PINK_SCALE`` to RMS-match white. Both are multiplied by the
-        ``amp`` param.
+        bright). Every other colour is that white through one filter
+        via ``scipy.signal.lfilter`` with its state ``zi`` carried in
+        ``self._state`` across blocks (so the spectrum stays continuous
+        at block seams and the stream is the same at any block size),
+        then scaled to RMS-match white so ``amp`` means one level for
+        all colours: ``pink`` through the class-level pinking IIR
+        (``_PINK_SCALE``), ``brown`` through a leaky integrator with a
+        ``_BROWN_CORNER_HZ`` corner (scale ``sqrt(1 - a^2)``), ``violet``
+        through a first difference (``_VIOLET_SCALE``). Switching colour
+        drops the other colours' filter state.
+
+        The die: ``seed`` 0 (default) draws from numpy's GLOBAL rng --
+        the shipped free-running behaviour, so ``np.random.seed`` still
+        pins a whole patch for a test. Any other seed is a private
+        ``default_rng(seed)`` held in state and re-created when the seed
+        changes: the stream is then the same run to run and the same at
+        every block size (``Generator.uniform`` draws one word per
+        sample, so chunking cannot move it). The seed alone is the key,
+        deliberately not seed-plus-module-id: two modules with the same
+        seed are the same stream (correlated stereo is a feature).
+
+        ``amp_cv`` is a knobless per-sample amplitude (the CV IS the
+        level, like ``vca.cv``), multiplied after the colour filter and
+        ``amp``; unpatched = unity, bit-exact with the pre-CV render. A
+        ``(V, F)`` source broadcasts the ONE mono stream to ``(V, F)``
+        with a per-voice level -- every voice hears the same noise under
+        its own envelope, not V independent streams.
 
         A source has no voice context of its own, so the output is
-        always mono ``(frames,)`` (like :class:`Constant`); a 1D signal
-        broadcasts cleanly against any per-voice consumer. The same
-        float32 array is returned under both port names -- consumers
-        treat buffers as read-only, exactly as fan-out from any single
-        output already does.
+        otherwise mono ``(frames,)`` (like :class:`Constant`); a 1D
+        signal broadcasts cleanly against any per-voice consumer. The
+        same float32 array is returned under both port names --
+        consumers treat buffers as read-only, exactly as fan-out from
+        any single output already does.
         """
         color = str(module.params.get("color", "white"))
         amp = float(module.params.get("amp", 1.0))
+        try:
+            seed = int(module.params.get("seed", 0))
+        except (TypeError, ValueError):
+            seed = 0
 
-        white = np.random.uniform(-1.0, 1.0, frames).astype(np.float32)
+        state = self._state.setdefault(module.id, {})
+
+        if seed == 0:
+            # Free-running: the global rng, exactly as shipped. Drop any
+            # private die so a later non-zero seed starts fresh.
+            state.pop("seed", None)
+            state.pop("rng", None)
+            white = np.random.uniform(-1.0, 1.0, frames).astype(np.float32)
+        else:
+            if state.get("seed") != seed:
+                state["seed"] = seed
+                state["rng"] = np.random.default_rng(seed)
+            white = state["rng"].uniform(-1.0, 1.0, frames).astype(np.float32)
+
+        # One "<colour>_zi" per filtered colour; a colour switch at
+        # runtime drops the others so a stale tail cannot leak into the
+        # new colour (white carries none).
+        for key in ("pink_zi", "brown_zi", "violet_zi"):
+            if key != color + "_zi":
+                state.pop(key, None)
 
         if color == "pink":
-            state = self._state.setdefault(module.id, {})
             zi = state.get("pink_zi")
             if zi is None:
                 zi = np.zeros(
@@ -8080,16 +8141,37 @@ class NumpyBackend(AudioBackend):
             filtered, zf = lfilter(self._PINK_B, self._PINK_A, white, zi=zi)
             state["pink_zi"] = zf
             sig = (filtered * self._PINK_SCALE).astype(np.float32)
+        elif color == "brown":
+            pole = 1.0 - 2.0 * math.pi * self._BROWN_CORNER_HZ / float(self.sample_rate)
+            zi = state.get("brown_zi")
+            if zi is None:
+                zi = np.zeros(1, dtype=np.float64)
+            filtered, zf = lfilter((1.0,), (1.0, -pole), white, zi=zi)
+            state["brown_zi"] = zf
+            sig = (filtered * math.sqrt(1.0 - pole * pole)).astype(np.float32)
+        elif color == "violet":
+            zi = state.get("violet_zi")
+            if zi is None:
+                zi = np.zeros(1, dtype=np.float64)
+            filtered, zf = lfilter((1.0, -1.0), (1.0,), white, zi=zi)
+            state["violet_zi"] = zf
+            sig = (filtered * self._VIOLET_SCALE).astype(np.float32)
         else:
-            # Any non-pink color is white. Drop stale pink state if the
-            # color was switched at runtime.
-            st = self._state.get(module.id)
-            if st is not None:
-                st.pop("pink_zi", None)
+            # Any unknown colour is white.
             sig = white
 
         if amp != 1.0:
             sig = (sig * amp).astype(np.float32)
+
+        # Knobless per-sample amplitude; collapse=False so a (V, F)
+        # envelope reaches us intact and broadcasts the stream to (V, F).
+        amp_cv = None
+        if patch is not None and buffers is not None:
+            amp_cv = self._input_buffer(
+                patch, buffers, module.id, "amp_cv", collapse=False
+            )
+        if amp_cv is not None:
+            sig = (sig * amp_cv).astype(np.float32, copy=False)
         # Same array on both jacks (read-only downstream, like any fan-out).
         return {"out": sig, "cv": sig}
 

@@ -78,9 +78,9 @@ Two deliberate exceptions:
   emit 1 V/oct into it, and a depth knob here would silently detune patches.
   Hardware makes the same split: a calibrated V/OCT jack, and separate FM
   inputs with attenuators.
-- **Amplitude multipliers (`vca.cv`, `oscillator.amp_cv`) are knobless.** The
-  CV *is* the amplitude (`out = in × cv`), the modular convention; attenuate
-  with the source's own level or a CVScale.
+- **Amplitude multipliers (`vca.cv`, `oscillator.amp_cv`, `noise.amp_cv`) are
+  knobless.** The CV *is* the amplitude (`out = in × cv`), the modular
+  convention; attenuate with the source's own level or a CVScale.
 
 The full map:
 
@@ -88,6 +88,7 @@ The full map:
 |----------------|--------------------|------------------|---------|
 | `oscillator.freq_cv` | — (calibrated) | 1 V/oct fixed, per-sample | `freq · 2^cv[n]` |
 | `oscillator.amp_cv` | — (multiplier) | linear | `amp · cv[n]` |
+| `noise.amp_cv` | — (multiplier) | linear, per-sample | `noise · amp · cv[n]`, applied after the colour filter; a `(V, F)` source broadcasts the one mono stream to `(V, F)` with a per-voice level |
 | `oscillator.pw_cv` | `0.5` (`pw_cv_depth`) | width (duty cycle) per unit | `clip(pulse_width + d·cv[n], 0.05, 0.95)`, per-sample, voice-aware; only `square` / `square_blep` listen (`square_wt` is a fixed 50% table) |
 | `vca.cv` | — (multiplier) | linear | `audio · cv · gain` |
 | `filter.cutoff_cv` | `1.0` | octaves | `cutoff · 2^(d·mean cv)` |
@@ -238,7 +239,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`sampler`](#sampler) | Sources | `pitch_cv` (cv), `gate` (gate), `start_cv` (cv), `vel` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`mic_input`](#mic_input) | Sources | — → `left`,`right` (audio) |
 | [`cv_to_frequency`](#cv_to_frequency) | Sources | `cv` (cv) → `out` (audio) |
-| [`noise`](#noise) | Sources | — → `out` (audio), `cv` (cv) |
+| [`noise`](#noise) | Sources | `amp_cv` (cv) → `out` (audio), `cv` (cv) |
 | [`fm_op`](#fm_op) | Sources | `pitch_cv`,`amp_cv`,`index_cv` (cv), `pm` (audio) → `out` (audio) |
 | [`pluck`](#pluck) | Sources | `pitch_cv`,`vel` (cv), `trigger` (gate) → `out` (audio) |
 | [`bowed`](#bowed) | Sources | `pitch_cv`,`pressure_cv`,`velocity_cv` (cv), `gate` (gate) → `out` (audio) |
@@ -664,21 +665,71 @@ optional negative-side mirror. Outputs `out` (audio). See
 
 #### `noise`
 
-White or pink noise with no inputs and two output jacks carrying the
+White, pink, brown or violet noise with two output jacks carrying the
 *same* stream: `out` (audio) to drive filters/speakers directly (hats,
-snares, wind, breath) and `cv` to drive modulation directly — the
+snares, wind, breath, surf) and `cv` to drive modulation directly — the
 textbook random-voltage source for `sample_hold`. Two jacks so neither
 use needs a bridge, the way Keyboard exposes `out` + `gate`.
 
-`color` selects `white` (flat spectrum; uniform ±1) or `pink`
-(−3 dB/oct, equal power per octave — the tilt of rain and rushing
-water). Pink is white filtered through a 3rd-order pinking IIR
-(`scipy.signal.lfilter`, state carried across blocks), RMS-normalised
-so `amp` means the same level for both colors. `amp` scales both jacks
-(white is hard-bounded to ±amp; pink's occasional peaks run slightly
-past it). Output is mono — a source has no voice context of its own and
-broadcasts cleanly to any per-voice consumer. See
-`examples/noise_hat.json`.
+`color` is the spectral tilt. Every colour is the one white stream
+through a different filter (`scipy.signal.lfilter`, state carried across
+blocks so the spectrum is continuous at block seams and the stream is
+the same at any buffer size), RMS-normalised so `amp` means the same
+level for all of them:
+
+| Colour | Tilt | What it is | Sounds like |
+|--------|------|------------|-------------|
+| `white` | flat | uniform ±1 per sample, hard-bounded | hiss; hats, the classic S&H source |
+| `pink` | −3 dB/oct | 3rd-order pinking IIR | rain, rushing water; gentler as a CV |
+| `brown` | −6 dB/oct | a *leaky* integrator (one-pole, 10 Hz corner) | surf, thunder, wind through a wall; a slow smooth wander as a CV |
+| `violet` | +6 dB/oct | the first difference | thin, airy hiss; breath, cymbal tops |
+
+Brown's corner is what keeps it from wandering off as DC (a true
+integrator of white is a random walk): below 10 Hz it flattens, from
+~20 Hz up it is the textbook −6 dB/oct. Its RMS-match scale is exact —
+`sqrt(1 − a²)` for the pole `a` — rather than a fitted constant. `amp`
+scales both jacks: white is hard-bounded to ±amp; the filtered colours'
+occasional peaks run past it (pink and brown to roughly 2·amp over a few
+seconds, violet to 1.4·amp — the speaker limiter handles the audio path).
+
+`seed` picks the die. `0` (default) is free-running: numpy's global
+generator, different every run — the shipped behaviour. Any other value
+keys a private generator held in the module's state, so the stream is
+**the same every run and at every buffer size** — a seeded snare or a
+seeded `sample_hold` melody comes back identical after a reload. The
+seed alone is the key (not seed-plus-module), so **two noise modules
+with the same seed produce the same stream** by design — patch one
+brown to the left and its twin to the right for correlated stereo;
+give them different seeds for two independent streams. Changing the
+seed re-creates the generator.
+
+`amp_cv` is a per-sample linear amplitude, knobless by the house rule
+([CV depth conventions](#cv-depth-conventions)): the CV *is* the level,
+`out = noise · amp · amp_cv[n]`, unpatched = unity. It multiplies
+*after* the colour filter, so a fast gate here chops the noise cleanly.
+A `(V, F)` source — a polyphonic ADSR — broadcasts the one noise stream
+to `(V, F)` with a per-voice level: every voice hears the same noise
+under its own envelope (one stream, not V independent ones); a mono CV
+keeps the output mono. Output is otherwise mono — a source has no voice
+context of its own and broadcasts cleanly to any per-voice consumer.
+See `examples/noise_hat.json`, `examples/noise_wind.json` and
+`examples/noise_brown_surf.json`.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `amp_cv` | in | cv | Per-sample linear amplitude (knobless — the CV is the level). Unpatched = unity. A `(V, F)` source broadcasts the stream to `(V, F)`. |
+| `out` | out | audio | The noise as audio. |
+| `cv` | out | cv | The same noise as control voltage. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `color` | `white` | white / pink / brown / violet | Spectral tilt (flat / −3 / −6 / +6 dB/oct). |
+| `amp` | `1.0` | 0 … 1 | Level on both jacks (white hard-bounded; other colours RMS-matched to it). |
+| `seed` | `0` | ≥ 0 | 0 = free-running (different every run); N = a private generator, the same stream every run and at every buffer size. Same seed on two modules = the same stream. |
 
 ---
 
@@ -4985,4 +5036,5 @@ loads in the app. Notable ones referenced above:
 - `pluck_velocity.json` — picked accents: an eight-step C minor line into a [`pluck`](#pluck) whose `vel` is a [`shift_random`](#shift_random) accent loop clocked alongside the sequencer, scaled into 0.3…1.0 — each pick's velocity is read at its trigger edge and scales the burst, so the line breathes while every note rings down the same way (the live version is `midi_input.velocity_cv → vel`).
 - `delay_freeze_stutter.json` — the beat-repeat: a sixteenth-note [`pluck`](#pluck) phrase into a 187.5 ms (dotted-sixteenth) [`delay`](#delay), a 15 BPM [`clock`](#clock)'s [`logic`](#logic) `not_a` holding the delay's `freeze` for the second two seconds of every four — the last one-and-a-half notes stutter, tumbling against the grid, while the phrase carries on dry over the top through `mix`.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
+- `noise_brown_surf.json` — surf: a seeded `brown` [`noise`](#noise) (seed 7, so the same tide every run) swelling under a 0.12 Hz unipolar sine on its knobless `amp_cv` (a [`cv_offset`](#cv_offset) of 0.2 keeps the trough from going silent) into a resonant 900 Hz lowpass [`filter`](#filter) — waves rolling in and drawing back every eight seconds. Five modules.
 - `stereo_hard_pan.json` — left/right speaker sinks.

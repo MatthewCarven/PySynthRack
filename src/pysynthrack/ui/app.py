@@ -3640,17 +3640,30 @@ class App:
             )
             return
 
-        if param_name == "color":
-            # Noise color picker (white / pink).
-            dpg.add_combo(
-                label=param_name,
-                items=list(NOISE_COLORS),
-                default_value=str(current),
-                width=120,
-                callback=self._on_param_changed,
-                user_data=user_data,
-            )
-            return
+        if module.TYPE == "noise":
+            # Noise. ``color`` is the spectral tilt (white / pink / brown
+            # / violet -- NOISE_COLORS is the module's own list, so only
+            # the noise gets these items; pluck's ``color`` is a 0..1
+            # slider in its own branch above); ``seed`` keys the die (0 =
+            # free-running, N = the same stream every run, the house
+            # drag_int); ``amp`` falls through to the shared 0..1 slider.
+            if param_name == "color":
+                dpg.add_combo(
+                    label=param_name,
+                    items=list(NOISE_COLORS),
+                    default_value=str(current),
+                    width=120,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                return
+            if param_name == "seed":
+                dpg.add_drag_int(
+                    label=param_name, default_value=int(current), speed=1,
+                    min_value=0, max_value=999999,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
 
         if module.TYPE == "sampler":
             # `root` is the note the recording IS. Shown as a note name and
