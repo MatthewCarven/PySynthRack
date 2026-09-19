@@ -80,6 +80,7 @@ from ..modules.wind import WIND_MODELS
 from ..modules.drift import DRIFT_MODES
 from ..modules.cv_recorder import CV_RECORDER_MODES
 from ..modules.vowel import VOWEL_VOICES
+from ..modules.freeze import FREEZE_SIZES
 from ..modules.samplehold import SAMPLE_HOLD_MODES
 from ..modules.compressor import DETECTOR_MODES
 from ..modules.distortion import DISTORTION_MODES
@@ -3283,6 +3284,65 @@ class App:
                 )
                 return
 
+        if module.TYPE == "freeze":
+            # Spectral freeze. ``size`` is the FFT window (the resolution
+            # knob: bigger holds close harmony, smaller grabs faster);
+            # ``freeze`` the tickbox ORed with the gate; ``smear`` 0 =
+            # coherent hold, 1 = random-phase wash; ``pitch`` transposes
+            # the frozen layer (st) with ``pitch_cv_depth`` oct/unit on
+            # pitch_cv; ``level`` the frozen layer, ``dry`` the live
+            # input (not a mix: engaging never ducks what you play over
+            # it); ``fade`` the rise / fall / re-freeze crossfade (ms);
+            # ``seed`` the smear's die.
+            if param_name == "size":
+                dpg.add_combo(
+                    label=f"{param_name} (fft)", items=[str(n) for n in FREEZE_SIZES],
+                    default_value=str(int(current)),
+                    width=140, callback=self._on_freeze_size_changed, user_data=user_data,
+                )
+                return
+            if param_name == "freeze":
+                dpg.add_checkbox(
+                    label=f"{param_name} (or gate)", default_value=bool(current),
+                    callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("smear", "level", "dry"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "pitch":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.1,
+                    min_value=-24.0, max_value=24.0, format="%.1f st",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "pitch_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f oct/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "fade":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=1.0,
+                    min_value=1.0, max_value=2000.0, format="%.0f ms",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "seed":
+                dpg.add_drag_int(
+                    label=param_name, default_value=int(current), speed=1,
+                    min_value=0, max_value=999999,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "vowel":
             # Formant filter. ``vowel`` slides A > E > I > O > U (0..4);
             # ``voice`` picks the formant table; ``resonance`` multiplies
@@ -4222,6 +4282,20 @@ class App:
         # reasoning as the device branch in _on_param_changed.
         self._sink_buffer_last.pop(module_id, None)
         self._sink_buffer_flash.pop(module_id, None)
+
+    def _on_freeze_size_changed(self, sender, app_data, user_data) -> None:
+        """The freeze's ``size`` combo changed. The combo carries the FFT
+        window as a string; store it as an int (snapped onto FREEZE_SIZES)
+        so patches stay numeric and the renderer keys its history on a
+        clean value."""
+        module_id, param_name = user_data
+        try:
+            n = int(app_data)
+        except (TypeError, ValueError):
+            n = 4096
+        if n not in FREEZE_SIZES:
+            n = min(FREEZE_SIZES, key=lambda k: abs(k - n))
+        self._set_module_param(module_id, param_name, n)
 
     def _on_fm_ratio_changed(self, sender, app_data, user_data) -> None:
         """An fm_op ``ratio`` combo changed. The combo carries the harmonic

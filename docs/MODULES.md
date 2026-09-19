@@ -98,6 +98,7 @@ The full map:
 | `clock.bpm_cv` | `1.0` (`bpm_cv_depth`) | tempo doublings | `bpm · 2^(d·mean cv)`, block-rate; exponent clipped ±6 (×64) before the power; mono (a `(V, F)` source is averaged) |
 | `crossover.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
 | `vowel.vowel_cv` | `2.0` | vowels (0 = A … 4 = U) | `vowel + d·mean cv`, clamped 0…4 |
+| `freeze.pitch_cv` | `1.0` (`pitch_cv_depth`) | octaves | frozen layer at `2^(pitch/12 + d·mean cv)`, block-rate; exponent clipped ±4 before the power; mono (a `(V, F)` source is averaged) |
 | `sweep_eq.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
 | `motion_eq.band{i}_freq_cv` | `1.0` (shared) | octaves | `freq_i · 2^(d·mean cv)` |
 | `motion_eq.band{i}_gain_cv` | `6.0` (shared, `gain_cv_depth`) | dB | `gain_i + d·mean cv` (clamped ±24) |
@@ -264,6 +265,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`resampler`](#resampler) | Effects | `in` (audio), `pitch_cv` (cv), `brake` (gate) → `out`, `out_l`, `out_r` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`granular`](#granular) | Effects | `in` (audio), `position_cv` (cv), `freeze` (gate) → `out`, `out_l`, `out_r` (audio) |
+| [`freeze`](#freeze) | Effects | `in` (audio), `freeze` (gate), `pitch_cv` (cv) → `out` (audio) |
 | [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv), `freeze` (gate) → `out` (audio) |
 | [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv), `freeze` (gate) → `out_l`,`out_r` (audio) |
 | [`compressor`](#compressor) | Effects | `in`,`sidechain` (audio), `threshold_cv` (cv) → `out` (audio), `gr` (cv) |
@@ -3111,6 +3113,109 @@ that *hides* the grains, use the [`pitch_shifter`](#pitch_shifter).
 
 ---
 
+#### `freeze`
+
+A **spectral freeze** — hold a moment's spectrum as a pad, forever.
+Module #100. The rack already has a freeze that loops *time*: the
+[`granular`](#granular) re-reads a slice of its ring, so what it holds is
+a rhythm, a stutter, a cloud of grains. This one holds a *spectrum*. At
+the rising edge of `freeze` it takes the last `size` samples of the
+input, measures the frequencies present and how loud each one is, and
+re-synthesises that spectrum indefinitely with every partial's phase
+advancing at its own true rate — a chord becomes a stationary pad with
+no loop seam and no rhythm in it at all. It is the sound of the Freeze
+pedal, of the spectral mode on a Clouds, of a sustain that never has to
+breathe. The dry keeps passing at `dry`: a freeze is something you play
+*over*, so engaging it never ducks what you are playing (that is why the
+two levels are `dry` and `level`, not a `mix`).
+
+**How it holds.** The capture is two Hann frames one hop (`size`/4)
+apart: magnitudes from the later one, and each bin's *true* frequency
+from the pair's phase difference — the phase-vocoder estimate — so a
+partial that sits between two bins holds at its real pitch instead of
+beating between them. The estimate is then **phase-locked to the
+spectral peaks** (Laroche & Dolson's identity locking: every bin in a
+peak's region of influence advances at the peak's frequency). That
+lock is what makes the hold *stationary*: without it the bins one
+partial's lobe shares with a neighbour carry a frequency of their own,
+dephase over seconds, and the pad slowly eats itself (a C-E-G triad at
+a 4096 window had lost two thirds of two partials by 10 s; locked, the
+same triad holds within 2% at 2 s and at 10 s, and a lone sine
+freezes to the same sine at unity — measured 441.30 Hz at 0.500, in
+phase with the live input, so a stationary source's hold is its own
+continuation). Synthesis is an inverse FFT per hop through a synthesis
+Hann, overlap-added (Hann² at 75% overlap sums to exactly 1.5, divided
+out). The frames are generated in order on demand, so the stream is
+bit-exact whatever the block size.
+
+**`size` is the resolution knob.** Bigger windows capture a longer
+moment (93 ms at 4096, 372 ms at 16384 — an average of a third of a
+second) and separate close harmony; partials closer than about three
+bins (`3 · sr / size` Hz — 32 Hz at 4096, 8 Hz at 16384) merge into one
+lobe and hold as a single tone at their mean (a minor second at C3 at
+4096 or 8192 comes back as one note; 16384 resolves it). Smaller
+windows grab faster. 4096 is the default because it holds a triad
+cleanly and still feels like a *moment*.
+
+**`smear`** is the character knob: 0 is the coherent hold, glassy and
+still; 1 gives every synthesis frame random phases (`default_rng([seed,
+frame])`, reproducible) — the identity of the sound stays, its
+coherence goes, and the hold becomes the classic spectral wash. The
+wash is ~5 dB quieter than the coherent hold (the lobe's bins no longer
+add in phase); `level` is the makeup. **`pitch`** transposes the frozen
+layer, `pitch_cv` at 1 V/oct × `pitch_cv_depth` (block mean; the
+exponent is clipped to ±4 octaves before the power). Because the
+frozen stream is stationary, a transposition is simply a change of
+playback rate on it — exact frequency, unity level (measured 659.26 /
+220.00 / 880.00 Hz at 0.500 for +7 / −12 / +12); resampling the
+*spectrum* instead would widen every lobe and lose ~4 dB an octave up.
+Bins above Nyquist / r are dropped at synthesis when pitching up, so
+nothing folds back. The read position is an integer count of output
+samples times the ratio, rebased when the ratio changes, so a knob
+turn mid-hold glides without a step.
+
+**`fade`** is the layer's rise at the edge, its fall at release, and
+the crossfade between two freezes: a rising edge while a hold is still
+sounding — a chord change under a held pedal, a re-trigger mid-release
+— captures a *new* layer and eases the old one out from its current
+level, so a re-freeze melts, never cuts (measured: the largest sample
+step across the swap is a sine's own). At most four layers sound at
+once; a flurry of re-triggers drops the oldest. The `freeze` tickbox
+is ORed with the gate (the `granular` precedent) so you can hold from
+the panel. Mono: a `(V, F)` source is the house sum, a `(V, F)` gate
+collapses to any-voice-high. Unfrozen, with no layer sounding, the
+render returns the input buffer itself at `dry` 1.0 — bit-exact.
+
+| Port | Dir | Kind | Notes |
+|------|-----|------|-------|
+| `in` | in | audio | The source (mono; a `(V, F)` source is summed). Unpatched → silence, no state. |
+| `freeze` | in | gate | Rising edge captures, high holds, the fall releases. ORed with the tickbox. |
+| `pitch_cv` | in | cv | 1 V/oct × `pitch_cv_depth` on the frozen layer, block mean. |
+| `out` | out | audio | `in · dry + frozen · level`. |
+
+| Parameter | Default | Range | Notes |
+|-----------|---------|-------|-------|
+| `size` | 4096 | 1024 · 2048 · 4096 · 8192 · 16384 | FFT window in samples — the resolution knob. |
+| `freeze` | off | tickbox | Hold from the panel (ORed with the gate). |
+| `smear` | 0.0 | 0…1 | 0 = coherent hold, 1 = random-phase wash. |
+| `pitch` | 0.0 | −24…24 st | Transposition of the frozen layer — exact. |
+| `pitch_cv_depth` | 1.0 | 0…4 oct/unit | Octaves per unit on `pitch_cv`. |
+| `level` | 0.7 | 0…1 | The frozen layer's level. |
+| `dry` | 1.0 | 0…1 | The live input's level (1 = bit-exact passthrough when unfrozen). |
+| `fade` | 60 | 1…2000 ms | Rise / fall / re-freeze crossfade. |
+| `seed` | 1 | int | The smear's die. |
+
+*Patching.* A held chord into `in` and a gate from a footswitch, a
+[`key_trigger`](#key_trigger) latch or a clock into `freeze`: lift the
+chord and it stays. A [`logic`](#logic) `not_a` of the chord's own gate
+freezes the instant the chord *stops* — the capture is its sustain. A
+[`sequencer`](#sequencer) into `pitch_cv` plays the hold as an
+instrument. `smear` 1 through a [`reverb`](#reverb) is the wash;
+`pitch` −12 under the dry is a sub-pad of whatever you just played.
+See `examples/freeze_chord_pad.json`.
+
+---
+
 #### `rotary`
 
 The **Leslie** — a spinning horn and a spinning drum, in stereo. The
@@ -5201,5 +5306,6 @@ loads in the app. Notable ones referenced above:
 - `delay_freeze_stutter.json` — the beat-repeat: a sixteenth-note [`pluck`](#pluck) phrase into a 187.5 ms (dotted-sixteenth) [`delay`](#delay), a 15 BPM [`clock`](#clock)'s [`logic`](#logic) `not_a` holding the delay's `freeze` for the second two seconds of every four — the last one-and-a-half notes stutter, tumbling against the grid, while the phrase carries on dry over the top through `mix`.
 - `tape_stop_drop.json` — the tape-stop drop: an eighth-note saw riff ([`clock`](#clock) → [`sequencer`](#sequencer) → [`oscillator`](#oscillator) → [`adsr`](#adsr)/[`vca`](#vca)) on [`tape`](#tape) (`sat` 0.3, `wow` 0.15, `mix` 1), a 7.5 BPM clock's [`logic`](#logic) `not_a` pulling the tape's `stop` for the last 1.6 s of every 8 — the beat dives over `stop_time` 1.25 s, halts, and spins back up over `start_time` 0.6 s.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
+- `freeze_chord_pad.json` — module #100, the spectral freeze: a bar clock plays four sus2 chords on the [`organ`](#organ) ([`sequencer`](#sequencer) → [`chord`](#chord)) for a second each; the clock's `not_a` through [`logic`](#logic) is the [`freeze`](#freeze) gate, so it rises the instant the chord's gate falls and the capture is the chord's sustain — held as a glassy pad (`smear` 0.25) for the rest of the bar, easing out under the next chord over a 300 ms `fade`. Try `smear` 1 (the wash), `pitch` −12 (a sub-pad), `size` 16384 (a longer, smoother moment).
 - `noise_brown_surf.json` — surf: a seeded `brown` [`noise`](#noise) (seed 7, so the same tide every run) swelling under a 0.12 Hz unipolar sine on its knobless `amp_cv` (a [`cv_offset`](#cv_offset) of 0.2 keeps the trough from going silent) into a resonant 900 Hz lowpass [`filter`](#filter) — waves rolling in and drawing back every eight seconds. Five modules.
 - `stereo_hard_pan.json` — left/right speaker sinks.

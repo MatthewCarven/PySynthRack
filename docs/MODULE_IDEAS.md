@@ -31,7 +31,7 @@ Paste the preamble below plus one module spec as the task.
 
 Dynamics: `compressor` `limiter` `noise_gate` `transient_shaper` ·
 Pitch/frequency: `ring_mod` `freq_shifter` `bitcrusher` ·
-Character/space: `tape` `convolver` ·
+Character/space: `tape` `convolver` `freeze` ·
 CV tools: `cv_math` `cv_recorder` `quantizer` `slew` `pitch_detector` · Filters: `vowel` ·
 Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate` `burst` `arpeggiator` `chord` `chaos` `possibility_selector` `drift` ·
 Voices: `fm_op` `pluck` `bowed` `wind` `modal` `granular` `kick_drum`/`snare_drum`/`hat_drum` `sampler` `organ` ·
@@ -197,6 +197,117 @@ IR loader + partitioned FFT convolution: real rooms, springs, plates, cabs.
   isn't bit-exact — pin and document); mix=0 bit-exact dry.
 - Tests: oracle equivalence per block size; latency reported; tail length
   matches IR.
+
+### `freeze` (M) — "Effects" — **SHIPPED 2026-09-20** (see TODO.md / WORKLOG.md) — the spectral freeze — **module #100**
+
+The keep-list's "spectral freeze: FFT a moment, hold it forever as a
+pad. A different animal from `granular`'s time-domain freeze." That one
+loops a slice of TIME (grains re-read a ring — a rhythm, a stutter, a
+cloud); this one holds a SPECTRUM: the moment's frequencies and their
+levels, re-synthesised indefinitely with the phases advancing at each
+partial's true rate, so a chord becomes a stationary pad with no loop
+seam and no rhythm at all — the sound of the Freeze pedal, of Clouds'
+spectral mode, of Norris' Spectral Freeze. Play over it: the dry keeps
+passing.
+
+- Ports: `in` (audio, mono — a `(V, F)` source is the house sum);
+  `freeze` (gate — rising edge captures, high holds; a `(V, F)` gate
+  collapses any-voice-high); `pitch_cv` (cv, 1 V/oct × `pitch_cv_depth`,
+  block mean) → `out` (audio).
+- Params: `size` 1024 | 2048 | 4096 | 8192 | 16384 (4096 — the FFT
+  window in samples; the resolution knob, see below) · `freeze` tickbox
+  (off — ORed with the gate, the `granular` precedent) · `smear` 0..1
+  (0.0 — 0 is the coherent phase-vocoder hold: a sine freezes to the
+  same sine; 1 randomises every frame's phases: the classic spectral
+  wash, the tone's identity kept, its coherence gone) · `pitch`
+  semitones −24..24 (0.0 — the frozen layer's transposition, exact) ·
+  `pitch_cv_depth` oct/unit (1.0) · `level` 0..1 (0.7 — the frozen
+  layer's level) · `dry` 0..1 (1.0 — the live input's level; NOT a
+  `mix`, because a freeze is something you play OVER: engaging it must
+  never duck the dry) · `fade` ms 1..2000 (60 — the layer's rise at the
+  edge and its fall at release; also the crossfade between two
+  freezes) · `seed` (1 — the smear's die).
+- DSP — capture: the last `size + hop` input samples before the edge
+  (a rolling history, always kept), Hann-windowed into two frames one
+  hop (`size/4`) apart; magnitudes from the later frame; each bin's
+  TRUE frequency from the pair's phase difference (`w_bin +
+  princarg(dphi − w_bin·hop)/hop`, the phase-vocoder estimate) so a
+  partial between bins holds at its real pitch and does not beat.
+  Synthesis: frame j = `mag · exp(i(phi0 + j·w_true·hop [+ smear ·
+  jitter_j]))`, inverse FFT, synthesis Hann, overlap-add at the hop —
+  Hann² at 75% overlap sums to exactly 1.5, divided out, so a
+  stationary input freezes at unity. `jitter_j` is `default_rng([seed,
+  j])`, keyed by the frame index (the granular's grain-index idiom), so
+  the wash is reproducible and block-size exact. Frames are generated
+  in order on demand into a rolling synthesis buffer; the additions
+  happen in frame order whatever the block partition, so the stream
+  is bit-exact across block sizes.
+- DSP — pitch: NOT by resampling the spectrum (that widens every lobe
+  and loses ~4 dB an octave up — measured); the frozen stream is
+  stationary, so a pitch shift is simply reading it at rate `r =
+  2^(pitch/12 + depth·mean cv)` (exponent clipped to ±4 octaves before
+  the power) with linear interpolation — exact frequency, unity level
+  (measured 659.26 / 220.00 / 880.00 Hz at 0.500 for +7 / −12 / +12).
+  Bins above Nyquist/r are zeroed at frame synthesis when r > 1 (no
+  aliasing). The read position is an integer count of output samples
+  times r, rebased when r changes, so a constant ratio is bit-exact
+  across block sizes and a ratio change never jumps.
+- DSP — the layer: the gate (OR the tickbox) drives one integer-count
+  `_gate_ramp_env` (attack = release = `fade`); the frozen stream
+  times `env · level` is ADDED to `src · dry`. A rising edge while a
+  layer is still sounding (a chord change under a held pedal, or a
+  re-trigger mid-release) captures a NEW layer and forces the old one
+  into its release from its current level — the two crossfade over
+  `fade` — so a re-freeze melts, never cuts; at most four layers live,
+  the oldest dropped beyond that. When a layer's envelope reaches 0
+  its synthesis state is dropped. Unfrozen with no layer alive the
+  render returns `src` itself at `dry` 1.0 (bit-exact passthrough,
+  the effects neutral) while the history keeps rolling.
+- The resolution rule (measured, drives the default): partials closer
+  than about four bins (`4·sr/size` Hz) share lobes, their bins'
+  true-frequency estimates disagree, and the hold loses them — a
+  C-E-G triad (68 Hz apart) at `size` 1024 vanishes, 2048 loses a
+  partial (−2.6 dB on the lowest), 4096 holds within 1%, 8192 exactly.
+  Bigger `size` = a longer moment captured (93 ms at 4096, 372 ms at
+  16384 — an average of a third of a second) and cleaner harmony;
+  smaller = a snappier grab. `smear` 1 drops the level ~5 dB (the lobe
+  bins no longer add in phase) — `level` is the makeup.
+- Neutral / contracts: unpatched `in` → silence, no state; unpatched
+  `freeze` with the tickbox off → `src` (at `dry` 1.0 the same buffer);
+  a gate that never rises == no gate, bit-exact; `pitch_cv` +1 at depth
+  1 == `pitch` +12 bit-exact; block-size exact with rising and falling
+  edges mid-stream at a constant ratio (a MOVING `pitch_cv` is
+  block-mean like every other block-mean CV — documented).
+- Tests: registration/ports/params; the sine hold (frequency, unity
+  amplitude, steady RMS over 3 s, still there at 5 s with the input
+  gone silent — "forever"); a non-bin sine does not beat; the triad
+  at 4096 within 10% per partial; every `size` holds; `smear` 1 keeps
+  the peak bin, decorrelates the waveform (corr < 0.3) and reproduces
+  per seed; `pitch` +12 → 880 at unity; the cv equivalence; the
+  clip; `fade` measured (half level at half the fade; release to 0
+  and the state dropped); the re-freeze crossfade (old → new, no
+  click by the house step tripwire, ≤ 2 layers); tickbox == gate;
+  never-rising == no cable; `dry` 0.5 halves the passthrough; a
+  `(V, F)` input sums; block-size independence 64 vs 512 with edges
+  mid-stream at pitch +7, smear 0.5; finite under absurd params;
+  widget sweep; the example.
+- Example `freeze_chord_pad.json`: a bar clock at `pulse_width` 0.25
+  plays four chords on the organ (sequencer → chord → organ) for a
+  second each; the clock's `not_a` through `logic` is the freeze gate
+  — it rises exactly when the chord's gate FALLS, so the capture is
+  the chord's sustain, held as a glassy pad for the rest of the bar
+  and melting into the next chord's freeze on the following bar; a
+  little reverb. `smear` 0.25, `size` 4096.
+- Follow-ons: stereo `width` (two smear seeds, L/R decorrelated); a
+  `spread` (formant-preserving shift); a `decay` (a hold that fades
+  on its own); `hold` as a latch/toggle mode.
+- As built (2026-09-20), verbatim plus one addition the third
+  prototype forced: the true-frequency estimate is **phase-locked to
+  the spectral peaks** (identity locking) — without it the hold of
+  close partials decays over seconds; with it a triad at 4096 holds
+  within 2% forever. The read starts at frozen time `size` (the edge
+  itself), so a stationary source's hold is in phase with the live
+  input. 35 tests. Example `freeze_chord_pad.json`.
 
 ## CV tools & bridges
 
@@ -1204,8 +1315,10 @@ full specs above.
   `supersaw`. (Cousin of `wavetable_morph`'s vowel *stack* — that one
   IS the source, this one filters any source.) **Picked and SHIPPED
   2026-09-19 — full spec under CV tools.**
-- `freeze` (M) — spectral freeze: FFT a moment, hold it forever as a
+- ~~`freeze` (M)~~ — spectral freeze: FFT a moment, hold it forever as a
   pad. A different animal from `granular`'s time-domain freeze.
+  **Picked and SHIPPED 2026-09-19 as module #100 — full spec under
+  Character & space.**
 - `autopan` (S) — there's no dedicated panner anywhere in the rack.
   Equal-power pan with CV in; fold tremolo into it and it's the
   missing stereo motion utility.

@@ -43,6 +43,7 @@ from .fileplayer import FilePlayer
 from .filter import Filter
 from .flanger import Flanger
 from .fm_op import FMOperator
+from .freeze import Freeze
 from .freq_shifter import FreqShifter
 from .function_generator import FunctionGenerator
 from .keyboard import Keyboard
@@ -143,6 +144,7 @@ __all__ = [
     "Filter",
     "Flanger",
     "FMOperator",
+    "Freeze",
     "FreqShifter",
     "FunctionGenerator",
     "HatDrum",

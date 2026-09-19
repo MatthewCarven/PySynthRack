@@ -5,14 +5,14 @@ A modular software synthesizer in Python with a drag-cable node-graph UI. Think 
 ## Status: active development (pre-1.0)
 
 PySynthRack has grown well past its first prototype into a working instrument:
-**99 modules** across seven categories, a full CV/modulation system, MIDI,
+**100 modules** across seven categories, a full CV/modulation system, MIDI,
 recording, and a node editor with zoom, live meters, and per-patch layout
 persistence. It's still pre-1.0 — the patch format and APIs can shift — but you
 can build real patches in it today.
 
 ### What works
 
-- **99 modules** in seven Add-menu categories:
+- **100 modules** in seven Add-menu categories:
   - **Sources (22)** — oscillator (sine / saw / square / triangle, each in
     naive, PolyBLEP/PolyBLAMP `*_blep`, and wavetable `*_wt` flavours),
     supersaw, wavetable morph (with single-cycle WAV import), FM operator,
@@ -24,10 +24,11 @@ can build real patches in it today.
   - **Filters & EQ (8)** — multimode resonant filter, Linkwitz-Riley crossover,
     a five-formant vowel filter (A–E–I–O–U morph), and parametric / sweep /
     motion / tilt EQ plus a loudness contour.
-  - **Effects (23)** — delay, reverb, chorus, flanger, phaser, rotary (Leslie),
+  - **Effects (24)** — delay, reverb, chorus, flanger, phaser, rotary (Leslie),
     distortion, waveshaper, bitcrusher, tape, vinyl (dust / crackle / rumble /
     wobble), convolution reverb (IR), ring modulator, frequency shifter, pitch
-    shifter, granular cloud, resampler (with tape-stop/spin), octaver, vocoder,
+    shifter, granular cloud, spectral freeze (module #100), resampler (with
+    tape-stop/spin), octaver, vocoder,
     and a full dynamics set (compressor, limiter, noise gate, transient shaper).
   - **Modulation (18)** — LFO, ADSR, AD envelope, function generator, clock,
     clock divider, step sequencer, fader sequencer, possibility sequencer
@@ -82,7 +83,7 @@ for the design write-up.
 src/pysynthrack/
 ├── core/            # Pure-Python model: Port, Module, Patch (no audio, no UI)
 ├── audio/           # AudioBackend interface + numpy (reference) / pyo backends
-├── modules/         # The 99 module type definitions — ports & params, no DSP
+├── modules/         # The 100 module type definitions — ports & params, no DSP
 ├── io_patch/        # JSON save / load
 ├── ui/              # DearPyGui app — node editor, palette, transport, meters
 ├── _crash.py        # Crash-log wiring (GUI + audio-thread hooks)

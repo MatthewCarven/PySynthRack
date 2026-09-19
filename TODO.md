@@ -739,6 +739,33 @@ same session.
       anyone is playing). Decide whether that asymmetry should be
       documented as-is or changed; do not change it silently.
 
+## The hundredth module (2026-09-20)
+
+- [x] **`freeze` — SHIPPED 2026-09-20, module #100.** Effects. Matthew:
+      "freeze please Claude - #100". Spec into MODULE_IDEAS first (§
+      Character & space), three prototypes before the module. The
+      spectral freeze: a phase-vocoder capture (two Hann frames a hop
+      apart, true frequency per bin) **phase-locked to the spectral
+      peaks** — the third prototype found an unlocked hold eats itself
+      (a triad at 4096 lost two thirds of two partials by 10 s; locked
+      it holds within 2% forever) — re-synthesised per hop, overlap-
+      added, read from frozen time `size` so a stationary source's
+      hold is its own continuation in phase. `size` 1024..16384 (4096;
+      partials within ~3 bins merge and hold at their mean — a minor
+      second at C3 needs 16384), `smear` (coherent → random-phase wash,
+      seeded per frame), `pitch` + `pitch_cv` (a change of READ rate —
+      exact, unity level; a resampled spectrum lost 4 dB), `level` +
+      `dry` (not a mix — engaging never ducks the dry), `fade` (rise /
+      fall / the crossfade between two holds — a re-freeze melts; four
+      layers max), the `freeze` tickbox ORed with the gate. Bit-exact
+      across block sizes with edges mid-stream; unfrozen returns the
+      input buffer itself. 35 tests in `tests/test_freeze.py`. Example
+      `freeze_chord_pad.json` (banked). Suite **4245**, 148 examples,
+      **100 modules**. Follow-ons: stereo `width` (two smear seeds L/R);
+      a `decay` (a hold that fades on its own); a `spread` /
+      formant-preserving shift; `hold` as a latch/toggle; `size` above
+      16384 for drones (cheap — the combo is the only limit).
+
 ## A third batch of five love passes in parallel (2026-09-19, night)
 
 Matthew: "Ok choose another 5 modules that could use some love I should
@@ -982,7 +1009,8 @@ sounds wrong, one line here is enough and Claude takes it from there.
 **First run `python examples/samples/generate_samples.py` once** (the
 sampler examples need it).
 
-*The new modules (six):*
+*The new modules (seven):*
+- [ ] `freeze_chord_pad.json` — **module #100.** Each sus2 chord plays a second, then hangs as a glassy pad for the rest of the bar and melts into the next. Is it a pad or a buzz? Try `smear` 1 (the wash), `pitch` -12 (a sub-pad under the organ), `size` 16384 (a longer, smoother moment), and the `freeze` tickbox under a held keyboard chord. EYES: the `size (fft)` combo, the `freeze (or gate)` tickbox.
 - [ ] `bowed_cello.json` — does it read as a bowed string? Try `pressure` 0.8 (crunch), `position` 0.06 (sul ponticello), `body` 0 with the scope (the raw sawtooth). The 88% gates should re-bow without a gap.
 - [ ] `wind_duet.json` — flute over reed. Flute `breath` 0.8 should go sharp and airy; reed `breath` 0.05 must NOT speak and 1.0 should choke — both on purpose. Is the flute a flute?
 - [ ] `drift_wander.json` — the filter breathes with no corners (the scope shows the wander); the pluck lands exactly when the wander turns; the drone's 36-cent walk reads as an old oscillator, not vibrato. Try `glide` 0 (pure S&H) and `walk` with `step` 0.05.

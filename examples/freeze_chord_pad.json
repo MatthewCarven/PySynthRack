@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "next_id": 10,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "one bar every four seconds - the chord sounds for the first quarter", "params": { "bpm": 60.0, "division": 0.25, "pulse_width": 0.25 } },
+    { "id": 2, "type": "sequencer", "name": "roots: C F G A (sus2 on each - all white keys)",
+      "params": { "steps": 4, "direction": "forward", "seed": 1,
+                  "step1_pitch": 0.0, "step1_on": true, "step2_pitch": -7.0, "step2_on": true,
+                  "step3_pitch": -5.0, "step3_on": true, "step4_pitch": -3.0, "step4_on": true } },
+    { "id": 3, "type": "chord", "name": "sus2 voicing", "params": { "preset": "sus2", "strum": 0.0, "spread": false, "inversion": 0 } },
+    { "id": 4, "type": "organ", "name": "ORGAN - plays each chord for one second",
+      "params": { "bar1": 8, "bar2": 8, "bar3": 8, "bar4": 0, "bar5": 4, "bar6": 0, "bar7": 0, "bar8": 0, "bar9": 0,
+                  "click": 0.2, "perc": "off", "perc_decay": "fast", "perc_level": 0.7, "level": 0.14, "vibrato": "off" } },
+    { "id": 5, "type": "logic", "name": "not_a: the freeze rises the moment the chord's gate falls", "params": {} },
+    { "id": 6, "type": "freeze", "name": "FREEZE - the chord's last 116 ms held as a pad for the rest of the bar; try smear 1, pitch -12",
+      "params": { "size": 4096, "freeze": false, "smear": 0.25, "pitch": 0.0, "pitch_cv_depth": 1.0, "level": 0.8, "dry": 1.0, "fade": 300.0, "seed": 1 } },
+    { "id": 7, "type": "reverb", "name": "a hall", "params": { "size": 0.7, "decay": 0.55, "damping": 0.5, "mix": 0.3, "cv_depth": 1.0 } },
+    { "id": 8, "type": "scope", "name": "the pad", "params": {} },
+    { "id": 9, "type": "stereo_speaker_output", "name": "out", "params": {} }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",      "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "cv",       "dst_module_id": 3, "dst_port": "pitch_cv" },
+    { "src_module_id": 2, "src_port": "gate",     "dst_module_id": 3, "dst_port": "gate" },
+    { "src_module_id": 3, "src_port": "pitch_cv", "dst_module_id": 4, "dst_port": "pitch_cv" },
+    { "src_module_id": 3, "src_port": "gate",     "dst_module_id": 4, "dst_port": "gate" },
+    { "src_module_id": 4, "src_port": "out",      "dst_module_id": 6, "dst_port": "in" },
+    { "src_module_id": 1, "src_port": "out",      "dst_module_id": 5, "dst_port": "a" },
+    { "src_module_id": 5, "src_port": "not_a",    "dst_module_id": 6, "dst_port": "freeze" },
+    { "src_module_id": 6, "src_port": "out",      "dst_module_id": 8, "dst_port": "in" },
+    { "src_module_id": 8, "src_port": "out",      "dst_module_id": 7, "dst_port": "in" },
+    { "src_module_id": 7, "src_port": "out_l",    "dst_module_id": 9, "dst_port": "in_l" },
+    { "src_module_id": 7, "src_port": "out_r",    "dst_module_id": 9, "dst_port": "in_r" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 60], "2": [300, 60], "3": [580, 60], "4": [860, 60],
+      "5": [300, 360], "6": [1160, 160], "8": [1460, 160], "7": [1720, 160], "9": [2000, 160]
+    }
+  }
+}

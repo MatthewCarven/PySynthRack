@@ -2701,6 +2701,8 @@ class NumpyBackend(AudioBackend):
             return self._render_cv_math(module, frames, buffers, patch)
         if module.TYPE == "vowel":
             return self._render_vowel(module, frames, buffers, patch)
+        if module.TYPE == "freeze":
+            return self._render_freeze(module, frames, buffers, patch)
         if module.TYPE == "cv_recorder":
             return self._render_cv_recorder(module, frames, buffers, patch)
         if module.TYPE == "logic":
@@ -17605,6 +17607,276 @@ class NumpyBackend(AudioBackend):
         out = wet if mix >= 1.0 else x * (1.0 - mix) + wet * mix
         result = out if voiced else out[0]
         return result.astype(np.float32)
+
+    # ----- Freeze rendering ------------------------------------------------------
+
+    #: How many frozen layers may sound at once (a re-freeze fades the old
+    #: one out; a flurry of re-triggers drops the oldest beyond this).
+    _FREEZE_MAX_LAYERS = 4
+    #: The pitch exponent is clipped to +-4 octaves BEFORE ``2 ** e`` (the
+    #: filter pass found an absurd CV can overflow the power).
+    _FREEZE_PITCH_OCT_LIMIT = 4.0
+    #: Periodic Hann windows by size, built once.
+    _FREEZE_WINDOWS: dict = {}
+
+    @classmethod
+    def _freeze_window(cls, n: int) -> np.ndarray:
+        w = cls._FREEZE_WINDOWS.get(n)
+        if w is None:
+            w = np.hanning(n + 1)[:-1].astype(np.float64)
+            cls._FREEZE_WINDOWS[n] = w
+        return w
+
+    @staticmethod
+    def _freeze_lock(mag: np.ndarray, w_true: np.ndarray) -> np.ndarray:
+        """Identity phase locking (Laroche & Dolson): every bin in a
+        spectral peak's region of influence (out to the valley on either
+        side) advances at the PEAK's true frequency.
+
+        Without it the bins of one partial's lobe that a neighbouring
+        partial has contaminated carry a frequency of their own, dephase
+        against the lobe's centre over seconds, and the hold slowly eats
+        itself -- a C-E-G triad at a 4096 window had lost two thirds of
+        two partials by 10 s. Locked, the same triad holds within 2%
+        forever, and a lone sine is unchanged.
+        """
+        k_n = mag.shape[0]
+        up = np.concatenate(([False], mag[1:] > mag[:-1]))
+        down = np.concatenate((mag[:-1] >= mag[1:], [False]))
+        peaks = np.flatnonzero(up & down & (mag > 1e-12))
+        if peaks.size == 0:
+            return w_true
+        bounds = [0]
+        for a, b in zip(peaks[:-1].tolist(), peaks[1:].tolist()):
+            bounds.append(a + int(np.argmin(mag[a:b + 1])))
+        bounds.append(k_n)
+        locked = w_true.copy()
+        for pk, lo, hi in zip(peaks.tolist(), bounds[:-1], bounds[1:]):
+            locked[lo:hi] = w_true[pk]
+        return locked
+
+    @classmethod
+    def _freeze_capture(cls, seg: np.ndarray, n: int, hop: int) -> dict:
+        """Analyse the ``n + hop`` samples before a freeze edge.
+
+        Two Hann frames one hop apart: magnitudes from the later one, and
+        each bin's TRUE frequency from the pair's phase difference (the
+        phase-vocoder estimate ``w_bin + princarg(dphi - w_bin*hop)/hop``)
+        so a partial between two bins holds at its real pitch instead of
+        beating between them, then phase-locked to the peaks
+        (``_freeze_lock``). Returns the layer's spectral state.
+        """
+        w = cls._freeze_window(n)
+        spec_a = np.fft.rfft(seg[:n] * w)
+        spec_b = np.fft.rfft(seg[hop:hop + n] * w)
+        k = np.arange(spec_b.shape[0], dtype=np.float64)
+        w_bin = 2.0 * np.pi * k / n
+        dphi = np.angle(spec_b) - np.angle(spec_a) - w_bin * hop
+        dphi = np.mod(dphi + np.pi, 2.0 * np.pi) - np.pi
+        mag = np.abs(spec_b)
+        return {
+            "mag": mag,
+            "phi": np.angle(spec_b),
+            "w_true": cls._freeze_lock(mag, w_bin + dphi / hop),
+        }
+
+    def _render_freeze(self, module, frames: int, buffers, patch) -> np.ndarray:
+        """Spectral freeze (see modules/freeze.py for the contract).
+
+        The input rolls through a history of ``size + hop`` samples. A
+        rising edge of the gate (OR the tickbox) captures a LAYER from
+        that history (``_freeze_capture``) and the layer re-synthesises
+        its spectrum forever: frame ``j`` is ``mag * exp(i(phi + j *
+        w_true * hop [+ smear * jitter_j]))`` (``w_true`` phase-locked to
+        the spectral peaks) through an inverse FFT and a synthesis Hann,
+        overlap-added at the hop into a rolling buffer
+        in the layer's own "frozen time" (Hann^2 at 75% overlap sums to
+        1.5, divided out, so a stationary input freezes at unity). The
+        jitter is ``default_rng([seed, j])`` keyed by the frame index and
+        frames are generated in order on demand, so the stream is the
+        same whatever the block partition.
+
+        Pitch is a change of READ rate on that stationary stream (linear
+        interpolation), never a resampled spectrum -- exact frequency,
+        unity level; the read position is ``p_base + (m - m_base) * r``
+        with ``m`` an integer count of output samples since the layer
+        was born and a rebase whenever ``r`` changes, so a constant ratio
+        is bit-exact across block sizes and a ratio change never jumps.
+        Bins above Nyquist / r are zeroed at synthesis when r > 1.
+
+        Each layer has its own integer-count ``_gate_ramp_env`` (attack =
+        release = ``fade``). A new edge while a layer still sounds
+        creates a new layer and forces the old one into its release from
+        its current level -- the two crossfade, a re-freeze melts. A
+        layer whose envelope has reached 0 is dropped. With no layer
+        alive and no edge this block the render returns ``src`` itself
+        at ``dry`` 1.0 (bit-exact passthrough) while the history rolls.
+        """
+        from ..modules.freeze import FREEZE_SIZES
+
+        src = self._input_buffer(patch, buffers, module.id, "in")
+        if src is None or src.size == 0:
+            self._state.pop(module.id, None)
+            return np.zeros(frames, dtype=np.float32)
+        if frames == 0:
+            return np.empty(0, dtype=np.float32)
+
+        sr = self.sample_rate
+        size = int(module.params.get("size", 4096))
+        if size not in FREEZE_SIZES:
+            size = 4096
+        n = size
+        hop = n // 4
+        tick = bool(module.params.get("freeze", False))
+        smear = min(max(float(module.params.get("smear", 0.0)), 0.0), 1.0)
+        pitch = float(module.params.get("pitch", 0.0))
+        depth = float(module.params.get("pitch_cv_depth", 1.0))
+        level = max(0.0, float(module.params.get("level", 0.7)))
+        dry = max(0.0, float(module.params.get("dry", 1.0)))
+        fade_ms = max(0.0, float(module.params.get("fade", 60.0)))
+        fade_n = max(1, int(round(fade_ms * sr / 1000.0)))
+        seed = abs(int(module.params.get("seed", 1)))
+
+        st = self._state.setdefault(module.id, {})
+        if st.get("n") != n:
+            # A new window size restarts the history (and any hold with it).
+            st.clear()
+            st["n"] = n
+            st["hist"] = np.zeros(n + hop, dtype=np.float64)
+            st["prev"] = False
+            st["t"] = 0
+            st["layers"] = []
+
+        x = src.astype(np.float64)
+        full = np.concatenate([st["hist"], x])
+        st["hist"] = full[-(n + hop):]
+        t_abs = int(st["t"])
+        st["t"] = t_abs + frames
+
+        # --- the gate: cable OR tickbox; a (V, F) cable is the house sum
+        gate = self._input_buffer(patch, buffers, module.id, "freeze")
+        if gate is not None and gate.shape[0] == frames:
+            gt = gate > self._GATE_HIGH
+        else:
+            gt = np.zeros(frames, dtype=bool)
+        if tick:
+            gt = np.ones(frames, dtype=bool)
+        prev = bool(st["prev"])
+        st["prev"] = bool(gt[-1])
+        rising = np.flatnonzero(gt & ~np.concatenate(([prev], gt[:-1])))
+
+        layers = st["layers"]
+        if not layers and rising.size == 0:
+            # Nothing frozen, nothing starting: the neutral.
+            if dry == 1.0:
+                return src
+            return (x * dry).astype(np.float32)
+
+        # --- pitch ratio (block mean, 1 V/oct, clipped before the power)
+        cv = self._input_buffer(patch, buffers, module.id, "pitch_cv", collapse=False)
+        cv_mean = 0.0
+        if cv is not None and cv.size:
+            cv_mean = float(np.mean(cv))
+            if not np.isfinite(cv_mean):
+                cv_mean = 0.0
+        lim = self._FREEZE_PITCH_OCT_LIMIT
+        ratio = float(2.0 ** min(max(pitch / 12.0 + depth * cv_mean, -lim), lim))
+
+        # --- new layers at this block's rising edges: each one cuts the
+        # gate row of every older layer at its index (forced release).
+        for i in rising.tolist():
+            for old in layers:
+                old["active"] = False
+                if old["cut"] is None:
+                    old["cut"] = i
+            if len(layers) >= self._FREEZE_MAX_LAYERS:
+                layers.pop(0)
+            seg = full[i:i + n + hop]  # the n + hop samples before edge i
+            spec = self._freeze_capture(seg, n, hop)
+            layers.append({
+                "mag": spec["mag"], "phi": spec["phi"], "w_true": spec["w_true"],
+                "syn": np.zeros(4 * n, dtype=np.float64), "origin": 0, "j_next": 0,
+                # the read starts at frozen time ``n`` = the edge itself,
+                # so a stationary input's hold is its own continuation,
+                # in phase (frames 1..4 cover it from the first sample)
+                "m0": t_abs + i, "p_base": float(n), "m_base": 0, "ratio": ratio,
+                "prev": False, "on": 0, "off": 0, "env_off": 0.0,
+                "active": True, "born": i, "cut": None,
+            })
+
+        # --- render every layer, drop the ones that have faded out
+        w = self._freeze_window(n)
+        idx = np.arange(frames)
+        wet = np.zeros(frames, dtype=np.float64)
+        keep = []
+        for layer in layers:
+            row = gt.copy()
+            born = layer.pop("born", None)
+            if born is not None:
+                row &= idx >= born
+            if not layer["active"]:
+                cut = layer["cut"]
+                if cut is None:
+                    row[:] = False
+                else:
+                    row &= idx < cut
+                    layer["cut"] = None
+            env, on_c, off_c, env_off = self._gate_ramp_env(
+                row, bool(layer["prev"]), int(layer["on"]), int(layer["off"]),
+                float(layer["env_off"]), fade_n, fade_n)
+            layer["prev"] = bool(row[-1])
+            layer["on"], layer["off"], layer["env_off"] = on_c, off_c, env_off
+
+            # read positions: an integer sample count since birth, times r
+            m = np.maximum(0, t_abs + idx - int(layer["m0"]))
+            if ratio != layer["ratio"]:
+                m_now = max(0, t_abs - int(layer["m0"]))
+                layer["p_base"] = layer["p_base"] + (m_now - layer["m_base"]) * layer["ratio"]
+                layer["m_base"] = m_now
+                layer["ratio"] = ratio
+            p = layer["p_base"] + (m - layer["m_base"]) * ratio
+            p_lo = int(np.floor(p[0]))
+            p_hi = int(np.floor(p[-1])) + 1
+            # generate frames until the buffer covers p_hi (frame j fills
+            # frozen time [j*hop, j*hop + n); full overlap up to j_next*hop)
+            syn = layer["syn"]
+            origin = int(layer["origin"])
+            if p_lo - origin >= syn.shape[0] // 2:
+                shift = p_lo - origin
+                syn = np.concatenate([syn[shift:], np.zeros(shift, dtype=np.float64)])
+                origin += shift
+            mag = layer["mag"]
+            if ratio > 1.0:
+                kmax = int(mag.shape[0] / ratio)
+                mag = np.where(np.arange(mag.shape[0]) < kmax, mag, 0.0)
+            j = int(layer["j_next"])
+            phi = layer["phi"]
+            while j * hop <= p_hi:
+                end = j * hop + n - origin
+                if end > syn.shape[0]:
+                    syn = np.concatenate([syn, np.zeros(end - syn.shape[0] + 4 * n, dtype=np.float64)])
+                ph = phi
+                if smear > 0.0:
+                    jit = np.random.default_rng([seed, j]).uniform(-np.pi, np.pi, mag.shape[0])
+                    ph = phi + smear * jit
+                frame = np.fft.irfft(mag * np.exp(1j * ph), n) * w / 1.5
+                syn[j * hop - origin:end] += frame
+                phi = np.mod(phi + layer["w_true"] * hop, 2.0 * np.pi)
+                j += 1
+            layer["syn"], layer["origin"], layer["j_next"], layer["phi"] = syn, origin, j, phi
+
+            i0 = np.floor(p).astype(np.int64) - origin
+            frac = p - np.floor(p)
+            val = syn[i0] * (1.0 - frac) + syn[i0 + 1] * frac
+            wet += val * env
+
+            done = (not row[-1]) and env[-1] == 0.0 and off_c >= fade_n
+            if not done:
+                keep.append(layer)
+        st["layers"] = keep
+
+        out = x * dry + wet * level
+        return out.astype(np.float32)
 
     def _render_cv_math(self, module, frames: int, buffers, patch) -> dict:
         """Two-in CV algebra (see modules/cv_math.py).

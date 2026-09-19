@@ -124,8 +124,12 @@ already three light before slice 2 added one -- count with
 > love passes in parallel**: noise `brown`/`seed`/`amp_cv`, sample_hold
 > `mode`/`prob`/`glide`, clock `reset`/`run`/`bpm_cv`, organ `vibrato`
 > (the scanner), tape `stop` — five examples banked. Suite **4206**,
-> 147 examples. Keep-list left: freeze, autopan, midi_output, subpatch
-> containers, snapshot morph — the next module is #100.
+> 147 examples.
+>
+> 2026-09-20: **`freeze`, module #100** — the spectral freeze, phase-
+> locked so the hold is stationary; `freeze_chord_pad.json` (banked).
+> Suite **4245**, 148 examples, **100 modules**. Keep-list left:
+> autopan, midi_output, subpatch containers, snapshot morph.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -175,6 +179,75 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-20 — freeze: the hundredth module
+
+Matthew: "freeze please Claude - #100 like :-{D … Congratulations
+Claude #100!" — the keep-list's spectral freeze, picked as the
+hundredth module, in the small hours after the third love-pass batch.
+Spec into MODULE_IDEAS first (§ Character & space), then three scratch
+prototypes before a line of the module — and the third one changed the
+design.
+
+**What it is.** The rack already had a freeze that loops TIME
+(`granular` re-reads a slice of its ring: a rhythm, a stutter, a
+cloud). This one holds a SPECTRUM: at the gate's rising edge it takes
+the last `size` samples, measures the frequencies present and their
+levels, and re-synthesises that spectrum forever with every partial's
+phase advancing at its own true rate — a chord becomes a stationary pad
+with no loop seam and no rhythm in it. The Freeze pedal; Clouds'
+spectral mode. `dry` and `level` instead of a `mix`, because a freeze
+is something you play OVER — engaging it must never duck the dry.
+`smear` 0 → 1 slides from the glassy coherent hold to the random-phase
+wash; `pitch` + `pitch_cv` transpose the layer; `fade` is the rise, the
+fall, and the crossfade between two holds (a re-freeze melts, never
+cuts — a new layer captures, the old eases out from its current level;
+four may sound at once); the `freeze` tickbox ORs with the gate.
+
+**How it's built, and what the prototypes found.** (1) The
+phase-vocoder capture — two Hann frames a hop apart, magnitudes from
+the later, true frequency per bin from the pair's phase difference —
+holds a non-bin sine at its real pitch with no beating (441.30 Hz at
+0.500, first time). (2) Pitch by resampling the SPECTRUM widens every
+lobe and loses ~4 dB an octave up (0.29 of 0.50 at +12), so pitch is a
+change of READ RATE on the frozen stream, which is stationary — exact
+frequency, unity level (659.26 / 220.00 / 880.00 at 0.500). (3) The one
+that mattered: a C-E-G triad at a 4096 window held within 2% at first
+and had lost two thirds of two partials by 10 s — the bins one
+partial's lobe shares with a neighbour carry a frequency of their own
+and dephase over seconds; the hold eats itself. **Identity phase
+locking** (Laroche & Dolson: every bin in a peak's region of influence
+advances at the peak's frequency) fixes it completely: the same triad
+holds within 2% at 2 s and 10 s, even a 2048 window holds it within 6%,
+and a lone sine is unchanged. What is left of the resolution rule is
+honest: partials closer than ~3 bins merge into one lobe and hold as
+a single tone at their mean (a minor second at C3 needs 16384). Then
+the read starts at frozen time `size` = the edge itself, so a
+stationary source's hold is its own continuation IN PHASE (dry +
+frozen of the same sine = exactly 2×, pinned). Frames are generated in
+order on demand into a rolling buffer; the read position is an integer
+count of output samples times the ratio, rebased on a ratio change;
+each layer has its own integer-count `_gate_ramp_env` — so the whole
+thing is bit-exact 64 vs 512 vs 1000 with edges mid-stream at pitch +7
+and smear 0.5, and a knob turn mid-hold glides without a step.
+Unfrozen with nothing sounding, the render returns the input buffer
+itself. Test lessons: a Hilbert envelope RINGS into a silent region
+(measure silence with `abs`, the envelope inside the active part); a
+gate high from sample 0 freezes the silence before the input — an
+honest capture of nothing, so the tickbox test toggles mid-render.
+
+**Measured.** Sine hold 441.30 Hz / 0.500 / RMS identical at 2 s and
+5 s with the input silent from 1.5 s; triad partials 0.1808 / 0.1771 /
+0.1999 against 0.1802 / 0.1802 / 0.2000; smear 1 keeps the peak bin,
+correlation 0.055, −6.7 dB; the re-freeze swap's largest sample step
+is a 660 Hz sine's own; +24 st on a 10 kHz partial folds nothing back.
+35 tests. Example `freeze_chord_pad.json` (banked): a bar clock plays
+four sus2 chords on the organ for a second each and the clock's
+`not_a` freezes the instant each chord's gate falls — the capture is
+the sustain, held as a pad for the rest of the bar, easing out under
+the next chord. **Suite 4245**, 148 examples, **100 modules.**
 
 ---
 
