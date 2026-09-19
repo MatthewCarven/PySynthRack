@@ -1,0 +1,187 @@
+{
+  "version": 1,
+  "next_id": 10,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "one riser every 8 s",
+      "params": {
+        "bpm": 7.5,
+        "division": 1.0,
+        "pulse_width": 0.94
+      }
+    },
+    {
+      "id": 2,
+      "type": "sequencer",
+      "name": "roots: A F C G",
+      "params": {
+        "steps": 4,
+        "step1_pitch": -15.0,
+        "step2_pitch": -19.0,
+        "step3_pitch": -12.0,
+        "step4_pitch": -17.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "chord",
+      "name": "sus2 - the open trance shape",
+      "params": {
+        "preset": "sus2",
+        "strum": 0.0
+      }
+    },
+    {
+      "id": 4,
+      "type": "function_generator",
+      "name": "THE RISE - 7.5 s up while the gate holds",
+      "params": {
+        "mode": "gate",
+        "rise": 7.5,
+        "fall": 0.4,
+        "curve_rise": 0.35,
+        "curve_fall": 0.0
+      }
+    },
+    {
+      "id": 5,
+      "type": "supersaw",
+      "name": "detune 0.05 -> 0.95 from the rise",
+      "params": {
+        "detune": 0.05,
+        "detune_cv_depth": 0.9,
+        "blend": 0.85,
+        "spread": 0.85,
+        "amp": 0.18
+      }
+    },
+    {
+      "id": 6,
+      "type": "adsr",
+      "name": "swell / breathe",
+      "params": {
+        "attack": 0.4,
+        "decay": 0.2,
+        "sustain": 0.85,
+        "release": 0.5
+      }
+    },
+    {
+      "id": 7,
+      "type": "filter",
+      "name": "lowpass L - opens with the rise",
+      "params": {
+        "mode": "lowpass",
+        "cutoff": 500.0,
+        "resonance": 1.4,
+        "cv_depth": 2.8
+      }
+    },
+    {
+      "id": 8,
+      "type": "filter",
+      "name": "lowpass R - opens with the rise",
+      "params": {
+        "mode": "lowpass",
+        "cutoff": 500.0,
+        "resonance": 1.4,
+        "cv_depth": 2.8
+      }
+    },
+    {
+      "id": 9,
+      "type": "stereo_speaker_output",
+      "name": "out",
+      "params": {}
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "cv",
+      "dst_module_id": 3,
+      "dst_port": "pitch_cv"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "trig"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "pitch_cv",
+      "dst_module_id": 5,
+      "dst_port": "freq_cv"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "detune_cv"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "gate",
+      "dst_module_id": 6,
+      "dst_port": "gate"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "cv",
+      "dst_module_id": 5,
+      "dst_port": "amp_cv"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out_l",
+      "dst_module_id": 7,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out_r",
+      "dst_module_id": 8,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 7,
+      "dst_port": "cutoff_cv"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 8,
+      "dst_port": "cutoff_cv"
+    },
+    {
+      "src_module_id": 7,
+      "src_port": "out",
+      "dst_module_id": 9,
+      "dst_port": "in_l"
+    },
+    {
+      "src_module_id": 8,
+      "src_port": "out",
+      "dst_module_id": 9,
+      "dst_port": "in_r"
+    }
+  ],
+  "ui": {}
+}

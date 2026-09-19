@@ -3219,6 +3219,23 @@ class NumpyBackend(AudioBackend):
         Gains are RMS-normalised so blend/detune moves don't pump; at
         ``spread`` 0 the L and R gain vectors are identical, so the two
         outs are bit-identical.
+
+        ``detune_cv`` is a BLOCK-RATE control on the detune knob --
+        ``detune_eff = clip(detune + detune_cv_depth * mean cv, 0, 1)``
+        -- because the detune is a per-block frequency table here
+        (seven ratios, one exponentiation, then the phase ramps ride
+        them); a per-sample detune would mean a (V, 7, F) exponent
+        every block for a knob nobody moves at audio rate. The phases
+        are carried across blocks, so a block-to-block change in the
+        ratios is a slope change, not a discontinuity: a sweep is
+        click-free. Per voice when the source is ``(V, F)`` on a
+        voice-aware stack (the mean over axis 1 is a ``(V,)`` vector,
+        broadcast over the seven offsets -- the ``mult`` table simply
+        grows a voice axis); otherwise the mean over everything, one
+        detune shared. The gain normalisation never depended on the
+        detune, so the CV path pumps exactly as much as the knob does:
+        not at all. Unpatched, ``detune_eff`` IS the knob float and
+        every expression below is the pre-CV one, bit for bit.
         """
         from ..modules.supersaw import (
             SUPERSAW_MAX_CENTS,
@@ -3239,13 +3256,44 @@ class NumpyBackend(AudioBackend):
         amp_cv = self._input_buffer(
             patch, buffers, module.id, "amp_cv", collapse=False
         )
+        detune_cv = self._input_buffer(
+            patch, buffers, module.id, "detune_cv", collapse=False
+        )
 
         voiced = freq_cv is not None and freq_cv.ndim == 2
         V = freq_cv.shape[0] if voiced else 1
 
+        # Block-mean detune offset. Depth 0 short-circuits (the knob
+        # float, untouched -- "disables without unpatching", and a
+        # non-finite cable can't leak through 0 * inf). The mean is
+        # taken in float64 so the scalar path lands on the same float
+        # a knob set to ``detune + depth * mean`` would.
+        detune_depth = float(module.params.get("detune_cv_depth", 1.0))
+        detune_eff = detune
+        if detune_cv is not None and detune_cv.size > 0 and detune_depth != 0.0:
+            dcv = detune_cv.astype(np.float64)
+            if voiced and dcv.ndim == 2 and dcv.shape[0] == V:
+                # A detune per voice: (V,), clipped to the knob's rails.
+                detune_eff = np.clip(
+                    detune + detune_depth * dcv.mean(axis=1), 0.0, 1.0
+                )
+            else:
+                detune_eff = min(
+                    1.0, max(0.0, detune + detune_depth * float(np.mean(dcv)))
+                )
+
         sr = float(self.sample_rate)
         offsets = np.asarray(SUPERSAW_OFFSETS, dtype=np.float64)
-        mult = 2.0 ** (offsets * SUPERSAW_MAX_CENTS * detune / 1200.0)  # (7,)
+        if np.ndim(detune_eff) == 0:
+            mult = 2.0 ** (offsets * SUPERSAW_MAX_CENTS * detune_eff / 1200.0)  # (7,)
+            mult3 = mult[None, :, None]  # (1, 7, 1)
+        else:
+            # Same expression, same operation order, one axis wider:
+            # a single-voice row is bit-identical to the scalar path.
+            mult = 2.0 ** (
+                offsets[None, :] * SUPERSAW_MAX_CENTS * detune_eff[:, None] / 1200.0
+            )  # (V, 7)
+            mult3 = mult[:, :, None]  # (V, 7, 1)
 
         st = self._state.setdefault(module.id, {})
         if st.get("V") != V:
@@ -3261,9 +3309,7 @@ class NumpyBackend(AudioBackend):
         phases0 = st["phases"]  # (V, 7)
 
         if freq_cv is None:
-            inc = np.broadcast_to(
-                (freq * mult / sr)[None, :, None], (V, SUPERSAW_N, 1)
-            )
+            inc = np.broadcast_to(freq * mult3 / sr, (V, SUPERSAW_N, 1))
             ramp = np.arange(frames, dtype=np.float64)
             phases = (phases0[:, :, None] + inc * (ramp + 1.0)) % 1.0
             st["phases"] = phases[:, :, -1].copy()
@@ -3273,7 +3319,7 @@ class NumpyBackend(AudioBackend):
             if cv.ndim == 1:
                 cv = cv[None, :]
             inst = freq * np.power(2.0, cv)  # (V, F)
-            inc = inst[:, None, :] * mult[None, :, None] / sr  # (V, 7, F)
+            inc = inst[:, None, :] * mult3 / sr  # (V, 7, F)
             phases = (
                 phases0[:, :, None] + np.cumsum(inc, axis=2)
             ) % 1.0

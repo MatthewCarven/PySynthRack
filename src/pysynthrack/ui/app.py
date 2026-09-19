@@ -2759,7 +2759,9 @@ class App:
 
         if module.TYPE == "supersaw":
             # detune/blend/spread are the three character knobs, all
-            # 0..1; ``freq`` is the usual Hz drag.
+            # 0..1; ``freq`` is the usual Hz drag; ``detune_cv_depth``
+            # is detune per CV unit (bipolar so a rising CV can tighten
+            # the stack as well as open it).
             if param_name in ("detune", "blend", "spread", "amp"):
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
@@ -2771,6 +2773,13 @@ class App:
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=1.0,
                     min_value=20.0, max_value=4000.0, format="%.1f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "detune_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.01,
+                    min_value=-2.0, max_value=2.0, format="%.2f det/unit",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

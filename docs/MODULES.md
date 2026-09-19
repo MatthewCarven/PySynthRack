@@ -114,6 +114,7 @@ The full map:
 | `bowed.pressure_cv` / `bowed.velocity_cv` | `1.0` (shared) | level (0…1) | `pressure/velocity + d·cv[n]`, per sample, clamped 0…1; mono, shared by every voice |
 | `wind.breath_cv` | `1.0` | level (0…1) | `breath + d·cv[n]`, per sample, clamped 0…1; mono, shared by every voice |
 | `granular.position_cv` | `1.0` (`position_cv_depth`) | fraction of the buffer | `position + d·cv[onset]`, read at each grain's onset and latched for that grain; clamped 0…1; a `(V, F)` source is averaged |
+| `supersaw.detune_cv` | `1.0` (`detune_cv_depth`) | detune (0…1, the knob's unit) | `clip(detune + d·mean cv, 0, 1)`, block-rate; a `(V, F)` source on a voice-aware stack gives every voice its own detune, a `(V, F)` source on a mono stack is averaged |
 | `delay.time_cv` | `50.0` | ms | `time + d·cv` |
 | `loudness.level_cv` | `1.0` | level (0…1) | `level + d·mean cv` |
 | `tilt_eq.tilt_cv` | `6.0` | dB | `tilt + d·mean cv` |
@@ -246,7 +247,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`snare_drum`](#snare_drum) | Sources | `trigger` (gate), `vel` (cv) → `out` (audio) |
 | [`hat_drum`](#hat_drum) | Sources | `closed_trigger`,`open_trigger` (gate), `vel` (cv) → `out` (audio) |
 | [`organ`](#organ) | Sources | `pitch_cv` (cv), `gate` (gate) → `out` (audio) |
-| [`supersaw`](#supersaw) | Sources | `freq_cv`,`amp_cv` (cv) → `out_l`,`out_r` (audio) |
+| [`supersaw`](#supersaw) | Sources | `freq_cv`,`detune_cv`,`amp_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`wavetable_morph`](#wavetable_morph) | Sources | `freq_cv`,`position_cv`,`amp_cv` (cv) → `out` (audio) |
 | [`filter`](#filter) | Filters & EQ | `in` (audio), `cutoff_cv` (cv), `resonance_cv` (cv) → `out` (audio) |
 | [`crossover`](#crossover) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
@@ -1304,10 +1305,24 @@ are **bit-identical** (patch either for mono). Voice-aware via
 `freq_cv` (1 V/oct around `freq`, per-sample): [`chord`](#chord) →
 supersaw is the obvious wall of sound. Heavy by design — 16 voices =
 112 PolyBLEP saws (~46 % of the 48 k/512 budget; recorded) — spend it
-on the pad, not the whole rack. **Ports**: `freq_cv`, `amp_cv` (cv) →
-`out_l`, `out_r` (audio). **Params**: `freq` (261.6256) · `detune`
-0..1 (0.35) · `blend` 0..1 (0.75) · `spread` 0..1 (0.5) · `amp`
-(0.5). See `examples/supersaw_chord_wall.json`.
+on the pad, not the whole rack. `detune_cv` moves the detune knob from
+a cable — **the trance riser**: a slow ramp here (a
+[`function_generator`](#function_generator) in `gate` mode, rise 7.5 s)
+takes a held chord from one thick saw to the full shimmer. It is
+block-rate like a filter cutoff, `detune_eff = clip(detune +
+detune_cv_depth · mean cv, 0, 1)` once per block (the detune is a
+per-block frequency table in this renderer), phase-continuous across
+blocks so the sweep never clicks, and the RMS normalisation never
+depended on the detune, so the sweep doesn't pump (measured: ±9 % over
+0.1…1.0, the same wobble the knob has). Per voice from a `(V, F)`
+source on a voice-aware stack (an [`adsr`](#adsr) off the chord's own
+gate gives every voice its own rise); a mono source is shared; depth 0
+disables it without unpatching. **Ports**: `freq_cv`, `detune_cv`,
+`amp_cv` (cv) → `out_l`, `out_r` (audio). **Params**: `freq`
+(261.6256) · `detune` 0..1 (0.35) · `detune_cv_depth` detune/unit
+(1.0) · `blend` 0..1 (0.75) · `spread` 0..1 (0.5) · `amp` (0.5). See
+`examples/supersaw_chord_wall.json` and `examples/supersaw_detune_rise.json`
+(the riser).
 
 #### `wavetable_morph`
 
@@ -4675,6 +4690,14 @@ loads in the app. Notable ones referenced above:
 
 - `hello_sine.json`, `fat_saw.json` — basic oscillators.
 - `oscillator_pwm.json` — the classic PWM pad: two `square_blep` [`oscillator`](#oscillator)s seven cents apart, each with its own slow LFO on `pw_cv` (widths sweeping 0.1…0.9, never in step), summed through a breathing 900 Hz lowpass into a room.
+- `supersaw_detune_rise.json` — the trance riser: a 7.5 bpm clock holds a
+  sus2 [`chord`](#chord) (roots A F C G off a [`sequencer`](#sequencer)) on
+  a [`supersaw`](#supersaw) while a gate-mode
+  [`function_generator`](#function_generator) (rise 7.5 s, exponential)
+  sweeps `detune_cv` from one thick saw (0.05) to the full shimmer (0.95)
+  and opens a pair of resonant lowpasses (`cutoff_cv`, 2.8 oct) into the
+  stereo out; a per-voice ADSR on `amp_cv` lets it breathe between risers.
+  Nine modules.
 - `sampler_breaks.json` — a breaks machine: three [`sampler`](#sampler)s
   pointed at three regions of one synthetic drum loop, each fired by its
   own [`euclidean`](#euclidean) (4, 2 and 6 pulses in 16). Run
