@@ -10911,6 +10911,12 @@ class NumpyBackend(AudioBackend):
     # Shortest delay, in samples. >= 2 keeps both linear-interpolation taps
     # strictly behind the write head (never reads the sample being written).
     _DELAY_MIN_SAMP = 2.0
+    # Freeze blend ramp (s): the loop gain, the damping bypass, the input
+    # mute and the read position all follow the ``freeze`` gate through
+    # one integer-count linear ramp this long from each edge -- the
+    # reverb's 10 ms, for the same reason: short enough to catch the
+    # moment, long enough that the switch is inaudible inside the echo.
+    _DELAY_FREEZE_RAMP_S = 0.010
 
 
     # ----- Vocoder rendering ------------------------------------------------
@@ -11106,6 +11112,10 @@ class NumpyBackend(AudioBackend):
         ``time_cv`` broadcasts across voices; a ``(V, F)`` ``time_cv``
         modulates each independently. Missing audio in -> silence, with the
         line left intact so reconnecting the cable doesn't snap the tail.
+
+        ``freeze`` (gate): while high the echo hangs -- see the core below.
+        A ``(V, F)`` gate collapses to the house sum (any voice high freezes)
+        and the one row is shared by every voice's line.
         """
         src = self._input_buffer(
             patch, buffers, module.id, "in", collapse=False
@@ -11116,6 +11126,7 @@ class NumpyBackend(AudioBackend):
         time_cv = self._input_buffer(
             patch, buffers, module.id, "time_cv", collapse=False
         )
+        fz_gate = self._input_buffer(patch, buffers, module.id, "freeze")
 
         if src.ndim == 2:
             V = src.shape[0]
@@ -11131,7 +11142,7 @@ class NumpyBackend(AudioBackend):
                 cv = np.broadcast_to(
                     time_cv.mean(axis=0), (V, time_cv.shape[1])
                 )
-            return self._render_delay_core(module, frames, src, cv)
+            return self._render_delay_core(module, frames, src, cv, fz_gate)
 
         # Mono audio. A 2D time_cv collapses to one shared modulation
         # (mean over voices) -- summing time voltages would be nonsense.
@@ -11142,10 +11153,11 @@ class NumpyBackend(AudioBackend):
             frames,
             src[np.newaxis, :],
             None if time_cv is None else time_cv[np.newaxis, :],
+            fz_gate,
         )
         return out[0]
 
-    def _render_delay_core(self, module, frames, src, cv):
+    def _render_delay_core(self, module, frames, src, cv, fz=None):
         """Shared ``(V, F)`` feedback-delay engine.
 
         Per output sample: read the line ``delay`` samples back with linear
@@ -11159,6 +11171,27 @@ class NumpyBackend(AudioBackend):
         Per-sample (not block-vectorized) because the feedback recirculation
         is sequential when the delay is shorter than a block; the constant-
         delay >= block case could be vectorized later (see WORKLOG).
+
+        ``fz`` (the ``freeze`` gate row, or None): while high the echo
+        hangs. A per-sample blend ``e`` (0 = normal, 1 = frozen) follows
+        the gate through an integer-count ramp (``_gate_ramp_env``, so the
+        edge lands on the same sample at any block size) and, per sample,
+        slides the fed-back signal from the damped read to the raw read,
+        the loop gain from ``feedback`` to exactly 1.0, the input into the
+        line to silence, and the read position to a WHOLE number of
+        samples. That last one is what makes the hold lossless: a linear-
+        interpolated read is a two-tap low-pass, and a unity loop through
+        it loses ~9-11 dB in 10 s on a bright echo (measured, any fraction
+        from 0.1 to 0.5), while an integer read is ``buf[wp] = buf[wp - D]``
+        bit for bit -- the held loop neither decays nor grows. The held
+        delay ``D = round(delay at the rising edge)`` is latched per voice
+        at a fresh rise (one the ramp meets fully released) and ``time_cv``
+        / the knob no longer move the read while held; a re-rise inside
+        the 10 ms release keeps the previous hold so the read position
+        never jumps mid-blend. The damping one-pole keeps tracking the raw
+        read while bypassed, so it is warm the moment the gate falls. The
+        dry path and ``mix`` never see the gate. Unpatched (or never
+        risen), both paths below run their pre-freeze code verbatim.
         """
         V = src.shape[0]
         sr = self.sample_rate
@@ -11182,6 +11215,16 @@ class NumpyBackend(AudioBackend):
             state["buf"] = np.zeros((V, L), dtype=np.float64)
             state["write_idx"] = 0
             state["lp"] = np.zeros(V, dtype=np.float64)
+            # freeze: ramp state (gate at the last sample, on/off counts
+            # since the last edge, level at the last falling edge, level
+            # at the last sample) and the held delay per voice (samples,
+            # whole-valued; latched at a fresh rising edge).
+            state["fz_prev"] = False
+            state["fz_on"] = 0
+            state["fz_off"] = 0
+            state["fz_env"] = 0.0
+            state["fz_last"] = 0.0
+            state["fz_dly"] = np.zeros(V, dtype=np.float64)
 
         buf = state["buf"]
         wp = int(state["write_idx"])
@@ -11210,6 +11253,51 @@ class NumpyBackend(AudioBackend):
             dly = time_samp + cv_depth_samp * cv.astype(np.float64)
         np.clip(dly, min_s, max_s, out=dly)
 
+        # --- freeze blend: one 0..1 row per block, or None when the gate
+        # is unpatched or has not risen (both paths below then run their
+        # pre-freeze code verbatim, so the feature ships bit-exact OFF).
+        e = None
+        if fz is not None and fz.shape[0] == frames:
+            gt = fz > self._GATE_HIGH
+            prev = bool(state["fz_prev"])
+            ramp_n = max(1, int(round(self._DELAY_FREEZE_RAMP_S * sr)))
+            env, fz_on, fz_off, fz_env = self._gate_ramp_env(
+                gt, prev, int(state["fz_on"]), int(state["fz_off"]),
+                float(state["fz_env"]), ramp_n, ramp_n)
+            # The held delay latches at a FRESH rising edge (one the ramp
+            # meets fully released): the per-sample delay at that sample,
+            # rounded to whole samples, per voice. It is a per-sample row
+            # so two fresh rises in one block hold two different times --
+            # the same ones a smaller block would hold.
+            fz_dly = state["fz_dly"]
+            fzd = None
+            rises = np.flatnonzero(gt & ~np.concatenate(([prev], gt[:-1])))
+            if len(rises):
+                fzd = np.empty((V, frames), dtype=np.float64)
+                pos = 0
+                for n_r in rises.tolist():
+                    before = float(env[n_r - 1]) if n_r > 0 else float(state["fz_last"])
+                    if before == 0.0:
+                        fzd[:, pos:n_r] = fz_dly[:, np.newaxis]
+                        fz_dly = np.round(dly[:, n_r])
+                        pos = n_r
+                fzd[:, pos:] = fz_dly[:, np.newaxis]
+                state["fz_dly"] = fz_dly
+            state["fz_prev"] = bool(gt[-1])
+            state["fz_on"] = fz_on
+            state["fz_off"] = fz_off
+            state["fz_env"] = fz_env
+            state["fz_last"] = float(env[-1])
+            if np.any(env):
+                e = env
+                if fzd is None:
+                    fzd = fz_dly[:, np.newaxis]
+                # The read slides to the held whole-sample delay on the
+                # same ramp (at most half a sample over 10 ms -- a pitch
+                # nudge, not a click) and stays there: at e == 1 this is
+                # exactly ``fzd``, and time_cv no longer moves it.
+                dly = dly * (1.0 - e) + fzd * e
+
         rows = np.arange(V)
         if float(dly.min()) >= frames:
             # Fast path: every read this block lands at least one block back,
@@ -11227,7 +11315,21 @@ class NumpyBackend(AudioBackend):
             )
             zi = ((1.0 - g) * lp)[:, np.newaxis]             # (V, 1)
             damped = lfilter([g], [1.0, -(1.0 - g)], d, axis=-1, zi=zi)[0]
-            buf[rows[:, None], absidx % L] = x + feedback * damped
+            if e is None:
+                buf[rows[:, None], absidx % L] = x + feedback * damped
+            else:
+                # Frozen or ramping: per sample, the fed-back signal slides
+                # from the damped read to the raw read, the loop gain from
+                # ``feedback`` to exactly 1.0 and the input to silence --
+                # each as ``a * (1 - e) + b * e``, exact at both ends, so at
+                # e == 1 the write is ``buf[wp] = d = buf[wp - D]`` bit for
+                # bit. Convex blends on the way in: the loop gain never
+                # exceeds 1, so the ramp cannot grow the loop either.
+                eh = e[np.newaxis, :]
+                om = 1.0 - eh
+                fb_sig = damped * om + d * eh
+                gain = feedback * om + eh
+                buf[rows[:, None], absidx % L] = x * om + gain * fb_sig
             out = x * (1.0 - mix) + d * mix
             lp = damped[:, -1].copy()
             wp = (wp + frames) % L
@@ -11235,6 +11337,9 @@ class NumpyBackend(AudioBackend):
             # Per-sample path: the delay dips below a block (short or heavily
             # modulated), so the feedback recirculation is sequential.
             out = np.empty((V, frames), dtype=np.float64)
+            if e is not None:
+                om = 1.0 - e
+                gain = feedback * om + e
             for n in range(frames):
                 rp = wp - dly[:, n]                          # (V,)
                 i0 = np.floor(rp).astype(np.int64)
@@ -11244,7 +11349,13 @@ class NumpyBackend(AudioBackend):
                     + buf[rows, (i0 + 1) % L] * frac
                 )
                 lp = lp + g * (d - lp)                       # damped feedback
-                buf[rows, wp % L] = x[:, n] + feedback * lp
+                if e is None:
+                    buf[rows, wp % L] = x[:, n] + feedback * lp
+                else:
+                    # the same blends as the fast path, one sample at a time
+                    buf[rows, wp % L] = (
+                        x[:, n] * om[n] + gain[n] * (lp * om[n] + d * e[n])
+                    )
                 out[:, n] = x[:, n] * (1.0 - mix) + d * mix
                 wp += 1
             wp = wp % L

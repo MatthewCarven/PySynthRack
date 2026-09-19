@@ -25,11 +25,41 @@ Use cases:
     low ``tone`` so the tail melts away).
   * Rhythmic echoes — set ``time`` to a note value of your clock by ear,
     or wobble ``time_cv`` from an LFO for tape flutter.
+  * Beat-repeat / stutter: pulse ``freeze`` from a slow clock and the last
+    ``time`` milliseconds of whatever you played stutter until it drops.
+
+Freeze:
+  While the ``freeze`` gate is high **the echo hangs**: the line
+  recirculates at exactly unity gain with the ``tone`` damping bypassed,
+  and the input is muted from the line — so the last ``time`` ms of
+  whatever you played repeats, unchanged, for as long as the gate is
+  held. The read snaps to a **whole number of samples** while held (the
+  held time is ``round(time)`` samples, latched at the rising edge):
+  the normal fractional read is a two-tap low-pass, and a unity loop
+  through it loses ~9–11 dB in 10 s on a bright echo (measured), while a
+  whole-sample read is ``buf[n] = buf[n - D]`` bit for bit — the held
+  loop neither decays nor grows (measured over 10 s of freeze: the
+  energy in the loop conserved to 1e-9 dB, the output RMS within
+  ±0.85 dB of the level caught — the RMS window sliding against the
+  loop, not loss). Because
+  the read is pinned, ``time_cv`` and the ``time`` knob stop moving it
+  while held; they take effect again on release. The dry path through
+  ``mix`` never sees the gate, so notes played over a frozen echo are
+  heard dry and never pile into the loop. When the gate falls,
+  ``feedback`` and ``tone`` resume and the held loop decays away like
+  any other repeat. The switch is per sample: an integer-count 10 ms
+  ramp from each gate edge crossfades the loop gain, the damping bypass,
+  the input mute and the read position together, so a freeze landing
+  anywhere in a block is click-free and lands on the same sample at any
+  block size. Unpatched, the module is bit-exact with the pre-freeze
+  render.
 
 Ports:
   * ``in`` (audio): the signal to echo. Unpatched -> silence out.
   * ``time_cv`` (cv): added to ``time``, scaled by ``cv_depth``.
     Optional; unpatched means no modulation.
+  * ``freeze`` (gate): high (> 0.5) hangs the echo (see Freeze above).
+    Optional; unpatched means never frozen.
   * ``out`` (audio): the dry+echo mix.
 
 Voice-awareness:
@@ -39,7 +69,8 @@ Voice-awareness:
   polyphonic source upstream echoes without cross-talk. A mono
   ``time_cv`` broadcasts across voices; a ``(V, F)`` ``time_cv`` drives
   each voice independently. A single voice row is bit-identical to the
-  mono path.
+  mono path. A ``(V, F)`` ``freeze`` gate collapses to any-voice-high
+  (the house sum) and the one row freezes every voice's line together.
 """
 from __future__ import annotations
 
@@ -63,6 +94,11 @@ class Delay(Module):
     Ports:
         in (in, audio): signal to echo. Unpatched -> silence.
         time_cv (in, cv): added to ``time``, scaled by ``cv_depth``.
+        freeze (in, gate): high hangs the echo -- unity loop, damping
+            bypassed, input muted from the line, read pinned to whole
+            samples (dry still passes). ``(V, F)`` collapses to
+            any-voice-high. Unpatched -> never frozen (bit-exact with
+            the pre-freeze render).
         out (out, audio): dry + echo mix.
     """
 
@@ -78,5 +114,6 @@ class Delay(Module):
     INPUT_PORTS = [
         Port("in", "in", "audio"),
         Port("time_cv", "in", "cv"),
+        Port("freeze", "in", "gate"),
     ]
     OUTPUT_PORTS = [Port("out", "out", "audio")]

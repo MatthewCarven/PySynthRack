@@ -260,7 +260,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`resampler`](#resampler) | Effects | `in` (audio), `pitch_cv` (cv), `brake` (gate) → `out`, `out_l`, `out_r` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`granular`](#granular) | Effects | `in` (audio), `position_cv` (cv), `freeze` (gate) → `out`, `out_l`, `out_r` (audio) |
-| [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv) → `out` (audio) |
+| [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv), `freeze` (gate) → `out` (audio) |
 | [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv), `freeze` (gate) → `out_l`,`out_r` (audio) |
 | [`compressor`](#compressor) | Effects | `in`,`sidechain` (audio), `threshold_cv` (cv) → `out` (audio), `gr` (cv) |
 | [`limiter`](#limiter) | Effects | `in` (audio) → `out` (audio) |
@@ -1842,6 +1842,7 @@ of staying digitally bright.
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to echo. Unpatched → silence. |
 | `time_cv` | in | cv | Added to `time`, scaled by `cv_depth`. Modulate for wow / dub throws. |
+| `freeze` | in | gate | (2026-09-19) High (> 0.5) **hangs the echo**: unity loop, damping bypassed, input muted from the line, read pinned to `round(time)` samples (the dry path still passes). A `(V, F)` gate collapses to any-voice-high. Unpatched → never frozen, bit-exact with the pre-freeze render. |
 | `out` | out | audio | Dry + echo mix. |
 
 **Parameters**
@@ -1867,6 +1868,41 @@ fully vectorized block path; only short or heavily modulated delays
 with a little modulation for chorus / vibrato shading. See
 `examples/delay_dub_echo.json` (a self-playing sequencer melody through a
 dotted-eighth dub echo).
+
+**Freeze** (2026-09-19 love pass). Hold `freeze` and **the echo hangs**:
+the last `time` milliseconds of whatever you played stutter, unchanged,
+for as long as the gate is held — the beat-repeat gesture. While the gate
+is high the line recirculates at **exactly unity gain** with the `tone`
+damping bypassed and the input muted from the line. The read also snaps
+to a **whole number of samples** while held — the held time is
+`round(time)` samples, latched at the rising edge — because that is what
+makes the hold lossless: the normal fractional (linear-interpolated) read
+is a two-tap low-pass, and a unity loop through it loses **9–11 dB in
+10 s** on a bright echo (measured, any fraction from 0.1 to 0.5), whereas
+a whole-sample read is `buf[n] = buf[n − D]` bit for bit — the energy in
+the loop is conserved exactly over 10 s of freeze (pinned to 1e-9 dB) and
+the output RMS sits within ±0.85 dB of the level caught (the RMS window
+sliding against the loop, not loss). Because the read is pinned,
+`time_cv` and the `time` knob stop moving the echo while it is held and
+take effect again on release; a re-rise inside the 10 ms release keeps
+the previous hold (so the read position never jumps mid-blend), a rise
+from fully released latches afresh. The dry path through `mix` never
+sees the gate: notes played over a frozen echo are heard dry and never
+pile into the loop. When the gate falls, `feedback` and `tone` resume and
+the held loop decays away like any other repeat. The switch is per sample
+— an integer-count **10 ms ramp** from each gate edge crossfades the loop
+gain, the damping bypass, the input mute and the read position together
+(the read slides at most half a sample over 10 ms: a pitch nudge, not a
+click) — so a freeze landing anywhere in a block is click-free (steps
+across either edge bounded by the signal's own plus the ramp's slew; an
+abrupt switch is 8–10× over that and, at the rise, would be captured by
+the lossless loop and repeat every lap) and lands on the same sample at
+any block size. The damping one-pole keeps tracking the raw read while
+bypassed, so it is warm the moment the gate falls. Pulse it from a slow
+[`clock`](#clock) (or its [`logic`](#logic) `not_a`) for timed stutters,
+a [`key_trigger`](#key_trigger) latch to hold by hand, or a
+[`function_generator`](#function_generator) `eoc` chain. See
+`examples/delay_freeze_stutter.json`.
 
 #### `reverb`
 
@@ -4885,5 +4921,6 @@ loads in the app. Notable ones referenced above:
 - `adsr_velocity.json` — accents: a [`shift_random`](#shift_random) clocked alongside the sequencer, scaled into 0.3…1.0, into [`adsr`](#adsr)`.vel` — every step's velocity is read at its gate edge and scales the whole note; the same envelope opens a filter, so hard notes are brighter as well as louder.
 - `reverb_freeze_pad.json` — the shimmer-pad trick: a strummed Cmaj7 of four [`pluck`](#pluck) strings every six seconds into a big [`reverb`](#reverb) (`size` 0.9, `decay` 0.9, `mix` 0.75), the strike [`clock`](#clock)'s [`logic`](#logic) `not_a` holding the reverb's `freeze` between strikes so the chord hangs as a pad, and a quieter sequenced pluck line playing over it — heard dry through `mix`, never piling into the tank.
 - `pluck_velocity.json` — picked accents: an eight-step C minor line into a [`pluck`](#pluck) whose `vel` is a [`shift_random`](#shift_random) accent loop clocked alongside the sequencer, scaled into 0.3…1.0 — each pick's velocity is read at its trigger edge and scales the burst, so the line breathes while every note rings down the same way (the live version is `midi_input.velocity_cv → vel`).
+- `delay_freeze_stutter.json` — the beat-repeat: a sixteenth-note [`pluck`](#pluck) phrase into a 187.5 ms (dotted-sixteenth) [`delay`](#delay), a 15 BPM [`clock`](#clock)'s [`logic`](#logic) `not_a` holding the delay's `freeze` for the second two seconds of every four — the last one-and-a-half notes stutter, tumbling against the grid, while the phrase carries on dry over the top through `mix`.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `stereo_hard_pan.json` — left/right speaker sinks.
