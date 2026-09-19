@@ -6690,6 +6690,20 @@ class NumpyBackend(AudioBackend):
         starting from the carried phase: the pre-love-pass ramp,
         bit-exact. The ``random`` waveform rolls a fresh value on a
         reset edge as well as on a wrap.
+
+        ``seed`` (2026-09-20): 0 (the default) is the old draw -- the
+        ``random`` waveform rolls from numpy's GLOBAL rng, bit-exact
+        under ``np.random.seed``. N != 0 holds a private
+        ``default_rng(N)`` in state, re-created when the seed changes
+        and consumed ONLY when a value is due (a wrap or a reset edge),
+        in time order, so the seeded S&H is the same run to run and
+        bit-exact across block sizes. A reset edge RE-SEEDS it (the
+        sequencer's precedent): with a bar-rate reset on both the
+        sequencer and the LFO, a random LFO plays the same random
+        phrase every bar -- the musical point. The voice path keeps one
+        generator per voice, every copy seeded alike, so each voice
+        plays the phrase from its own reset (see _render_lfo_voice).
+        Non-random waveforms never touch the generator.
         """
         # collapse=False so a voice-aware (V, F) rate_cv reaches us
         # with the voice axis intact. ``buffers``/``patch`` are None
@@ -6754,6 +6768,24 @@ class NumpyBackend(AudioBackend):
         prev[1:] = high[:-1]
         return np.flatnonzero(high & ~prev), bool(high[-1])
 
+    @staticmethod
+    def _lfo_seed(module):
+        """The ``seed`` param as a non-negative int; 0 = the global rng."""
+        try:
+            seed = int(module.params.get("seed", 0))
+        except (TypeError, ValueError):
+            seed = 0
+        return max(0, seed)
+
+    @staticmethod
+    def _lfo_roll(rng):
+        """One S&H value in [-1, 1): the private generator when there is
+        one, else numpy's global rng -- the exact pre-seed call, so
+        ``seed`` 0 stays bit-exact under ``np.random.seed``."""
+        if rng is None:
+            return float(np.random.uniform(-1.0, 1.0))
+        return float(rng.uniform(-1.0, 1.0))
+
     def _render_lfo_mono(self, module, frames, rate_cv, reset=None):
         """Mono fast path -- scalar phase, vectorized phase ramp.
 
@@ -6774,6 +6806,8 @@ class NumpyBackend(AudioBackend):
             "random_fresh": True,
             "reset_prev": False,
             "phase_param": phase0,
+            "seed": None,
+            "rng": None,
         }
         state = self._state.setdefault(module.id, dict(fresh))
         # If state belongs to the voice branch (different keys),
@@ -6783,6 +6817,13 @@ class NumpyBackend(AudioBackend):
             state.update(fresh)
         for key, value in fresh.items():
             state.setdefault(key, value)
+        seed = self._lfo_seed(module)
+        if state["seed"] != seed:
+            # A live seed change re-rolls the stream on the spot; the
+            # held value stays until the next event. 0 = no private
+            # generator: the global rng, exactly the pre-seed draw.
+            state["seed"] = seed
+            state["rng"] = np.random.default_rng(seed) if seed else None
 
         waveform = str(module.params.get("waveform", "sine"))
         rate = float(module.params.get("rate", 4.0))
@@ -6797,7 +6838,14 @@ class NumpyBackend(AudioBackend):
         # 1D slice is the same as the old code.
         if rate_cv is not None and rate_cv.size > 0:
             cv_depth = float(module.params.get("cv_depth", 1.0))
-            rate = rate * float(2.0 ** (cv_depth * float(np.mean(rate_cv))))
+            # The exponent is clipped to +-64 octaves BEFORE the power:
+            # a Python-float ``2.0 ** 1e6`` raises OverflowError (the
+            # filter pass found an absurd CV taking the render down),
+            # and either bound is far outside the rate clamp below, so
+            # the clip is a no-op for any sane CV (a NaN passes through
+            # np.clip unchanged and lands on the floor as before).
+            octaves = float(np.clip(cv_depth * float(np.mean(rate_cv)), -64.0, 64.0))
+            rate = rate * float(2.0 ** octaves)
 
         # Clamp to a safe range: 0.001 Hz floor (one cycle per ~17 min)
         # and an effective ceiling at Nyquist/2 -- beyond that an LFO
@@ -6847,12 +6895,19 @@ class NumpyBackend(AudioBackend):
                 is_reset[edges] = True
                 wave = np.empty(frames, dtype=np.float64)
                 current = state["random_value"]
+                rng = state["rng"]
                 if state["random_fresh"]:
-                    current = float(np.random.uniform(-1.0, 1.0))
+                    current = self._lfo_roll(rng)
                     state["random_fresh"] = False
                 for i in range(frames):
                     if diffs[i] < 0.0 or is_reset[i]:
-                        current = float(np.random.uniform(-1.0, 1.0))
+                        if rng is not None and is_reset[i]:
+                            # A reset edge re-seeds the private stream
+                            # so the phrase replays from the top (the
+                            # sequencer's precedent): a bar reset here
+                            # plays the same random phrase every bar.
+                            rng = state["rng"] = np.random.default_rng(seed)
+                        current = self._lfo_roll(rng)
                     wave[i] = current
                 state["random_value"] = current
             else:
@@ -6891,6 +6946,18 @@ class NumpyBackend(AudioBackend):
         each voice carries its own sample-and-hold value, re-rolled on
         its own phase wrap (independently-clocked voices roll
         independently) and on its own reset edges.
+
+        Draw order under ``seed``: with seed 0 every voice rolls from
+        the global rng, voice-major per block (voice 0's events this
+        block in time order, then voice 1's, ...) -- the pre-seed
+        shape, bit-exact. With seed N each voice holds ITS OWN copy of
+        ``default_rng(N)``: the phrase is a property of the LFO and
+        every voice plays it from its own reset (a ``(V, F)`` reset on
+        voice v re-seeds voice v alone; voices reset together move in
+        lockstep), each copy consumed only at that voice's events in
+        time order, so a single voice row is bit-identical to the mono
+        path and a block split never changes a draw. Independent voices
+        under a seed are what seed 0 is for.
         """
         V = rate_cv.shape[0]
         phase0 = float(module.params.get("phase", 0.0)) % 1.0
@@ -6912,6 +6979,15 @@ class NumpyBackend(AudioBackend):
         state.setdefault("random_fresh_arr", np.ones(V, dtype=bool))
         state.setdefault("reset_prev_arr", np.zeros(V, dtype=bool))
         state.setdefault("phase_param", phase0)
+        seed = self._lfo_seed(module)
+        if state.get("seed") != seed:
+            # One private generator PER VOICE, every copy seeded alike
+            # (see the docstring); a reinit above dropped the key, so a
+            # changed voice count rebuilds them at the new V.
+            state["seed"] = seed
+            state["rng_arr"] = [
+                np.random.default_rng(seed) if seed else None for _ in range(V)
+            ]
 
         waveform = str(module.params.get("waveform", "sine"))
         base_rate = float(module.params.get("rate", 4.0))
@@ -6926,9 +7002,11 @@ class NumpyBackend(AudioBackend):
         # block.
         cv_depth = float(module.params.get("cv_depth", 1.0))
         cv_block_mean = rate_cv.mean(axis=1)  # (V,)
-        rate_per_voice = base_rate * np.power(
-            2.0, cv_depth * cv_block_mean.astype(np.float64)
-        )
+        # Exponent clipped to +-64 octaves first, the mono path's rule.
+        # np.power would only warn and hand the clamp below an inf, but
+        # the two paths should agree on the bound.
+        octaves = np.clip(cv_depth * cv_block_mean.astype(np.float64), -64.0, 64.0)
+        rate_per_voice = base_rate * np.power(2.0, octaves)
         rate_per_voice = np.clip(rate_per_voice, 0.001, sr * 0.45)
 
         phase_inc_per_voice = rate_per_voice / sr  # (V,)
@@ -6994,20 +7072,26 @@ class NumpyBackend(AudioBackend):
             wave = np.empty((V, frames), dtype=np.float64)
             random_arr = state["random_arr"]
             fresh_arr = state["random_fresh_arr"]
+            rng_arr = state["rng_arr"]
             for v in range(V):
                 row_phases = phases[v]
                 row_start = float(start_phase[v])
                 current = float(random_arr[v])
+                rng = rng_arr[v]
                 if frames > 0:
                     if fresh_arr[v]:
-                        current = float(np.random.uniform(-1.0, 1.0))
+                        current = self._lfo_roll(rng)
                         fresh_arr[v] = False
                     diffs = np.diff(np.concatenate([[row_start], row_phases]))
                     is_reset = np.zeros(frames, dtype=bool)
                     is_reset[edges_per_voice[v]] = True
                     for i in range(frames):
                         if diffs[i] < 0.0 or is_reset[i]:
-                            current = float(np.random.uniform(-1.0, 1.0))
+                            if rng is not None and is_reset[i]:
+                                # This voice's reset replays the phrase
+                                # on this voice alone.
+                                rng = rng_arr[v] = np.random.default_rng(seed)
+                            current = self._lfo_roll(rng)
                         wave[v, i] = current
                     random_arr[v] = current
             state["random_arr"] = random_arr

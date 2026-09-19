@@ -26,6 +26,8 @@ class TestLFOModel:
             "bipolar": False,
             "cv_depth": 1.0,
             "phase": 0.0,
+            # 0 = the global rng (the old random), N = a private stream.
+            "seed": 0,
         }
         # v0.3 adds rate_cv input for modulation-matrix patches; the
         # 2026-09-19 love pass adds the reset gate.
@@ -578,6 +580,245 @@ class TestLFOResetVoiceAware:
         assert np.array_equal(out[2], np.full(512, first[2, 0], np.float32))
 
 
+# ----- seed -------------------------------------------------------------------
+
+
+def _steps(out):
+    """The S&H value sequence of a random render: one entry per held run."""
+    out = np.asarray(out)
+    keep = np.concatenate([[True], out[1:] != out[:-1]])
+    return out[keep], np.flatnonzero(keep)
+
+
+class TestLFOSeed:
+    """``seed`` (2026-09-20): 0 is the global rng -- today's random,
+    bit-exact under ``np.random.seed`` -- and N is a private
+    ``default_rng(N)`` consumed only at events and RE-SEEDED by a reset
+    edge, so the same random phrase replays from every reset."""
+
+    # 97 Hz: 454.6 samples a cycle, ~1.1 wraps per 512 block, and NOT an
+    # integer period -- see test_block_size_at_an_integer_period below.
+    RATE = 97.0
+
+    def test_seed_zero_is_the_global_stream_in_event_order(self):
+        # The recipe pin. With seed 0 every held value is exactly one
+        # np.random.uniform(-1, 1) draw -- the fresh roll, then one per
+        # wrap or reset edge, in time order, and nothing else consumed
+        # -- so replaying the global stream by hand reproduces the
+        # render. (The 19 reference renders under scratch compared
+        # bit-exact the same way; this is the one that stays.)
+        np.random.seed(11)
+        rig = _Rig(waveform="random", rate=self.RATE, bipolar=True)
+        outs = [rig.render(reset=np.zeros(512)) for _ in range(4)]
+        outs.append(rig.render(reset=_gate(512, 100)))
+        outs += [rig.render(reset=np.zeros(512)) for _ in range(3)]
+        steps, _ = _steps(np.concatenate(outs))
+        assert steps.size >= 9
+        np.random.seed(11)
+        expect = np.array(
+            [np.random.uniform(-1.0, 1.0) for _ in range(steps.size)], np.float32
+        )
+        assert np.array_equal(steps, expect)
+        assert rig.state["seed"] == 0 and rig.state["rng"] is None
+
+    def test_seeded_random_is_reproducible_and_ignores_the_global_rng(self):
+        gates = [np.zeros(512), _gate(512, 300), np.zeros(512), np.zeros(512)]
+        np.random.seed(1)
+        a = _Rig(waveform="random", rate=self.RATE, bipolar=True, seed=7)
+        oa = np.concatenate([a.render(reset=g) for g in gates])
+        np.random.seed(2)
+        b = _Rig(waveform="random", rate=self.RATE, bipolar=True, seed=7)
+        ob = np.concatenate([b.render(reset=g) for g in gates])
+        c = _Rig(waveform="random", rate=self.RATE, bipolar=True, seed=8)
+        oc = np.concatenate([c.render(reset=g) for g in gates])
+        assert np.array_equal(oa, ob)
+        assert not np.array_equal(oa, oc)
+        assert _steps(oa)[0].size >= 5
+        assert isinstance(a.state["rng"], np.random.Generator)
+
+    def test_a_live_seed_change_rerolls_the_stream_and_keeps_the_held_value(self):
+        rig = _Rig(waveform="random", rate=1.0, bipolar=True, seed=3)
+        first = rig.render(reset=np.zeros(512))
+        rig.lfo.params["seed"] = 4
+        out = rig.render(reset=np.zeros(512))
+        # 1 Hz: no event in this block, so the held value stays...
+        assert np.array_equal(out, first)
+        # ...and the next event draws from the NEW stream's first value.
+        out = rig.render(reset=_gate(512, 10))
+        assert out[10] == np.float32(np.random.default_rng(4).uniform(-1.0, 1.0))
+
+    def _two_sizes(self, rate, seed=5, n=8192):
+        gate = np.zeros(n, np.float32)
+        gate[1234:1500] = 1.0    # mid-block at both sizes
+        gate[3000:3100] = 1.0
+        gate[6666:6700] = 1.0
+        big = _Rig(block=512, waveform="random", rate=rate, bipolar=True, seed=seed)
+        small = _Rig(block=64, waveform="random", rate=rate, bipolar=True, seed=seed)
+        o512 = np.concatenate(
+            [big.render(reset=gate[i:i + 512], frames=512) for i in range(0, n, 512)]
+        )
+        o64 = np.concatenate(
+            [small.render(reset=gate[i:i + 64], frames=64) for i in range(0, n, 64)]
+        )
+        return o512, o64
+
+    def test_seeded_random_is_bit_exact_64_vs_512_with_resets_mid_stream(self):
+        o512, o64 = self._two_sizes(self.RATE)
+        assert np.array_equal(o512, o64)
+        assert _steps(o512)[0].size >= 12
+
+    def test_block_size_at_an_integer_period(self):
+        # 100 Hz is exactly 441 samples a cycle, so a wrap sits ON a
+        # float rounding boundary and the phase accumulator (64 adds
+        # of 64*inc vs 8 of 512*inc) can land it one sample apart --
+        # a trait of every LFO waveform's float phase, not of the seed.
+        # What the seed guarantees is the DRAW SEQUENCE: identical
+        # values, in order, at most one sample adrift.
+        o512, o64 = self._two_sizes(100.0)
+        v1, i1 = _steps(o512)
+        v2, i2 = _steps(o64)
+        assert v1.size >= 20
+        assert np.array_equal(v1, v2)
+        assert int(np.abs(i1 - i2).max()) <= 1
+
+    def test_a_reset_replays_the_phrase_from_the_top(self):
+        # The musical point: the value sequence after a reset edge IS
+        # the sequence from the start (the private stream re-seeds on
+        # the edge, the sequencer's precedent).
+        rig = _Rig(waveform="random", rate=self.RATE, bipolar=True, seed=3)
+        head = np.concatenate([rig.render(reset=np.zeros(512)) for _ in range(8)])
+        phrase, _ = _steps(head)
+        assert phrase.size >= 9
+        out = rig.render(reset=_gate(512, 250))
+        tail = np.concatenate(
+            [out[250:]] + [rig.render(reset=np.zeros(512)) for _ in range(8)]
+        )
+        replay, _ = _steps(tail)
+        assert np.array_equal(replay[:8], phrase[:8])
+        # And it really was a restart: the value held right before the
+        # edge was deep into the phrase, and the edge sample is its top.
+        assert out[249] != phrase[0] and out[249] in phrase[8:]
+        assert out[250] == phrase[0]
+
+    def test_a_reset_on_seed_zero_only_reanchors_the_phase(self):
+        # Seed 0: the reset rolls a NEW value from the global stream
+        # (the 09-19 behaviour), no replay.
+        np.random.seed(11)
+        rig = _Rig(waveform="random", rate=self.RATE, bipolar=True)
+        head = np.concatenate([rig.render(reset=np.zeros(512)) for _ in range(4)])
+        out = rig.render(reset=_gate(512, 250))
+        assert out[250] != head[0]
+        assert rig.state["rng"] is None
+
+    @pytest.mark.parametrize("waveform", ["sine", "triangle", "square", "saw"])
+    def test_non_random_waveforms_never_touch_the_generator(self, waveform):
+        pristine = np.random.default_rng(5).bit_generator.state
+        rig = _Rig(waveform=waveform, rate=self.RATE, bipolar=True, seed=5)
+        for g in (np.zeros(512), _gate(512, 100), np.zeros(512)):
+            rig.render(reset=g)
+        assert rig.state["rng"].bit_generator.state == pristine
+        # ...and every per-voice copy on the voice path.
+        poly = _Rig(voice=True, waveform=waveform, rate=self.RATE, bipolar=True, seed=5)
+        cv = np.zeros((3, 512), np.float32)
+        for g in (np.zeros(512), _gate(512, 100, voices=3, row=1), np.zeros(512)):
+            poly.render(rate_cv=cv, reset=g)
+        assert len(poly.state["rng_arr"]) == 3
+        for rng in poly.state["rng_arr"]:
+            assert rng.bit_generator.state == pristine
+
+    def test_voice_path_every_voice_replays_the_phrase_from_its_own_reset(self):
+        # The documented draw shape under a seed: one generator PER
+        # VOICE, every copy seeded alike. Voices reset together move in
+        # lockstep and a single row is bit-identical to the mono path;
+        # a voice reset alone restarts the phrase on that voice only,
+        # the others carry on undisturbed.
+        cv = np.zeros((3, 512), np.float32)
+        poly = _Rig(voice=True, waveform="random", rate=self.RATE, bipolar=True, seed=9)
+        mono = _Rig(waveform="random", rate=self.RATE, bipolar=True, seed=9)
+        head_p = np.concatenate(
+            [poly.render(rate_cv=cv, reset=cv) for _ in range(8)], axis=1
+        )
+        head_m = np.concatenate([mono.render(reset=np.zeros(512)) for _ in range(8)])
+        for v in range(3):
+            assert np.array_equal(head_p[v], head_m)
+        phrase, _ = _steps(head_m)
+        assert phrase.size >= 8
+        out_p = poly.render(rate_cv=cv, reset=_gate(512, 200, voices=3, row=1))
+        out_m = mono.render(reset=np.zeros(512))
+        more_p = np.concatenate(
+            [out_p] + [poly.render(rate_cv=cv, reset=cv) for _ in range(8)], axis=1
+        )
+        more_m = np.concatenate(
+            [out_m] + [mono.render(reset=np.zeros(512)) for _ in range(8)]
+        )
+        assert np.array_equal(more_p[0], more_m)
+        assert np.array_equal(more_p[2], more_m)
+        replay, _ = _steps(more_p[1, 200:])
+        assert np.array_equal(replay[:8], phrase[:8])
+        assert not np.array_equal(_steps(more_m[200:])[0][:8], phrase[:8])
+
+    def test_voice_path_reset_together_keeps_the_voices_in_lockstep(self):
+        cv = np.zeros((2, 512), np.float32)
+        poly = _Rig(voice=True, waveform="random", rate=self.RATE, bipolar=True, seed=9)
+        poly.render(rate_cv=cv, reset=_gate(512, 100, voices=2, row=1))
+        out = np.concatenate(
+            [poly.render(rate_cv=cv, reset=g) for g in
+             (_gate(512, 300), np.zeros(512), np.zeros(512))], axis=1
+        )
+        # Rows differ before the shared edge (row 1 was reset alone)
+        # and agree from it on.
+        assert not np.array_equal(out[0, :300], out[1, :300])
+        assert np.array_equal(out[0, 300:], out[1, 300:])
+
+    def test_seed_zero_voice_path_draws_voice_major_from_the_global_rng(self):
+        # The pre-seed shape, pinned: with seed 0 the first block's
+        # fresh rolls are voice 0's, then voice 1's, then voice 2's.
+        np.random.seed(21)
+        cv = np.zeros((3, 512), np.float32)
+        rig = _Rig(voice=True, waveform="random", rate=1.0, bipolar=True)
+        out = rig.render(rate_cv=cv, reset=cv)
+        np.random.seed(21)
+        expect = [np.float32(np.random.uniform(-1.0, 1.0)) for _ in range(3)]
+        assert [out[v, 0] for v in range(3)] == expect
+        assert rig.state["rng_arr"] == [None, None, None]
+
+    def test_an_absurd_rate_cv_clips_instead_of_overflowing(self):
+        # ``2.0 ** 1e6`` as a Python float raises OverflowError (the
+        # filter pass found it); the exponent is clipped to +-64
+        # octaves BEFORE the power, which the rate clamp then swallows:
+        # the render equals any CV past the ceiling, and a sane CV is
+        # untouched (the recipe's renders cover that).
+        rig = _Rig(voice=True, waveform="sine", rate=4.0, bipolar=True)
+        ref = _Rig(voice=True, waveform="sine", rate=4.0, bipolar=True)
+        hot = rig.render(rate_cv=np.full(512, 1e6, np.float32))        # mono path
+        assert np.all(np.isfinite(hot))
+        assert np.array_equal(hot, ref.render(rate_cv=np.full(512, 100.0, np.float32)))
+        cold = rig.render(rate_cv=np.full(512, -1e6, np.float32))
+        assert np.all(np.isfinite(cold))
+        assert np.array_equal(cold, ref.render(rate_cv=np.full(512, -100.0, np.float32)))
+        # ...and the voice path (np.power would only warn, but the two
+        # paths share the bound).
+        vp = _Rig(voice=True, waveform="sine", rate=4.0, bipolar=True)
+        vref = _Rig(voice=True, waveform="sine", rate=4.0, bipolar=True)
+        with np.errstate(over="raise"):
+            v_hot = vp.render(rate_cv=np.full((2, 512), 1e6, np.float32))
+        assert np.all(np.isfinite(v_hot))
+        assert np.array_equal(v_hot, vref.render(rate_cv=np.full((2, 512), 100.0, np.float32)))
+
+    def test_seed_survives_a_json_round_trip_and_a_bad_value_is_zero(self):
+        patch = Patch()
+        patch.add_module("lfo", params={"waveform": "random", "seed": 4242})
+        restored = Patch.from_dict(patch.to_dict())
+        lfo = next(m for m in restored if m.TYPE == "lfo")
+        assert lfo.params["seed"] == 4242
+        rig = _Rig(waveform="random", rate=1.0, bipolar=True, seed="junk")
+        rig.render()
+        assert rig.state["seed"] == 0 and rig.state["rng"] is None
+        neg = _Rig(waveform="random", rate=1.0, bipolar=True, seed=-5)
+        neg.render()
+        assert neg.state["seed"] == 0
+
+
 # ----- UI ---------------------------------------------------------------------
 
 
@@ -611,6 +852,8 @@ def test_every_param_gets_a_bounded_widget(monkeypatch):
     assert w["phase"][1].endswith(" cyc")
     assert "oct/unit" in w["cv_depth"][1]
     assert w["rate"][1].endswith(" Hz")
+    # The seed is the sequencer's drag_int (0..999999), not a text box.
+    assert w["seed"][0] == "add_drag_int"
 
 
 # ----- example ------------------------------------------------------------------
@@ -656,3 +899,73 @@ def test_the_retrigger_example_opens_every_note_at_the_tremolo_peak():
     # sit at ~0.25 there (and it does, one sample earlier).
     assert np.all(trem[edges] == np.float32(1.0))
     assert np.all(trem[edges - 1] < 0.6)
+
+
+def _render_random_replay(seconds=6.5):
+    """Render examples/lfo_random_replay.json, capturing the LFO and the
+    bar pulse (the clock_divider's div8) alongside the output."""
+    from pysynthrack.io_patch import load_patch
+
+    path = Path(__file__).resolve().parent.parent / "examples" / "lfo_random_replay.json"
+    patch = load_patch(path)
+    b = NumpyBackend(sample_rate=44100, block_size=512)
+    b.compile(patch)
+    lfo_cap, bar_cap = [], []
+    orig_l, orig_d = b._render_lfo, b._render_clock_divider
+
+    def spy_l(module, frames, buffers=None, p=None):
+        r = orig_l(module, frames, buffers, p)
+        lfo_cap.append(np.asarray(r).copy())
+        return r
+
+    def spy_d(module, frames, buffers, p):
+        r = orig_d(module, frames, buffers, p)
+        bar_cap.append(np.asarray(r["div8"]).copy())
+        return r
+
+    b._render_lfo, b._render_clock_divider = spy_l, spy_d
+    outs = []
+    for _ in range(int(44100 * seconds / 512)):
+        out, _devices = b.render_block_multi(512)
+        assert out is not None and np.all(np.isfinite(out))
+        outs.append(np.asarray(out).copy())
+    return (
+        patch, np.concatenate(outs, axis=-1),
+        np.concatenate(lfo_cap), np.concatenate(bar_cap) > 0.5,
+    )
+
+
+def test_the_random_replay_example_plays_the_same_random_phrase_every_bar():
+    # Two renders with NO global seeding in common -- opposite global
+    # seeds, in fact -- must be identical: every module with a seed
+    # has one set, and the LFO's random is the private stream.
+    np.random.seed(1)
+    patch, out_a, lfo, bar = _render_random_replay()
+    np.random.seed(2)
+    _patch, out_b, _lfo, _bar = _render_random_replay()
+    assert np.array_equal(out_a, out_b)
+    assert len(patch.modules) <= 12
+    lfo_mod = next(m for m in patch if m.TYPE == "lfo")
+    assert lfo_mod.params["waveform"] == "random" and lfo_mod.params["seed"] != 0
+    seq = next(m for m in patch if m.TYPE == "sequencer")
+    assert seq.params["seed"] != 0
+    peak = float(np.abs(out_a).max())
+    assert 0.3 < peak < 0.8, peak
+    # The bar pulse (div8 at 120 BPM 8ths = every 2 s, from sample 0)
+    # resets both the sequencer and the LFO; the random LFO plays the
+    # SAME twelve values at the SAME samples in every bar.
+    edges = np.flatnonzero(bar[1:] & ~bar[:-1]) + 1
+    if bar[0]:
+        edges = np.concatenate([[0], edges])
+    assert len(edges) >= 3
+    bars = []
+    for a, z in zip(edges[:-1], edges[1:]):
+        seg = lfo[a:z]
+        vals, pos = _steps(seg)
+        bars.append((vals, pos))
+    assert bars[0][0].size == 12
+    for vals, pos in bars[1:]:
+        assert np.array_equal(vals, bars[0][0])
+        assert np.array_equal(pos, bars[0][1])
+    # And it is a phrase, not a drone: the twelve values differ.
+    assert np.unique(bars[0][0]).size == 12

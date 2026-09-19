@@ -36,6 +36,21 @@ Retrigger (2026-09-19 love pass):
     is the zero crossing. Moving the knob re-anchors a free-running
     LFO there at the next block, so it is audible without a cable.
     Unpatched ``reset`` at ``phase`` 0.0 is exactly the old free-run.
+
+Seeded random (2026-09-20 love pass):
+  * ``seed`` (int): 0, the default, is the old ``random`` -- every new
+    value comes from numpy's global rng, so the sequence is different
+    every run. N != 0 gives the LFO a private ``default_rng(N)``,
+    consumed only when a value is due (a cycle wrap or a reset edge),
+    so a seeded S&H plays the same sequence run after run and is
+    bit-exact whatever the block size. **A ``reset`` edge re-seeds it**
+    -- the sequencer's precedent -- which is the musical point: put a
+    bar-rate pulse on the sequencer's ``reset`` AND the LFO's, and a
+    random LFO on a filter plays the SAME random phrase every bar, a
+    written-down accident instead of a new one. With ``seed`` 0 a reset
+    only re-anchors the phase, as before. On the per-voice path each
+    voice holds its own copy of the same generator and replays the
+    phrase from its own reset. Non-random waveforms never draw.
 """
 from __future__ import annotations
 
@@ -62,6 +77,10 @@ class LFO(Module):
             0 disables the CV.
         phase: Start phase in cycles, 0..1 (wraps). The free-running
             start and the phase a ``reset`` edge jumps to. Default 0.0.
+        seed: The ``random`` waveform's stream. 0 (default) = numpy's
+            global rng, a fresh sequence every run; N != 0 = a private
+            seeded generator that a ``reset`` edge restarts, so the
+            same random phrase replays from every reset.
     """
 
     TYPE = "lfo"
@@ -73,6 +92,7 @@ class LFO(Module):
         "bipolar": False,
         "cv_depth": 1.0,
         "phase": 0.0,
+        "seed": 0,
     }
     INPUT_PORTS = [
         # Octaves per CV unit on the rate, scaled by ``cv_depth``

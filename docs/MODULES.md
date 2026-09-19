@@ -4209,6 +4209,26 @@ a fresh value on a reset edge as well as on a wrap, so a retriggered S&H
 starts every note on a new step. Unpatched `reset` at `phase` 0 is
 exactly the old free-run (bit-exact).
 
+**The replaying random** (2026-09-20). `random` at `seed` 0 rolls from
+numpy's global rng: a new sequence every run, the same as ever. Set
+`seed` to anything else and the LFO keeps a private generator of its
+own, consumed only when a value is due (a wrap or a reset edge), so a
+seeded S&H plays the same sequence run after run and is bit-exact
+whatever the block size. **A `reset` edge re-seeds it** — the
+[`sequencer`](#sequencer)'s precedent — and that is the musical point:
+take a bar-rate pulse (a [`clock_divider`](#clock_divider)'s `div8`
+under an 8-step sequencer), put it on the sequencer's `reset` *and* the
+LFO's, and a random LFO on a filter's cutoff plays the **same random
+phrase every bar** — a written-down accident instead of a new one,
+something the rest of the patch can lean on. Turn the knob and the
+phrase changes on the spot (the held value stays until the next event).
+On the per-voice path each voice holds its own copy of the same
+generator and replays the phrase from its own reset: voices reset
+together move in lockstep, a `(V, F)` reset on one voice restarts that
+voice alone, and a single voice row is bit-identical to the mono path.
+Independent voices under a seed are what `seed` 0 is for. Non-random
+waveforms never touch the generator.
+
 **Ports**
 
 | Port | Dir | Kind | Description |
@@ -4227,13 +4247,15 @@ exactly the old free-run (bit-exact).
 | `bipolar` | `false` | — | Off: `0 … depth`. On: `−depth … +depth`. |
 | `cv_depth` | `1.0` | 0 … 4 oct/unit | Octaves the rate moves per unit of `rate_cv`. |
 | `phase` | `0.0` | 0 … 1 cyc | Start phase: the free-running start and where `reset` jumps to. Wraps. |
+| `seed` | `0` | 0 … 999999 | The `random` waveform's stream. 0 = the global rng (a new sequence every run); N = a private seeded generator that a `reset` edge restarts, so the same random phrase replays from every reset. |
 
 **Patching.** `lfo.cv → vca.cv` for tremolo, `lfo.cv → oscillator.freq_cv`
 (bipolar, `depth` ≈ 0.03) for vibrato, `lfo.cv → filter.cutoff_cv` for
 wah; `lfo.cv → schmitt.in` turns it into a clock. See
 `examples/vibrato.json`, `examples/keyboard_tremolo.json`,
-`examples/lfo_retrigger.json` (key-synced tremolo) and
-`examples/schmitt_lfo_clock.json`.
+`examples/lfo_retrigger.json` (key-synced tremolo),
+`examples/lfo_random_replay.json` (a seeded random wah that plays the
+same phrase every bar) and `examples/schmitt_lfo_clock.json`.
 
 ---
 
@@ -5343,6 +5365,7 @@ loads in the app. Notable ones referenced above:
 - `pitch_shifter_harmonizer.json` — a stereo major triad from one module: `semitones` +4, `harmony` +7, `spread` 1 → third left, fifth right, root centred.
 - `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.
 - `mid_side_bass_mono.json` — bass mono: a wide [`supersaw`](#supersaw) pad (`spread` 0.9) and a 55 Hz sub summed into each channel, through [`mid_side`](#mid_side) at `width` 1.6 with `side_hp` 120 — the pad's detune would otherwise smear the sub across the field; with the corner in, the sub sits dead centre and the pad stays wide.
+- `lfo_random_replay.json` — the replaying random: an 8-step C-minor melody ([`sequencer`](#sequencer) → [`quantizer`](#quantizer) → saw → lowpass) under a 6 Hz `random` [`lfo`](#lfo) on the filter's `cutoff_cv` with `seed` 4242, and the [`clock_divider`](#clock_divider)'s `div8` bar pulse on the sequencer's `reset` *and* the LFO's — the same twelve-step random wah phrase every bar, a written-down accident; every module with a seed has one set, so the patch renders bit-identically run after run.
 - `lfo_retrigger.json` — the key-synced tremolo: a 90 BPM sequencer melody through an ADSR VCA and then a 7 Hz [`lfo`](#lfo) VCA, with the sequencer's `gate` also into the LFO's `reset` and `phase` 0.25 — every note opens at the top of the tremolo and pulses down from there, instead of landing wherever the cycle happened to be.
 - `sequencer_pendulum.json` — the [`sequencer`](#sequencer)'s `direction`: a five-step [`pluck`](#pluck) line in `pendulum` (an 8-note period, `1 2 3 4 5 4 3 2`) against a second sequencer in `random` (`seed` 7) gating a [`hat`](#hat) on sixteenths, with a [`clock_divider`](#clock_divider) at /16 resetting both every bar — so the "random" hat pattern is one reproducible bar, replayed.
 - `filter_resonance_sweep.json` — the [`filter`](#filter)'s `resonance_cv`: a saw through a lowpass, a 0.5 Hz LFO on `cutoff_cv` and a 0.11 Hz triangle on `resonance_cv` (`res_cv_depth` 1.5, so the Q breathes between 0.7 and 5.7) — the peak sharpens and softens on its own nine-second cycle, whatever the cutoff is doing.

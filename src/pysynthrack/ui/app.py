@@ -1111,12 +1111,22 @@ class App:
         if module.TYPE == "lfo":
             # ``phase`` is the start phase in cycles: the free-running
             # start and where a ``reset`` edge jumps to (0.25 on a sine =
-            # the peak). ``waveform``, ``rate``, ``depth``, ``bipolar`` and
-            # ``cv_depth`` ride the shared branches below.
+            # the peak). ``seed`` is the ``random`` waveform's stream (0 =
+            # the global rng, N = a private one a reset replays), the
+            # same drag_int as the sequencer's. ``waveform``, ``rate``,
+            # ``depth``, ``bipolar`` and ``cv_depth`` ride the shared
+            # branches below.
             if param_name == "phase":
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
                     min_value=0.0, max_value=1.0, format="%.2f cyc",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "seed":
+                dpg.add_drag_int(
+                    label=param_name, default_value=int(current), speed=1,
+                    min_value=0, max_value=999999,
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

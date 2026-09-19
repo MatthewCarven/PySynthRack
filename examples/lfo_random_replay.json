@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "next_id": 11,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "Clock (120 BPM, 8ths)",
+      "params": {"bpm": 120.0, "division": 2.0, "pulse_width": 0.5}
+    },
+    {
+      "id": 2,
+      "type": "clock_divider",
+      "name": "Bar (div8)",
+      "params": {"n": 3, "m": 2, "swing": 0.0, "pw": 0.5}
+    },
+    {
+      "id": 3,
+      "type": "sequencer",
+      "name": "Melody (one bar)",
+      "params": {
+        "steps": 8,
+        "direction": "forward",
+        "seed": 1,
+        "step1_pitch": 0.0, "step1_on": true,
+        "step2_pitch": 3.0, "step2_on": true,
+        "step3_pitch": 7.0, "step3_on": true,
+        "step4_pitch": 10.0, "step4_on": true,
+        "step5_pitch": 12.0, "step5_on": true,
+        "step6_pitch": 8.0, "step6_on": false,
+        "step7_pitch": 5.0, "step7_on": true,
+        "step8_pitch": -2.0, "step8_on": true
+      }
+    },
+    {
+      "id": 4,
+      "type": "quantizer",
+      "name": "C minor",
+      "params": {"root": "C", "scale": "minor", "hysteresis": 10.0, "transpose": 0.0}
+    },
+    {
+      "id": 5,
+      "type": "oscillator",
+      "name": "Saw (C3)",
+      "params": {"waveform": "saw", "freq": 130.81, "amp": 0.5}
+    },
+    {
+      "id": 6,
+      "type": "filter",
+      "name": "Wah",
+      "params": {"mode": "lowpass", "cutoff": 700.0, "resonance": 2.5, "cv_depth": 1.5}
+    },
+    {
+      "id": 7,
+      "type": "lfo",
+      "name": "Random (seeded, bar-reset)",
+      "params": {
+        "waveform": "random",
+        "rate": 6.0,
+        "depth": 0.6,
+        "bipolar": true,
+        "cv_depth": 1.0,
+        "phase": 0.0,
+        "seed": 4242
+      }
+    },
+    {
+      "id": 8,
+      "type": "adsr",
+      "name": "Note env",
+      "params": {"attack": 0.005, "decay": 0.12, "sustain": 0.5, "release": 0.15}
+    },
+    {
+      "id": 9,
+      "type": "vca",
+      "name": "Note VCA",
+      "params": {"gain": 1.0}
+    },
+    {
+      "id": 10,
+      "type": "speaker_output",
+      "name": "speaker_output",
+      "params": {"gain": 0.7}
+    }
+  ],
+  "cables": [
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "clock"},
+    {"src_module_id": 1, "src_port": "out", "dst_module_id": 3, "dst_port": "clock"},
+    {"src_module_id": 2, "src_port": "div8", "dst_module_id": 3, "dst_port": "reset"},
+    {"src_module_id": 2, "src_port": "div8", "dst_module_id": 7, "dst_port": "reset"},
+    {"src_module_id": 3, "src_port": "cv", "dst_module_id": 4, "dst_port": "in"},
+    {"src_module_id": 4, "src_port": "out", "dst_module_id": 5, "dst_port": "freq_cv"},
+    {"src_module_id": 3, "src_port": "gate", "dst_module_id": 8, "dst_port": "gate"},
+    {"src_module_id": 5, "src_port": "out", "dst_module_id": 6, "dst_port": "in"},
+    {"src_module_id": 7, "src_port": "cv", "dst_module_id": 6, "dst_port": "cutoff_cv"},
+    {"src_module_id": 6, "src_port": "out", "dst_module_id": 9, "dst_port": "audio"},
+    {"src_module_id": 8, "src_port": "cv", "dst_module_id": 9, "dst_port": "cv"},
+    {"src_module_id": 9, "src_port": "out", "dst_module_id": 10, "dst_port": "in"}
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 80], "2": [280, 80], "3": [520, 80], "4": [780, 80],
+      "5": [40, 360], "6": [300, 360], "7": [300, 600], "8": [560, 600],
+      "9": [560, 360], "10": [820, 360]
+    }
+  }
+}
