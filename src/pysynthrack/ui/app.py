@@ -3347,8 +3347,10 @@ class App:
             # Formant filter. ``vowel`` slides A > E > I > O > U (0..4);
             # ``voice`` picks the formant table; ``resonance`` multiplies
             # every formant's Q; ``gain`` is makeup in dB; ``cv_depth``
-            # is vowels per unit on vowel_cv. ``mix`` rides the generic
-            # slider.
+            # is vowels per unit on vowel_cv; ``formant`` is the throat
+            # size in semitones (down = giant, up = child) and
+            # ``formant_cv_depth`` octaves per unit on formant_cv.
+            # ``mix`` rides the generic slider.
             if param_name == "vowel":
                 dpg.add_slider_float(
                     label=f"{param_name} (A E I O U)", default_value=float(current),
@@ -3381,6 +3383,20 @@ class App:
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=0.02,
                     min_value=0.0, max_value=4.0, format="%.2f vow/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "formant":
+                dpg.add_drag_float(
+                    label=f"{param_name} (giant < 0 < child)", default_value=float(current),
+                    speed=0.1, min_value=-24.0, max_value=24.0, format="%.1f st",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "formant_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f oct/unit",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

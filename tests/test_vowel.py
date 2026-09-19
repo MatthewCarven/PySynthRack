@@ -9,6 +9,16 @@ doubles; `mix` 0 is bit-exact dry (the input buffer itself) and 0.5 the
 half blend; voice-aware `(V, F)` in/out with a single row ≡ mono;
 block-size independence at a constant vowel; the clamp; the voice combo
 offers the five voices; the widget sweep; the example.
+
+The formant shift (love pass, 2026-09-20): `formant` +12 / -12 puts
+noise-through-A's peak at 2x / 0.5x the table F1, measured; `formant_cv`
++1 at depth 1 == the knob at +12 bit-exact, depth 0 and cv 0 are the
+unshifted render bit-exact; the shift is constant-Q (bass I's F1 at
+resonance 2 keeps its -3 dB Q and its quarter-octave peak-to-skirt at
++12, measured on the impulse response); `formant` 0 unpatched is
+bit-exact with a verbatim pre-shift oracle; one shift per block for
+every voice; 64 vs 512 at a constant shift; the +-4 octave clip and the
+0.45 sr park read off the coefficients; the widgets; the example.
 """
 from __future__ import annotations
 
@@ -33,7 +43,7 @@ from pysynthrack.modules.vowel import (
 SR = 44100
 
 
-def _driver(params=None, cv=False, sr=SR, block=512):
+def _driver(params=None, cv=False, sr=SR, block=512, cv_port="vowel_cv"):
     patch = Patch()
     m = patch.add_module("vowel", params=params or {})
     src = patch.add_module("noise")
@@ -41,7 +51,7 @@ def _driver(params=None, cv=False, sr=SR, block=512):
     keys = {"in": (src.id, "out")}
     if cv:
         c = patch.add_module("constant")
-        patch.connect(c.id, "out", m.id, "vowel_cv")
+        patch.connect(c.id, "out", m.id, cv_port)
         keys["cv"] = (c.id, "out")
     b = NumpyBackend(sample_rate=sr, block_size=block)
     b.compile(patch)
@@ -61,8 +71,8 @@ def _noise(n, seed=1):
     return np.random.default_rng(seed).uniform(-1.0, 1.0, n).astype(np.float32)
 
 
-def _render(params=None, seconds=1.0, block=512, cv_value=None, x=None):
-    step = _driver(params, cv=cv_value is not None, block=block)
+def _render(params=None, seconds=1.0, block=512, cv_value=None, x=None, cv_port="vowel_cv"):
+    step = _driver(params, cv=cv_value is not None, block=block, cv_port=cv_port)
     if x is None:
         x = _noise(int(SR * seconds))
     out = []
@@ -92,17 +102,31 @@ def test_registered_with_ports_and_params():
     assert cls is get_module_type("vowel")
     assert cls.CATEGORY == "Filters & EQ"
     m = cls(1)
-    assert [(p.name, p.signal_kind) for p in m.input_ports] == [("in", "audio"), ("vowel_cv", "cv")]
+    assert [(p.name, p.signal_kind) for p in m.input_ports] == [
+        ("in", "audio"), ("vowel_cv", "cv"), ("formant_cv", "cv")]
     assert [(p.name, p.signal_kind) for p in m.output_ports] == [("out", "audio")]
     assert m.params["voice"] == "tenor" and m.params["mix"] == 1.0 and m.params["vowel"] == 0.0
+    assert m.params["formant"] == 0.0 and m.params["formant_cv_depth"] == 1.0
     assert VOWEL_VOICES == ("soprano", "alto", "countertenor", "tenor", "bass")
     assert VOWEL_NAMES == ("a", "e", "i", "o", "u")
 
 
 def test_serialization_round_trip():
     cls = all_module_types()["vowel"]
-    m = cls(2, params={"vowel": 2.5, "voice": "bass", "resonance": 1.5, "mix": 0.4})
+    m = cls(2, params={"vowel": 2.5, "voice": "bass", "resonance": 1.5, "mix": 0.4,
+                       "formant": -7.0, "formant_cv_depth": 0.5})
     assert cls.from_dict(m.to_dict()).params == m.params
+
+
+def test_pre_shift_patch_loads_with_the_default_shift():
+    d = Patch()
+    d.add_module("vowel", params={"vowel": 1.0})
+    raw = d.to_dict()
+    for m in raw["modules"]:
+        m["params"].pop("formant", None)
+        m["params"].pop("formant_cv_depth", None)
+    vw = next(m for m in Patch.from_dict(raw) if m.TYPE == "vowel")
+    assert vw.params["formant"] == 0.0 and vw.params["formant_cv_depth"] == 1.0
 
 
 def test_the_formant_table_is_complete_and_ordered():
@@ -238,6 +262,192 @@ def test_block_size_independent_at_a_constant_vowel():
     assert np.array_equal(big, small)
 
 
+# ----- the formant shift (the child / giant knob) --------------------------------
+
+
+def _reference_unshifted(params, x, block=512):
+    """The pre-shift filter, verbatim (2026-09-19): five RBJ constant-peak
+    bandpasses at the table's F/BW with Q = F/BW x resonance, F clamped
+    at 0.45 sr, lfilter along the last axis with the state carried, summed
+    with the table's gains, `gain` dB, `mix` blend. The oracle the module
+    must match bit for bit at `formant` 0 with nothing on the jack."""
+    from scipy.signal import lfilter
+
+    voice = params.get("voice", "tenor")
+    vowel = float(params.get("vowel", 0.0))
+    resonance = float(params.get("resonance", 1.0))
+    gain = 10.0 ** (float(params.get("gain", 6.0)) / 20.0)
+    mix = float(params.get("mix", 1.0))
+    freqs, gains, bws = vowel_formants(voice, vowel)
+    coefs = []
+    for k in range(N_FORMANTS):
+        f = min(freqs[k], 0.45 * SR)
+        q = max(0.1, (f / bws[k]) * resonance)
+        w0 = 2.0 * np.pi * f / SR
+        alpha = np.sin(w0) / (2.0 * q)
+        a0 = 1.0 + alpha
+        coefs.append((np.array([alpha / a0, 0.0, -alpha / a0]),
+                      np.array([1.0, -2.0 * np.cos(w0) / a0, (1.0 - alpha) / a0]), gains[k]))
+    zi = np.zeros((N_FORMANTS, 1, 2))
+    out = []
+    for i in range(0, len(x) - block + 1, block):
+        xb = x[i:i + block][None, :].astype(np.float64)
+        wet = np.zeros_like(xb)
+        for k, (b, a, g) in enumerate(coefs):
+            y, zi[k] = lfilter(b, a, xb, axis=-1, zi=zi[k])
+            wet += g * y
+        wet *= gain
+        o = wet if mix >= 1.0 else xb * (1.0 - mix) + wet * mix
+        out.append(o[0].astype(np.float32))
+    return np.concatenate(out)
+
+
+@pytest.mark.parametrize("params", [
+    {},
+    {"vowel": 1.5, "voice": "soprano", "resonance": 2.0, "gain": 12.0},
+    {"vowel": 3.2, "voice": "bass", "resonance": 0.6, "gain": 0.0, "mix": 0.6},
+])
+def test_formant_zero_unpatched_is_the_pre_shift_filter_bit_exact(params):
+    # 2 ** 0 == 1.0 and f * 1.0 is f, bw * 1.0 is bw: the coefficients
+    # are the pre-shift coefficients, not merely close to them.
+    x = _noise(512 * 40, seed=11)
+    ref = _reference_unshifted(params, x)
+    assert np.array_equal(_render(params, x=x), ref)
+    assert np.array_equal(_render({**params, "formant": 0.0}, x=x), ref)
+    # Patched but idle (cv 0) is the same render, and so is depth 0.
+    assert np.array_equal(_render(params, x=x, cv_value=0.0, cv_port="formant_cv"), ref)
+    assert np.array_equal(
+        _render({**params, "formant_cv_depth": 0.0}, x=x, cv_value=0.8, cv_port="formant_cv"), ref)
+
+
+@pytest.mark.parametrize("st,factor", [(12.0, 2.0), (-12.0, 0.5)])
+def test_formant_shift_moves_the_peak_an_octave(st, factor):
+    # Measured: 1338 Hz at +12 and 342 Hz at -12 against 650 x 2 / 650 / 2.
+    y = _render({"vowel": 0.0, "voice": "tenor", "gain": 0.0, "formant": st}, seconds=2.0)
+    f1 = FORMANTS["tenor"]["a"][0][0]
+    peak = _smooth_peak_hz(y[SR // 4:])
+    assert abs(peak - f1 * factor) < 0.1 * f1 * factor, (st, peak, f1 * factor)
+
+
+def test_formant_cv_at_depth_one_is_the_knob_at_twelve_bit_exact():
+    # 0/12 + 1.0 * 1.0 and 12/12 are both 1.0 exactly: the same ratio,
+    # the same coefficients, the same render.
+    x = _noise(512 * 20, seed=5)
+    knob = _render({"formant": 12.0}, x=x)
+    jack = _render({"formant": 0.0, "formant_cv_depth": 1.0}, x=x, cv_value=1.0, cv_port="formant_cv")
+    assert np.array_equal(knob, jack)
+    # They sum: -6 st on the knob and -1 at depth 0.5 on the jack is -12.
+    both = _render({"formant": -6.0, "formant_cv_depth": 0.5}, x=x, cv_value=-1.0, cv_port="formant_cv")
+    assert np.array_equal(both, _render({"formant": -12.0}, x=x))
+
+
+def _impulse_response(params, seconds=2.0):
+    imp = np.zeros(int(SR * seconds), np.float32)
+    imp[0] = 1.0
+    h = _render(params, x=imp).astype(np.float64)
+    return np.abs(np.fft.rfft(h)), np.fft.rfftfreq(len(h), 1.0 / SR)
+
+
+def _peak_bw_skirt(H, fr, near):
+    """Peak frequency, -3 dB bandwidth and the peak-to-skirt ratio at a
+    quarter octave either side, of the resonance nearest `near`."""
+    band = (fr > near / 2) & (fr < near * 2)
+    i = int(np.argmax(np.where(band, H, 0.0)))
+    half = H[i] / np.sqrt(2.0)
+    lo = i
+    while lo > 0 and H[lo] > half:
+        lo -= 1
+    hi = i
+    while hi < len(H) - 1 and H[hi] > half:
+        hi += 1
+    skirt = 0.5 * (H[np.argmin(np.abs(fr - fr[i] * 2 ** 0.25))]
+                   + H[np.argmin(np.abs(fr - fr[i] / 2 ** 0.25))])
+    return float(fr[i]), float(fr[hi] - fr[lo]), float(H[i] / skirt)
+
+
+def test_the_shift_is_constant_q_not_constant_bandwidth():
+    # Bass I is the single-formant case (F2 sits 30 dB down); at resonance
+    # 2 its F1 (250 Hz, bw 60) has Q 8.3. Measured on the impulse response
+    # (the module IS an LTI filter at a constant shift, so |H| is exact,
+    # not a noise estimate): at +12 the peak moves to 500 Hz, the -3 dB
+    # bandwidth DOUBLES (31 -> 61 Hz) and the Q and the quarter-octave
+    # peak-to-skirt hold within 3% -- the same vowel, a different throat.
+    # A constant-bandwidth shift would have doubled the Q instead.
+    f1 = FORMANTS["bass"]["i"][0][0]
+    base = {"vowel": 2.0, "voice": "bass", "resonance": 2.0, "gain": 0.0}
+    H0, fr = _impulse_response(base)
+    H1, _ = _impulse_response({**base, "formant": 12.0})
+    p0, bw0, ps0 = _peak_bw_skirt(H0, fr, f1)
+    p1, bw1, ps1 = _peak_bw_skirt(H1, fr, 2 * f1)
+    assert abs(p0 - f1) < 0.02 * f1 and abs(p1 - 2 * f1) < 0.02 * f1, (p0, p1)
+    assert abs(bw1 / bw0 - 2.0) < 0.05, (bw0, bw1)
+    q0, q1 = p0 / bw0, p1 / bw1
+    assert abs(q1 / q0 - 1.0) < 0.03, (q0, q1)
+    assert abs(ps1 / ps0 - 1.0) < 0.03, (ps0, ps1)
+
+
+def test_one_shift_per_block_for_every_voice():
+    # A (V, F) input takes the block's one shift on every row (the jack is
+    # read as a block mean like vowel_cv): each noise row equals its own
+    # mono render at the same shift, bit for bit.
+    x = _noise(512 * 6, 1)
+    z = _noise(512 * 6, 2)
+    voiced = _driver({"formant": 7.0, "formant_cv_depth": 1.0}, cv=True, cv_port="formant_cv")
+    rows = []
+    for i in range(0, 512 * 6, 512):
+        blk = np.stack([x[i:i + 512], np.zeros(512, np.float32), z[i:i + 512]])
+        rows.append(voiced(blk, np.full(512, -0.25, np.float32)))
+    got = np.concatenate(rows, axis=-1)
+    assert got.shape == (3, 512 * 6) and np.all(got[1] == 0.0)
+    assert np.array_equal(got[0], _render({"formant": 4.0}, x=x))       # 7 - 3 semitones
+    assert np.array_equal(got[2], _render({"formant": 4.0}, x=z))
+
+
+def test_block_size_independent_at_a_constant_shift():
+    x = _noise(512 * 8, 7)
+    p = {"vowel": 1.5, "resonance": 1.3, "formant": 7.0}
+    assert np.array_equal(_render(p, x=x, block=512), _render(p, x=x, block=64))
+    q = {"vowel": 0.5, "formant": -5.0, "formant_cv_depth": 1.0}
+    assert np.array_equal(_render(q, x=x, block=512, cv_value=0.3, cv_port="formant_cv"),
+                          _render(q, x=x, block=64, cv_value=0.3, cv_port="formant_cv"))
+
+
+def _centres_from_coefs(coefs):
+    # RBJ bandpass: a1 = -2 cos(w0) / a0, a2 = (1 - alpha) / a0, a0 = 1 + alpha.
+    out = []
+    for _b, a, _g in coefs:
+        alpha = (1.0 - a[2]) / (1.0 + a[2])
+        cos_w0 = -a[1] * (1.0 + alpha) / 2.0
+        out.append(float(np.arccos(cos_w0) / (2.0 * np.pi) * SR))
+    return out
+
+
+def test_absurd_cv_is_clipped_to_four_octaves_and_parks_at_the_ceiling():
+    # The exponent is clipped to +-4 BEFORE the power: a cv of a million
+    # at depth 1 is the same render as cv +4, finite, and its ratio is 16.
+    x = _noise(512 * 10, 9)
+    huge = _render({"voice": "soprano"}, x=x, cv_value=1e6, cv_port="formant_cv")
+    four = _render({"voice": "soprano"}, x=x, cv_value=4.0, cv_port="formant_cv")
+    assert np.all(np.isfinite(huge)) and np.array_equal(huge, four)
+    assert np.all(np.isfinite(_render({}, x=x, cv_value=-1e6, cv_port="formant_cv")))
+    # A non-finite CV is ignored (the knob alone), not propagated.
+    assert np.array_equal(_render({"formant": 5.0}, x=x, cv_value=np.nan, cv_port="formant_cv"),
+                          _render({"formant": 5.0}, x=x))
+    # Read the artifact: at x16 soprano A's formants land at 12800, 18400,
+    # 46400, 62400, 79200 Hz -- the first two move, the last three park at
+    # 0.45 sr (19845 Hz), read back off the coefficients.
+    step = _driver({"voice": "soprano"}, cv=True, cv_port="formant_cv")
+    step(x[:512], np.full(512, 1e6, np.float32))
+    st = step.backend._state[step.module.id]
+    assert st["key"][3] == 16.0
+    centres = _centres_from_coefs(st["coefs"])
+    table = FORMANTS["soprano"]["a"][0]
+    assert centres[0] == pytest.approx(table[0] * 16, rel=1e-6)
+    assert centres[1] == pytest.approx(table[1] * 16, rel=1e-6)
+    for c in centres[2:]:
+        assert c == pytest.approx(0.45 * SR, rel=1e-6)
+
+
 # ----- UI ------------------------------------------------------------------------
 
 
@@ -258,10 +468,19 @@ def test_voice_combo_offers_the_five_voices_and_every_param_has_a_widget(monkeyp
         for call in getattr(app_mod.dpg, k).call_args_list[before[k]:]:
             widgets[str(call.kwargs.get("label"))] = (k, call.kwargs.get("items"))
     assert widgets["voice"] == ("add_combo", list(VOWEL_VOICES))
+    formats = {}
+    for k in kinds:
+        for call in getattr(app_mod.dpg, k).call_args_list[before[k]:]:
+            formats[str(call.kwargs.get("label"))] = str(call.kwargs.get("format"))
     for name in get_module_type("vowel").DEFAULT_PARAMS:
         hits = [lb for lb in widgets if lb == name or lb.startswith(name + " ")]
         assert hits, (name, list(widgets))
         assert widgets[hits[0]][0] != "add_input_text", name
+    formant = next(lb for lb in widgets if lb.startswith("formant "))
+    assert widgets[formant][0] == "add_drag_float" and formats[formant].endswith(" st")
+    assert widgets["formant_cv_depth"][0] == "add_drag_float"
+    assert "oct/unit" in formats["formant_cv_depth"]
+    assert all(ord(ch) < 128 for lb in widgets for ch in lb)
 
 
 # ----- example ----------------------------------------------------------------------
@@ -292,3 +511,35 @@ def test_the_talking_pad_example_sweeps_the_vowels():
         peak = max(peak, float(np.abs(out).max()))
     assert 0.1 < peak < 1.0
     assert max(keys) - min(keys) > 2.5                        # it went most of the way A..U
+
+
+def test_the_giant_child_example_grows_the_throat_an_octave_each_way():
+    from pysynthrack.io_patch import load_patch
+
+    path = Path(__file__).resolve().parent.parent / "examples" / "vowel_giant_child.json"
+    patch = load_patch(path)
+    assert len(list(patch)) <= 12
+    vw = next(m for m in patch if m.TYPE == "vowel")
+    assert any(c.dst_module_id == vw.id and c.dst_port == "formant_cv" for c in patch.cables)
+    assert any(c.dst_module_id == vw.id and c.dst_port == "vowel_cv" for c in patch.cables)
+    b = NumpyBackend(sample_rate=SR, block_size=512)
+    b.compile(patch)
+    ratios = []
+    orig = b._render_vowel
+
+    def spy(module, frames, buffers, p):
+        r = orig(module, frames, buffers, p)
+        ratios.append(b._state[module.id]["key"][3])
+        return r
+
+    b._render_vowel = spy
+    np.random.seed(1)
+    peak = 0.0
+    # Half the 25 s cycle: the bipolar triangle starts at the giant (-1
+    # octave) and reaches the child (+1) at 12.5 s.
+    for _ in range(int(SR * 13 / 512)):
+        out, _devices = b.render_block_multi(512)
+        assert out is not None and np.all(np.isfinite(out))
+        peak = max(peak, float(np.abs(out).max()))
+    assert 0.3 < peak < 0.8, peak
+    assert min(ratios) < 0.55 and max(ratios) > 1.9, (min(ratios), max(ratios))

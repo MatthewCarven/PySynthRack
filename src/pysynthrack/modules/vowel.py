@@ -26,16 +26,37 @@ passes only what sits near its peaks, so the wet is ~15 dB down on a
 saw); ``mix`` blends the dry in, and at 0 the filter is not run at all
 — the effects neutral, bit-exact dry.
 
+``formant`` is the throat size — the child / giant knob. Every formant
+frequency is multiplied by ``2 ** (formant / 12)``: up, the mouth gets
+smaller (a child at +12, a chipmunk at +24); down, larger (a giant at
+−12). The bandwidths scale by the SAME ratio, so each formant's Q
+(F/BW) — its resonant character — is preserved: a constant-Q shift is
+"the same vowel, a different throat", where a constant-bandwidth shift
+would sharpen the resonances going up and blur them going down (a
+60 Hz band is a fifth of a 300 Hz formant but a fortieth of a 2400 Hz
+one). ``formant_cv`` moves it — ``formant_cv_depth`` octaves per unit,
+block mean like ``vowel_cv`` — so a slow bipolar LFO at depth 1 grows
+the voice from a giant to a child and back, and the effective shift is
+``formant/12 + depth × mean cv`` octaves, clipped to ±4 before the
+power (the house overflow guard). A formant pushed past 0.45 × the
+sample rate just parks there (its bandwidth keeps scaling, so a parked
+formant is a little broader than the table's Q would make it — it is
+out past 19 kHz anyway). At ``formant`` 0 with nothing on the jack the
+ratio is exactly 1 and the render is bit-identical to the unshifted
+filter.
+
 Voice-aware like [`filter`](#filter): a ``(V, F)`` input gives ``(V, F)``
 out with one filter state per voice row; a single voice row is
 bit-identical to mono. Coefficients are rebuilt only when the effective
-vowel, the voice type or the resonance changes; between changes the
-five biquads carry their state across blocks, so a render is block-size
-independent at a constant vowel.
+vowel, the voice type, the resonance or the formant ratio changes;
+between changes the five biquads carry their state across blocks, so a
+render is block-size independent at a constant vowel and shift.
 
 Ports:
   * ``in`` (audio): the source. Unpatched → silence.
   * ``vowel_cv`` (cv): adds ``cv_depth`` × mean CV to ``vowel`` per block.
+  * ``formant_cv`` (cv): adds ``formant_cv_depth`` × mean CV octaves to
+    the formant shift per block.
   * ``out`` (audio): the vowel.
 
 Params:
@@ -45,6 +66,10 @@ Params:
   * ``gain``: makeup in dB, −12..24. Default 6.
   * ``mix``: dry/wet, 0..1. Default 1 (0 = bit-exact dry).
   * ``cv_depth``: vowels per CV unit on ``vowel_cv``. Default 2.
+  * ``formant``: throat size in semitones, −24..24 (up = smaller, a
+    child; down = larger, a giant). Default 0 (bit-exact unshifted).
+  * ``formant_cv_depth``: octaves per CV unit on ``formant_cv``.
+    Default 1 (1 V/oct).
 """
 from __future__ import annotations
 
@@ -135,10 +160,16 @@ class Vowel(Module):
         gain: Makeup in dB, −12..24. Default 6.
         mix: Dry/wet, 0..1 (0 = bit-exact dry). Default 1.
         cv_depth: Vowels per CV unit on ``vowel_cv``. Default 2.
+        formant: Throat size in semitones, −24..24 — every formant's
+            frequency and bandwidth × ``2 ** (formant / 12)`` (Q kept).
+            Default 0.
+        formant_cv_depth: Octaves per CV unit on ``formant_cv``.
+            Default 1.
 
     Ports:
         in (in, audio): the source (voice-aware).
         vowel_cv (in, cv): moves ``vowel``, block mean.
+        formant_cv (in, cv): moves the formant shift, block mean.
         out (out, audio): the vowel.
     """
 
@@ -151,9 +182,12 @@ class Vowel(Module):
         "gain": 6.0,
         "mix": 1.0,
         "cv_depth": 2.0,
+        "formant": 0.0,
+        "formant_cv_depth": 1.0,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),
         Port("vowel_cv", "in", "cv"),
+        Port("formant_cv", "in", "cv"),
     ]
     OUTPUT_PORTS = [Port("out", "out", "audio")]

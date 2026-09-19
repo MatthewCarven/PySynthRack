@@ -17526,6 +17526,10 @@ class NumpyBackend(AudioBackend):
 
     _VOWEL_RES_MIN = 0.25
     _VOWEL_RES_MAX = 4.0
+    #: The formant-shift exponent (``formant``/12 + depth x mean cv,
+    #: octaves) is clipped to +-4 BEFORE ``2 ** e`` -- the house overflow
+    #: guard (the filter pass found an absurd CV can overflow the power).
+    _VOWEL_SHIFT_OCT_LIMIT = 4.0
 
     def _render_vowel(self, module, frames: int, buffers, patch) -> np.ndarray:
         """Five-formant vowel filter (see modules/vowel.py).
@@ -17536,9 +17540,16 @@ class NumpyBackend(AudioBackend):
         formant is an RBJ constant-peak bandpass with Q = F/BW x
         ``resonance``, run by one ``lfilter`` call along the last axis
         (so a ``(V, F)`` input is V parallel filters with ``zi`` of shape
-        (V, 2)) with the state carried across blocks. Coefficients are
-        rebuilt only when the (voice, vowel_eff, resonance) key changes.
-        The five outputs are summed with the table's gains, ``gain`` dB
+        (V, 2)) with the state carried across blocks.
+
+        ``formant`` (semitones) + ``formant_cv_depth`` x the block-mean
+        ``formant_cv`` (octaves) is the throat size: every formant's
+        frequency AND bandwidth are multiplied by ``2 ** shift`` (the
+        exponent clipped to +-4 first), so Q = F/BW is preserved -- the
+        same vowel in a smaller (up) or larger (down) mouth. A frequency
+        pushed past 0.45 sr parks there. Coefficients are rebuilt only
+        when the (voice, vowel_eff, resonance, ratio) key changes. The
+        five outputs are summed with the table's gains, ``gain`` dB
         applied, then ``out = dry (1 - mix) + wet mix``; at ``mix`` 0 the
         input buffer is returned untouched -- the effects neutral.
         """
@@ -17570,6 +17581,21 @@ class NumpyBackend(AudioBackend):
         cv = self._input_buffer(patch, buffers, module.id, "vowel_cv")
         if cv is not None:
             vowel = min(4.0, max(0.0, vowel + cv_depth * float(np.mean(cv))))
+        # The throat size: semitones on the knob, octaves per unit on the
+        # jack, one value per block for every voice (like vowel_cv). The
+        # mean is taken in float64: a float32 accumulation of a CONSTANT
+        # 0.3 gives 0.29999998 over 64 samples and 0.30000001 over 512,
+        # an ulp that moves the coefficients and breaks block-size
+        # independence; n * v is exact in 53 bits, so the float64 mean
+        # of a constant is that constant at any block size.
+        shift = fparam("formant", 0.0, -24.0, 24.0) / 12.0
+        fcv = self._input_buffer(patch, buffers, module.id, "formant_cv")
+        if fcv is not None and fcv.size:
+            fcv_mean = float(np.mean(fcv, dtype=np.float64))
+            if np.isfinite(fcv_mean):
+                shift += fparam("formant_cv_depth", 1.0, -10.0, 10.0) * fcv_mean
+        lim = self._VOWEL_SHIFT_OCT_LIMIT
+        ratio = float(2.0 ** min(max(shift, -lim), lim))
 
         voiced = x_in.ndim == 2
         x = (x_in if voiced else x_in[None, :]).astype(np.float64)
@@ -17582,13 +17608,16 @@ class NumpyBackend(AudioBackend):
                 "V": V, "key": None, "coefs": None,
                 "zi": np.zeros((N_FORMANTS, V, 2), dtype=np.float64),
             }
-        key = (voice, round(vowel, 6), round(resonance, 6))
+        key = (voice, round(vowel, 6), round(resonance, 6), round(ratio, 9))
         if st["key"] != key:
             freqs, gains, bws = vowel_formants(voice, vowel)
             coefs = []
             for k in range(N_FORMANTS):
-                f = min(freqs[k], 0.45 * sr)
-                q = max(0.1, (f / bws[k]) * resonance)
+                # Frequency and bandwidth scale together (constant Q); a
+                # ratio of exactly 1.0 leaves both bit-identical to the
+                # table, so an unshifted render is the pre-shift render.
+                f = min(freqs[k] * ratio, 0.45 * sr)
+                q = max(0.1, (f / (bws[k] * ratio)) * resonance)
                 w0 = 2.0 * np.pi * f / sr
                 alpha = np.sin(w0) / (2.0 * q)
                 a0 = 1.0 + alpha

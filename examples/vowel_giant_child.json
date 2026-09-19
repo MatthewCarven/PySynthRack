@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "next_id": 13,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "one chord every four seconds, held three", "params": { "bpm": 60.0, "division": 0.25, "pulse_width": 0.75 } },
+    { "id": 2, "type": "sequencer", "name": "two notes - a fifth apart (semitones from C4)",
+      "params": { "steps": 2, "direction": "forward", "seed": 1, "step1_pitch": -12.0, "step1_on": true, "step2_pitch": -5.0, "step2_on": true } },
+    { "id": 3, "type": "adsr", "name": "slow in, slow out", "params": { "attack": 0.4, "decay": 0.2, "sustain": 0.9, "release": 0.8 } },
+    { "id": 4, "type": "supersaw", "name": "the buzz - a wide supersaw", "params": { "freq": 130.8128, "detune": 0.45, "blend": 0.8, "spread": 0.0, "amp": 0.5 } },
+    { "id": 5, "type": "lfo", "name": "the mouth - a slow triangle sweeps A > E > I > O > U and back", "params": { "waveform": "triangle", "rate": 0.09, "depth": 1.0, "bipolar": false, "cv_depth": 1.0 } },
+    { "id": 12, "type": "lfo", "name": "the throat - a slower BIPOLAR triangle: -1 oct (giant) > +1 oct (child) > back over 25 s", "params": { "waveform": "triangle", "rate": 0.04, "depth": 1.0, "bipolar": true, "cv_depth": 1.0, "phase": 0.0 } },
+    { "id": 6, "type": "vowel", "name": "VOWEL - tenor; formant_cv at depth 1 = one octave of throat per volt",
+      "params": { "vowel": 0.0, "voice": "tenor", "resonance": 1.2, "gain": 16.0, "mix": 1.0, "cv_depth": 4.0, "formant": 0.0, "formant_cv_depth": 1.0 } },
+    { "id": 7, "type": "vca", "name": "the envelope", "params": {} },
+    { "id": 8, "type": "reverb", "name": "a hall", "params": { "size": 0.75, "decay": 0.6, "damping": 0.5, "mix": 0.3, "cv_depth": 1.0 } },
+    { "id": 9, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.9 } },
+    { "id": 10, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.9 } },
+    { "id": 11, "type": "scope", "name": "the vowel", "params": {} }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "cv",   "dst_module_id": 4, "dst_port": "freq_cv" },
+    { "src_module_id": 2, "src_port": "gate", "dst_module_id": 3, "dst_port": "gate" },
+    { "src_module_id": 4, "src_port": "out_l", "dst_module_id": 6, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "cv",   "dst_module_id": 6, "dst_port": "vowel_cv" },
+    { "src_module_id": 12, "src_port": "cv",  "dst_module_id": 6, "dst_port": "formant_cv" },
+    { "src_module_id": 6, "src_port": "out",  "dst_module_id": 7, "dst_port": "audio" },
+    { "src_module_id": 3, "src_port": "cv",   "dst_module_id": 7, "dst_port": "cv" },
+    { "src_module_id": 7, "src_port": "out",  "dst_module_id": 11, "dst_port": "in" },
+    { "src_module_id": 11, "src_port": "out", "dst_module_id": 8, "dst_port": "in" },
+    { "src_module_id": 8, "src_port": "out_l", "dst_module_id": 9, "dst_port": "in" },
+    { "src_module_id": 8, "src_port": "out_r", "dst_module_id": 10, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 60], "2": [300, 60], "3": [300, 300], "4": [600, 60], "5": [600, 360], "12": [600, 560],
+      "6": [900, 160], "7": [1200, 160], "11": [1460, 160], "8": [1720, 160],
+      "9": [1980, 100], "10": [1980, 240]
+    }
+  }
+}

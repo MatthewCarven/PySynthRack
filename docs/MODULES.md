@@ -98,6 +98,7 @@ The full map:
 | `clock.bpm_cv` | `1.0` (`bpm_cv_depth`) | tempo doublings | `bpm · 2^(d·mean cv)`, block-rate; exponent clipped ±6 (×64) before the power; mono (a `(V, F)` source is averaged) |
 | `crossover.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
 | `vowel.vowel_cv` | `2.0` | vowels (0 = A … 4 = U) | `vowel + d·mean cv`, clamped 0…4 |
+| `vowel.formant_cv` | `1.0` (`formant_cv_depth`) | octaves | every formant's frequency and bandwidth × `2^(formant/12 + d·mean cv)` (constant Q), block-rate; exponent clipped ±4 before the power; one value for every voice |
 | `freeze.pitch_cv` | `1.0` (`pitch_cv_depth`) | octaves | frozen layer at `2^(pitch/12 + d·mean cv)`, block-rate; exponent clipped ±4 before the power; mono (a `(V, F)` source is averaged) |
 | `sweep_eq.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
 | `motion_eq.band{i}_freq_cv` | `1.0` (shared) | octaves | `freq_i · 2^(d·mean cv)` |
@@ -255,7 +256,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`wavetable_morph`](#wavetable_morph) | Sources | `freq_cv`,`position_cv`,`amp_cv` (cv) → `out` (audio) |
 | [`filter`](#filter) | Filters & EQ | `in` (audio), `cutoff_cv` (cv), `resonance_cv` (cv) → `out` (audio) |
 | [`crossover`](#crossover) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
-| [`vowel`](#vowel) | Filters & EQ | `in` (audio), `vowel_cv` (cv) → `out` (audio) |
+| [`vowel`](#vowel) | Filters & EQ | `in` (audio), `vowel_cv` (cv), `formant_cv` (cv) → `out` (audio) |
 | [`parametric_eq`](#parametric_eq) | Filters & EQ | `in` (audio) → `out` (audio) |
 | [`sweep_eq`](#sweep_eq) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `out` (audio) |
 | [`motion_eq`](#motion_eq) | Filters & EQ | `in` (audio), `band{i}_freq_cv`, `band{i}_gain_cv`, `band{i}_q_cv` ×4 (cv) → `out` (audio) |
@@ -1559,16 +1560,39 @@ bank passes only what sits near its peaks, so the wet is ~15 dB down on
 a saw); `mix` blends the dry back in, and at 0 the filter is not run at
 all — the effects neutral, bit-exact dry.
 
+`formant` is the throat size — the child / giant knob. Every formant
+frequency is multiplied by `2^(formant/12)`: up, the mouth gets smaller
+(a child at +12, a chipmunk at +24); down, larger (a giant at −12). The
+bandwidths scale by the *same* ratio, so each formant's Q (F/BW) — its
+resonant character — is preserved: a constant-Q shift is "the same
+vowel, a different throat", where a constant-bandwidth shift would
+sharpen the resonances going up and blur them going down (a 60 Hz band
+is a fifth of a 300 Hz formant but a fortieth of a 2400 Hz one).
+`formant_cv` moves it — `formant_cv_depth` octaves per unit, block mean
+like `vowel_cv`, one value for every voice — so a slow bipolar LFO at
+depth 1 grows the voice from a giant to a child and back; the effective
+shift is `formant/12 + depth × mean cv` octaves, clipped to ±4 before
+the power (the house overflow guard). A formant pushed past 0.45 × the
+sample rate just parks there (its bandwidth keeps scaling, so a parked
+formant is a little broader than the table's Q would make it — it is
+out past 19 kHz anyway). At `formant` 0 with nothing on the jack the
+ratio is exactly 1 and the render is bit-identical to the unshifted
+filter. Measured: noise through tenor A peaks at 342 / 661 / 1338 Hz at
+−12 / 0 / +12 st (table F1 650 → 325 / 650 / 1300); bass I's F1 at
+`resonance` 2 keeps its Q (8.06 → 8.18 at +12, the −3 dB bandwidth
+31 → 61 Hz).
+
 Five RBJ constant-peak bandpasses (Q = F/BW × `resonance`) in parallel,
 summed with the table's gains; coefficients are rebuilt only when the
-effective vowel, the voice or the resonance changes, and the biquads
-carry their state across blocks, so a render is block-size independent
-at a constant vowel. Voice-aware like [`filter`](#filter): a `(V, F)`
-input gives `(V, F)` out with one filter state per voice row, and a
-single voice row is bit-identical to mono. Measured: white noise through
-tenor A/E/I/O/U peaks at 666 / 397 / 285 / 378 / 361 Hz against table
-F1s of 650 / 400 / 290 / 400 / 350. Numpy backend only; silent stub
-under pyo. See `examples/vowel_talk.json`.
+effective vowel, the voice, the resonance or the formant ratio changes,
+and the biquads carry their state across blocks, so a render is
+block-size independent at a constant vowel and shift. Voice-aware like
+[`filter`](#filter): a `(V, F)` input gives `(V, F)` out with one
+filter state per voice row, and a single voice row is bit-identical to
+mono. Measured: white noise through tenor A/E/I/O/U peaks at 666 / 397 /
+285 / 378 / 361 Hz against table F1s of 650 / 400 / 290 / 400 / 350.
+Numpy backend only; silent stub under pyo. See `examples/vowel_talk.json`
+and `examples/vowel_giant_child.json`.
 
 **Ports**
 
@@ -1576,6 +1600,7 @@ under pyo. See `examples/vowel_talk.json`.
 |------|-----|------|-------------|
 | `in` | in | audio | The source (voice-aware). Unpatched → silence. |
 | `vowel_cv` | in | cv | Adds `cv_depth` × mean CV to `vowel` per block; clamped 0…4. |
+| `formant_cv` | in | cv | Adds `formant_cv_depth` × mean CV octaves to the formant shift per block; the exponent is clipped ±4 before the power. |
 | `out` | out | audio | The vowel. |
 
 **Parameters**
@@ -1588,6 +1613,8 @@ under pyo. See `examples/vowel_talk.json`.
 | `gain` | `6.0` | −12 … 24 dB | Makeup. |
 | `mix` | `1.0` | 0 … 1 | Dry/wet; 0 = bit-exact dry. |
 | `cv_depth` | `2.0` | 0 … 4 | Vowels per CV unit on `vowel_cv`. |
+| `formant` | `0.0` | −24 … 24 st | Throat size: every formant's frequency and bandwidth × `2^(formant/12)` (Q kept). Up = child, down = giant. |
+| `formant_cv_depth` | `1.0` | 0 … 4 | Octaves per CV unit on `formant_cv` (1 = 1 V/oct). |
 
 #### `parametric_eq`
 
@@ -5180,6 +5207,13 @@ loads in the app. Notable ones referenced above:
   1.2) with a 0.09 Hz unipolar triangle on `vowel_cv` at `cv_depth` 4,
   so the mouth slides A → E → I → O → U and back over eleven seconds;
   an ADSR on a VCA, a hall, a scope on the vowel.
+- `vowel_giant_child.json` — the talking pad grows and shrinks: the same
+  [`supersaw`](#supersaw) on two long notes through the
+  [`vowel`](#vowel) filter with the 0.09 Hz triangle on `vowel_cv`,
+  plus a second, slower bipolar triangle (0.04 Hz) on `formant_cv` at
+  `formant_cv_depth` 1, so every formant slides an octave down (a
+  giant) and an octave up (a child) and back over 25 s while the mouth
+  keeps talking; `gain` 16 as makeup, a hall, a scope on the vowel.
 - `cv_recorder_layers.json` — the modulation looper, clocked: sixteenths
   into [`cv_recorder`](#cv_recorder)'s `clock` with `length` 16 (a bar),
   a slow clock holding `rec` high every other bar, a 0.37 Hz triangle
