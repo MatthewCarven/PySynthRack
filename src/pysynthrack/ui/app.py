@@ -82,7 +82,7 @@ from ..modules.distortion import DISTORTION_MODES
 from ..modules.meter import METER_MODES
 from ..modules.waveshaper import WAVESHAPER_MODES
 from ..modules.noise import NOISE_COLORS
-from ..modules.oscillator import WAVEFORMS
+from ..modules.oscillator import PULSE_WIDTH_MAX, PULSE_WIDTH_MIN, WAVEFORMS
 from ..modules.quantizer import (
     CUSTOM_KEYS as QUANTIZER_CUSTOM_KEYS,
     QUANTIZER_ROOTS,
@@ -1051,6 +1051,28 @@ class App:
                 user_data=user_data,
             )
             return
+
+        if module.TYPE == "oscillator":
+            # ``pulse_width`` is the duty cycle of the square shapes,
+            # clamped to the 0.05..0.95 band the renderer enforces;
+            # ``pw_cv_depth`` scales pw_cv in width per CV unit (0.5 lets
+            # a bipolar +/-1 LFO sweep the whole band). waveform / freq /
+            # amp fall through to the shared widgets below.
+            if param_name == "pulse_width":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=PULSE_WIDTH_MIN, max_value=PULSE_WIDTH_MAX,
+                    format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "pw_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.01,
+                    min_value=0.0, max_value=1.0, format="%.2f width/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
 
         if module.TYPE == "cv_gates":
             # Per-key ADSR, shared across the whole gate bank. attack /

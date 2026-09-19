@@ -20,6 +20,14 @@ WAVEFORMS = (
     "triangle_wt",
 )
 
+# The pulse width is clamped to this band, param and CV alike. Below 5% the
+# pulse is a click train; above 95% it is the inverted click train; and at
+# the rails the PolyBLEP corrections at the two edges would start to
+# overlap at ordinary pitches (an edge pair closer than one correction
+# window is not a pulse the blep can draw).
+PULSE_WIDTH_MIN = 0.05
+PULSE_WIDTH_MAX = 0.95
+
 
 @register_module_type
 class Oscillator(Module):
@@ -35,6 +43,25 @@ class Oscillator(Module):
         freq: Frequency in Hz. v0.1 only supports a static value set via the
             UI; v0.2 will accept a CV cable on a ``freq_cv`` input port.
         amp: Linear amplitude in [0, 1].
+        pulse_width: Duty cycle of the ``square`` and ``square_blep``
+            shapes, 0.05..0.95 (0.5 = the classic symmetric square). The
+            pulse is high while the phase is below the width. A non-50%
+            pulse carries a DC offset of ``2*pw - 1``, which is removed
+            per sample so slow width sweeps don't pump the speaker (at
+            0.5 the correction is exactly zero). ``square_wt`` is a fixed
+            50% table and ignores this: the wavetable flavour is for
+            band-limited vintage tone, not PWM. Other shapes ignore it.
+        pw_cv_depth: Width per CV unit on ``pw_cv`` (default 0.5, so a
+            bipolar +/-1 LFO sweeps the whole 0.05..0.95 band).
+
+    The pulse width is evaluated per sample: ``pw[n] = clip(pulse_width +
+    pw_cv_depth * pw_cv[n], 0.05, 0.95)``. ``pw_cv`` is voice-aware like
+    ``freq_cv`` -- a ``(V, F)`` source gives each voice its own width, a
+    mono source is shared by every voice. ``square_blep`` keeps both
+    edges band-limited under modulation: the falling edge's correction
+    rides on the falling edge's own phase and its own per-sample
+    increment (``dt - dpw``), so a width that moves against the phase
+    still gets exactly one correction pair per edge.
     """
 
     TYPE = "oscillator"
@@ -43,6 +70,8 @@ class Oscillator(Module):
         "waveform": "sine",
         "freq": 440.0,
         "amp": 0.5,
+        "pulse_width": 0.5,
+        "pw_cv_depth": 0.5,
     }
     INPUT_PORTS = [
         # Frequency CV: 1 volt = 1 octave. ``freq`` becomes
@@ -54,5 +83,10 @@ class Oscillator(Module):
         # ``amp * cv[n]`` per sample when patched. A unipolar LFO
         # here is ring-modulator-ish AM. Unpatched = no modulation.
         Port("amp_cv", "in", "cv"),
+        # Pulse-width CV: ``pulse_width + pw_cv_depth * cv[n]`` per
+        # sample, clamped to 0.05..0.95; only the square / square_blep
+        # shapes listen. A slow LFO here is the classic PWM pad.
+        # Unpatched = the static ``pulse_width``.
+        Port("pw_cv", "in", "cv"),
     ]
     OUTPUT_PORTS = [Port("out", "out", "audio")]

@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "next_id": 11,
+  "modules": [
+    { "id": 1, "type": "lfo", "name": "PWM A - 0.23 Hz on pw_cv; depth 0.4 sweeps the width 0.1..0.9",
+      "params": { "waveform": "sine", "rate": 0.23, "depth": 1.0, "bipolar": true, "cv_depth": 1.0 } },
+    { "id": 2, "type": "lfo", "name": "PWM B - 0.31 Hz, out of step with A so the two pulses never line up",
+      "params": { "waveform": "triangle", "rate": 0.31, "depth": 1.0, "bipolar": true, "cv_depth": 1.0 } },
+    { "id": 3, "type": "oscillator", "name": "pulse A - square_blep, both edges band-limited as the width moves",
+      "params": { "waveform": "square_blep", "freq": 110.0, "amp": 0.4, "pulse_width": 0.5, "pw_cv_depth": 0.4 } },
+    { "id": 4, "type": "oscillator", "name": "pulse B - 7 cents sharp; two pulses at different widths beat like a chorus",
+      "params": { "waveform": "square_blep", "freq": 110.45, "amp": 0.4, "pulse_width": 0.5, "pw_cv_depth": 0.4 } },
+    { "id": 5, "type": "mixer", "name": "the pair",
+      "params": { "gain1": 1.0, "gain2": 1.0, "gain3": 1.0, "gain4": 1.0, "master": 0.6 } },
+    { "id": 6, "type": "lfo", "name": "filter breath - 0.07 Hz, half an octave either way",
+      "params": { "waveform": "sine", "rate": 0.07, "depth": 0.5, "bipolar": true, "cv_depth": 1.0 } },
+    { "id": 7, "type": "filter", "name": "lowpass 900 Hz - the pad's blanket",
+      "params": { "mode": "lowpass", "cutoff": 900.0, "resonance": 1.2, "cv_depth": 1.0 } },
+    { "id": 8, "type": "reverb", "name": "a room",
+      "params": { "size": 0.6, "decay": 0.5, "damping": 0.55, "mix": 0.28, "cv_depth": 1.0 } },
+    { "id": 9, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.8 } },
+    { "id": 10, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.8 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "cv",    "dst_module_id": 3, "dst_port": "pw_cv" },
+    { "src_module_id": 2, "src_port": "cv",    "dst_module_id": 4, "dst_port": "pw_cv" },
+    { "src_module_id": 3, "src_port": "out",   "dst_module_id": 5, "dst_port": "in1" },
+    { "src_module_id": 4, "src_port": "out",   "dst_module_id": 5, "dst_port": "in2" },
+    { "src_module_id": 5, "src_port": "out",   "dst_module_id": 7, "dst_port": "in" },
+    { "src_module_id": 6, "src_port": "cv",    "dst_module_id": 7, "dst_port": "cutoff_cv" },
+    { "src_module_id": 7, "src_port": "out",   "dst_module_id": 8, "dst_port": "in" },
+    { "src_module_id": 8, "src_port": "out_l", "dst_module_id": 9, "dst_port": "in" },
+    { "src_module_id": 8, "src_port": "out_r", "dst_module_id": 10, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 60], "2": [30, 340], "3": [330, 60], "4": [330, 340],
+      "5": [660, 200], "6": [660, 460], "7": [940, 200], "8": [1220, 200],
+      "9": [1500, 140], "10": [1500, 280]
+    }
+  }
+}

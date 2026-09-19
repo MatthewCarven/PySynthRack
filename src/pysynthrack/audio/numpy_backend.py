@@ -31,7 +31,10 @@ selected by the ``waveform`` string suffix:
 ``sine`` is already band-limited, so it has only the one naive form. The
 shaping is centralised in :meth:`_osc_waveshape`, which both the
 Oscillator and CVToFrequency renderers (and, via the same call, the
-Keyboard / MIDIInput note sources) route through.
+Keyboard / MIDIInput note sources) route through. The Oscillator alone
+also hands it a pulse width for ``square`` / ``square_blep`` (per-sample
+PWM, DC-compensated, the falling edge's blep riding its own phase);
+``square_wt`` is a fixed 50% table by design.
 """
 from __future__ import annotations
 
@@ -52,6 +55,10 @@ from scipy.io import wavfile
 from .._resources import resource_root
 from ..core.patch import Patch
 from ..modules.keyboard import midi_to_freq
+from ..modules.oscillator import (
+    PULSE_WIDTH_MAX as _PW_MAX,
+    PULSE_WIDTH_MIN as _PW_MIN,
+)
 from ..modules.cv_keyboard import CV_REFERENCE_NOTE, KEY_GATE_NAMES
 from ..modules.cv_gates import KEY_CV_NAMES
 from ..modules.fm_op import snap_ratio as _fm_snap_ratio
@@ -2873,17 +2880,28 @@ class NumpyBackend(AudioBackend):
             what you want when one carrier should be amplitude-shaped
             independently per voice.
 
-        Two CV inputs (both optional):
+        Three CV inputs (all optional):
           - ``freq_cv`` follows 1V/octave: instantaneous frequency for
             sample n is ``freq * 2 ** cv[n]``. Per-sample evaluation
             makes this true FM/vibrato -- phase is integrated from the
             instantaneous frequency, not a block-rate scalar.
           - ``amp_cv`` is linear multiplicative: ``amp * cv[n]``. A
             unipolar LFO here gives AM; bipolar would invert phase.
+          - ``pw_cv`` moves the pulse width of the square shapes:
+            ``pw[n] = clip(pulse_width + pw_cv_depth * cv[n], 0.05,
+            0.95)`` per sample. Like ``amp_cv`` it broadcasts: a
+            ``(V, F)`` source on the mono path yields ``(V, F)`` output
+            (one phase, a width per voice); a mono source on the voice
+            path is shared by every voice. Only ``square`` and
+            ``square_blep`` listen (``square_wt`` is a fixed 50% table);
+            the other shapes are handed the width and ignore it.
         """
         freq = float(module.params.get("freq", 440.0))
         amp = float(module.params.get("amp", 0.5))
         waveform = str(module.params.get("waveform", "sine"))
+        pulse_width = min(max(
+            float(module.params.get("pulse_width", 0.5)), _PW_MIN), _PW_MAX)
+        pw_depth = float(module.params.get("pw_cv_depth", 0.5))
 
         # CV lookups only when called via the topo walk (which always
         # passes buffers + patch). Tests that drive the oscillator in
@@ -2891,6 +2909,7 @@ class NumpyBackend(AudioBackend):
         if buffers is None or patch is None:
             freq_cv = None
             amp_cv = None
+            pw_cv = None
         else:
             # collapse=False so a voice-aware (V, F) freq_cv or amp_cv
             # reaches us with the voice axis intact. The mono branch
@@ -2901,14 +2920,61 @@ class NumpyBackend(AudioBackend):
             amp_cv = self._input_buffer(
                 patch, buffers, module.id, "amp_cv", collapse=False
             )
+            pw_cv = self._input_buffer(
+                patch, buffers, module.id, "pw_cv", collapse=False
+            )
+
+        # The width is a scalar when pw_cv is unpatched (the static
+        # param, so the default path allocates nothing extra) and a
+        # per-sample array when patched.
+        if pw_cv is None:
+            pw = pulse_width
+        else:
+            pw = np.clip(
+                pulse_width + pw_depth * pw_cv.astype(np.float64),
+                _PW_MIN, _PW_MAX,
+            )
 
         if freq_cv is not None and freq_cv.ndim == 2:
             return self._render_oscillator_voice(
-                module, frames, freq, amp, waveform, freq_cv, amp_cv
+                module, frames, freq, amp, waveform, freq_cv, amp_cv, pw
             )
         return self._render_oscillator_mono(
-            module, frames, freq, amp, waveform, freq_cv, amp_cv
+            module, frames, freq, amp, waveform, freq_cv, amp_cv, pw
         )
+
+    @staticmethod
+    def _osc_pw_increment(state, pw):
+        """Per-sample change of an array pulse width, continuous across
+        blocks.
+
+        The falling edge of ``square_blep`` is corrected on the falling
+        edge's own phase, ``(phase - pw) mod 1``, which advances by
+        ``dt - dpw`` per sample rather than ``dt``. Sizing that edge's
+        correction window with its own increment is what keeps the
+        "sample before" and "sample after" halves of a PolyBLEP pair in
+        agreement when the width moves: both then measure the crossing
+        in the same units, exactly as the rising edge's pair does under
+        per-sample FM. The first sample's increment reads against the
+        previous block's last width (``state["pw_last"]``), so a sweep
+        that crosses a block boundary is not seen as a jump there.
+
+        Returns an array shaped like ``pw``. For a scalar width (pw_cv
+        unpatched) the caller passes ``None`` instead -- the increment
+        is zero and the window is plain ``dt``, the pre-PWM arithmetic.
+        """
+        pw = np.asarray(pw, dtype=np.float64)
+        last = pw[..., -1].copy()
+        prev = state.get("pw_last")
+        if prev is None or np.shape(prev) != np.shape(last):
+            # First block, or the voice count / path changed: no history
+            # to diff against, so the first sample's increment is zero.
+            prev = pw[..., 0]
+        dpw = np.empty_like(pw)
+        dpw[..., 0] = pw[..., 0] - prev
+        dpw[..., 1:] = np.diff(pw, axis=-1)
+        state["pw_last"] = last
+        return dpw
 
     # Wavetable mipmap parameters. WT_LEN is the per-table sample count;
     # NUM_WT_TABLES octave bands span WT_BASE_FREQ .. ~Nyquist.
@@ -2916,13 +2982,22 @@ class NumpyBackend(AudioBackend):
     NUM_WT_TABLES = 11
     WT_BASE_FREQ = 20.0
 
-    def _osc_waveshape(self, phases, waveform, dt=None):
+    def _osc_waveshape(self, phases, waveform, dt=None, pw=None, dpw=None):
         """Apply the waveform shaping function to a phase array.
 
         ``phases`` can be any shape (1D for mono, 2D for voice) -- all
         ops are elementwise (or shape-preserving) so the same code
         handles both. Returns an array of the same shape with values in
         roughly [-1, 1].
+
+        ``pw`` is the pulse width of the square shapes: ``None`` (every
+        caller but the Oscillator -- the classic 50% square), a scalar,
+        or an array broadcastable to ``phases`` (per-sample PWM). ``dpw``
+        is the per-sample width increment that goes with an array
+        ``pw`` (see :meth:`_osc_pw_increment`); ``None`` means the width
+        is constant. Only ``square`` / ``square_blep`` read them --
+        ``square_wt`` is a fixed 50% table -- and at ``pw`` 0.5 the
+        square arithmetic reduces to the pre-PWM expressions bit for bit.
 
         The ``waveform`` string carries both the shape and the band-
         limiting method as ``"<base>_<method>"``:
@@ -2948,21 +3023,32 @@ class NumpyBackend(AudioBackend):
         else:
             base, method = waveform, "naive"
 
+        if base != "square" or method == "wt":
+            # Only the two pulse shapes have a width; square_wt is the
+            # 50% mipmap by design (and would still be if it degraded to
+            # naive for want of a dt).
+            pw = dpw = None
         if method == "blep" and dt is not None:
-            return self._waveshape_blep(base, phases, dt)
+            return self._waveshape_blep(base, phases, dt, pw=pw, dpw=dpw)
         if method == "wt" and dt is not None:
             return self._waveshape_wt(base, phases, dt)
         # naive (or anti-aliased requested with no dt -> degrade to naive)
-        return self._waveshape_naive(base, phases)
+        return self._waveshape_naive(base, phases, pw=pw)
 
     @staticmethod
-    def _waveshape_naive(base, phases):
+    def _waveshape_naive(base, phases, pw=None):
         if base == "sine":
             return np.sin(2.0 * np.pi * phases)
         if base == "saw":
             return 2.0 * phases - 1.0
         if base == "square":
-            return np.where(phases < 0.5, 1.0, -1.0)
+            if pw is None:
+                return np.where(phases < 0.5, 1.0, -1.0)
+            # High while the phase is below the width, then the DC a
+            # non-50% pulse carries (mean = 2pw - 1) taken out per
+            # sample so a slow PWM sweep does not pump the speaker. At
+            # pw 0.5 the offset is exactly 0.0 and ``v - 0.0`` is ``v``.
+            return np.where(phases < pw, 1.0, -1.0) - (2.0 * pw - 1.0)
         if base == "triangle":
             return 1.0 - 4.0 * np.abs(phases - 0.5)
         return np.zeros_like(phases)
@@ -3005,16 +3091,35 @@ class NumpyBackend(AudioBackend):
         res = np.where(m2, 1.0 / 3.0 * x2 * x2 * x2, res)
         return res
 
-    def _waveshape_blep(self, base, phases, dt):
+    def _waveshape_blep(self, base, phases, dt, pw=None, dpw=None):
         """PolyBLEP saw/square, PolyBLAMP triangle. Sine has no edges."""
         phases = np.asarray(phases, dtype=np.float64)
         if base == "saw":
             return (2.0 * phases - 1.0) - self._poly_blep(phases, dt)
         if base == "square":
-            v = np.where(phases < 0.5, 1.0, -1.0)
+            if pw is None:
+                v = np.where(phases < 0.5, 1.0, -1.0)
+                v = v + self._poly_blep(phases, dt)
+                v = v - self._poly_blep((phases + 0.5) % 1.0, dt)
+                return v
+            # The rising edge sits at phase 0 whatever the width; the
+            # falling edge sits at phase ``pw``, so its correction runs
+            # on the falling edge's own phase ``(phase - pw) mod 1``.
+            # When the width moves, that phase advances by ``dt - dpw``
+            # per sample, and the correction window must be that
+            # increment (not ``dt``) for the two halves of the blep pair
+            # to agree on where the edge fell -- see _osc_pw_increment.
+            # The window is capped at half a cycle: a width that jumps
+            # by more than that in one sample (a square LFO on pw_cv)
+            # is a step the blep can only soften, and past 0.5 its two
+            # half-windows would overlap and fight. With ``pw`` 0.5 and
+            # no ``dpw`` this is ``(phases + 0.5) % 1.0`` with window
+            # ``dt`` -- the classic expression, bit for bit.
+            v = np.where(phases < pw, 1.0, -1.0)
             v = v + self._poly_blep(phases, dt)
-            v = v - self._poly_blep((phases + 0.5) % 1.0, dt)
-            return v
+            fall_dt = dt if dpw is None else np.minimum(dt - dpw, 0.5)
+            v = v - self._poly_blep((phases + (1.0 - pw)) % 1.0, fall_dt)
+            return v - (2.0 * pw - 1.0)
         if base == "triangle":
             tri = 1.0 - 4.0 * np.abs(phases - 0.5)
             dtb = np.broadcast_to(np.asarray(dt, np.float64), phases.shape)
@@ -3438,7 +3543,7 @@ class NumpyBackend(AudioBackend):
         return out32 if voiced else out32[0]
 
     def _render_oscillator_mono(
-        self, module, frames, freq, amp, waveform, freq_cv, amp_cv
+        self, module, frames, freq, amp, waveform, freq_cv, amp_cv, pw=None
     ):
         """Mono fast path -- scalar phase, vectorized phase ramp.
 
@@ -3447,6 +3552,8 @@ class NumpyBackend(AudioBackend):
         cumsum (with mono freq_cv). The amp_cv multiplication at the
         end can broadcast a (F,) mono wave against a (V, F) voice
         amp_cv, producing (V, F) output -- the broadcast-by-amp case.
+        A (V, F) ``pw`` broadcasts the same way (one phase ramp, a
+        width per voice) -- the broadcast-by-width case.
         """
         state = self._state.setdefault(module.id, {"phase": 0.0})
         # If state belongs to the voice branch (different keys),
@@ -3473,7 +3580,14 @@ class NumpyBackend(AudioBackend):
             state["phase"] = float(phases[-1])
             dt = inst_inc
 
-        wave = self._osc_waveshape(phases, waveform, dt=dt)
+        dpw = None
+        if isinstance(pw, np.ndarray):
+            dpw = self._osc_pw_increment(state, pw)
+        elif pw is not None:
+            # Keep the history current while the width is static so a
+            # cable patched in later diffs against the right value.
+            state["pw_last"] = np.float64(pw)
+        wave = self._osc_waveshape(phases, waveform, dt=dt, pw=pw, dpw=dpw)
         wave = wave * amp
         if amp_cv is not None:
             # amp_cv may be (F,) (same shape, elementwise) or (V, F)
@@ -3484,7 +3598,7 @@ class NumpyBackend(AudioBackend):
         return wave.astype(np.float32)
 
     def _render_oscillator_voice(
-        self, module, frames, freq, amp, waveform, freq_cv, amp_cv
+        self, module, frames, freq, amp, waveform, freq_cv, amp_cv, pw=None
     ):
         """Voice-aware path -- V independent phase accumulators.
 
@@ -3496,6 +3610,11 @@ class NumpyBackend(AudioBackend):
           * (V, F) amp_cv -> elementwise per-voice AM.
           * (F,)  amp_cv -> mono amplitude broadcast across every voice.
           * None  amp_cv -> just the static ``amp`` param.
+
+        ``pw`` follows the same three cases: a (V, F) width per voice,
+        an (F,) width shared by every voice (materialised to (V, F) so
+        its per-sample increment carries per-voice history), or the
+        static param.
 
         Phases are kept per-voice so a slot that was silent in a prior
         block (freq_cv = 0 -> phase advances at the base ``freq``)
@@ -3529,7 +3648,14 @@ class NumpyBackend(AudioBackend):
         phases = (start_phase[:, None] + np.cumsum(inst_inc, axis=1)) % 1.0  # (V, F)
         state["phase_arr"] = phases[:, -1].copy()
 
-        wave = self._osc_waveshape(phases, waveform, dt=inst_inc)  # (V, F)
+        dpw = None
+        if isinstance(pw, np.ndarray):
+            if pw.ndim == 1:
+                pw = np.broadcast_to(pw[None, :], phases.shape)
+            dpw = self._osc_pw_increment(state, pw)
+        elif pw is not None:
+            state["pw_last"] = np.full(V, pw, dtype=np.float64)
+        wave = self._osc_waveshape(phases, waveform, dt=inst_inc, pw=pw, dpw=dpw)  # (V, F)
         wave = wave * amp
         if amp_cv is not None:
             # amp_cv (V, F) -> elementwise; amp_cv (F,) -> broadcasts

@@ -88,6 +88,7 @@ The full map:
 |----------------|--------------------|------------------|---------|
 | `oscillator.freq_cv` | — (calibrated) | 1 V/oct fixed, per-sample | `freq · 2^cv[n]` |
 | `oscillator.amp_cv` | — (multiplier) | linear | `amp · cv[n]` |
+| `oscillator.pw_cv` | `0.5` (`pw_cv_depth`) | width (duty cycle) per unit | `clip(pulse_width + d·cv[n], 0.05, 0.95)`, per-sample, voice-aware; only `square` / `square_blep` listen (`square_wt` is a fixed 50% table) |
 | `vca.cv` | — (multiplier) | linear | `audio · cv · gain` |
 | `filter.cutoff_cv` | `1.0` | octaves | `cutoff · 2^(d·mean cv)` |
 | `filter.resonance_cv` | `1.0` (`res_cv_depth`) | Q doublings | `resonance · 2^(d·mean cv)` (clipped 0.1…20); a `(V, F)` source gives every voice its own Q |
@@ -225,7 +226,7 @@ signal-flow role (sources → processors → … → sinks).
 
 | Module (`TYPE`) | Category | Inputs → Outputs |
 |-----------------|----------|------------------|
-| [`oscillator`](#oscillator) | Sources | `freq_cv`,`amp_cv` (cv) → `out` (audio) |
+| [`oscillator`](#oscillator) | Sources | `freq_cv`,`amp_cv`,`pw_cv` (cv) → `out` (audio) |
 | [`keyboard`](#keyboard) | Sources | — → `out` (audio), `gate` (gate) |
 | [`cv_keyboard`](#cv_keyboard) | Sources | — → `pitch_cv` (cv), `gate`, `key_c`…`key_b` (gate) |
 | [`cv_gates`](#cv_gates) | Sources | — → `c4`…`e5` (cv, one enveloped gate per key) |
@@ -332,7 +333,8 @@ Modules that generate or bring in signal — the start of a patch.
 #### `oscillator`
 
 The workhorse tone generator: a periodic waveform at a chosen pitch, with
-optional CV modulation of pitch and amplitude.
+optional CV modulation of pitch, amplitude and — for the square shapes —
+pulse width.
 
 **Ports**
 
@@ -340,6 +342,7 @@ optional CV modulation of pitch and amplitude.
 |------|-----|------|-------------|
 | `freq_cv` | in | cv | 1 volt/octave pitch modulation. `freq` becomes `freq · 2^cv` per sample, so a bipolar LFO here is vibrato and an audio-rate signal is FM. Unpatched = no modulation. |
 | `amp_cv` | in | cv | Linear amplitude modulation (`amp · cv`). A unipolar LFO here is tremolo/AM. Unpatched = no modulation. |
+| `pw_cv` | in | cv | Pulse-width modulation of the `square` / `square_blep` shapes: `pw[n] = clip(pulse_width + pw_cv_depth · cv[n], 0.05, 0.95)` per sample. Voice-aware like `freq_cv` — a `(V, F)` source gives every voice its own width, a mono source is shared. A slow LFO here is the classic PWM pad. Unpatched = the static `pulse_width`. |
 | `out` | out | audio | The waveform. |
 
 **Parameters**
@@ -349,10 +352,34 @@ optional CV modulation of pitch and amplitude.
 | `waveform` | `sine` | `sine`, `saw`, `square`, `triangle`, plus `*_blep` and `*_wt` variants of saw/square/triangle | Shape + band-limiting. Naive shapes are cheap but alias; `_blep` (PolyBLEP/PolyBLAMP) and `_wt` (band-limited wavetable) are anti-aliased. `sine` is already band-limited. |
 | `freq` | `440.0` | Hz | Base pitch when `freq_cv` is unpatched. |
 | `amp` | `0.5` | 0…1 | Linear output level. |
+| `pulse_width` | `0.5` | 0.05…0.95 | Duty cycle of `square` / `square_blep` (the pulse is high while the phase is below the width; 0.5 = the classic symmetric square). Ignored by every other shape, including `square_wt`. |
+| `pw_cv_depth` | `0.5` | width per CV unit | Scales `pw_cv`. At 0.5 a bipolar ±1 LFO sweeps the whole 0.05…0.95 band. |
+
+**Pulse width.** `square` and `square_blep` are pulse waves: `pulse_width`
+sets the duty cycle and `pw_cv` moves it per sample, clamped to 0.05…0.95
+(narrower is a click train; at the rails the two edges' band-limiting
+windows would start to overlap at ordinary pitches). A pulse that isn't 50%
+carries a DC offset of `2·pw − 1` (a 20% pulse averages −0.6), and a slow
+PWM sweep would push the speaker cone in and out with it — so the offset is
+removed per sample (`out = pulse − (2·pw − 1)`). At 0.5 the correction is
+exactly zero, which is why a patch saved before PWM existed renders bit for
+bit as it did. `square_blep` keeps both edges band-limited while the width
+moves: the rising edge is at phase 0 as ever, and the falling edge's
+PolyBLEP runs on the falling edge's own phase `(phase − pw) mod 1` with a
+window sized by that phase's own per-sample increment (`dt − dpw`), so a
+width sweeping against the phase still gets exactly one before/after
+correction pair per edge. At width 0.1 the blep's alias floor stays within
+a factor of 1.5 of the 50% square's, sixty times below the naive pulse.
+**`square_wt` does not do PWM** — it is a fixed 50% mipmap table (the
+wavetable flavour is for band-limited vintage tone, not width modulation);
+it ignores `pulse_width` and `pw_cv`, and that is a documented limit, not
+a bug.
 
 **Patching.** The canonical voice is `oscillator → filter → vca → speaker`,
 with an `adsr` driving the VCA's `cv`. See `examples/hello_sine.json` and
-`examples/fat_saw.json`.
+`examples/fat_saw.json`. For PWM, `lfo.cv → oscillator.pw_cv` on a
+`square_blep` (see `examples/oscillator_pwm.json`, the classic pad: two
+pulses, two out-of-step LFOs, a breathing lowpass).
 
 #### `keyboard`
 
@@ -4523,6 +4550,7 @@ The `examples/` folder is the fastest way to learn a module — each `.json`
 loads in the app. Notable ones referenced above:
 
 - `hello_sine.json`, `fat_saw.json` — basic oscillators.
+- `oscillator_pwm.json` — the classic PWM pad: two `square_blep` [`oscillator`](#oscillator)s seven cents apart, each with its own slow LFO on `pw_cv` (widths sweeping 0.1…0.9, never in step), summed through a breathing 900 Hz lowpass into a room.
 - `sampler_breaks.json` — a breaks machine: three [`sampler`](#sampler)s
   pointed at three regions of one synthetic drum loop, each fired by its
   own [`euclidean`](#euclidean) (4, 2 and 6 pulses in 16). Run

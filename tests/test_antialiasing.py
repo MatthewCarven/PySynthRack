@@ -40,10 +40,11 @@ def _alias_fraction(sig, freq, sr=SR):
     return alias / total if total > 0 else 0.0
 
 
-def _render_osc_mono(waveform, freq=2200.0, frames=1 << 14):
+def _render_osc_mono(waveform, freq=2200.0, frames=1 << 14, **params):
     patch = Patch()
     osc = patch.add_module(
-        "oscillator", params={"waveform": waveform, "freq": freq, "amp": 1.0}
+        "oscillator",
+        params={"waveform": waveform, "freq": freq, "amp": 1.0, **params},
     )
     backend = NumpyBackend(sample_rate=SR, block_size=512)
     backend.compile(patch)
@@ -94,6 +95,20 @@ class TestAliasingReduction:
         assert a_wt < a_naive / 5.0, (
             f"{base}_wt alias={a_wt:.4f} vs naive={a_naive:.4f}"
         )
+
+    def test_blep_pulse_stays_band_limited_at_narrow_width(self):
+        """PWM: at width 0.1 the blep corrects BOTH edges, so its alias
+        floor stays where the 50% square's is -- far below the naive
+        pulse at the same width. A one-edge correction would show up
+        here as a floor closer to naive than to the 50% blep."""
+        naive = _render_osc_mono("square", pulse_width=0.1)
+        blep = _render_osc_mono("square_blep", pulse_width=0.1)
+        blep_half = _render_osc_mono("square_blep", pulse_width=0.5)
+        a_naive = _alias_fraction(naive, 2200.0)
+        a_blep = _alias_fraction(blep, 2200.0)
+        a_half = _alias_fraction(blep_half, 2200.0)
+        assert a_blep < a_naive / 20.0, (a_blep, a_naive)
+        assert a_blep < 2.0 * a_half, (a_blep, a_half)
 
     def test_triangle_blep_no_worse_than_naive(self):
         naive = _render_osc_mono("triangle")
