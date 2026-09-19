@@ -14853,6 +14853,23 @@ class NumpyBackend(AudioBackend):
         rate). Determinism: each burst's rng is seeded from (module id,
         voice, hit number). Exact block-size independence holds under
         constant pitch (coefficients then rebuild identically).
+
+        Velocity (2026-09-19, love pass): ``vel`` is a knobless
+        multiplier on the BURST, read at the trigger's rising-edge sample
+        and latched into that hit (the drums' / adsr's edge-latch rule);
+        the loop -- decay, damping, tuning -- is untouched, so a soft hit
+        is a quieter pluck that rings down the same way. Voice-aware like
+        the other inputs: a ``(V, F)`` bus (``midi_input.velocity_cv``)
+        latches per voice from its own row, a mono bus is shared, and a
+        ``(V, F)`` bus on a mono pluck collapses to the loudest voice at
+        the edge. Unpatched the code path is the old one verbatim (no
+        multiply), and a bus holding 1.0 is bit-for-bit the same since
+        ``x * 1.0 == x``. A non-positive velocity is a SILENT hit: not
+        just a zero burst -- every shipped hit also relocks the pitch and
+        clears the allpass state, and that clear alone steps the output
+        by ~7-18% of the ring's amplitude (measured), an audible tick on
+        a hit that is supposed to make no sound. So a silent hit leaves
+        the string exactly as it was and only advances the hit counter.
         """
         pitch = self._input_buffer(
             patch, buffers, module.id, "pitch_cv", collapse=False
@@ -14863,6 +14880,11 @@ class NumpyBackend(AudioBackend):
         if pitch is None and trig is None:
             self._state.pop(module.id, None)
             return np.zeros(frames, dtype=np.float32)
+        # The velocity bus goes down whole: it is only ever READ at a
+        # rising-edge sample, and each voice picks its own row below.
+        vel = self._input_buffer(
+            patch, buffers, module.id, "vel", collapse=False
+        )
 
         voiced = (pitch is not None and pitch.ndim == 2) or (
             trig is not None and trig.ndim == 2
@@ -14934,6 +14956,18 @@ class NumpyBackend(AudioBackend):
         for v in range(V):
             p_row = row(pitch, v)
             t_row = row(trig, v)
+            # This voice's velocity: its own row of a (V, F) bus (or the
+            # shared mono bus) when the pluck is voiced; the whole buffer
+            # when the pluck is mono, collapsing at the read to the
+            # loudest voice at the edge (a velocity bus carries 0 on idle
+            # slots, so the max is the key that was struck). None when
+            # unpatched -- the old code path, untouched.
+            if vel is None:
+                v_row = None
+            elif voiced:
+                v_row = row(vel, v)
+            else:
+                v_row = vel
 
             if t_row is not None:
                 gt = t_row > gate_high
@@ -14963,6 +14997,18 @@ class NumpyBackend(AudioBackend):
                     )
                 if i < len(edges):
                     e = edges[i]
+                    if v_row is not None:
+                        # Velocity: read AT the edge sample, latched into
+                        # this hit. Non-positive = a silent hit: the
+                        # string keeps ringing exactly as it was (no
+                        # burst, no relock, no allpass clear -- see the
+                        # docstring for why the clear alone would tick);
+                        # only the hit counter advances (a hit is a hit).
+                        scale = max(0.0, self._drum_edge_value(v_row, e, 1.0))
+                        if scale <= 0.0:
+                            st["hits"][v] += 1
+                            seg_start = e
+                            continue
                     cv_at = float(p_row[e]) if p_row is not None else 0.0
                     set_coeffs(v, cv_at)
                     n_int = int(st["n_int"][v])
@@ -14971,6 +15017,10 @@ class NumpyBackend(AudioBackend):
                     )
                     st["hits"][v] += 1
                     burst = _pluck_exciter(n_int, color, position, rng)
+                    if v_row is not None:
+                        # The burst scales; the loop does not, so a soft
+                        # hit rings down the same way.
+                        burst *= scale
                     # Add the burst into the last n_int ring positions so
                     # the loop reads it starting at the edge sample.
                     w = int(st["widx"][v])

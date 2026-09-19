@@ -32,8 +32,28 @@ of replacing it — physical (the string was still moving) and click-free.
 Every burst is seeded from (module, voice, hit number), so renders are
 deterministic and testable sample-for-sample.
 
+**Velocity.** ``vel`` is a knobless multiplier on the burst — the house
+``vel`` convention (the drums, the sampler, the adsr): the bus is read
+**at the trigger's rising-edge sample** and latched into that hit, so a
+velocity that moves mid-note changes nothing until the next pluck, and
+``scale = max(0, vel[edge])``. Only the burst scales; the loop is
+untouched, so a soft hit is a quieter pluck that rings down in exactly
+the same time and colour — how a real string behaves when picked
+gently (the pick's *spectrum* does not change with velocity here; that
+is a follow-on idea, not built). ``midi_input.velocity_cv → vel`` is
+the point: a harder key plays louder, per voice. A non-positive
+velocity is a **silent hit** — the string keeps ringing exactly as it
+was (no burst, and none of the pitch relock / allpass clear a hit
+performs either, which alone would tick audibly); the hit counter still
+advances. Unpatched, the render is bit-for-bit what it was before the
+input existed.
+
 Voice-awareness: shape follows the inputs — mono ``(F,)`` in gives mono
-out, ``(V, F)`` gives per-voice strings with no crosstalk. Silent voices
+out, ``(V, F)`` gives per-voice strings with no crosstalk. ``vel``
+follows the same rule: a ``(V, F)`` bus latches per voice from its own
+row, a mono bus is shared by every string, and a ``(V, F)`` bus on a
+mono pluck collapses to the loudest voice at the edge (an idle slot's
+velocity is 0, so the max is the key that was struck). Silent voices
 early-out (a decayed string costs nothing until re-plucked). Pitch is
 read per block (mean), so slides/vibrato track at block rate; the pluck
 pitch itself is locked from the trigger sample. Numpy backend only;
@@ -42,6 +62,8 @@ silent stub under pyo.
 Ports:
   * ``pitch_cv`` (cv): 1 V/oct pitch, C4 = 0 V. Unpatched → C4.
   * ``trigger`` (gate): pluck on each rising edge. No trigger, no sound.
+  * ``vel`` (cv): burst multiplier, read at the edge and latched;
+    ``max(0, ·)``, ≤ 0 is a silent hit. Unpatched → 1 (old code path).
   * ``out`` (audio): the string.
 
 Params:
@@ -74,6 +96,8 @@ class Pluck(Module):
     Ports:
         pitch_cv (in, cv): 1 V/oct, C4 = 0 V. Unpatched → C4.
         trigger (in, gate): pluck per rising edge (per voice).
+        vel (in, cv): burst multiplier latched at the edge (per voice);
+            max(0, ·). Unpatched → 1.
         out (out, audio): the string.
     """
 
@@ -89,5 +113,6 @@ class Pluck(Module):
     INPUT_PORTS = [
         Port("pitch_cv", "in", "cv"),
         Port("trigger", "in", "gate"),
+        Port("vel", "in", "cv"),
     ]
     OUTPUT_PORTS = [Port("out", "out", "audio")]

@@ -10,10 +10,22 @@ independence with mono ≡ single-voice parity, block-size independence
 under constant pitch, silent-voice early-out to exact zeros, and
 unpatched behaviour.
 
+Velocity (the 2026-09-19 love pass): ``vel`` scales the burst, read at
+the trigger edge and latched -- a cable holding 1.0 is bit-exact with no
+cable, a soft hit is the burst scaled linearly (measured), a re-pluck
+adds a burst scaled by ITS OWN velocity (superposition, click-free), a
+non-positive velocity is a silent hit that leaves the string bit-exactly
+as it was, mono broadcasts / voiced latches per row / a voiced bus on a
+mono pluck takes the loudest voice, single voice ≡ mono, block-size
+independence with the trigger mid-stream, the widget sweep, the example.
+
 Pitch/decay tests run at 44100 Hz (they measure real frequencies);
 plumbing tests run fast at SR 1000.
 """
 from __future__ import annotations
+
+from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pytest
@@ -24,34 +36,66 @@ from pysynthrack.core.module import all_module_types, get_module_type
 from pysynthrack.modules import pluck as _pluck  # noqa: F401
 
 
-def _driver(params=None, sr=44100, block=512):
-    """Backend + `constant → pitch_cv, clock → trigger` pluck patch."""
+def _driver(params=None, sr=44100, block=512, vel=False):
+    """Backend + `constant → pitch_cv, clock → trigger` pluck patch.
+
+    ``vel=True`` cables a third ``constant`` into ``vel``; ``step`` then
+    takes the velocity buffer as its third argument. Without it there is
+    no ``vel`` cable at all (the unpatched path).
+    """
     patch = Patch()
     m = patch.add_module("pluck", params=params or {})
     psrc = patch.add_module("constant")
     patch.connect(psrc.id, "out", m.id, "pitch_cv")
     tsrc = patch.add_module("clock")
     patch.connect(tsrc.id, "out", m.id, "trigger")
+    vsrc = None
+    if vel:
+        vsrc = patch.add_module("constant")
+        patch.connect(vsrc.id, "out", m.id, "vel")
     b = NumpyBackend(sample_rate=sr, block_size=block)
     b.compile(patch)
 
-    def step(pitch_block, trig_block):
+    def step(pitch_block, trig_block, vel_block=None):
         arr = np.asarray(pitch_block, dtype=np.float32)
         F = arr.shape[-1]
-        return b._render_pluck(
-            patch.get(m.id),
-            F,
-            {
-                (psrc.id, "out"): arr,
-                (tsrc.id, "out"): np.asarray(trig_block, dtype=np.float32),
-            },
-            patch,
-        )
+        buffers = {
+            (psrc.id, "out"): arr,
+            (tsrc.id, "out"): np.asarray(trig_block, dtype=np.float32),
+        }
+        if vsrc is not None:
+            assert vel_block is not None, "a vel driver needs a vel buffer"
+            buffers[(vsrc.id, "out")] = np.asarray(vel_block, dtype=np.float32)
+        return b._render_pluck(patch.get(m.id), F, buffers, patch)
 
     step.module = m
     step.patch = patch
     step.backend = b
     return step
+
+
+def _two_hit_render(vel_second, first=1.0, sr=44100, block=512, n_blocks=40,
+                    params=None, second=True):
+    """Hit 0 at block 0 sample 0 (velocity ``first``), hit 1 at block 20
+    sample 100 (velocity ``vel_second``) -- a re-pluck while ringing.
+    ``vel_second`` None renders with NO vel cable; ``second=False`` drops
+    the second trigger entirely. Returns the mono signal."""
+    params = params or {"decay": 3.0, "color": 0.5}
+    step = _driver(params, sr=sr, block=block, vel=vel_second is not None)
+    out = []
+    for i in range(n_blocks):
+        trig = np.zeros(block, dtype=np.float32)
+        if i == 0:
+            trig[0] = 1.0
+        if i == 20 and second:
+            trig[100] = 1.0
+        pitch = np.zeros(block, dtype=np.float32)
+        if vel_second is None:
+            out.append(step(pitch, trig))
+        else:
+            vel = np.full(block, first if i < 20 else vel_second, dtype=np.float32)
+            out.append(step(pitch, trig, vel))
+    return np.concatenate(out)
 
 
 def _render_pluck_tail(cv, seconds=1.0, sr=44100, params=None, block=512):
@@ -95,9 +139,11 @@ def test_registered_with_ports_and_params():
     assert cls is get_module_type("pluck")
     assert cls.CATEGORY == "Sources"
     m = cls(1)
-    assert [p.name for p in m.input_ports] == ["pitch_cv", "trigger"]
+    assert [p.name for p in m.input_ports] == ["pitch_cv", "trigger", "vel"]
+    assert [p.signal_kind for p in m.input_ports] == ["cv", "gate", "cv"]
     assert [p.name for p in m.output_ports] == ["out"]
     assert m.params["decay"] == 2.0
+    assert "vel" not in m.params  # knobless by house rule
 
 
 def test_serialization_round_trip():
@@ -312,3 +358,320 @@ def test_unpatched_everything_is_silent_and_stateless():
     out = b._render_pluck(patch.get(m.id), 64, {}, patch)
     assert np.all(out == 0.0)
     assert m.id not in b._state
+
+
+# ----- velocity --------------------------------------------------------------
+
+
+def test_vel_cable_holding_one_is_bit_exact_with_no_cable():
+    """The feature ships OFF: unpatched is the old code path verbatim, and
+    a bus at 1.0 multiplies by 1.0 -- `x * 1.0 == x` in IEEE. Mono with a
+    re-pluck and a pitch change, then a (2, F) voiced string."""
+    assert np.array_equal(_two_hit_render(None), _two_hit_render(1.0))
+
+    plain = _driver({"decay": 1.0}, sr=1000, block=64)
+    cabled = _driver({"decay": 1.0}, sr=1000, block=64, vel=True)
+    for i in range(12):
+        trig = np.zeros((2, 64), dtype=np.float32)
+        pitch = np.zeros((2, 64), dtype=np.float32)
+        pitch[1] = 0.5 if i < 6 else -0.5
+        if i == 0:
+            trig[0, 3] = 1.0
+        if i in (2, 6):
+            trig[1, 40] = 1.0
+        a = plain(pitch, trig)
+        b_ = cabled(pitch, trig, np.ones((2, 64), dtype=np.float32))
+        assert np.array_equal(a, b_)
+
+
+def test_vel_is_read_at_the_edge_and_latched():
+    """Only the edge sample matters, and it holds for the whole hit: a bus
+    that is 1.0 everywhere except 0.5 AT the edge equals a constant 0.5,
+    and a bus that moves after the edge (2.0 for every later block) does
+    not touch the ringing string."""
+    sr, block = 1000, 64
+    ref = _driver({"decay": 0.5}, sr=sr, block=block, vel=True)
+    spike = _driver({"decay": 0.5}, sr=sr, block=block, vel=True)
+    later = _driver({"decay": 0.5}, sr=sr, block=block, vel=True)
+    first = None
+    for i in range(10):
+        trig = np.zeros(block, dtype=np.float32)
+        if i == 0:
+            trig[7] = 1.0
+        pitch = np.full(block, -3.0, dtype=np.float32)  # C1: a real loop at SR 1000
+        v_ref = np.full(block, 0.5, dtype=np.float32)
+        v_spike = np.ones(block, dtype=np.float32)
+        if i == 0:
+            v_spike[7] = 0.5
+        v_later = np.full(block, 0.5 if i == 0 else 2.0, dtype=np.float32)
+        a = ref(pitch, trig, v_ref)
+        assert np.array_equal(a, spike(pitch, trig, v_spike))
+        assert np.array_equal(a, later(pitch, trig, v_later))
+        first = a if first is None else first
+    assert np.any(first != 0.0)
+
+
+@pytest.mark.parametrize("vel", [0.5, 0.25])
+def test_soft_hit_is_the_burst_scaled_linearly(vel):
+    """A fresh string is a linear loop from a zero state, so the whole
+    render -- and its measured peak -- scales with the velocity, while it
+    rings down the same way (the normalized signals coincide)."""
+    def render(v):
+        step = _driver({"decay": 0.8}, sr=44100, block=512, vel=True)
+        out = []
+        for i in range(30):
+            trig = np.zeros(512, dtype=np.float32)
+            if i == 0:
+                trig[0] = 1.0
+            out.append(step(np.zeros(512, dtype=np.float32), trig,
+                            np.full(512, v, dtype=np.float32)))
+        return np.concatenate(out)
+
+    full, soft = render(1.0), render(vel)
+    ratio = float(np.abs(soft).max()) / float(np.abs(full).max())
+    assert abs(ratio - vel) < 1e-3, ratio
+    assert np.allclose(soft, vel * full, atol=1e-6)
+    # Same ring-down: the late/early energy ratio is velocity-independent.
+    def decay_ratio(sig):
+        return float(np.sum(sig[-4096:] ** 2) / np.sum(sig[:4096] ** 2))
+    assert np.isclose(decay_ratio(soft), decay_ratio(full), rtol=1e-4)
+
+
+def test_re_pluck_adds_a_burst_scaled_by_its_own_vel():
+    """Superposition: hit 1 lands on a string still ringing from hit 0 (at
+    velocity 1). Its contribution is linear in ITS velocity: with hit-1
+    velocities 1.0 / 0.5 / 0.25 (same seed, same ring before the hit, so
+    the relock/allpass-clear transient cancels in the differences),
+    (B - A) == 2 (A - D). And it stays click-free, as before."""
+    b_ = _two_hit_render(1.0)
+    a = _two_hit_render(0.5)
+    d = _two_hit_render(0.25)
+    k = 20 * 512 + 100
+    assert np.any(b_[k:] != a[k:])
+    assert np.allclose(b_ - a, 2.0 * (a - d), atol=1e-5)
+    # The click check from the full-velocity retrigger test, at 0.5.
+    single = _two_hit_render(None, n_blocks=2)
+    jump = np.max(np.abs(np.diff(a[k - 64 : k + 64])))
+    attack_jump = np.max(np.abs(np.diff(single[:256])))
+    assert jump <= attack_jump * 1.5 + 1e-6
+
+
+@pytest.mark.parametrize("vel", [0.0, -0.5])
+def test_non_positive_vel_is_a_silent_hit(vel):
+    """No burst, and no relock or allpass clear either -- the string keeps
+    ringing BIT-EXACTLY as it was (the clear alone would step the output
+    by ~7-18% of the ring, measured). The hit still counts, and the next
+    real hit plucks as normal."""
+    silent = _two_hit_render(vel)
+    alone = _two_hit_render(None, second=False)
+    assert np.array_equal(silent, alone)
+    assert np.any(silent[20 * 512 :] != 0.0)
+    # ...and a bare re-pluck (no cable) really is a different string.
+    assert not np.array_equal(_two_hit_render(None), alone)
+
+    step = _driver({"decay": 0.5}, sr=1000, block=64, vel=True)
+    trig = np.zeros(64, dtype=np.float32)
+    trig[0] = 1.0
+    zero = np.zeros(64, dtype=np.float32)
+    low = np.full(64, -3.0, dtype=np.float32)  # C1: a real loop at SR 1000
+    step(low, trig, np.ones(64, dtype=np.float32))
+    step(low, trig, np.full(64, vel, dtype=np.float32))
+    assert int(step.backend._state[step.module.id]["hits"][0]) == 2
+    quiet = step(low, zero, np.ones(64, dtype=np.float32))
+    loud = step(low, trig, np.ones(64, dtype=np.float32))
+    assert np.abs(loud).max() > 2.0 * np.abs(quiet).max()
+    assert int(step.backend._state[step.module.id]["hits"][0]) == 3
+
+
+def test_vel_mono_broadcasts_and_voiced_latches_per_row():
+    """(2, F) strings hit together: a (2, F) bus scales each from its own
+    row (0.5 / 1.0 -> voice 0 halved, voice 1 untouched to the bit); a mono
+    bus at 0.5 halves both. Low pitches (C1 / G1) so the strings ring for
+    the whole render at SR 1000 -- a C4 loop there is ~4 samples and dies
+    into the early-out floor, which is an absolute threshold and so NOT
+    linear in velocity."""
+    sr, block = 1000, 64
+
+    def render(vel_rows):
+        step = _driver({"decay": 2.0}, sr=sr, block=block, vel=True)
+        out = []
+        for i in range(8):
+            trig = np.zeros((2, block), dtype=np.float32)
+            if i == 0:
+                trig[:, 4] = 1.0
+            pitch = np.full((2, block), -3.0, dtype=np.float32)
+            pitch[1] = -2.5
+            if vel_rows is None:
+                vel = np.full(block, 0.5, dtype=np.float32)
+            else:
+                vel = np.array(vel_rows, dtype=np.float32)[:, None] * np.ones(
+                    (2, block), dtype=np.float32
+                )
+            out.append(step(pitch, trig, vel))
+        return np.concatenate(out, axis=1)
+
+    both = render([1.0, 1.0])
+    rows = render([0.5, 1.0])
+    mono = render(None)
+    assert both.shape == (2, 8 * block)
+    assert np.allclose(rows[0], 0.5 * both[0], atol=1e-6)
+    assert np.array_equal(rows[1], both[1])
+    assert np.allclose(mono, 0.5 * both, atol=1e-6)
+    assert np.abs(both[:, -block:]).max() > 1e-3  # still ringing, above the floor
+
+
+def test_voiced_vel_on_mono_pluck_takes_loudest_voice_at_edge():
+    """A (3, F) bus on a mono string collapses to the max at the edge
+    (an idle slot's velocity is 0, so the max is the key that was struck)
+    -- bit-exact with a mono bus at that value, shape still (F,)."""
+    sr, block = 1000, 64
+    poly = _driver({"decay": 0.6}, sr=sr, block=block, vel=True)
+    mono = _driver({"decay": 0.6}, sr=sr, block=block, vel=True)
+    for i in range(6):
+        trig = np.zeros(block, dtype=np.float32)
+        if i == 0:
+            trig[9] = 1.0
+        pitch = np.zeros(block, dtype=np.float32)
+        vel3 = np.zeros((3, block), dtype=np.float32)
+        vel3[0] = 0.2
+        vel3[1] = 0.7
+        a = poly(pitch, trig, vel3)
+        b_ = mono(pitch, trig, np.full(block, 0.7, dtype=np.float32))
+        assert a.shape == (block,)
+        assert np.array_equal(a, b_)
+    assert np.any(a != 0.0)
+
+
+def test_single_voice_row_matches_mono_with_vel():
+    mono = _driver({"decay": 0.5}, sr=1000, block=64, vel=True)
+    voiced = _driver({"decay": 0.5}, sr=1000, block=64, vel=True)
+    trig = np.zeros(64, dtype=np.float32)
+    trig[5] = 1.0
+    vel = np.full(64, 0.6, dtype=np.float32)
+    for i in range(4):
+        t = trig if i == 0 else np.zeros(64, dtype=np.float32)
+        m = mono(np.zeros(64, dtype=np.float32), t, vel)
+        v = voiced(np.zeros((1, 64), dtype=np.float32), t[None, :], vel[None, :])
+        assert np.array_equal(m, v[0])
+    assert np.any(m != 0.0)
+
+
+def test_block_size_independent_with_vel_mid_stream():
+    """Constant pitch; the bus is a ramp (so the value AT the edge is what
+    counts); a hit at sample 5, a silent hit at 300 on the ringing string
+    and a soft hit at 400 in the next block. 2x512 == 16x64 to the bit.
+
+    Stays above the -100 dB early-out floor on purpose (long decay, a
+    C1 loop): the early-out is decided on the BLOCK peak, so below that
+    floor a small block goes to exact zero a little before a big one
+    would -- shipped behaviour, block-size dependent by construction and
+    inaudible, but not this test's claim."""
+    F = 1024
+    trig = np.zeros(F, dtype=np.float32)
+    trig[[5, 300 + 512, 400 + 512]] = 1.0
+    vel = np.linspace(0.2, 1.4, F).astype(np.float32)
+    vel[300 + 512] = -1.0
+    pitch = np.full(F, -3.0, dtype=np.float32)
+    big = _driver({"decay": 4.0}, sr=1000, block=512, vel=True)
+    small = _driver({"decay": 4.0}, sr=1000, block=64, vel=True)
+    out_big = np.concatenate(
+        [big(pitch[i : i + 512], trig[i : i + 512], vel[i : i + 512])
+         for i in range(0, F, 512)]
+    )
+    out_small = np.concatenate(
+        [small(pitch[i : i + 64], trig[i : i + 64], vel[i : i + 64])
+         for i in range(0, F, 64)]
+    )
+    assert np.array_equal(out_big, out_small)
+    assert np.abs(out_big[-64:]).max() > 1e-3  # never reached the floor
+    assert np.abs(out_big[912:976]).max() > np.abs(out_big[848:912]).max()
+
+
+# ----- widgets ---------------------------------------------------------------
+
+
+def _widgets(monkeypatch):
+    pytest.importorskip("dearpygui.dearpygui")
+    import pysynthrack.ui.app as app_mod
+    monkeypatch.setenv("PYSYNTHRACK_BACKEND", "numpy")
+    monkeypatch.setattr(app_mod, "dpg", mock.MagicMock())
+    app = app_mod.App()
+    app.patch = Patch()
+    module = app.patch.add_module("pluck")
+    kinds = ("add_combo", "add_drag_float", "add_slider_float", "add_input_text",
+             "add_input_float", "add_checkbox", "add_drag_int")
+    before = {k: len(getattr(app_mod.dpg, k).call_args_list) for k in kinds}
+    app._create_node_for_module(module)
+    out = {}
+    for k in kinds:
+        for call in getattr(app_mod.dpg, k).call_args_list[before[k]:]:
+            out[str(call.kwargs.get("label"))] = (k, call.kwargs.get("format"))
+    return out
+
+
+def test_every_param_gets_a_bounded_widget(monkeypatch):
+    w = _widgets(monkeypatch)
+    labels = list(w)
+    for name in get_module_type("pluck").DEFAULT_PARAMS:
+        hits = [lb for lb in labels if lb == name or lb.startswith(name + " ")]
+        assert hits, (name, labels)
+        assert w[hits[0]][0] != "add_input_text", (name, w[hits[0]])
+    assert w["decay"][1].endswith(" s")
+    assert "vel" not in w  # a jack, not a knob
+
+
+# ----- example ---------------------------------------------------------------
+
+
+def test_the_velocity_example_accents_each_hit():
+    """examples/pluck_velocity.json: a shift_random accent loop into
+    pluck.vel. Rendered with and without the vel cable, each hit's onset
+    peak (first 256 samples after its gate edge) scales by the bus value
+    at that edge -- measured within +-0.01, pinned at +-0.05 -- and the
+    line has a real dynamic spread."""
+    from pysynthrack.io_patch import load_patch
+
+    path = Path(__file__).resolve().parent.parent / "examples" / "pluck_velocity.json"
+
+    def render(strip_vel):
+        patch = load_patch(path)
+        seq = next(m for m in patch if m.TYPE == "sequencer")
+        off = next(m for m in patch if m.TYPE == "cv_offset")
+        if strip_vel:
+            patch.cables.remove(next(c for c in patch.cables if c.dst_port == "vel"))
+        np.random.seed(0)
+        b = NumpyBackend(sample_rate=44100, block_size=512)
+        b.compile(patch)
+        outs, vels, gates = [], [], []
+        orig = b._render_pluck
+
+        def spy(module, frames, buffers, p):
+            vb = buffers.get((off.id, "out"))
+            vels.append(np.zeros(frames) if vb is None else np.asarray(vb).copy())
+            gates.append(np.asarray(buffers[(seq.id, "gate")]).copy())
+            r = orig(module, frames, buffers, p)
+            outs.append(np.asarray(r).copy())
+            return r
+
+        b._render_pluck = spy
+        peak = 0.0
+        for _ in range(int(44100 * 4 / 512)):
+            out, _devices = b.render_block_multi(512)
+            assert out is not None and np.all(np.isfinite(out))
+            peak = max(peak, float(np.abs(out).max()))
+        assert 0.1 < peak < 1.0
+        return (np.concatenate(outs), np.concatenate(vels),
+                np.concatenate(gates) > 0.5)
+
+    assert len(load_patch(path)) <= 12
+    with_vel, vel, gate = render(False)
+    without, _, _ = render(True)
+    edges = np.flatnonzero(gate[1:] & ~gate[:-1]) + 1
+    assert len(edges) >= 12
+    vels = np.array([vel[e] for e in edges])
+    peaks = np.array([float(np.abs(with_vel[e : e + 256]).max()) for e in edges])
+    plain = np.array([float(np.abs(without[e : e + 256]).max()) for e in edges])
+    assert np.all(np.abs(peaks / plain - vels) < 0.05)
+    assert np.corrcoef(peaks, vels)[0, 1] > 0.9
+    assert peaks.max() > 1.8 * peaks.min()
+    assert vels.min() >= 0.3 and vels.max() <= 1.0

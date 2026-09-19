@@ -109,7 +109,7 @@ The full map:
 | `kick_drum.pitch_cv` | — (calibrated) | 1 V/oct fixed | `tune + 12·cv[edge]`, read at the trigger edge and latched per hit — the pitch bus, like `oscillator.freq_cv` |
 | `euclidean.fills_cv` | `8.0` (`fills_cv_depth`) | fills (hits per loop) | `fills + round(d·cv[edge])`, read at each clock edge, clamped 0…steps |
 | `burst.count_cv` | `8.0` (`count_cv_depth`) | gates per burst | `count + round(d·cv[edge])`, read at the trigger edge and latched per burst, clamped 1…16 |
-| `sampler.vel` / `kick_drum.vel` / `snare_drum.vel` / `hat_drum.vel` / `adsr.vel` | — (multiplier) | linear | `hit · max(0, cv[edge])`, read at the edge and latched; a `(V, F)` source collapses to the loudest voice at that sample (the `adsr` latches per voice when its gate is `(V, F)`, and scales the whole envelope of the note — release included) |
+| `sampler.vel` / `kick_drum.vel` / `snare_drum.vel` / `hat_drum.vel` / `adsr.vel` / `pluck.vel` | — (multiplier) | linear | `hit · max(0, cv[edge])`, read at the edge and latched; a `(V, F)` source collapses to the loudest voice at that sample (the `adsr` and the `pluck` latch per voice when their gate/trigger is `(V, F)`; the `adsr` scales the whole envelope of the note — release included; the `pluck` scales the burst only, and ≤ 0 is a silent hit that leaves the ringing string untouched) |
 | `pitch_shifter.pitch_cv` | `12.0` | semitones | `st + d·mean cv` |
 | `bowed.pressure_cv` / `bowed.velocity_cv` | `1.0` (shared) | level (0…1) | `pressure/velocity + d·cv[n]`, per sample, clamped 0…1; mono, shared by every voice |
 | `wind.breath_cv` | `1.0` | level (0…1) | `breath + d·cv[n]`, per sample, clamped 0…1; mono, shared by every voice |
@@ -239,7 +239,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`cv_to_frequency`](#cv_to_frequency) | Sources | `cv` (cv) → `out` (audio) |
 | [`noise`](#noise) | Sources | — → `out` (audio), `cv` (cv) |
 | [`fm_op`](#fm_op) | Sources | `pitch_cv`,`amp_cv`,`index_cv` (cv), `pm` (audio) → `out` (audio) |
-| [`pluck`](#pluck) | Sources | `pitch_cv` (cv), `trigger` (gate) → `out` (audio) |
+| [`pluck`](#pluck) | Sources | `pitch_cv`,`vel` (cv), `trigger` (gate) → `out` (audio) |
 | [`bowed`](#bowed) | Sources | `pitch_cv`,`pressure_cv`,`velocity_cv` (cv), `gate` (gate) → `out` (audio) |
 | [`wind`](#wind) | Sources | `pitch_cv`,`breath_cv` (cv), `gate` (gate) → `out` (audio) |
 | [`modal`](#modal) | Sources | `excite` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
@@ -932,12 +932,44 @@ exact silence for free. Pitch is re-read per block (glides track at
 block rate); the pluck pitch itself locks from the trigger sample. Numpy
 backend only; silent stub under pyo. See `examples/pluck_strings.json`.
 
+**Velocity** (2026-09-19). `vel` is the house velocity input — knobless,
+a plain multiplier like [`vca`](#vca)`.cv`, the drums' and the
+[`adsr`](#adsr)'s `vel` — on the **burst**: the bus is read **at the
+trigger's rising-edge sample** and latched into that hit
+(`scale = max(0, vel[edge])`), so a velocity that moves mid-note changes
+nothing until the next pluck. Only the burst scales; the loop is
+untouched, so a soft hit is a quieter pluck that rings down in exactly
+the same time and colour (a fresh string at velocity 0.5 renders as
+exactly half of the same string at 1.0 — the loop is linear), and a
+re-pluck on a ringing string adds a burst scaled by *its own* velocity,
+superposed and click-free as before. Values above 1 are honoured. A
+non-positive velocity is a **silent hit**: the string keeps ringing
+exactly as it was — not just a zero burst, because every hit also
+relocks the pitch and clears the allpass state, and that clear alone
+steps the output by 7–18% of the ring's amplitude (measured), an
+audible tick on a hit that is supposed to make no sound; the hit still
+counts for the burst seeding. Voice-aware like the other inputs: a
+`(V, F)` `vel` latches per string from its own row, a mono `vel` is
+shared by every string, and a `(V, F)` `vel` on a mono pluck collapses
+to the loudest voice at the edge (an idle slot's velocity is 0, so the
+max is the key that was struck). Unpatched, the render is bit-for-bit
+what it was before the input existed. The pick's *spectrum* does not
+change with velocity (a harder pluck is not a brighter one here) — a
+follow-on idea, not built.
+
+The live use is `midi_input.velocity_cv → pluck.vel` beside
+`pitch_cv → pitch_cv` and `gate → trigger`: a harder key plays louder,
+per voice. Sequenced accents: `examples/pluck_velocity.json`, a
+[`shift_random`](#shift_random) velocity loop clocked alongside the
+sequencer, scaled into 0.3…1.0, into `vel`.
+
 **Ports**
 
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `pitch_cv` | in | cv | 1 V/oct, C4 = 0 V. Unpatched → C4. |
 | `trigger` | in | gate | Pluck on each rising edge, per voice. |
+| `vel` | in | cv | Burst multiplier, read at the trigger edge and latched per hit (per voice); `max(0, ·)`, ≤ 0 is a silent hit. Unpatched → 1. |
 | `out` | out | audio | The string(s). |
 
 **Parameters**
@@ -4852,5 +4884,6 @@ loads in the app. Notable ones referenced above:
 - `granular_beat_repeat.json` — the drum machine into a [`granular`](#granular) cutting exact 125 ms slices (`density` 32 × `size` 62.5 ms), a [`shift_random`](#shift_random) at sixteenths on `position_cv` picking the slice point and a 15 BPM clock on `freeze`: two seconds recording, two seconds held and re-cut, forever.
 - `adsr_velocity.json` — accents: a [`shift_random`](#shift_random) clocked alongside the sequencer, scaled into 0.3…1.0, into [`adsr`](#adsr)`.vel` — every step's velocity is read at its gate edge and scales the whole note; the same envelope opens a filter, so hard notes are brighter as well as louder.
 - `reverb_freeze_pad.json` — the shimmer-pad trick: a strummed Cmaj7 of four [`pluck`](#pluck) strings every six seconds into a big [`reverb`](#reverb) (`size` 0.9, `decay` 0.9, `mix` 0.75), the strike [`clock`](#clock)'s [`logic`](#logic) `not_a` holding the reverb's `freeze` between strikes so the chord hangs as a pad, and a quieter sequenced pluck line playing over it — heard dry through `mix`, never piling into the tank.
+- `pluck_velocity.json` — picked accents: an eight-step C minor line into a [`pluck`](#pluck) whose `vel` is a [`shift_random`](#shift_random) accent loop clocked alongside the sequencer, scaled into 0.3…1.0 — each pick's velocity is read at its trigger edge and scales the burst, so the line breathes while every note rings down the same way (the live version is `midi_input.velocity_cv → vel`).
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `stereo_hard_pan.json` — left/right speaker sinks.
