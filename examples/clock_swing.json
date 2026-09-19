@@ -1,0 +1,199 @@
+{
+  "version": 1,
+  "next_id": 9,
+  "modules": [
+    {
+      "id": 1,
+      "type": "clock",
+      "name": "master - sixteenths at 96, swing 0.3",
+      "params": {
+        "bpm": 96.0,
+        "division": 4.0,
+        "pulse_width": 0.3,
+        "bpm_cv_depth": 1.0,
+        "swing": 0.3
+      }
+    },
+    {
+      "id": 2,
+      "type": "clock_divider",
+      "name": "DIVIDER - div4 kick, div8 open hat (counts the swung edges: even pulses only)",
+      "params": {
+        "n": 3,
+        "m": 2,
+        "swing": 0.0,
+        "pw": 0.4
+      }
+    },
+    {
+      "id": 3,
+      "type": "hat_drum",
+      "name": "HATS - closed on every swung sixteenth, open on div8",
+      "params": {
+        "decay_closed": 45.0,
+        "decay_open": 320.0,
+        "tone": 420.0,
+        "tune": 0.0,
+        "level": 0.32
+      }
+    },
+    {
+      "id": 4,
+      "type": "kick_drum",
+      "name": "KICK on div4 - dead straight",
+      "params": {
+        "freq_start": 165.0,
+        "freq_end": 46.0,
+        "bend": 40.0,
+        "decay": 360.0,
+        "click": 0.3,
+        "drive": 0.15,
+        "tune": 0.0,
+        "level": 0.5
+      }
+    },
+    {
+      "id": 5,
+      "type": "euclidean",
+      "name": "snare - 2 in 16 rotated 4: the backbeat (edges 4 and 12, even)",
+      "params": {
+        "steps": 16,
+        "fills": 2,
+        "rotate": 4,
+        "accent_fills": 0,
+        "gate_len": 0.4,
+        "fills_cv_depth": 8.0
+      }
+    },
+    {
+      "id": 6,
+      "type": "snare_drum",
+      "name": "SNARE",
+      "params": {
+        "tone_decay": 100.0,
+        "noise_decay": 180.0,
+        "snappy": 0.55,
+        "tune": 0.0,
+        "level": 0.5
+      }
+    },
+    {
+      "id": 7,
+      "type": "mixer",
+      "name": "drum bus",
+      "params": {
+        "gain1": 1.0,
+        "gain2": 1.0,
+        "gain3": 1.0,
+        "gain4": 1.0,
+        "master": 0.9
+      }
+    },
+    {
+      "id": 8,
+      "type": "speaker_output",
+      "name": "Output",
+      "params": {
+        "gain": 0.9
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "closed_trigger"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "div8",
+      "dst_module_id": 3,
+      "dst_port": "open_trigger"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "div4",
+      "dst_module_id": 4,
+      "dst_port": "trigger"
+    },
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "clock"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "gate",
+      "dst_module_id": 6,
+      "dst_port": "trigger"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 7,
+      "dst_port": "in1"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "out",
+      "dst_module_id": 7,
+      "dst_port": "in2"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out",
+      "dst_module_id": 7,
+      "dst_port": "in3"
+    },
+    {
+      "src_module_id": 7,
+      "src_port": "out",
+      "dst_module_id": 8,
+      "dst_port": "in"
+    }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [
+        30,
+        200
+      ],
+      "2": [
+        340,
+        320
+      ],
+      "3": [
+        660,
+        60
+      ],
+      "4": [
+        660,
+        300
+      ],
+      "5": [
+        340,
+        60
+      ],
+      "6": [
+        660,
+        540
+      ],
+      "7": [
+        980,
+        300
+      ],
+      "8": [
+        1280,
+        300
+      ]
+    }
+  }
+}

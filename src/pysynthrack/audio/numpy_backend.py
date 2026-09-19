@@ -61,6 +61,7 @@ from ..modules.oscillator import (
 )
 from ..modules.cv_keyboard import CV_REFERENCE_NOTE, KEY_GATE_NAMES
 from ..modules.cv_gates import KEY_CV_NAMES
+from ..modules.clockwork import DIVIDER_MAX_SWING
 from ..modules.fm_op import snap_ratio as _fm_snap_ratio
 from ..modules.quantizer import (
     CUSTOM_KEYS as _Q_CUSTOM_KEYS,
@@ -4094,6 +4095,9 @@ class NumpyBackend(AudioBackend):
     # that ``2.0 ** (depth * cv)`` on an absurd CV (a cv_math product
     # gone wild) raises OverflowError in the audio thread.
     _BPM_CV_EXP_LIMIT = 6.0
+    # The clock's ``swing`` clamps where the divider's does (0.75); the
+    # panel stops at 0.5, the hard shuffle.
+    _CLOCK_MAX_SWING = DIVIDER_MAX_SWING
 
     def _render_clock(self, module, frames: int, buffers=None, patch=None) -> np.ndarray:
         """Tempo-driven gate pulse train, fully vectorized.
@@ -4141,16 +4145,49 @@ class NumpyBackend(AudioBackend):
         collapsed by ``_input_buffer`` to its voice sum, i.e. any-voice-
         high (the house rule).
 
+        ``swing`` (love pass, 2026-09-20): every second pulse is late by
+        ``swing`` of a period -- the clock_divider's convention (a
+        fraction of the period, the pulse keeps its width). It is a phase
+        offset on the ODD periods: the parity of each sample's period is
+        ``floor(unwrapped phase)`` plus a carried parity (the integer part
+        is lost when the phase wraps at the block end, so the parity is
+        state of its own, reset to 0 with every restart edge -- the pulse
+        on a reset sample is an even one), and on an odd period the gate
+        is ``swing <= frac < swing + pw`` instead of ``frac < pw``. Even
+        periods use the very same ``frac`` values as the straight clock,
+        so the even pulses are bit-identical to it, sample for sample; a
+        fraction of the phase is a fraction of the CURRENT period, so
+        ``bpm_cv`` swings with the tempo for free. The ceiling: a sample
+        is the last of its period when the next one's ``frac`` wraps
+        (the next block's first sample is ``mod(end_phase + inc, 1)``,
+        computed here exactly as that block will), and an odd pulse is
+        forced low there -- cut one sample before the next even edge --
+        so a late pulse can never swallow the downbeat; past ``swing + pw
+        = 1`` the odd pulse is shorter than the even one, never longer.
+        Held samples (``run`` low) repeat the previous ``frac``, so they
+        never read as a wrap and the parity freezes with the phase.
+
         Bit-exactness at default is by construction: with no edges the
         block is one segment, ``np.mod(phase0 + inc * arange(1, F + 1),
         1)`` and ``np.mod(phase0 + inc * F, 1)`` -- the pre-love-pass
         code, operation for operation. A ``run`` cable that is high from
         sample 0 is one edge there, and phase 0 from sample 0 IS the fresh
         clock, so that too is bit-exact (both pinned in tests/test_clock.py).
+        At ``swing`` 0 the odd-period branch is never built and the gate
+        is the same ``frac < pw`` -- the parity bookkeeping is one floor
+        per segment on the way to state -- so the recipe's renders are
+        unchanged (pinned).
         """
         bpm = max(1e-6, float(module.params.get("bpm", 120.0)))
         division = max(1e-6, float(module.params.get("division", 4.0)))
         pw = min(0.999, max(0.001, float(module.params.get("pulse_width", 0.5))))
+        try:
+            swing = float(module.params.get("swing", 0.0))
+        except (TypeError, ValueError):
+            swing = 0.0
+        swing = min(self._CLOCK_MAX_SWING, max(0.0, swing))
+        if not np.isfinite(swing):
+            swing = 0.0
 
         reset = run = bpm_cv = None
         if buffers is not None and patch is not None:
@@ -4177,6 +4214,7 @@ class NumpyBackend(AudioBackend):
 
         st = self._state.setdefault(module.id, {"phase": 0.0})
         phase0 = float(st.get("phase", 0.0))
+        parity0 = int(st.get("parity", 0)) & 1
 
         # Restart edges this block: every reset edge, plus every run rise.
         # ``_lfo_reset_edges`` is the generic carried-across-blocks
@@ -4204,9 +4242,15 @@ class NumpyBackend(AudioBackend):
         # that never falls yields the very same ramp as no cable.
         ramp = np.arange(1, frames + 1, dtype=np.float64)
         frac = np.empty(frames, dtype=np.float64)
+        swung = swing > 0.0
+        if swung:
+            odd = np.zeros(frames, dtype=bool)   # sample sits in an odd period
+            last = np.zeros(frames, dtype=bool)  # sample is the last of its period
         bounds = [0, *(int(e) for e in edges), frames]
         seg_start = phase0
+        parity = parity0
         end_phase = phase0
+        end_parity = parity0
         for a, b in zip(bounds[:-1], bounds[1:]):
             n = b - a
             if running is None:
@@ -4215,15 +4259,41 @@ class NumpyBackend(AudioBackend):
             else:
                 cnt = np.cumsum(running[a:b], dtype=np.float64)
                 adv = float(cnt[-1]) if n else 0.0
-            frac[a:b] = np.mod(seg_start + inc * cnt, 1.0)
-            end_phase = np.mod(seg_start + inc * adv, 1.0)
-            # Every segment after the first begins at a restart edge.
+            unwrapped = seg_start + inc * cnt
+            frac[a:b] = np.mod(unwrapped, 1.0)
+            end_unwrapped = seg_start + inc * adv
+            end_phase = np.mod(end_unwrapped, 1.0)
+            # The period's parity: laps completed since the segment
+            # start, plus the parity the segment started in. ``frac`` is
+            # ``unwrapped - floor(unwrapped)`` exactly, so this floor and
+            # that mod agree on which side of the crossing a sample sits.
+            end_parity = (parity + int(np.floor(end_unwrapped))) & 1
+            if swung and n:
+                lap = np.floor(unwrapped).astype(np.int64)
+                odd[a:b] = ((lap + parity) & 1).astype(bool)
+                # Last-of-period: the next sample's frac wraps below this
+                # one's. For the segment's final sample that next frac is
+                # what the following block computes first (``end_phase +
+                # inc * 1``), evaluated here the same way. A held sample
+                # repeats its predecessor's frac, so it is never a wrap.
+                nxt = np.mod(end_phase + inc, 1.0)
+                last[a:b - 1] = frac[a + 1:b] < frac[a:b - 1]
+                last[b - 1] = nxt < frac[b - 1]
+            # Every segment after the first begins at a restart edge: a
+            # fresh clock, phase 0, and the pulse there is an even one.
             seg_start = 0.0
+            parity = 0
 
         gate = frac < pw
+        if swung:
+            # Odd periods: the same pulse, ``swing`` of a period later,
+            # cut one sample before the next even edge (the ceiling).
+            late = (frac >= swing) & (frac < swing + pw) & ~last
+            gate = np.where(odd, late, gate)
         if running is not None:
             gate &= running
         st["phase"] = float(end_phase)
+        st["parity"] = int(end_parity)
         return gate.astype(np.float32)
 
     def _render_sequencer(self, module, frames: int, buffers, patch) -> dict:

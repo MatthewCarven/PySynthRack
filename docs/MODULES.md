@@ -3632,7 +3632,9 @@ that other modules step off (most obviously a [sequencer](#sequencer)'s
 `clock`, but equally an [adsr](#adsr)/[ad_envelope](#ad_envelope) trigger or a
 [sample_hold](#sample_hold) `trig`). Since the 2026-09-19 love pass it has a
 **transport** of its own: `run` (play/hold), `reset` (the downbeat) and
-`bpm_cv` (tempo).
+`bpm_cv` (tempo) — and since 2026-09-20 a **`swing`**: every second pulse
+late by a fraction of the period, the [`clock_divider`](#clock_divider)'s
+shuffle on the master clock itself.
 
 **Ports**
 
@@ -3651,6 +3653,7 @@ that other modules step off (most obviously a [sequencer](#sequencer)'s
 | `division` | `4.0` | 0.25…16 | Pulses per beat — 1 = quarter, 2 = eighth, 4 = sixteenth notes. |
 | `pulse_width` | `0.5` | 0.01…0.99 | Duty cycle (fraction of each period the gate is high). |
 | `bpm_cv_depth` | `1.0` | 0…4 | Tempo **doublings per CV unit** on `bpm_cv` (1.0 = the 1 V/oct style: +1 doubles the tempo, −1 halves it). 0 disables the input without unpatching it. |
+| `swing` | `0.0` | 0…0.5 | Every **second** pulse is late by this fraction of the period (0.33 = triplet swing, 0.5 = the hard shuffle). The even pulses never move. The slider stops at 0.5; a patch file may push it to the divider's 0.75. |
 
 **How it works.** A float64 phase accumulator carries across blocks so pulses stay phase-continuous (no drift, no seam). The phase is evaluated at samples 1..n, so a fresh clock emits a rising edge on its first sample and a downstream sequencer plays step 1 immediately.
 
@@ -3658,7 +3661,9 @@ that other modules step off (most obviously a [sequencer](#sequencer)'s
 
 > **A sample of slop, honestly.** The free-running phase accumulator is a float: at a tempo whose period is a whole number of samples (120 BPM × 1 = 22050) the crossing lands exactly *on* a sample boundary (phase 1.0 at sample 22049 in exact arithmetic, so the pulse is due at 22049) and the rounding of `phase + inc · n` decides whether that sample or the next one goes high — so between block sizes (64 vs 512) an edge can land one sample apart. A reset or run edge realigns everything to its own sample exactly. At the default 8 Hz (5512.5-sample period) the crossing is always half a sample from the grid and the sequences agree exactly across block sizes; the tests pin exact there and ±1 on the integer-period case.
 
-**Patching.** `clock.out → sequencer.clock`. See `examples/sequencer_melody.json`. A slow, wide-pulse `clock` into `run` is a play/hold transport (`examples/clock_transport.json`: two bars on, one bar off); a bar-rate `clock` into `reset` *and* the sequencer's `reset` nails the phrase to the bar line; a [drift](#drift) into `bpm_cv` at a small depth (0.02–0.05) is a tempo that breathes.
+**Swing.** The [`clock_divider`](#clock_divider)'s convention, on the master clock: `swing` is a fraction of the period, and every *second* pulse — the offbeat — is late by that much, keeping its width; the *even* pulses (the downbeat and every other one) sit exactly where the straight clock puts them, sample for sample. Mechanically it is a phase offset on the odd periods: the clock keeps the parity of the period it is in (state, since the integer part of the phase is lost at the block-end wrap) and on an odd period the gate is `swing ≤ phase < swing + pulse_width` instead of `phase < pulse_width`. Two consequences fall out for free: a fraction of the phase is a fraction of the *current* period, so `bpm_cv` swings with the tempo; and a `reset` (or a `run` rise) restarts the parity with the phase — the pulse on the reset sample is an even, straight one, and the count starts over from it. Measured at the default 8 Hz with `swing` 0.33: odd edges 1819 samples late (= round(0.33 × 5512.5)), even edges untouched, pulse widths identical, 64- and 512-sample blocks agreeing to the sample. The ceiling: an odd pulse is cut one sample before the next even edge, so a late pulse can *never* swallow the downbeat — past `swing + pulse_width = 1` (the slider's top with the default duty) the odd pulse is shorter than the even one, never longer, and every downbeat still rises. Downstream, a divider on a swung clock counts *edges*, and edge parity is pulse parity, so its `/2`, `/4`, `/8` fire on even pulses only — a straight kick under swung hats from one clock — while its measured interval alternates long/short and its gate *lengths* wobble with it (use it for triggers). At 0 the straight clock is the same code path, bit-exact.
+
+**Patching.** `clock.out → sequencer.clock`. See `examples/sequencer_melody.json`. A slow, wide-pulse `clock` into `run` is a play/hold transport (`examples/clock_transport.json`: two bars on, one bar off); a bar-rate `clock` into `reset` *and* the sequencer's `reset` nails the phrase to the bar line; a [drift](#drift) into `bpm_cv` at a small depth (0.02–0.05) is a tempo that breathes. Swung sixteenth hats over a straight kick from the same clock: `examples/clock_swing.json`.
 
 #### `sequencer`
 
@@ -5341,6 +5346,14 @@ loads in the app. Notable ones referenced above:
   slow [`drift`](#drift) at 0.03 doublings/unit (±2%: the tempo breathes,
   the downbeat still lands on the sample). Into a [`pluck`](#pluck) and a
   little reverb. Eight modules.
+- `clock_swing.json` — the shuffle on the master clock: a 96 BPM sixteenth
+  [`clock`](#clock) with `swing` 0.3 into a [`hat_drum`](#hat_drum)'s
+  `closed_trigger` (every offbeat sixteenth lands 0.3 of a step late) and into a
+  [`clock_divider`](#clock_divider) whose `div4` — edges 0, 4, 8, … of the swung
+  train, all even pulses — is a dead-straight [`kick_drum`](#kick_drum), with
+  `div8` opening the hat every half-note and a two-in-sixteen
+  [`euclidean`](#euclidean) snare on the backbeat. One clock, swung hats,
+  straight kick. Eight modules.
 - `chord_legato_inversions.json` — a held gate with roots walking under it: the
   [`chord`](#chord)'s `retrig` re-strums a maj7 in first inversion 20 ms apart on
   every root step, and the [`arpeggiator`](#arpeggiator) below it runs on its

@@ -53,6 +53,7 @@ from ..modules.organ import (
     PERC_DECAYS,
     PERC_MODES,
 )
+from ..modules.clock import CLOCK_MAX_SWING_UI
 from ..modules.clockwork import DIVIDER_MAX_M, DIVIDER_MAX_N, DIVIDER_MAX_SWING
 from ..modules.drums import HAT_TONE_MAX, HAT_TONE_MIN
 from ..modules.sequencer import MAX_STEPS as SEQ_MAX_STEPS, SEQ_DIRECTIONS
@@ -1136,7 +1137,18 @@ class App:
             # and ``bpm_cv_depth`` -- tempo doublings per CV unit on
             # ``bpm_cv`` (1.0 = the 1 V/oct style: +1 doubles the tempo),
             # presented like the filter's ``res_cv_depth`` drag (0..4).
-            # ``reset`` / ``run`` / ``bpm_cv`` are jacks, no widget.
+            # ``swing`` delays every second pulse by that fraction of the
+            # period -- the divider's convention; the slider stops at 0.5
+            # (the hard shuffle; 0.33 = triplet) though the backend takes
+            # the divider's 0.75. ``reset`` / ``run`` / ``bpm_cv`` are
+            # jacks, no widget.
+            if param_name == "swing":
+                dpg.add_slider_float(
+                    label="swing (0.33 = triplet)", default_value=float(current),
+                    min_value=0.0, max_value=CLOCK_MAX_SWING_UI, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
             if param_name == "bpm_cv_depth":
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=0.02,

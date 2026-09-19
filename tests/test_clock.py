@@ -7,9 +7,17 @@ the free-running clock's own edges; a run rise is the same; a held clock
 emits nothing and its phase does not move. Bit-exactness at default (and
 under a run cable that never falls + a reset cable that never rises) is
 the recipe's pin.
+
+``swing`` (love pass, 2026-09-20) is pinned the same way: the odd edges
+land ``round(swing * period)`` samples after the straight clock's, the
+even ones ON them (and the even periods are bit-identical), the widths
+are the straight clock's, a reset restarts the parity, the ceiling never
+swallows a downbeat, and the default is the straight clock -- the recipe
+(18 reference renders) plus a digest of the free-running render.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from unittest import mock
@@ -44,6 +52,7 @@ class TestClockModel:
         assert c.TYPE == "clock"
         assert c.params == {
             "bpm": 120.0, "division": 4.0, "pulse_width": 0.5, "bpm_cv_depth": 1.0,
+            "swing": 0.0,
         }
 
     def test_ports(self):
@@ -63,6 +72,15 @@ class TestClockModel:
             m["params"].pop("bpm_cv_depth", None)
         loaded = Patch.from_dict(d)
         assert loaded.modules[c.id].params["bpm_cv_depth"] == 1.0
+
+    def test_pre_swing_patch_loads_straight(self):
+        patch = Patch()
+        c = patch.add_module("clock")
+        d = patch.to_dict()
+        for m in d["modules"]:
+            m["params"].pop("swing", None)
+        loaded = Patch.from_dict(d)
+        assert loaded.modules[c.id].params["swing"] == 0.0
 
 
 class TestClockSignal:
@@ -363,6 +381,159 @@ class TestBlockSize:
         assert 30011 in e512 and 30011 in e64
 
 
+# ----- swing ---------------------------------------------------------------------------
+
+PERIOD = SR / 8.0  # 5512.5 samples at the default 120 x 4
+
+
+def _widths(y):
+    r, f = _rising(y), _falling(y)
+    return (f - r[:len(f)]).tolist()
+
+
+class TestSwing:
+    def test_odd_edges_are_late_by_swing_of_the_period_and_even_edges_do_not_move(self):
+        # The divider's convention: every SECOND pulse late by swing x
+        # period -- at 8 Hz and 0.33 that is round(1819.125) = 1819
+        # samples, measured exactly; the even edges are the straight
+        # clock's own samples.
+        free = _free_edges()
+        y, _b, _c = _transport({}, params={"swing": 0.33})
+        edges = _rising(y)
+        assert len(edges) == len(free)
+        late = edges - free
+        assert np.all(late[0::2] == 0)
+        assert set(late[1::2].tolist()) <= {1818, 1819, 1820}
+        assert late[1::2].tolist().count(1819) == len(late[1::2])  # measured: exact
+        assert edges[:6].tolist() == [0, 7331, 11024, 18356, 22049, 29381]
+
+    def test_pulse_widths_are_the_straight_clocks(self):
+        free, _b, _c = _transport({})
+        y, _b2, _c2 = _transport({}, params={"swing": 0.33})
+        ws, ww = _widths(free), _widths(y)
+        assert len(ws) == len(ww)
+        assert np.abs(np.array(ws) - np.array(ww)).max() <= 1
+        assert ww[:6] == ws[:6] == [2756, 2756, 2757, 2756, 2757, 2756]  # measured: equal
+
+    def test_even_periods_are_bit_identical_and_the_phase_is_untouched(self):
+        # The swing is a phase OFFSET on odd periods: the accumulator and
+        # every even period's samples are the straight clock's, bit for bit.
+        free, bf, cf = _transport({})
+        y, b, c = _transport({}, params={"swing": 0.33})
+        fe = _rising(free)
+        for k in range(len(fe) // 2 - 1):
+            a, z = fe[2 * k], fe[2 * k + 1]
+            assert np.array_equal(y[a:z], free[a:z]), k
+        assert b._state[c.id]["phase"] == bf._state[cf.id]["phase"]
+        assert b._state[c.id]["parity"] in (0, 1)
+
+    def test_swing_is_a_fraction_of_the_current_period(self):
+        # bpm_cv +1 at depth 1 = 16 Hz, a 2756.25-sample period: the odd
+        # edges are round(0.33 * 2756.25) = 910 late (+/-1), not 1819.
+        cv = np.ones(N, np.float32)
+        free, _b, _c = _transport({"bpm_cv": cv})
+        y, _b2, _c2 = _transport({"bpm_cv": cv}, params={"swing": 0.33})
+        late = _rising(y) - _rising(free)
+        assert np.all(late[0::2] == 0)
+        assert set(late[1::2].tolist()) <= {909, 910, 911}
+
+    def test_reset_restarts_the_parity_the_reset_pulse_is_even(self):
+        # A reset at 6000 sits in period 1 (the odd one) BEFORE its late
+        # pulse would rise at 7331: the gate goes high on the reset sample
+        # (an even, straight pulse), the dropped odd pulse never comes,
+        # and the count starts over -- 6000 + the swung clock's own edges.
+        reset = np.zeros(N, np.float32)
+        reset[6000:6100] = 1.0
+        y, _b, _c = _transport({"reset": reset}, params={"swing": 0.33})
+        assert y[5999] == 0.0 and y[6000] == 1.0
+        assert _rising(y)[:6].tolist() == [
+            0, 6000, 6000 + 7331, 6000 + 11024, 6000 + 18356, 6000 + 22049,
+        ]
+
+    def test_run_rise_restarts_the_parity_too(self):
+        run = np.ones(N, np.float32)
+        run[20005:30011] = 0.0
+        y, _b, _c = _transport({"run": run}, params={"swing": 0.33})
+        edges = _rising(y)
+        assert edges[:4].tolist() == [0, 7331, 11024, 18356]
+        assert not np.any(y[20005:30011] > 0.5)
+        after = edges[edges >= 30011] - 30011
+        assert after[:4].tolist() == [0, 7331, 11024, 18356]
+
+    def test_the_ceiling_cuts_the_odd_pulse_a_sample_before_the_downbeat(self):
+        # swing 0.5 + pw 0.5 = 1: the odd pulse would run straight into
+        # the even one and the downbeat would never RISE. It is cut one
+        # sample short instead: every straight edge is still an edge, a
+        # low sample precedes every even edge, odd widths 2755 vs 2756/7.
+        free = _free_edges()
+        y, _b, _c = _transport({}, params={"swing": 0.5})
+        edges = _rising(y)
+        assert len(edges) == len(free)
+        assert np.array_equal(edges[0::2], free[0::2])
+        assert all(y[k - 1] == 0.0 for k in edges[2::2])
+        assert _widths(y)[:8] == [2756, 2755, 2757, 2755, 2757, 2755, 2757, 2755]
+        # Past the ceiling (pw 0.9) the odd pulse SHRINKS to the room it
+        # has; the even one keeps its 0.9 and every downbeat still rises.
+        y9, _b2, _c2 = _transport({}, params={"swing": 0.5, "pulse_width": 0.9})
+        e9 = _rising(y9)
+        assert len(e9) == len(free)
+        assert np.array_equal(e9[0::2], free[0::2])
+        assert _widths(y9)[:4] == [4961, 2755, 4962, 2755]
+
+    def test_hand_edited_swing_clamps_at_the_dividers_ceiling_and_garbage_is_straight(self):
+        from pysynthrack.modules.clockwork import DIVIDER_MAX_SWING
+
+        assert NumpyBackend._CLOCK_MAX_SWING == DIVIDER_MAX_SWING == 0.75
+        free, _b, _c = _transport({})
+        y, _b2, _c2 = _transport({}, params={"swing": 0.9})
+        late = _rising(y) - _rising(free)
+        assert set(late[1::2].tolist()) <= {4133, 4134, 4135}  # round(0.75 * 5512.5)
+        for bad in (float("nan"), "abc", None, -0.3):
+            yb, _b3, _c3 = _transport({}, params={"swing": bad})
+            assert np.array_equal(yb, free), bad
+
+    def test_swing_zero_is_the_straight_clock_bit_exact_through_the_dispatcher(self):
+        # The recipe's pin in durable form: the free-running render at
+        # the default (512-sample blocks, N samples) hashed on the day
+        # the swing shipped, when 18 reference renders (16 examples + 2
+        # transport patches) captured BEFORE the edit compared bit-exact
+        # AFTER it. A swing of 0 is the same code path, so this pins both.
+        free, _b, _c = _transport({}, dispatch=True)
+        assert hashlib.sha256(free.tobytes()).hexdigest() == (
+            "40474ea156c99390d8b1dba80d61c55dba77dfb4980741af4e3e7d4a03a9a1fa"
+        )
+        y, _b2, _c2 = _transport({}, params={"swing": 0.0}, dispatch=True)
+        assert np.array_equal(y, free)
+        rows = {"run": np.ones(N, np.float32), "reset": np.zeros(N, np.float32)}
+        y2, _b3, _c3 = _transport(rows, params={"swing": 0.0}, dispatch=True)
+        assert np.array_equal(y2, free)
+
+    def test_swung_edge_sequence_is_exact_across_block_sizes_at_the_default_tempo(self):
+        # The transport rows (reset 7001, hold 20005..30011, reset 40003)
+        # with swing 0.33: 64 and 512 agree to the sample. The reset at
+        # 40003 lands INSIDE the late odd pulse (37342..40098) and extends
+        # it -- the standing rule -- so the count restarts without a rise.
+        rows = TestBlockSize._rows()
+        y512, _b, _c = _transport(rows, params={"swing": 0.33}, block=512)
+        y64, _b2, _c2 = _transport(rows, params={"swing": 0.33}, block=64)
+        assert np.array_equal(y512, y64)
+        assert _rising(y512)[:10].tolist() == [
+            0, 7001, 14332, 18025, 30011, 37342, 47334, 51027, 58359, 62052,
+        ]
+
+    def test_integer_period_tempo_swung_agrees_within_a_sample(self):
+        # Where the straight clock is +/-1 across block sizes (the
+        # 22050-sample period crosses ON a sample) the swung one is too.
+        rows = TestBlockSize._rows()
+        p = {"swing": 0.33, "division": 1.0}
+        y512, _b, _c = _transport(rows, params=p, block=512)
+        y64, _b2, _c2 = _transport(rows, params=p, block=64)
+        e512, e64 = _rising(y512), _rising(y64)
+        assert len(e512) == len(e64)
+        assert np.abs(e512 - e64).max() <= 1
+        assert 30011 in e512 and 30011 in e64
+
+
 # ----- widget sweep ----------------------------------------------------------------
 
 
@@ -381,7 +552,9 @@ def _widgets(monkeypatch):
     out = {}
     for k in kinds:
         for call in getattr(app_mod.dpg, k).call_args_list[before[k]:]:
-            out[str(call.kwargs.get("label"))] = (k, call.kwargs.get("format"))
+            out[str(call.kwargs.get("label"))] = (
+                k, call.kwargs.get("format"), call.kwargs.get("max_value"),
+            )
     return out
 
 
@@ -395,9 +568,65 @@ def test_every_param_gets_a_bounded_widget(monkeypatch):
     assert w["bpm"][1].endswith(" BPM")
     assert "dbl/unit" in w["bpm_cv_depth"][1]
     assert w["bpm_cv_depth"][1].isascii()
+    # swing: a bounded slider to the hard shuffle (0.5), ASCII label.
+    swing = [lb for lb in labels if lb.startswith("swing")]
+    assert swing and swing[0].isascii()
+    assert w[swing[0]] == ("add_slider_float", "%.2f", 0.5)
 
 
-# ----- example -----------------------------------------------------------------------
+# ----- examples ----------------------------------------------------------------------
+
+
+def test_the_swing_example_swings_the_hats_and_keeps_the_kick_straight():
+    from pysynthrack.io_patch import load_patch
+
+    path = Path(__file__).resolve().parent.parent / "examples" / "clock_swing.json"
+    patch = load_patch(path)
+    assert len(patch.modules) <= 10
+    clk = next(m for m in patch if m.TYPE == "clock")
+    assert clk.params["swing"] == 0.3
+    div = next(m for m in patch if m.TYPE == "clock_divider")
+    b = NumpyBackend(sample_rate=SR, block_size=512)
+    b.compile(patch)
+    clock_out, div4, div8 = [], [], []
+    orig = b._render_clock
+    orig_div = b._render_clock_divider
+
+    def spy(module, frames, buffers=None, p=None):
+        r = orig(module, frames, buffers, p)
+        clock_out.append(np.asarray(r).copy())
+        return r
+
+    def spy_div(module, frames, buffers, p):
+        r = orig_div(module, frames, buffers, p)
+        div4.append(np.asarray(r["div4"]).copy())
+        div8.append(np.asarray(r["div8"]).copy())
+        return r
+
+    b._render_clock = spy
+    b._render_clock_divider = spy_div
+    np.random.seed(5)  # the drums are seeded per hit; belt and braces
+    out = []
+    for _ in range(int(SR * 4 / 512)):
+        y, _devices = b.render_block_multi(512)
+        assert y is not None and np.all(np.isfinite(y))
+        out.append(np.asarray(y).copy())
+    y = np.concatenate(out, axis=0)
+    peak = float(np.abs(y).max())
+    assert 0.3 < peak < 0.8
+    # The hat's trigger IS the swung train: 96 x 4 = 6.4 Hz, a 6890.625-
+    # sample period, the offbeats round(0.3 * 6890.625) = 2067 late, so
+    # the spacing alternates 8957 / 4824 (+/-1).
+    edges = _rising(np.concatenate(clock_out))
+    spacing = np.diff(edges)
+    assert set(spacing[0::2].tolist()) <= {8957, 8958}
+    assert set(spacing[1::2].tolist()) <= {4823, 4824}
+    # The divider counts edges and edge parity is pulse parity: div4 fires
+    # on edges 0, 4, 8, ... -- even pulses only, exactly on their samples
+    # -- so the kick is dead straight under the swung hats; div8 likewise.
+    assert np.array_equal(_rising(np.concatenate(div4)), edges[0::4])
+    assert np.array_equal(_rising(np.concatenate(div8)), edges[0::8])
+    assert div.params["swing"] == 0.0  # the divider adds none of its own
 
 
 def test_the_transport_example_plays_two_bars_and_holds_one():

@@ -29,11 +29,29 @@ run rises (which re-zeros it anyway). `bpm_cv` (cv) scales the tempo by
 block-mean like every block-rate CV in the rack, exponent clipped to ±6.
 Gates are mono: a `(V, F)` source on `reset` or `run` collapses to
 any-voice-high; a `(V, F)` source on `bpm_cv` is averaged.
+
+`swing` (2026-09-20) is the shuffle: every SECOND pulse is late by `swing`
+of a period — the [`clock_divider`](#clock_divider)'s convention, the same
+units (a fraction of the period, 0.33 the triplet feel, 0.5 the hard
+shuffle) and the same rule (the odd pulse keeps its width; the even pulses
+do not move). The even pulses — the downbeat and every other one — sit
+exactly where the straight clock puts them, sample for sample; the odd
+pulses' rising edges move later by `swing × period`, a fraction of the
+CURRENT period, so `bpm_cv` swings with the tempo. A `reset` (or a `run`
+rise) restarts the even/odd count: the pulse on the reset sample is an even
+one. The ceiling: an odd pulse is cut one sample before the next even edge,
+so a late pulse can never swallow the downbeat — past `swing + pulse_width
+= 1` the odd pulse is shorter than the even one, never longer. 0 is the
+straight clock, bit-exact.
 """
 from __future__ import annotations
 
 from ..core.module import Module, register_module_type
 from ..core.port import Port
+
+# The panel's swing ceiling: 0.5 is the hard shuffle (the odd pulse lands
+# halfway to the next even one); the backend clamps at the divider's 0.75.
+CLOCK_MAX_SWING_UI = 0.5
 
 
 @register_module_type
@@ -49,6 +67,10 @@ class Clock(Module):
         bpm_cv_depth: Tempo doublings per CV unit on ``bpm_cv`` (1.0 = a
             CV of +1 doubles the tempo, -1 halves it). 0 disables the
             input without unpatching it.
+        swing: Every second pulse is delayed by this fraction of the
+            period (0.33 = triplet swing, 0.5 = the hard shuffle; the
+            panel stops at 0.5, the backend takes the divider's 0.75).
+            The even pulses never move; 0 = straight.
     """
 
     TYPE = "clock"
@@ -58,6 +80,7 @@ class Clock(Module):
         "division": 4.0,
         "pulse_width": 0.5,
         "bpm_cv_depth": 1.0,
+        "swing": 0.0,
     }
     INPUT_PORTS = [
         Port("reset", "in", "gate"),
