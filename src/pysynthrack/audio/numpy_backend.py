@@ -2670,6 +2670,8 @@ class NumpyBackend(AudioBackend):
             return self._render_possibility_seq(module, frames, buffers, patch)
         if module.TYPE == "possibility_selector":
             return self._render_possibility_selector(module, frames, buffers, patch)
+        if module.TYPE == "drift":
+            return self._render_drift(module, frames, buffers, patch)
         if module.TYPE == "sampler":
             return self._render_sampler(module, frames, buffers, patch)
         if module.TYPE == "euclidean":
@@ -14923,6 +14925,170 @@ class NumpyBackend(AudioBackend):
         out *= level * self._WIND_OUT_GAIN
         result = out if voiced else out[0]
         return result.astype(np.float32)
+
+    # ----- Drift rendering -------------------------------------------------
+
+    _DRIFT_RATE_MIN = 0.02
+    _DRIFT_RATE_MAX = 50.0
+    _DRIFT_TRIG_SEC = 0.001
+
+    def _render_drift(self, module, frames: int, buffers, patch) -> dict:
+        """Smooth wandering random CV (see modules/drift.py).
+
+        Ticks are an INTEGER schedule: ``next = last_tick + round(sr /
+        rate_eff)`` with the rate re-read per block (``rate_cv`` block
+        mean, octaves), so with a constant rate every tick lands on the
+        same absolute sample at any block size; with ``clock`` patched
+        the ticks are its rising edges and the glide is sized from the
+        measured edge interval (a jump until one exists). At each tick
+        the next target is drawn from ``default_rng(seed)`` -- uniform in
+        ±1 (``smooth``) or the previous target plus ``step`` x N(0, 1)
+        reflected at ±1 (``walk``) -- and a new segment starts FROM THE
+        CURRENT VALUE (not the old target, so a tick arriving mid-glide
+        never jumps). Between ticks the value follows a half-cosine over
+        ``max(1, round(glide x interval))`` samples then holds; each
+        segment is one vectorized expression in absolute sample indices.
+        ``stepped`` holds the target; ``trig`` is high for min(1 ms, half
+        the interval) from each tick, carried across blocks.
+        """
+        from ..modules.drift import DRIFT_MODES
+
+        rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
+        clock = self._input_buffer(patch, buffers, module.id, "clock")
+
+        def fparam(name, default, lo, hi):
+            try:
+                x = float(module.params.get(name, default))
+            except (TypeError, ValueError):
+                x = default
+            return min(hi, max(lo, x))
+
+        mode = str(module.params.get("mode", "smooth"))
+        if mode not in DRIFT_MODES:
+            mode = "smooth"
+        rate = fparam("rate", 0.5, self._DRIFT_RATE_MIN, self._DRIFT_RATE_MAX)
+        glide = fparam("glide", 1.0, 0.0, 1.0)
+        step = fparam("step", 0.25, 0.0, 1.0)
+        depth = fparam("depth", 1.0, 0.0, 1.0)
+        bipolar = bool(module.params.get("bipolar", True))
+        cv_depth = fparam("cv_depth", 1.0, -10.0, 10.0)
+        try:
+            seed = max(0, int(module.params.get("seed", 1)))
+        except (TypeError, ValueError):
+            seed = 1
+
+        sr = float(self.sample_rate)
+        if rate_cv is not None:
+            rate = rate * (2.0 ** (cv_depth * float(np.mean(rate_cv))))
+            rate = min(self._DRIFT_RATE_MAX, max(self._DRIFT_RATE_MIN, rate))
+        interval = max(1, int(round(sr / rate)))
+        trig_len = max(1, int(round(self._DRIFT_TRIG_SEC * sr)))
+
+        st = self._state.setdefault(module.id, {})
+        if st.get("seed") != seed:
+            st.clear()
+            st.update({
+                "seed": seed, "rng": np.random.default_rng(seed),
+                "n": 0,                 # absolute sample index of this block's start
+                "last_tick": -1,        # absolute sample of the last tick (-1: none yet)
+                "a": 0.0, "b": 0.0,     # segment start value and target
+                "glide_n": 1,
+                "trig_rem": 0,
+                "prev_clock": False,
+                "last_edge": -1,
+            })
+        rng = st["rng"]
+        n0 = int(st["n"])
+        last_tick = int(st["last_tick"])
+        a = float(st["a"])
+        b = float(st["b"])
+        glide_n = int(st["glide_n"])
+        trig_rem = int(st["trig_rem"])
+
+        # --- where the ticks fall in this block (relative indices)
+        if clock is not None:
+            gt = clock > self._GATE_HIGH
+            prev = np.concatenate(([bool(st["prev_clock"])], gt[:-1]))
+            ticks = np.flatnonzero(gt & ~prev).tolist()
+            st["prev_clock"] = bool(gt[-1])
+        else:
+            ticks = []
+            nxt = 0 if last_tick < 0 else last_tick + interval
+            if nxt < n0:
+                nxt = n0            # the rate shortened past the elapsed time: now
+            while nxt < n0 + frames:
+                ticks.append(nxt - n0)
+                nxt += interval
+
+        def segment(start, end):
+            """Value of the current segment over [start, end) (relative)."""
+            i = np.arange(start, end, dtype=np.float64) + (n0 - last_tick + 1)
+            u = np.minimum(1.0, i / glide_n)
+            return a + (b - a) * 0.5 * (1.0 - np.cos(np.pi * u))
+
+        value = np.empty(frames, dtype=np.float64)
+        stepped = np.empty(frames, dtype=np.float64)
+        trig = np.zeros(frames, dtype=np.float32)
+        if trig_rem > 0:
+            trig[:min(frames, trig_rem)] = 1.0
+        pos = 0
+        for t in ticks + [frames]:
+            if t > pos:
+                if last_tick < 0:
+                    value[pos:t] = 0.0
+                    stepped[pos:t] = 0.0
+                else:
+                    value[pos:t] = segment(pos, t)
+                    stepped[pos:t] = b
+            if t < frames:
+                # a tick at relative t: start the new segment from where we are
+                if last_tick < 0:
+                    cur = 0.0
+                else:
+                    cur = float(segment(t - 1, t)[0]) if t > 0 else a + (b - a) * 0.5 * (
+                        1.0 - np.cos(np.pi * min(1.0, (n0 - last_tick) / glide_n)))
+                if mode == "walk":
+                    nb = b + step * float(rng.standard_normal())
+                    while nb > 1.0 or nb < -1.0:
+                        nb = 2.0 - nb if nb > 1.0 else -2.0 - nb
+                else:
+                    nb = float(rng.uniform(-1.0, 1.0))
+                abs_t = n0 + t
+                if clock is not None:
+                    seg_int = abs_t - int(st["last_edge"]) if int(st["last_edge"]) >= 0 else 0
+                    st["last_edge"] = abs_t
+                else:
+                    seg_int = interval
+                a, b = cur, nb
+                last_tick = abs_t
+                glide_n = max(1, int(round(glide * seg_int))) if seg_int > 0 else 1
+                trig_rem = min(trig_len, max(1, seg_int // 2)) if seg_int > 0 else trig_len
+                trig[t:min(frames, t + trig_rem)] = 1.0
+            pos = t
+        # trig samples left over for the next block
+        if ticks:
+            trig_rem = max(0, ticks[-1] + trig_rem - frames)
+        else:
+            trig_rem = max(0, trig_rem - frames)
+
+        st["n"] = n0 + frames
+        st["last_tick"] = last_tick
+        st["a"] = a
+        st["b"] = b
+        st["glide_n"] = glide_n
+        st["trig_rem"] = trig_rem
+
+        if bipolar:
+            cv = value * depth
+            held = stepped * depth
+        else:
+            cv = (value + 1.0) * 0.5 * depth
+            held = (stepped + 1.0) * 0.5 * depth
+        return {
+            "cv": cv.astype(np.float32),
+            "stepped": held.astype(np.float32),
+            "trig": trig,
+        }
 
     # ----- Clockwork trio (euclidean / burst / bernoulli) ------------------
 

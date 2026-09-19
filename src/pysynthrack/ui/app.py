@@ -76,6 +76,7 @@ from ..modules.possibility_selector import (
 )
 from ..modules.wavetable_morph import WT_STACKS
 from ..modules.wind import WIND_MODELS
+from ..modules.drift import DRIFT_MODES
 from ..modules.compressor import DETECTOR_MODES
 from ..modules.distortion import DISTORTION_MODES
 from ..modules.meter import METER_MODES
@@ -3162,6 +3163,40 @@ class App:
                 )
                 return
 
+        if module.TYPE == "drift":
+            # Smooth wandering random. ``rate`` is new values per second;
+            # ``glide`` the fraction of each interval spent travelling (0 =
+            # stepped); ``step`` the walk's gaussian step; ``mode`` hits the
+            # shared combo branch below; ``bipolar`` rides the checkbox.
+            if param_name == "rate":
+                dpg.add_drag_float(
+                    label=f"{param_name} (values/s)", default_value=float(current),
+                    speed=0.01, min_value=0.02, max_value=50.0, format="%.2f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("glide", "step", "depth"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f oct/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "seed":
+                dpg.add_drag_int(
+                    label=param_name, default_value=int(current), speed=1,
+                    min_value=0, max_value=999999,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "wind":
             # Blown pipe. ``model`` picks the mouth (flute jet / clarinet
             # reed); ``breath`` is the player's pressure, ``noise`` the
@@ -3419,6 +3454,8 @@ class App:
                 items = list(ARP_MODES)
             elif module.TYPE == "sampler":
                 items = list(SAMPLER_MODES)
+            elif module.TYPE == "drift":
+                items = list(DRIFT_MODES)
             else:
                 items = list(FILTER_MODES)
             dpg.add_combo(

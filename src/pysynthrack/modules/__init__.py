@@ -32,6 +32,7 @@ from .cvtoaudio import CVToAudio
 from .cvtofrequency import CVToFrequency
 from .delay import Delay
 from .distortion import Distortion
+from .drift import Drift
 from .waveshaper import Waveshaper
 from .wind import Wind
 from .diskwriter import DiskWriter
@@ -131,6 +132,7 @@ __all__ = [
     "DiskWriter",
     "Euclidean",
     "Distortion",
+    "Drift",
     "FaderSeq",
     "FilePlayer",
     "Filter",

@@ -91,6 +91,7 @@ The full map:
 | `vca.cv` | — (multiplier) | linear | `audio · cv · gain` |
 | `filter.cutoff_cv` | `1.0` | octaves | `cutoff · 2^(d·mean cv)` |
 | `lfo.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
+| `drift.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)`, re-read per block; mono (a `(V, F)` source is averaged) |
 | `crossover.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
 | `sweep_eq.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
 | `motion_eq.band{i}_freq_cv` | `1.0` (shared) | octaves | `freq_i · 2^(d·mean cv)` |
@@ -288,6 +289,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`possibility_seq`](#possibility_seq) | Modulation | `clock`,`reset`,`reroll` (gate) → `gate` (gate) |
 | [`possibility_selector`](#possibility_selector) | Modulation | `in`,`clock`,`reset`,`reroll` (gate) → `out1`–`out4` (gate) |
 | [`chaos`](#chaos) | Modulation | `reset` (gate) → `x`,`y`,`z` (cv), `gate` (gate) |
+| [`drift`](#drift) | Modulation | `rate_cv` (cv), `clock` (gate) → `cv`,`stepped` (cv), `trig` (gate) |
 | [`euclidean`](#euclidean) | Modulation | `clock`,`reset` (gate), `fills_cv` (cv) → `gate`,`accent` (gate) |
 | [`burst`](#burst) | Modulation | `trigger`,`clock` (gate), `count_cv` (cv) → `gate` (gate), `env` (cv) |
 | [`bernoulli_gate`](#bernoulli_gate) | Modulation | `in` (gate), `p_cv` (cv) → `out_a`,`out_b` (gate) |
@@ -3363,6 +3365,69 @@ same `clock` on both (whether × which), `out1..out4 → kick / snare /
 closed hat / open hat`; or a sparse gate into `in` alone and four plucks
 on the outputs. `examples/possibility_selector_kit.json` is both at once.
 
+#### `drift`
+
+A **smooth wandering random CV**. The rack's other random sources all
+have corners or a plan: the [`lfo`](#lfo)'s `random` steps,
+[`sample_hold`](#sample_hold) steps, [`shift_random`](#shift_random)
+loops, [`chaos`](#chaos) orbits an attractor with perfect determinism.
+This one *stumbles*: a random voltage that wanders smoothly from value to
+value — Buchla's fluctuating random voltage, the Wogglebug's smooth out —
+for filter cutoffs that breathe, pitches that drift like an old
+oscillator, pans that never sit still.
+
+Every `1/rate` seconds a new target is drawn and the output travels to it
+along a half-cosine over `glide` of the interval, then holds. `mode`
+picks how the target is drawn: **`smooth`** — a fresh uniform draw across
+the whole range each time (the classic fluctuating random: it goes
+anywhere, at a walking pace); **`walk`** — the previous target plus a
+gaussian step of `step`, reflected off the edges (a random walk: it goes
+*somewhere near*, and keeps going — the drift of a thing with no home
+value). `glide` is the travel fraction: 0 is a plain sample-and-hold, 1 is
+one continuous curve with no flat spots, 0.3 arrives early and waits. A
+tick that lands mid-glide starts the next curve from wherever the value
+is, so nothing ever jumps — including under a `rate_cv` sweep.
+
+**Three outputs off the same die.** `cv` is the smooth wander; `stepped`
+is the held targets — the S&H twin, so a filter can drift while a
+[`quantizer`](#quantizer)'d pitch steps to the very same values; `trig`
+is a 1 ms pulse on every new value — a random clock at the same pace,
+which fires a [`pluck`](#pluck) exactly when the wander turns a corner.
+
+`rate_cv` bends the rate in octaves (`cv_depth` per unit, block mean;
+mono — a polyphonic source is averaged). Patch a [`clock`](#clock) and
+the draws happen on its rising edges instead of the internal rate, the
+glide sized from the measured beat (a jump until one exists).
+
+All randomness comes from `seed`, and the tick schedule is an integer
+sample count rather than a float phase, so a render is **bit-identical
+at any block size** (pinned at 64 vs 2048) and patches reload with the
+wander they were saved with. Numpy backend only; silent stub under pyo.
+See `examples/drift_wander.json`.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `rate_cv` | in | cv | Rate in octaves per unit × `cv_depth` (block mean). |
+| `clock` | in | gate | Optional: a new value on every rising edge instead of the internal rate. |
+| `cv` | out | cv | The smooth wander. |
+| `stepped` | out | cv | The targets, held (the S&H twin). |
+| `trig` | out | gate | A 1 ms pulse on every new value. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `mode` | `smooth` | smooth / walk | Fresh uniform targets, or a reflected random walk. |
+| `rate` | `0.5` | 0.02 … 50 Hz | New values per second. |
+| `glide` | `1.0` | 0 … 1 | Fraction of each interval spent travelling; 0 = stepped. |
+| `step` | `0.25` | 0 … 1 | `walk` only: the gaussian step's size on the ±1 scale. |
+| `depth` | `1.0` | 0 … 1 | Output amplitude. |
+| `bipolar` | `true` | bool | ±`depth`, or 0 … `depth`. |
+| `cv_depth` | `1.0` | 0 … 4 | Octaves per unit on `rate_cv`. |
+| `seed` | `1` | ≥ 0 | All randomness. |
+
 #### `chaos`
 
 A **strange-attractor CV source** — deterministic wandering with
@@ -4369,6 +4434,13 @@ loads in the app. Notable ones referenced above:
   (vibrato LFO summed into `pitch_cv`, a 0.15 Hz LFO on `breath_cv` so
   the player breathes) over a `reed` line in the chalumeau register at
   half speed off a [`clock_divider`](#clock_divider), through a chamber.
+- `drift_wander.json` — one [`drift`](#drift), three jobs: its `cv`
+  breathes a resonant lowpass over a low saw (2.5 octaves of `cutoff_cv`),
+  its `stepped` twin goes through a pentatonic [`quantizer`](#quantizer)
+  into a [`pluck`](#pluck) that its `trig` fires — a note at every new
+  place the wander turns towards; a second `drift` in `walk` mode, 36
+  cents deep, is the old-oscillator pitch drift on the drone. A
+  [`scope`](#scope) shows the wander itself.
 - `bowed_cello.json` — a cello line on the [`bowed`](#bowed) string: an
   eight-step [`sequencer`](#sequencer) two octaves down through a
   [`slew`](#slew) (portamento) summed with a 5.5 Hz vibrato LFO into

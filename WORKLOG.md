@@ -105,6 +105,11 @@ already three light before slice 2 added one -- count with
 > `bowed_cello.json` + `wind_duet.json` (banked). Suite **3716**, 128
 > examples, **95 modules**. The physical-modeling family is complete:
 > struck string, struck resonator, bowed string, blown pipe.
+>
+> 2026-09-19: **`drift`, module #96** — the keep-list's smooth
+> wandering random; `drift_wander.json` (banked). Suite **3745**, 129
+> examples. Keep-list left: cv_math, cv_recorder, vowel, freeze,
+> autopan, midi_output, subpatch containers, snapshot morph.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -154,6 +159,59 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-19 — drift: the random that stumbles (module #96)
+
+Matthew: "drift please Claude?" Spec into MODULE_IDEAS.md first, then
+built to it — verbatim, for once; an S-sized item that stayed S.
+
+**What it is.** The rack's random sources all had corners or a plan
+(the LFO's `random` and `sample_hold` step, `shift_random` loops,
+`chaos` orbits). This stumbles: a new target every `1/rate` seconds —
+`smooth` draws fresh across ±1, `walk` adds a gaussian `step` to the
+last target and reflects off the edges — and the output travels to it
+along a half-cosine over `glide` of the interval, then holds. Three
+outputs off the one die: `cv` (the wander), `stepped` (the held
+targets — so a filter can drift while a quantized pitch steps to the
+same values), `trig` (a 1 ms pulse per new value — a random clock at
+the same pace). `rate_cv` in octaves per block; `clock` patched puts
+the draws on its edges with the glide sized from the measured beat.
+
+**Two design calls worth keeping.** (1) *The tick schedule is an
+integer sample count* — `next = last_tick + round(sr/rate)` — not a
+float phase accumulator like the LFO and clock use. The selector's
+graph test had shown the clock's phase lands an edge a sample apart
+between block sizes; drift's ticks land on the same absolute sample at
+64 and at 2048, and the whole render is bit-exact, pinned in four
+configurations. (2) *A new curve starts from the current value, not
+the old target.* With `glide` 1 the value has arrived when the next
+tick comes, but a `rate_cv` sweep or a jittery clock can bring a tick
+mid-glide; starting from where the value actually is means nothing
+ever jumps. Pinned by speeding the rate 20× under a long glide and
+checking the seam.
+
+**One trap dodged.** `mode` is the param name, and `mode` goes through
+the shared combo branch in `_add_param_widget` that has bitten two
+modules before — the arm was added there (not in a TYPE block) and
+`test_mode_combos` plus a drift-specific test check the dropdown
+offers smooth/walk, not the filter's modes.
+
+**24 tests** (`tests/test_drift.py`): the schedule; an octave of
+`rate_cv` doubles the ticks; `trig` 1 ms wide, one per tick, carried
+across a block boundary; bit-exact block independence; seed
+determinism; `smooth` targets uniform (sd ≈ 1/√3, mean ≈ 0); `walk`
+reflected, ~`step` moves, lag-1 correlation > 0.8 where `smooth`'s is
+< 0.2; `glide` 0 == `stepped`; `glide` 1 the half-cosine exactly, no
+jumps; partial glide arrives early and holds; the mid-glide tick; the
+clock's edges and measured interval; scaling; depth 0; the combo; the
+example. Example `drift_wander.json` (banked): one drift breathing a
+resonant lowpass over a low saw, its stepped twin through a pentatonic
+quantizer into a pluck that its trig fires — a note at every place the
+wander turns towards — plus a second drift in `walk` mode, 36 cents
+deep, as the old-oscillator pitch drift on the drone, and a scope on
+the wander itself. **Suite 3745**, 129 examples, **96 modules.**
 
 ---
 

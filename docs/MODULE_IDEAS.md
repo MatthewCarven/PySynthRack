@@ -33,7 +33,7 @@ Dynamics: `compressor` `limiter` `noise_gate` `transient_shaper` ·
 Pitch/frequency: `ring_mod` `freq_shifter` `bitcrusher` ·
 Character/space: `tape` `convolver` ·
 CV tools: `quantizer` `slew` `pitch_detector` ·
-Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate` `burst` `arpeggiator` `chord` `chaos` `possibility_selector` ·
+Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate` `burst` `arpeggiator` `chord` `chaos` `possibility_selector` `drift` ·
 Voices: `fm_op` `pluck` `bowed` `wind` `modal` `granular` `kick_drum`/`snare_drum`/`hat_drum` `sampler` `organ` ·
 Visual: `scope` `spectrum` ·
 Planned run (2026-08-03): `logic` `mid_side` `octaver` · `matrix_mixer`
@@ -390,6 +390,58 @@ first module had been played, built to it the same day.
   64; the panel's gesture, popup, readout and repaint; the example.
 - Example `possibility_selector_kit.json`: whether × which drums + a
   four-string harp stepping on its own hits.
+
+### `drift` (S) — "Modulation" — **SHIPPED 2026-09-19** (see TODO.md / WORKLOG.md) — the keep-list's smooth wandering random
+
+The LFO's `random` is stepped; `sample_hold` + `slew` can round the
+corners but the corners are still there; `chaos` orbits deterministically.
+This *stumbles*: a smooth random voltage that wanders — Buchla's
+fluctuating random / the Wogglebug's smooth out — with a stepped twin and
+a trigger on every new value so the same die can drive three things.
+
+- Ports: `rate_cv` (cv, octaves per unit × `cv_depth`, block mean; a
+  `(V, F)` source is averaged — mono module), `clock` (gate, optional:
+  patched, a new value on every rising edge instead of the internal
+  rate) → `cv` (cv, the smooth wander), `stepped` (cv, the targets held
+  — the plain S&H), `trig` (gate, a 1 ms pulse on every new value).
+- Params: `mode` smooth | walk (smooth) · `rate` Hz 0.02..50 (0.5, new
+  values per second) · `glide` 0..1 (1.0, the fraction of each interval
+  spent travelling to the new value — 0 is stepped, 1 is one continuous
+  curve) · `step` 0..1 (0.25, walk only: gaussian step size as a
+  fraction of the range) · `depth` 0..1 (1.0) · `bipolar` (True) ·
+  `cv_depth` (1.0 oct/unit) · `seed` (1).
+- DSP: an integer tick schedule — `next_tick = last_tick +
+  round(sr / rate_eff)` with `rate_eff = rate · 2^(cv_depth · mean
+  rate_cv)` re-read per block, so ticks land on the same absolute samples
+  at any block size (the clock's float phase does not, see the selector
+  test). At each tick draw the next target from `default_rng(seed)`:
+  `smooth` = uniform(−1, 1); `walk` = previous + `step` · N(0, 1),
+  reflected at ±1. Between ticks the value travels from the old target
+  to the new one along a half-cosine over `max(1, round(glide ·
+  interval))` samples, then holds — vectorized per segment, one segment
+  per tick per block. `clock` patched: ticks on rising edges, the glide
+  length from the measured edge interval (a jump until one exists).
+  `cv` = value · depth (bipolar) or (value + 1)/2 · depth; `stepped` the
+  same scaling of the held target; `trig` high for min(1 ms, half the
+  interval) from each tick, carried across blocks.
+- Neutral: unpatched inputs are the default (free-running); `depth` 0
+  is exact zeros; the first block starts from 0 and glides to the first
+  draw (no click on start).
+- Tests: registration; the tick schedule (ticks at round(k·sr/rate) for
+  constant rate; `rate_cv` an octave doubles them); block-size
+  independence bit-exact (64 vs 512, 1024); seed determinism and
+  divergence; `smooth` targets are uniform in ±1 (a long run's stepped
+  output covers the range, mean ≈ 0), `walk` is a walk (consecutive
+  targets differ by ~`step`, never leave ±1, the reflection); `glide` 0
+  == the stepped output, `glide` 1 is C¹-smooth (max sample-to-sample
+  step bounded by π·range/interval), intermediate glides hold; `cv` ==
+  half-cosine between the stepped values at glide 1; `trig` fires once
+  per tick, 1 ms wide; `clock` patched ticks on edges only and glides
+  over the measured interval; bipolar/unipolar scaling; depth 0; the
+  mode combo offers drift's own modes (the shared-branch trap); the
+  example.
+- As built, verbatim to the spec. `step` is the gaussian's standard
+  deviation on the ±1 scale. 24 tests. Example `drift_wander.json`.
 
 ### `chaos` (S–M) — "Modulation" (added 2026-08-04)
 
@@ -989,10 +1041,11 @@ full specs above.
   patches; one module is an LFO, envelope, slew and clock depending
   on cabling. Probably the highest patch-value-per-line-of-code item
   on this list.
-- `drift` (S) — smooth random CV (interpolated sample-and-hold /
+- ~~`drift` (S)~~ — smooth random CV (interpolated sample-and-hold /
   random walk). The LFO's `random` is stepped; there's no wandering,
   Wogglebug-style source yet. (`chaos` orbits deterministically;
-  drift *stumbles* stochastically — siblings, not rivals.)
+  drift *stumbles* stochastically — siblings, not rivals.) **Picked
+  and SHIPPED 2026-09-19 — full spec above.**
 - `cv_math` (S) — `logic` for CVs: min, max, average, difference,
   rectify, invert of two CV ins, every jack live at once. Same
   zero-param shape as `logic`.

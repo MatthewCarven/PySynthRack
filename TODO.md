@@ -739,6 +739,27 @@ same session.
       anyone is playing). Decide whether that asymmetry should be
       documented as-is or changed; do not change it silently.
 
+## The keep-list, continued (2026-09-19)
+
+- [x] **`drift` — SHIPPED 2026-09-19, module #96.** Modulation. Matthew:
+      "drift please Claude?" Spec into MODULE_IDEAS first, built to it
+      verbatim. A smooth wandering random CV: targets every `1/rate` s
+      (`smooth` = fresh uniform in +-1; `walk` = previous + `step` x
+      N(0,1) reflected at +-1), a half-cosine glide over `glide` of the
+      interval then a hold, each new curve starting FROM THE CURRENT
+      VALUE so a tick mid-glide (rate_cv sweep, clock jitter) never
+      jumps. Three outputs off one die: `cv` (smooth), `stepped` (the
+      S&H twin), `trig` (1 ms pulse per tick, carried across blocks).
+      `rate_cv` octaves per block; `clock` patched = ticks on edges,
+      glide from the measured interval. The tick schedule is an
+      INTEGER sample count (`last_tick + round(sr/rate)`), not a float
+      phase, so renders are bit-exact at 64 vs 2048 (the clock module's
+      phase accumulator is not — the selector test found that). 24
+      tests in `tests/test_drift.py` incl. the mode-combo trap. Example
+      `drift_wander.json` (banked): one drift breathing a filter,
+      stepping a quantized pluck AND firing it; a 36-cent walk on the
+      drone's pitch. Suite **3745**, 129 examples, 96 modules.
+
 ## The physical-modeling family, sustained (opened 2026-09-18)
 
 Matthew's pick off the 2026-08-04 keep-list: "bowed/wind". The spec
@@ -917,12 +938,12 @@ halves), then built — the selector's precedent.
       Twelve items, one-liners now living in docs/MODULE_IDEAS.md
       § "The 2026-08-04 brainstorm" — promote to a full spec when
       picked, the usual workflow. The menu:
-      * Sources: `bowed`/`wind` (M–L, sustained-excitation waveguide
-        — completes pluck/modal's physical family).
+      * Sources: ~~`bowed`/`wind`~~ (BOTH SHIPPED 2026-09-18, #94/#95 —
+        see § "The physical-modeling family, sustained").
       * Modulation: `function_generator` — **SHIPPED 2026-08-23**, see
         § "The function generator" below,
-        `drift` (S — smooth wandering random; chaos orbits, drift
-        stumbles), `cv_math` (S — logic-for-CVs, zero params),
+        ~~`drift`~~ (SHIPPED 2026-09-19, #96 — see § "The keep-list,
+        continued"), `cv_math` (S — logic-for-CVs, zero params),
         `cv_recorder` (M — the modulation looper; nothing else
         captures performance).
       * Effects: ~~`rotary`~~ (SHIPPED 2026-09-14, module #91 — see below),
