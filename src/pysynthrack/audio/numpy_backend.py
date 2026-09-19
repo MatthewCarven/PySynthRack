@@ -5544,7 +5544,8 @@ class NumpyBackend(AudioBackend):
 
         # CV-modulate the cutoff: octaves per CV unit scaled by
         # ``cv_depth`` (default 1.0 = the classic 1 V/oct) --
-        # ``cutoff *= 2 ** (cv_depth * mean(cv))``. Block-mean keeps
+        # ``cutoff *= 2 ** (cv_depth * mean(cv))`` (the exponent clipped
+        # first: ``_pow2_clipped``). Block-mean keeps
         # the biquad coefficient recomputation to one pass per block;
         # audio-rate cutoff mod would need a time-varying filter,
         # which a single lfilter call can't express. If cutoff_cv is
@@ -5552,7 +5553,7 @@ class NumpyBackend(AudioBackend):
         # both axes -- same effect as the old collapse=True path.
         if cutoff_cv is not None and cutoff_cv.size > 0:
             cv_depth = float(module.params.get("cv_depth", 1.0))
-            cutoff = cutoff * float(2.0 ** (cv_depth * float(np.mean(cutoff_cv))))
+            cutoff = cutoff * self._pow2_clipped(cv_depth * float(np.mean(cutoff_cv)))
 
         # CV-modulate the Q the same way: doublings per CV unit scaled
         # by ``res_cv_depth`` -- ``q *= 2 ** (res_cv_depth * mean(cv))``.
@@ -5664,14 +5665,14 @@ class NumpyBackend(AudioBackend):
             sr = self.sample_rate
             if per_voice_cutoff:
                 cv_block_mean = cutoff_cv.mean(axis=1)  # (V,)
-                cutoff_per_voice = base_cutoff * np.power(2.0, cv_depth * cv_block_mean)
+                cutoff_per_voice = base_cutoff * self._pow2_clipped(cv_depth * cv_block_mean)
                 cutoff_per_voice = np.clip(cutoff_per_voice, 20.0, sr * 0.45)
             else:
                 # Shared cutoff (static, or a macro (F,) cutoff_cv) as
                 # a scalar; it broadcasts against the per-voice Q.
                 cutoff = base_cutoff
                 if cutoff_cv is not None and cutoff_cv.size > 0:
-                    cutoff = cutoff * float(2.0 ** (cv_depth * float(np.mean(cutoff_cv))))
+                    cutoff = cutoff * self._pow2_clipped(cv_depth * float(np.mean(cutoff_cv)))
                 cutoff_per_voice = max(20.0, min(cutoff, sr * 0.45))
             if per_voice_q:
                 q_clamped = np.clip(
@@ -5719,7 +5720,7 @@ class NumpyBackend(AudioBackend):
             if cutoff_cv is not None and cutoff_cv.size > 0:
                 # mean() over whatever shape: 1D collapses to scalar,
                 # 2D shouldn't reach here but be safe.
-                cutoff = cutoff * float(2.0 ** (cv_depth * float(np.mean(cutoff_cv))))
+                cutoff = cutoff * self._pow2_clipped(cv_depth * float(np.mean(cutoff_cv)))
             if resonance_cv is not None and resonance_cv.size > 0:
                 q = q * self._q_cv_ratio(module, float(np.mean(resonance_cv)))
             coeffs = self._filter_coeffs(mode, cutoff, q)
@@ -6549,7 +6550,8 @@ class NumpyBackend(AudioBackend):
     def _fg_lengths(rise_s, fall_s, rise_oct, fall_oct, sr):
         """``(rise_len, fall_len, pulse_len)`` in samples for one rate law.
 
-        Each slope's octave total is clamped to +/-5 and applied as
+        Each slope's octave total is clamped to +/-5 (``_pow2_clipped``,
+        so a NaN total reads as no modulation) and applied as
         ``1 / 2**oct``; ``x * 1.0 == x`` exactly, but a zero total skips
         the multiply anyway. Pulse width: 2 ms, but never more than a
         quarter of the cycle (so a 20 ms loop still emits a
@@ -6557,9 +6559,9 @@ class NumpyBackend(AudioBackend):
         instant rise still announces itself).
         """
         if rise_oct != 0.0:
-            rise_s *= 1.0 / (2.0 ** min(5.0, max(-5.0, rise_oct)))
+            rise_s *= 1.0 / NumpyBackend._pow2_clipped(rise_oct, 5.0)
         if fall_oct != 0.0:
-            fall_s *= 1.0 / (2.0 ** min(5.0, max(-5.0, fall_oct)))
+            fall_s *= 1.0 / NumpyBackend._pow2_clipped(fall_oct, 5.0)
         rise_len = max(1, int(round(rise_s * sr)))
         fall_len = max(1, int(round(fall_s * sr)))
         pulse_len = max(
@@ -8078,8 +8080,13 @@ class NumpyBackend(AudioBackend):
 
         r_oct = _oct(rise_cv)
         f_oct = _oct(fall_cv)
-        rise_v = np.full(V, rise) if r_oct is None else rise / (2.0 ** r_oct)
-        fall_v = np.full(V, fall) if f_oct is None else fall / (2.0 ** f_oct)
+        # The power through _pow2_clipped: _oct already clipped the
+        # octaves, this scrubs a NaN row to "no modulation" (np.clip
+        # passes NaN straight through).
+        rise_v = (np.full(V, rise) if r_oct is None
+                  else rise / self._pow2_clipped(r_oct, self._SLEW_MAX_OCT))
+        fall_v = (np.full(V, fall) if f_oct is None
+                  else fall / self._pow2_clipped(f_oct, self._SLEW_MAX_OCT))
         uniform = bool(np.all(rise_v == rise_v[0]) and np.all(fall_v == fall_v[0]))
 
         # Fast path: a SYMMETRIC exponential (rise == fall) is a plain LTI
@@ -8882,7 +8889,7 @@ class NumpyBackend(AudioBackend):
         freq_cv = self._input_buffer(patch, buffers, module.id, "freq_cv")
         if freq_cv is not None and freq_cv.size > 0:
             cv_depth = float(module.params.get("cv_depth", 1.0))
-            freq = freq * float(2.0 ** (cv_depth * float(np.mean(freq_cv))))
+            freq = freq * self._pow2_clipped(cv_depth * float(np.mean(freq_cv)))
 
         if src.ndim == 2:
             return self._render_crossover_voice(module, frames, src, freq)
@@ -9336,7 +9343,7 @@ class NumpyBackend(AudioBackend):
                 patch, buffers, module.id, f"band{i}_freq_cv"
             )
             if cv is not None and cv.size > 0:
-                base = base * float(2.0 ** (cv_depth * float(np.mean(cv))))
+                base = base * self._pow2_clipped(cv_depth * float(np.mean(cv)))
             mod_freqs.append(base)
 
         # Per-band gain CV: additive in dB (the tilt_eq convention),
@@ -9364,7 +9371,7 @@ class NumpyBackend(AudioBackend):
                 patch, buffers, module.id, f"band{i}_q_cv"
             )
             if cv is not None and cv.size > 0:
-                base = base * float(2.0 ** (q_cv_depth * float(np.mean(cv))))
+                base = base * self._pow2_clipped(q_cv_depth * float(np.mean(cv)))
             mod_qs.append(base)
 
         if src.ndim == 2:
@@ -9419,7 +9426,7 @@ class NumpyBackend(AudioBackend):
         freq_cv = self._input_buffer(patch, buffers, module.id, "freq_cv")
         if freq_cv is not None and freq_cv.size > 0:
             cv_depth = float(module.params.get("cv_depth", 1.0))
-            freq = freq * float(2.0 ** (cv_depth * float(np.mean(freq_cv))))
+            freq = freq * self._pow2_clipped(cv_depth * float(np.mean(freq_cv)))
 
         mode = str(module.params.get("mode", "bandpass"))
         gain = float(module.params.get("gain", 0.0))
@@ -10598,7 +10605,7 @@ class NumpyBackend(AudioBackend):
         # cadence the LFO module uses for its own rate_cv).
         rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
         if rate_cv is not None and rate_cv.size > 0:
-            rate = rate * float(2.0 ** (cv_depth * float(np.mean(rate_cv))))
+            rate = rate * self._pow2_clipped(cv_depth * float(np.mean(rate_cv)))
         rate = min(max(rate, 0.01), 20.0)
 
         max_ms = self._CHORUS_MAX_MS
@@ -11302,7 +11309,7 @@ class NumpyBackend(AudioBackend):
         # same cadence the chorus and LFO modules use for their rate_cv).
         rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
         if rate_cv is not None and rate_cv.size > 0:
-            rate = rate * float(2.0 ** (cv_depth * float(np.mean(rate_cv))))
+            rate = rate * self._pow2_clipped(cv_depth * float(np.mean(rate_cv)))
         rate = min(max(rate, 0.01), 20.0)
 
         # Through-zero sweeps the moving tap out to ~2x the centre delay, so
@@ -11462,7 +11469,7 @@ class NumpyBackend(AudioBackend):
         # same cadence the chorus and flanger use for their rate_cv).
         rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
         if rate_cv is not None and rate_cv.size > 0:
-            rate = rate * float(2.0 ** (cv_depth * float(np.mean(rate_cv))))
+            rate = rate * self._pow2_clipped(cv_depth * float(np.mean(rate_cv)))
         rate = min(max(rate, 0.01), 20.0)
 
         state = self._state.setdefault(module.id, {})
@@ -12811,8 +12818,10 @@ class NumpyBackend(AudioBackend):
         for v in range(V):
             cv_st = 0.0 if cv is None else cv_depth * float(np.mean(cv[v]))
             st = base_st if cv is None else base_st + cv_st
-            st = max(-self._PS_MAX_ST, min(self._PS_MAX_ST, st))
-            r = 2.0 ** (st / 12.0)
+            # +/-_PS_MAX_ST, clipped in octave space by the shared door
+            # (36 st is exactly 3.0 oct, so the rail lands where the
+            # semitone clamp put it); a NaN mean reads as no shift.
+            r = self._pow2_clipped(st / 12.0, self._PS_MAX_ST / 12.0)
             x = src[v].astype(np.float64)
 
             # --- shimmer: recirculate last block's main wet ---
@@ -12878,8 +12887,7 @@ class NumpyBackend(AudioBackend):
             harm = None
             if use_harm:
                 st2 = harmony_st + cv_st
-                st2 = max(-self._PS_MAX_ST, min(self._PS_MAX_ST, st2))
-                r2 = 2.0 ** (st2 / 12.0)
+                r2 = self._pow2_clipped(st2 / 12.0, self._PS_MAX_ST / 12.0)
                 xw2 = xw
                 if feedback > 0.0:
                     # The harmony hears the raw input, not the loop.
@@ -13530,7 +13538,7 @@ class NumpyBackend(AudioBackend):
         )
         if rate_cv is not None and rate_cv.size > 0:
             depth = float(module.params.get("rate_cv_depth", 1.0))
-            rate_div = rate_div * float(2.0 ** (depth * float(np.mean(rate_cv))))
+            rate_div = rate_div * self._pow2_clipped(depth * float(np.mean(rate_cv)))
 
         bits = int(round(bits))
         rate_div = int(round(rate_div))
@@ -16170,7 +16178,7 @@ class NumpyBackend(AudioBackend):
                 cv_val = float(p_row[rising[-1]])
             else:
                 cv_val = float(np.mean(p_row))
-            f0 = self._BOW_C4 * (2.0 ** cv_val)
+            f0 = self._BOW_C4 * self._pow2_clipped(cv_val)
             f0 = min(self._BOW_MAX_F0, max(self._BOW_MIN_F0, f0))
             w0 = 2.0 * np.pi * f0 / sr
             tau = float(np.arctan2(pole * np.sin(w0), 1.0 - pole * np.cos(w0)) / w0)
@@ -16293,6 +16301,43 @@ class NumpyBackend(AudioBackend):
                 cur = not cur
             seg_start = seg_end
         return env, on_count, off_count, env_off
+
+    # Every block-mean octave path -- ``base * 2 ** (depth * mean cv)`` --
+    # clips its exponent here BEFORE the power. +/-64 octaves is far past
+    # any rail the result then meets (a cutoff clamp, a rate clamp, a Q
+    # rail), so it is a no-op for every value a knob or a sane CV can
+    # produce; what it stops is an absurd CV (a ``constant`` at 1e6, a
+    # cv_math product gone wild, a runaway loop's scrub) raising
+    # OverflowError from a Python-float power in the audio thread. The
+    # filter's ``resonance_cv`` pass found the trap (2026-09-19); the
+    # clock (``_BPM_CV_EXP_LIMIT``, +/-6) and the freeze
+    # (``_FREEZE_PITCH_OCT_LIMIT``, +/-4) keep their own, tighter limits.
+    _OCT_EXP_LIMIT = 64.0
+
+    @staticmethod
+    def _pow2_clipped(exponent, limit: float = _OCT_EXP_LIMIT):
+        """``2.0 ** exponent`` with the exponent clipped to ``+/-limit``.
+
+        The one door every block-mean octave exponent goes through
+        before its power. A scalar in gives a Python float out -- the
+        bit-exact twin of the bare ``2.0 ** e`` for any ``|e| <=
+        limit``, since ``min``/``max`` hand back ``e`` itself. A
+        ``(V,)`` array in (the voice paths' per-row exponents) gives
+        an array out, ``np.power`` on the clipped array with the dtype
+        untouched, so a float32 block-mean stays float32 exactly as it
+        did unclipped. A non-finite exponent reads as 0.0: a NaN
+        block-mean (a NaN cable, a 0/0 upstream) must mean "no
+        modulation", not poison every coefficient downstream -- the
+        render stays finite and the module sits at its knob.
+        """
+        if np.ndim(exponent) == 0:
+            e = float(exponent)
+            if not math.isfinite(e):
+                e = 0.0
+            return 2.0 ** min(max(e, -limit), limit)
+        e = np.asarray(exponent)
+        e = np.where(np.isfinite(e), e, 0.0)
+        return np.power(2.0, np.clip(e, -limit, limit))
 
     # ----- Wind rendering ------------------------------------------------------
 
@@ -16455,7 +16500,7 @@ class NumpyBackend(AudioBackend):
                 cv_val = float(p_row[rising[-1]])
             else:
                 cv_val = float(np.mean(p_row))
-            f0 = self._WIND_C4 * (2.0 ** cv_val)
+            f0 = self._WIND_C4 * self._pow2_clipped(cv_val)
             f0 = min(self._WIND_MAX_F0, max(f_lo, f0))
             w0 = 2.0 * np.pi * f0 / sr
             tau = float(np.arctan2(pole * np.sin(w0), 1.0 - pole * np.cos(w0)) / w0)
@@ -16587,7 +16632,7 @@ class NumpyBackend(AudioBackend):
 
         sr = float(self.sample_rate)
         if rate_cv is not None:
-            rate = rate * (2.0 ** (cv_depth * float(np.mean(rate_cv))))
+            rate = rate * self._pow2_clipped(cv_depth * float(np.mean(rate_cv)))
             rate = min(self._DRIFT_RATE_MAX, max(self._DRIFT_RATE_MIN, rate))
         interval = max(1, int(round(sr / rate)))
         trig_len = max(1, int(round(self._DRIFT_TRIG_SEC * sr)))
@@ -18823,7 +18868,7 @@ class NumpyBackend(AudioBackend):
         for v in range(V):
             p_row = row(pitch, v)
             cv = float(np.mean(p_row)) if p_row is not None else 0.0
-            freqs[v] = self._ORGAN_C4 * (2.0 ** cv)
+            freqs[v] = self._ORGAN_C4 * self._pow2_clipped(cv)
         incs = (freqs[:, None] * ratios[None, :]) / sr  # (V, 9)
 
         gate_high = self._GATE_HIGH
@@ -19198,7 +19243,7 @@ class NumpyBackend(AudioBackend):
             groups.setdefault(round(cv_for(v), 6), []).append(v)
 
         for cv_val, rows in groups.items():
-            f0 = self._MODAL_C4 * (2.0 ** cv_val)
+            f0 = self._MODAL_C4 * self._pow2_clipped(cv_val)
             f0 = min(self._MODAL_MAX_F_FRACTION * sr, max(20.0, f0))
             freqs = f0 * ratios
             X = np.stack([x[v] if v < x.shape[0] else x[0] for v in rows]).astype(

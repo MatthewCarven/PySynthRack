@@ -138,6 +138,12 @@ SAMPLER_MODES = ("one_shot", "gated", "loop")
 #: MIDI note the 1 V/oct convention calls 0 V — C4, as everywhere else.
 CV_REFERENCE_NOTE = 60
 
+#: ``playback_rate`` clips its octave exponent to +/- this before the
+#: power (the backend's ``_OCT_EXP_LIMIT``): far past any playable pitch,
+#: so a no-op musically, but it keeps an absurd ``pitch_cv`` from raising
+#: OverflowError in the audio thread.
+OCT_EXP_LIMIT = 64.0
+
 #: Longest sample kept, in seconds. RAM-bound, not DSP-bound: a minute of
 #: mono float64 at 48 kHz is ~23 MB in the buffer. Anything longer is
 #: truncated (with a short fade so the cut doesn't click).
@@ -174,12 +180,23 @@ def playback_rate(cv: float, root_note: float, tune: float,
     docs can't drift on what "root" means. Playing the root note with no
     tune returns **exactly** 1.0 (the exponent is exactly 0.0), which is
     what makes the module's neutral bit-exact rather than merely close.
+
+    The octave exponent is clipped to +/-``OCT_EXP_LIMIT`` before the
+    power and a non-finite ``cv`` reads as 0 -- the backend's
+    ``_pow2_clipped`` rule, restated here because this file stays
+    numpy-free: a ``constant`` at 1e6 on ``pitch_cv`` used to raise
+    OverflowError from this line in the audio thread. A no-op for any
+    playable pitch (``min``/``max`` hand the exponent back untouched).
     """
+    cv = float(cv)
+    if not math.isfinite(cv):
+        cv = 0.0
     semitones = (
-        (CV_REFERENCE_NOTE + 12.0 * float(cv)) - float(root_note)
+        (CV_REFERENCE_NOTE + 12.0 * cv) - float(root_note)
         + float(tune) + float(fine) / 100.0
     )
-    return 2.0 ** (semitones / 12.0)
+    octaves = min(max(semitones / 12.0, -OCT_EXP_LIMIT), OCT_EXP_LIMIT)
+    return 2.0 ** octaves
 
 
 def mip_blend(rate: float, levels: int) -> tuple[int, int, float]:

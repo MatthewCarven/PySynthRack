@@ -133,6 +133,29 @@ The full map:
 scope: their params *are* the mapping. A converter's *side* input is not —
 `sample_hold.prob_cv` modulates a knob, so it gets a depth like any other.)
 
+**Every octave-style depth path clips its exponent before the power.** A
+block-mean row of the form `base · 2^(d·mean cv)` is a Python-float power,
+and an absurd CV — a `constant` at 1e6, a `cv_math` product gone wild, a
+runaway loop's non-finite scrub — used to raise `OverflowError` out of the
+render (found by the filter's `resonance_cv` pass, 2026-09-19). Since
+2026-09-20 every such path goes through one helper, `_pow2_clipped`, which
+clips the exponent to **±64 octaves** (far past any rail the result then
+meets — a cutoff clamp, a rate clamp, a Q rail — so a no-op for anything a
+knob or a sane CV produces) and reads a **non-finite exponent as 0** (a NaN
+mean means "no modulation", the module sits at its knob, the render stays
+finite): `filter.cutoff_cv` (mono, shared and per-voice), `crossover`,
+`sweep_eq` and `motion_eq` (freq and Q) `*_cv`s, the `chorus` / `flanger` /
+`phaser` / `drift` `rate_cv`s, `bitcrusher.rate_cv`, the `bowed` / `wind` /
+`organ` / `modal` `pitch_cv`s, and the `sampler`'s `playback_rate` (restated
+numpy-free in its own module). Four keep a **tighter** limit because their
+rail *is* the exponent: `clock.bpm_cv` ±6 (×64 is past any tempo),
+`freeze.pitch_cv` ±4, `function_generator` rise/fall/rate ±5 (the slope
+law's own clamp) and `slew` rise/fall ±5 (`_SLEW_MAX_OCT`); `pitch_shifter`
+clips in the same octave space at ±3 (its ±36-semitone rail). Per-sample
+array powers (`oscillator.freq_cv`, `fm_op`, `ring_mod`, `supersaw`,
+`wavetable_morph`, `resampler`) are numpy and never raise; they are not
+routed.
+
 ### Cabling rules
 
 - **Kinds must match.** You can't plug `cv` into an `audio` jack; the patch
