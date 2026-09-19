@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "next_id": 9,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "eighths at 120 - the phrase's tempo", "params": { "bpm": 120.0, "division": 2.0, "pulse_width": 0.5 } },
+    { "id": 2, "type": "sequencer", "name": "PHRASE - two seconds of rest, then an eight-note run ending on a cluster",
+      "params": { "steps": 16, "direction": "forward", "seed": 1,
+                  "step1_pitch": 0.0, "step1_on": false, "step2_pitch": 0.0, "step2_on": false,
+                  "step3_pitch": 0.0, "step3_on": false, "step4_pitch": 0.0, "step4_on": false,
+                  "step5_pitch": 0.0, "step5_on": false, "step6_pitch": 0.0, "step6_on": false,
+                  "step7_pitch": 0.0, "step7_on": false, "step8_pitch": 0.0, "step8_on": false,
+                  "step9_pitch": 2.0, "step9_on": true, "step10_pitch": 5.0, "step10_on": true,
+                  "step11_pitch": 9.0, "step11_on": true, "step12_pitch": 12.0, "step12_on": true,
+                  "step13_pitch": 14.0, "step13_on": true, "step14_pitch": 16.0, "step14_on": true,
+                  "step15_pitch": 12.0, "step15_on": true, "step16_pitch": 9.0, "step16_on": true } },
+    { "id": 3, "type": "pluck", "name": "STRING", "params": { "decay": 2.0, "damping": 0.4, "color": 0.7, "position": 0.2, "level": 0.6 } },
+    { "id": 4, "type": "clock", "name": "one hold every four seconds - a short dip, then the edge lands on the run's last note", "params": { "bpm": 15.0, "division": 1.0, "pulse_width": 0.95 } },
+    { "id": 5, "type": "freeze", "name": "FREEZE - a 372 ms moment (16384) as a smear 0.6 wash, width 0.8 wide, decay 6 s so it dies on its own; try width 0 / decay 0",
+      "params": { "size": 16384, "freeze": false, "smear": 0.6, "pitch": 0.0, "pitch_cv_depth": 1.0, "level": 1.0, "dry": 0.8, "fade": 300.0, "seed": 1, "width": 0.8, "decay": 6.0 } },
+    { "id": 6, "type": "reverb", "name": "a little room, left", "params": { "size": 0.6, "decay": 0.5, "damping": 0.5, "mix": 0.25, "cv_depth": 1.0 } },
+    { "id": 7, "type": "reverb", "name": "a little room, right", "params": { "size": 0.6, "decay": 0.5, "damping": 0.5, "mix": 0.25, "cv_depth": 1.0 } },
+    { "id": 8, "type": "stereo_speaker_output", "name": "out", "params": {} }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",   "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "cv",    "dst_module_id": 3, "dst_port": "pitch_cv" },
+    { "src_module_id": 2, "src_port": "gate",  "dst_module_id": 3, "dst_port": "trigger" },
+    { "src_module_id": 3, "src_port": "out",   "dst_module_id": 5, "dst_port": "in" },
+    { "src_module_id": 4, "src_port": "out",   "dst_module_id": 5, "dst_port": "freeze" },
+    { "src_module_id": 5, "src_port": "out_l", "dst_module_id": 6, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "out_r", "dst_module_id": 7, "dst_port": "in" },
+    { "src_module_id": 6, "src_port": "out_l", "dst_module_id": 8, "dst_port": "in_l" },
+    { "src_module_id": 7, "src_port": "out_r", "dst_module_id": 8, "dst_port": "in_r" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 60], "2": [300, 60], "3": [620, 60],
+      "4": [300, 400], "5": [900, 160], "6": [1240, 60], "7": [1240, 300], "8": [1560, 160]
+    }
+  }
+}

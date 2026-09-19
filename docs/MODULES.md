@@ -291,7 +291,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`resampler`](#resampler) | Effects | `in` (audio), `pitch_cv` (cv), `brake` (gate) → `out`, `out_l`, `out_r` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`granular`](#granular) | Effects | `in` (audio), `position_cv` (cv), `freeze` (gate) → `out`, `out_l`, `out_r` (audio) |
-| [`freeze`](#freeze) | Effects | `in` (audio), `freeze` (gate), `pitch_cv` (cv) → `out` (audio) |
+| [`freeze`](#freeze) | Effects | `in` (audio), `freeze` (gate), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv), `freeze` (gate) → `out` (audio) |
 | [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv), `freeze` (gate) → `out_l`,`out_r` (audio) |
 | [`compressor`](#compressor) | Effects | `in`,`sidechain` (audio), `threshold_cv` (cv) → `out` (audio), `gr` (cv) |
@@ -3281,16 +3281,62 @@ level, so a re-freeze melts, never cuts (measured: the largest sample
 step across the swap is a sine's own). At most four layers sound at
 once; a flurry of re-triggers drops the oldest. The `freeze` tickbox
 is ORed with the gate (the `granular` precedent) so you can hold from
-the panel. Mono: a `(V, F)` source is the house sum, a `(V, F)` gate
+the panel. Mono in: a `(V, F)` source is the house sum, a `(V, F)` gate
 collapses to any-voice-high. Unfrozen, with no layer sounding, the
 render returns the input buffer itself at `dry` 1.0 — bit-exact.
+
+**`width`** (2026-09-20 love pass) opens the hold into stereo on
+`out_l` / `out_r` without touching what it is made of. The two channels
+are the same frozen stream with every partial's phase rotated apart —
+`+width · π/4` in L and `−width · π/4` in R, the sign alternating
+partial by partial — a **quadrature scatter**, one constant per
+spectral peak region, fixed for the life of the layer. One phase per
+*region* rather than per bin, because a partial's Hann lobe spans four
+bins and scattering those against each other changes the partial's
+level (that is exactly what `smear` does; measured, a per-bin scatter
+moved partials by up to 16 dB on a triad and 36 dB on a saw), whereas a
+rotation of the whole lobe is a pure phase shift: each channel keeps
+every partial's level to 0.01 dB and, alone, sounds like the mono hold.
+Deterministic rather than random so the numbers are laws, not the luck
+of a die: the L/R correlation is `cos(width · π/2)` (0.924 / 0.707 /
+0.383 / 0.000 measured at 0.25 / 0.5 / 0.75 / 1), and the **mono fold
+`(L + R)/2` is the mono hold itself at `cos(width · π/4)`** — −3.01 dB
+at `width` 1, correlated 1.0000 with `out`, never a partial cancelled
+(the failure mode of a random scatter, which folds some partials to
+nothing). That is why `out` stays the untouched mono: the pad on `out`
+is not changed by `width` at all, bit-exact. At `width` 0 the pair *is*
+the mono buffer — no extra synthesis, `out_l == out_r == out`. The
+scatter is applied when frames are synthesised, so turning `width` up
+on a live hold starts the channels as the mono stream and lets them
+diverge across the overlap (no step; measured ≤ a sine's own), and
+turning it back to 0 melts them back until `out_l` is `out` bit-exact
+again. `smear`'s per-frame jitter is the same in both channels, on top
+of the scatter, so a wash is as wide as a chord. A lone sine cannot be
+widened, only turned: width is for chords and washes.
+
+**`decay`** (2026-09-20 love pass) lets the hold fade by itself: the
+layer's level follows `10^(−3t/decay)` — −60 dB in `decay` seconds
+(measured to 0.1 dB against the same hold at `decay` 0) — a per-sample
+factor from the *integer* sample count since the layer was born, so it
+is bit-exact at any block size (64 = 512 = 1000 pinned with `width`
+and `decay` both live and edges mid-stream), on top of the gate's
+`fade`. A layer that has fallen below −90 dB is dropped even while the
+gate is held high (at `decay` 2 the state is empty 3 s after the edge
+and the render is the passthrough again), so nothing runs for free. A
+re-freeze starts the new layer at full level (measured: 0.3 s after
+the second edge matches 0.3 s after the first). A knob turn mid-hold
+never jumps — the fall so far is folded in and the new rate runs from
+now (turned 0 → 1 s at 2.0 s, the hold is −30 dB at 2.5 s and −60 dB at
+3.0 s, not the −90 dB a count from birth would give); turned back to 0
+mid-fall, the level holds where it is. 0 = forever, as shipped.
 
 | Port | Dir | Kind | Notes |
 |------|-----|------|-------|
 | `in` | in | audio | The source (mono; a `(V, F)` source is summed). Unpatched → silence, no state. |
 | `freeze` | in | gate | Rising edge captures, high holds, the fall releases. ORed with the tickbox. |
 | `pitch_cv` | in | cv | 1 V/oct × `pitch_cv_depth` on the frozen layer, block mean. |
-| `out` | out | audio | `in · dry + frozen · level`. |
+| `out` | out | audio | `in · dry + frozen · level` — the mono, untouched by `width`. |
+| `out_l` / `out_r` | out | audio | The stereo pair: the same hold, every partial rotated `±width · π/4` from the mono (`width · π/2` between the sides). At `width` 0 they are `out` itself, bit-exact. |
 
 | Parameter | Default | Range | Notes |
 |-----------|---------|-------|-------|
@@ -3303,6 +3349,8 @@ render returns the input buffer itself at `dry` 1.0 — bit-exact.
 | `dry` | 1.0 | 0…1 | The live input's level (1 = bit-exact passthrough when unfrozen). |
 | `fade` | 60 | 1…2000 ms | Rise / fall / re-freeze crossfade. |
 | `seed` | 1 | int | The smear's die. |
+| `width` | 0.0 | 0…1 | Quadrature stereo scatter on `out_l` / `out_r`; corr(L, R) = cos(width · π/2), the fold −3 dB at 1. 0 = the pair is the mono. |
+| `decay` | 0.0 | 0…60 s | The hold's own fade to −60 dB; dropped at −90 dB. 0 = forever. |
 
 *Patching.* A held chord into `in` and a gate from a footswitch, a
 [`key_trigger`](#key_trigger) latch or a clock into `freeze`: lift the
@@ -3311,7 +3359,10 @@ freezes the instant the chord *stops* — the capture is its sustain. A
 [`sequencer`](#sequencer) into `pitch_cv` plays the hold as an
 instrument. `smear` 1 through a [`reverb`](#reverb) is the wash;
 `pitch` −12 under the dry is a sub-pad of whatever you just played.
-See `examples/freeze_chord_pad.json`.
+`width` 0.8 with `decay` 6 and a slow clock re-freezing every few
+seconds is a wash that blooms wide out of each phrase and dies on its
+own — `out_l` / `out_r` to the two sides. See
+`examples/freeze_chord_pad.json` and `examples/freeze_wide_wash.json`.
 
 ---
 
@@ -5485,5 +5536,6 @@ loads in the app. Notable ones referenced above:
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `freeze_chord_pad.json` — module #100, the spectral freeze: a bar clock plays four sus2 chords on the [`organ`](#organ) ([`sequencer`](#sequencer) → [`chord`](#chord)) for a second each; the clock's `not_a` through [`logic`](#logic) is the [`freeze`](#freeze) gate, so it rises the instant the chord's gate falls and the capture is the chord's sustain — held as a glassy pad (`smear` 0.25) for the rest of the bar, easing out under the next chord over a 300 ms `fade`. Try `smear` 1 (the wash), `pitch` −12 (a sub-pad), `size` 16384 (a longer, smoother moment).
 - `sequencer_reverse_bars.json` — the [`sequencer`](#sequencer)'s `reverse` gate: an eight-step [`pluck`](#pluck) line at eighths, a [`clock_divider`](#clock_divider) `divn` 8 resetting it on every bar line and a bar-pair square ([`lfo`](#lfo) 0.25 Hz, `phase` 17/32 so its edges fall half an eighth *before* the bar lines, through a [`schmitt`](#schmitt)) holding `reverse` high through every second bar — bar 1 climbs `0 3 7 10 12 15 14 19`, bar 2 is its exact mirror (a reset with the gate high lands on the last step), bar 3 climbs again: a palindrome, through a dotted-eighth [`delay`](#delay). Swap the sequencer's `direction` to `pendulum` and the same gate turns it around at the bar lines instead.
+- `freeze_wide_wash.json` — the [`freeze`](#freeze)'s `width` + `decay`: a [`pluck`](#pluck) run (eight eighth-notes, then two seconds of rest) into the freeze at `size` 16384 / `smear` 0.6 / `width` 0.8 / `decay` 6; a 15 BPM [`clock`](#clock) (`pulse_width` 0.95, a short dip then the edge) latches a new hold every four seconds right on the run's last note, so each phrase blooms into a wide wash that falls 10 dB a second and is gone before the next one; `out_l` / `out_r` each through their own little [`reverb`](#reverb) to the two sides. Set `width` 0 to hear the same wash collapse to the centre, `decay` 0 to keep it forever.
 - `noise_brown_surf.json` — surf: a seeded `brown` [`noise`](#noise) (seed 7, so the same tide every run) swelling under a 0.12 Hz unipolar sine on its knobless `amp_cv` (a [`cv_offset`](#cv_offset) of 0.2 keeps the trough from going silent) into a resonant 900 Hz lowpass [`filter`](#filter) — waves rolling in and drawing back every eight seconds. Five modules.
 - `stereo_hard_pan.json` — left/right speaker sinks.

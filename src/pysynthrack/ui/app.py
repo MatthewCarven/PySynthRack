@@ -3331,7 +3331,11 @@ class App:
             # pitch_cv; ``level`` the frozen layer, ``dry`` the live
             # input (not a mix: engaging never ducks what you play over
             # it); ``fade`` the rise / fall / re-freeze crossfade (ms);
-            # ``seed`` the smear's die.
+            # ``seed`` the smear's die. Love pass: ``width`` the
+            # quadrature stereo scatter on out_l/out_r (0 = the pair is
+            # the mono); ``decay`` the hold's own fade to -60 dB in
+            # seconds (0 = forever) -- a drag, not a slider, because
+            # the useful range is 0.5 s to a minute.
             if param_name == "size":
                 dpg.add_combo(
                     label=f"{param_name} (fft)", items=[str(n) for n in FREEZE_SIZES],
@@ -3377,6 +3381,20 @@ class App:
                 dpg.add_drag_int(
                     label=param_name, default_value=int(current), speed=1,
                     min_value=0, max_value=999999,
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "width":
+                dpg.add_slider_float(
+                    label=f"{param_name} (stereo, out_l/r)", default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "decay":
+                dpg.add_drag_float(
+                    label=f"{param_name} (0 = forever)", default_value=float(current),
+                    speed=0.1, min_value=0.0, max_value=60.0, format="%.1f s",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

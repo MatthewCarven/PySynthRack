@@ -18034,7 +18034,30 @@ class NumpyBackend(AudioBackend):
         return w
 
     @staticmethod
-    def _freeze_lock(mag: np.ndarray, w_true: np.ndarray) -> np.ndarray:
+    def _freeze_lock_index(mag: np.ndarray) -> np.ndarray:
+        """The region map: for every bin, the index of the spectral peak
+        whose region of influence (out to the valley on either side) it
+        belongs to. A spectrum with no peak at all maps every bin to
+        itself. Both the phase lock and the stereo scatter are one value
+        per region, read through this map.
+        """
+        k_n = mag.shape[0]
+        idx = np.arange(k_n)
+        up = np.concatenate(([False], mag[1:] > mag[:-1]))
+        down = np.concatenate((mag[:-1] >= mag[1:], [False]))
+        peaks = np.flatnonzero(up & down & (mag > 1e-12))
+        if peaks.size == 0:
+            return idx
+        bounds = [0]
+        for a, b in zip(peaks[:-1].tolist(), peaks[1:].tolist()):
+            bounds.append(a + int(np.argmin(mag[a:b + 1])))
+        bounds.append(k_n)
+        for pk, lo, hi in zip(peaks.tolist(), bounds[:-1], bounds[1:]):
+            idx[lo:hi] = pk
+        return idx
+
+    @classmethod
+    def _freeze_lock(cls, mag: np.ndarray, w_true: np.ndarray) -> np.ndarray:
         """Identity phase locking (Laroche & Dolson): every bin in a
         spectral peak's region of influence (out to the valley on either
         side) advances at the PEAK's true frequency.
@@ -18046,20 +18069,7 @@ class NumpyBackend(AudioBackend):
         two partials by 10 s. Locked, the same triad holds within 2%
         forever, and a lone sine is unchanged.
         """
-        k_n = mag.shape[0]
-        up = np.concatenate(([False], mag[1:] > mag[:-1]))
-        down = np.concatenate((mag[:-1] >= mag[1:], [False]))
-        peaks = np.flatnonzero(up & down & (mag > 1e-12))
-        if peaks.size == 0:
-            return w_true
-        bounds = [0]
-        for a, b in zip(peaks[:-1].tolist(), peaks[1:].tolist()):
-            bounds.append(a + int(np.argmin(mag[a:b + 1])))
-        bounds.append(k_n)
-        locked = w_true.copy()
-        for pk, lo, hi in zip(peaks.tolist(), bounds[:-1], bounds[1:]):
-            locked[lo:hi] = w_true[pk]
-        return locked
+        return w_true[cls._freeze_lock_index(mag)]
 
     @classmethod
     def _freeze_capture(cls, seg: np.ndarray, n: int, hop: int) -> dict:
@@ -18070,7 +18080,9 @@ class NumpyBackend(AudioBackend):
         phase-vocoder estimate ``w_bin + princarg(dphi - w_bin*hop)/hop``)
         so a partial between two bins holds at its real pitch instead of
         beating between them, then phase-locked to the peaks
-        (``_freeze_lock``). Returns the layer's spectral state.
+        (``_freeze_lock``). Returns the layer's spectral state, plus
+        ``side``: +1 / -1 per bin, alternating by peak REGION, the sign
+        the stereo scatter gives each partial (``width`` below).
         """
         w = cls._freeze_window(n)
         spec_a = np.fft.rfft(seg[:n] * w)
@@ -18080,14 +18092,18 @@ class NumpyBackend(AudioBackend):
         dphi = np.angle(spec_b) - np.angle(spec_a) - w_bin * hop
         dphi = np.mod(dphi + np.pi, 2.0 * np.pi) - np.pi
         mag = np.abs(spec_b)
+        idx = cls._freeze_lock_index(mag)
+        ordinal = np.unique(idx, return_inverse=True)[1].reshape(-1)
         return {
             "mag": mag,
             "phi": np.angle(spec_b),
-            "w_true": cls._freeze_lock(mag, w_bin + dphi / hop),
+            "w_true": (w_bin + dphi / hop)[idx],
+            "side": 1.0 - 2.0 * (ordinal % 2),
         }
 
-    def _render_freeze(self, module, frames: int, buffers, patch) -> np.ndarray:
+    def _render_freeze(self, module, frames: int, buffers, patch) -> dict:
         """Spectral freeze (see modules/freeze.py for the contract).
+        Returns ``{"out", "out_l", "out_r"}``.
 
         The input rolls through a history of ``size + hop`` samples. A
         rising edge of the gate (OR the tickbox) captures a LAYER from
@@ -18117,15 +18133,51 @@ class NumpyBackend(AudioBackend):
         layer whose envelope has reached 0 is dropped. With no layer
         alive and no edge this block the render returns ``src`` itself
         at ``dry`` 1.0 (bit-exact passthrough) while the history rolls.
+
+        ``width`` (love pass): the stereo pair is the same stream with a
+        QUADRATURE phase scatter, one constant per peak region -- every
+        partial is rotated ``+width * pi/4`` in L and ``-width * pi/4``
+        in R, the sign alternating region by region (``side`` from the
+        capture). One phase per REGION, not per bin, because a partial's
+        Hann lobe spans four bins and a per-bin scatter breaks the
+        lobe's coherence exactly as ``smear`` does (measured: partials
+        moved by up to 16 dB on a triad, 36 dB on a saw); a per-region
+        rotation is a pure phase shift of the partial, so each channel
+        keeps every partial's level to 0.01 dB. Deterministic rather
+        than random so the numbers are laws, not luck: ``corr(L, R) =
+        cos(width * pi/2)`` (0 at width 1) and the fold ``(L + R)/2`` is
+        the mono hold itself at ``cos(width * pi/4)`` (-3.01 dB at width
+        1, no partial ever cancelled). The scatter is applied at frame
+        synthesis, so a layer born at width 0 costs nothing extra and
+        ``out_l``/``out_r`` ARE the mono buffer; when width first rises
+        on a live layer its channel buffers start as copies of the mono
+        stream and diverge from the next frame across the overlap (no
+        step), and a layer that has channels keeps them until it dies
+        (turning width back to 0 melts them back to mono the same way).
+        ``out`` is always the untouched mono. The smear jitter, when
+        on, is the same for both channels.
+
+        ``decay`` (love pass): the hold fades by itself -- a per-sample
+        factor ``g_base * 10 ** (-3 (m - m_gbase) / (decay sr))`` from
+        the INTEGER count ``m`` since birth (-60 dB in ``decay`` seconds;
+        block-size exact because it is a function of the count, never a
+        carried multiplication), on top of the gate envelope. A knob
+        turn mid-hold rebases (the fall so far folds into ``g_base``,
+        the new rate runs from now) so the level never jumps; 0 =
+        forever (turned to 0 mid-fall, the level holds where it is). A
+        layer below -90 dB is dropped even while the gate is high, so
+        nothing runs for free; a new edge starts a new layer at full.
         """
         from ..modules.freeze import FREEZE_SIZES
 
         src = self._input_buffer(patch, buffers, module.id, "in")
         if src is None or src.size == 0:
             self._state.pop(module.id, None)
-            return np.zeros(frames, dtype=np.float32)
+            z = np.zeros(frames, dtype=np.float32)
+            return {"out": z, "out_l": z, "out_r": z}
         if frames == 0:
-            return np.empty(0, dtype=np.float32)
+            e = np.empty(0, dtype=np.float32)
+            return {"out": e, "out_l": e, "out_r": e}
 
         sr = self.sample_rate
         size = int(module.params.get("size", 4096))
@@ -18142,6 +18194,11 @@ class NumpyBackend(AudioBackend):
         fade_ms = max(0.0, float(module.params.get("fade", 60.0)))
         fade_n = max(1, int(round(fade_ms * sr / 1000.0)))
         seed = abs(int(module.params.get("seed", 1)))
+        width = float(module.params.get("width", 0.0))
+        width = min(max(width, 0.0), 1.0) if np.isfinite(width) else 0.0
+        decay_s = float(module.params.get("decay", 0.0))
+        if not np.isfinite(decay_s) or decay_s <= 0.0:
+            decay_s = 0.0          # forever
 
         st = self._state.setdefault(module.id, {})
         if st.get("n") != n:
@@ -18175,8 +18232,9 @@ class NumpyBackend(AudioBackend):
         if not layers and rising.size == 0:
             # Nothing frozen, nothing starting: the neutral.
             if dry == 1.0:
-                return src
-            return (x * dry).astype(np.float32)
+                return {"out": src, "out_l": src, "out_r": src}
+            out = (x * dry).astype(np.float32)
+            return {"out": out, "out_l": out, "out_r": out}
 
         # --- pitch ratio (block mean, 1 V/oct, clipped before the power)
         cv = self._input_buffer(patch, buffers, module.id, "pitch_cv", collapse=False)
@@ -18201,11 +18259,17 @@ class NumpyBackend(AudioBackend):
             spec = self._freeze_capture(seg, n, hop)
             layers.append({
                 "mag": spec["mag"], "phi": spec["phi"], "w_true": spec["w_true"],
+                "side": spec["side"],
                 "syn": np.zeros(4 * n, dtype=np.float64), "origin": 0, "j_next": 0,
+                # the stereo channels are made only once width is up
+                "syn_l": None, "syn_r": None,
                 # the read starts at frozen time ``n`` = the edge itself,
                 # so a stationary input's hold is its own continuation,
                 # in phase (frames 1..4 cover it from the first sample)
                 "m0": t_abs + i, "p_base": float(n), "m_base": 0, "ratio": ratio,
+                # the self-decay's rebase point (a knob turn folds the
+                # fall so far into g_base and restarts the count)
+                "decay": decay_s, "g_base": 1.0, "m_gbase": 0,
                 "prev": False, "on": 0, "off": 0, "env_off": 0.0,
                 "active": True, "born": i, "cut": None,
             })
@@ -18214,6 +18278,10 @@ class NumpyBackend(AudioBackend):
         w = self._freeze_window(n)
         idx = np.arange(frames)
         wet = np.zeros(frames, dtype=np.float64)
+        # the stereo accumulators exist only once a layer with channels
+        # has been read, so a mono block's out_l / out_r ARE its out
+        wet_l = wet_r = None
+        drop_below = 10.0 ** -4.5      # -90 dB: the self-decayed layer is done
         keep = []
         for layer in layers:
             row = gt.copy()
@@ -18246,10 +18314,20 @@ class NumpyBackend(AudioBackend):
             # generate frames until the buffer covers p_hi (frame j fills
             # frozen time [j*hop, j*hop + n); full overlap up to j_next*hop)
             syn = layer["syn"]
+            syn_l, syn_r = layer["syn_l"], layer["syn_r"]
+            wide = width > 0.0 or syn_l is not None
+            if wide and syn_l is None:
+                # width has just come up on a live layer: the channels
+                # start as the mono stream and diverge from the next
+                # frame on, across the overlap -- no step
+                syn_l, syn_r = syn.copy(), syn.copy()
             origin = int(layer["origin"])
             if p_lo - origin >= syn.shape[0] // 2:
                 shift = p_lo - origin
                 syn = np.concatenate([syn[shift:], np.zeros(shift, dtype=np.float64)])
+                if wide:
+                    syn_l = np.concatenate([syn_l[shift:], np.zeros(shift, dtype=np.float64)])
+                    syn_r = np.concatenate([syn_r[shift:], np.zeros(shift, dtype=np.float64)])
                 origin += shift
             mag = layer["mag"]
             if ratio > 1.0:
@@ -18257,32 +18335,75 @@ class NumpyBackend(AudioBackend):
                 mag = np.where(np.arange(mag.shape[0]) < kmax, mag, 0.0)
             j = int(layer["j_next"])
             phi = layer["phi"]
+            # the quadrature scatter: +/- width * pi/4 per region
+            scat = (width * np.pi / 4.0) * layer["side"] if wide else None
             while j * hop <= p_hi:
                 end = j * hop + n - origin
                 if end > syn.shape[0]:
-                    syn = np.concatenate([syn, np.zeros(end - syn.shape[0] + 4 * n, dtype=np.float64)])
+                    grow = end - syn.shape[0] + 4 * n
+                    syn = np.concatenate([syn, np.zeros(grow, dtype=np.float64)])
+                    if wide:
+                        syn_l = np.concatenate([syn_l, np.zeros(grow, dtype=np.float64)])
+                        syn_r = np.concatenate([syn_r, np.zeros(grow, dtype=np.float64)])
                 ph = phi
                 if smear > 0.0:
                     jit = np.random.default_rng([seed, j]).uniform(-np.pi, np.pi, mag.shape[0])
                     ph = phi + smear * jit
                 frame = np.fft.irfft(mag * np.exp(1j * ph), n) * w / 1.5
                 syn[j * hop - origin:end] += frame
+                if wide:
+                    # the same jitter, rotated apart: L leads, R lags
+                    syn_l[j * hop - origin:end] += np.fft.irfft(mag * np.exp(1j * (ph + scat)), n) * w / 1.5
+                    syn_r[j * hop - origin:end] += np.fft.irfft(mag * np.exp(1j * (ph - scat)), n) * w / 1.5
                 phi = np.mod(phi + layer["w_true"] * hop, 2.0 * np.pi)
                 j += 1
             layer["syn"], layer["origin"], layer["j_next"], layer["phi"] = syn, origin, j, phi
+            layer["syn_l"], layer["syn_r"] = syn_l, syn_r
+
+            # the self-decay: a per-sample factor from the integer count
+            # since birth (rebased when the knob moves, so no jump)
+            if decay_s != layer["decay"]:
+                m_now = max(0, t_abs - int(layer["m0"]))
+                if layer["decay"] > 0.0:
+                    layer["g_base"] *= 10.0 ** (-3.0 * (m_now - layer["m_gbase"]) / (layer["decay"] * sr))
+                layer["m_gbase"] = m_now
+                layer["decay"] = decay_s
+            g_last = 1.0
+            if decay_s > 0.0:
+                g = layer["g_base"] * 10.0 ** (-3.0 * (m - layer["m_gbase"]) / (decay_s * sr))
+                env = env * g
+                g_last = float(g[-1])
+            elif layer["g_base"] != 1.0:
+                env = env * layer["g_base"]
 
             i0 = np.floor(p).astype(np.int64) - origin
             frac = p - np.floor(p)
             val = syn[i0] * (1.0 - frac) + syn[i0 + 1] * frac
+            if wide:
+                if wet_l is None:
+                    wet_l, wet_r = wet.copy(), wet.copy()
+                wet_l += (syn_l[i0] * (1.0 - frac) + syn_l[i0 + 1] * frac) * env
+                wet_r += (syn_r[i0] * (1.0 - frac) + syn_r[i0 + 1] * frac) * env
+            elif wet_l is not None:
+                wet_l += val * env
+                wet_r += val * env
             wet += val * env
 
             done = (not row[-1]) and env[-1] == 0.0 and off_c >= fade_n
+            if not done and g_last < drop_below:
+                done = True        # decayed below -90 dB: nothing left to hold
             if not done:
                 keep.append(layer)
         st["layers"] = keep
 
-        out = x * dry + wet * level
-        return out.astype(np.float32)
+        out = (x * dry + wet * level).astype(np.float32)
+        if wet_l is None:
+            return {"out": out, "out_l": out, "out_r": out}
+        return {
+            "out": out,
+            "out_l": (x * dry + wet_l * level).astype(np.float32),
+            "out_r": (x * dry + wet_r * level).astype(np.float32),
+        }
 
     def _render_cv_math(self, module, frames: int, buffers, patch) -> dict:
         """Two-in CV algebra (see modules/cv_math.py).
