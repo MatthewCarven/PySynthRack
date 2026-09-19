@@ -739,6 +739,78 @@ same session.
       anyone is playing). Decide whether that asymmetry should be
       documented as-is or changed; do not change it silently.
 
+## Five love passes in parallel (2026-09-19)
+
+Matthew: "i've banked a bit of credit this session like can i get you to
+fire up subagents for say 10 modules you decide upon to get some love?"
+— then "Just5". Five subagents, one module each, each in its own git
+worktree on the love-pass recipe (reference renders captured BEFORE
+editing, the feature ships OFF at its default, bit-exact pinned),
+cherry-picked onto main one at a time. Every pass brought its tests,
+its MODULES.md entry and an example. Suite **3762 → 3886**, 135
+examples. Ears/eyes items below are BANKED.
+
+- [x] **`lfo` — `reset` gate + `phase` param — SHIPPED 2026-09-19
+      (bda4f53).** A rising edge restarts the phase at `phase` ON THAT
+      SAMPLE (segments between edges, vectorized per segment); `phase`
+      is the free-running start too and re-anchors a running LFO when
+      the knob moves; per-voice on the voice path, any-voice-high on
+      the mono path; `random` re-rolls on reset. 62 reference renders
+      bit-exact. Fixed in passing: `random` at a non-zero start phase
+      used to output 0.0 until its first wrap. 15 → 37 tests.
+      Example `lfo_retrigger.json` (banked): every note opens at the
+      top of its tremolo. EYES: the `phase` slider re-anchors live.
+      Follow-on: a `seed` for the `random` waveform (still global
+      `np.random`).
+- [x] **`filter` — `resonance_cv` + `res_cv_depth` — SHIPPED 2026-09-19
+      (cd347f2).** Q doublings per unit (`motion_eq`'s convention),
+      block mean like `cutoff_cv`, per-voice when the source is
+      `(V, F)`; cv +1 at depth 1 IS the `resonance`-doubled render
+      bit-exact; exponent clipped to +-64 so an absurd CV cannot raise
+      OverflowError. 86 reference renders bit-exact. 29 → 51 tests.
+      Example `filter_resonance_sweep.json` (banked): the peak breathes
+      on its own nine-second cycle. LATENT TRAP found (not fixed):
+      `cutoff_cv` and every other `2.0 ** (depth*cv)` block-mean path
+      will raise OverflowError in the audio thread on a CV > ~1024 —
+      the resonance path guards it; the cutoff family should too.
+- [x] **`oscillator` — pulse-width modulation — SHIPPED 2026-09-19
+      (cb6eea0).** `pulse_width` 0.05..0.95 + per-sample `pw_cv` x
+      `pw_cv_depth` (width per unit) on `square` / `square_blep`,
+      voice-aware like `freq_cv`; the pulse's DC `2pw - 1` removed per
+      sample; the falling-edge PolyBLEP runs on the falling edge's OWN
+      phase with a window sized by its own increment (exact for widths
+      moving slower than the phase — every one of 163 edges under a
+      30 Hz LFO got exactly one correction pair). Alias fraction at
+      width 0.1: 0.0018 blep vs 0.108 naive. `square_wt` stays a fixed
+      50% table (documented limit). 68 reference renders bit-exact.
+      31 → 65 tests. Example `oscillator_pwm.json` (banked): the PWM
+      pad. Test lesson: 220 Hz x 2205 samples is exactly 11 cycles —
+      pin block-size independence at a frequency coprime with 44100.
+- [x] **`adsr` — `vel` input — SHIPPED 2026-09-19 (115fc17).** A
+      knobless multiplier read at the gate's rising edge and latched
+      for the note (release included), the drums' rule; stages run in
+      output space so the TIMES stay what the knobs say; a re-strike
+      softer than the ringing level falls to the new peak at the
+      full-velocity attack slope (no jump — max step == the attack
+      slope); per-voice from a `(V, F)` vel, loudest-voice on a mono
+      gate. 14 reference arrays bit-exact. 8 → 21 tests. Example
+      `adsr_velocity.json` (banked): seeded accents. Live wish:
+      `midi_input.velocity_cv -> adsr.vel` on a real keyboard.
+      PRE-EXISTING (not vel's): the voice-path ADSR lands its
+      attack/decay crossing +-1 sample across block sizes (one stage
+      step); mono is bit-exact. Fixing it changes shipped renders.
+- [x] **`reverb` — `freeze` gate — SHIPPED 2026-09-19 (5a9d3b4).**
+      The tank's Sylvester-Hadamard mix is orthonormal, so a unity loop
+      with the damping bypassed is lossless BY CONSTRUCTION: freeze gain
+      exactly 1.0, energy conserved to < 0.01 dB over 10 s, held RMS
+      within +-0.35 dB, the unfrozen tail at -188 dB by +5 s; a 10 ms
+      integer-count ramp (`_gate_ramp_env`) crossfades in and out
+      (edge steps 0.0005 vs the tail's own 0.013); input muted from the
+      tank, dry path untouched. 8 reference renders bit-exact. 19 → 32
+      tests. Example `reverb_freeze_pad.json` (banked): a Cmaj7 strum
+      hangs as a pad every six seconds. Follow-on: a `freeze` PARAM
+      (checkbox latch) beside the gate, like granular's.
+
 ## The keep-list, continued (2026-09-19)
 
 - [x] **`cv_math` — SHIPPED 2026-09-19, module #97.** CV & Utilities

@@ -109,9 +109,12 @@ already three light before slice 2 added one -- count with
 > 2026-09-19: **`drift`, module #96** — the keep-list's smooth
 > wandering random; `drift_wander.json` (banked). Then **`cv_math`,
 > module #97** — `logic` for voltages; `cv_math_delayed_vibrato.json`
-> (banked). Suite **3762**, 130 examples. Keep-list left: cv_recorder,
-> vowel, freeze, autopan, midi_output, subpatch containers, snapshot
-> morph.
+> (banked). Suite **3762**, 130 examples. Then **five love passes in
+> parallel** (five subagents, one module each, own worktrees,
+> cherry-picked): lfo `reset`+`phase`, filter `resonance_cv`,
+> oscillator PWM, adsr `vel`, reverb `freeze` — five examples banked.
+> Suite **3886**, 135 examples. Keep-list left: cv_recorder, vowel,
+> freeze, autopan, midi_output, subpatch containers, snapshot morph.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -161,6 +164,72 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-19 — five love passes in parallel
+
+Matthew: "i've banked a bit of credit this session like can i get you
+to fire up subagents for say 10 modules you decide upon to get some
+love?" — then "Just5". So five: one subagent per module, each in its
+own git worktree (`PYTHONPATH=src` so the worktree's code is the one
+imported past the editable install), each handed the love-pass recipe
+and a one-paragraph spec, each committing on its own branch. The
+coordinator cherry-picked the five onto main in landing order and
+wrote these records; the only conflicts were in MODULES.md — two
+appendix bullets and two adjacent index rows — resolved by keeping
+both. Full suite on the merged result: **3886 passed**, 135 examples.
+
+**What landed** (each with tests, docs, an example, reference renders
+bit-exact at the default):
+
+* **lfo `reset` + `phase`** (bda4f53). A rising edge restarts the
+  phase at `phase` on that sample — the block is rendered in segments
+  between edges — so a keyboard gate into `reset` makes every note's
+  vibrato start from the same place; `phase` is also the free-running
+  start and re-anchors a running LFO when the knob moves. Per-voice on
+  the voice path, any-voice-high on the mono path; `random` re-rolls
+  on reset. Found and fixed in passing: `random` at a non-zero start
+  phase output 0.0 until its first wrap. 62 renders bit-exact.
+* **filter `resonance_cv`** (cd347f2). Q doublings per unit, block
+  mean like `cutoff_cv`, per-voice from a `(V, F)` source; cv +1 at
+  depth 1 is the resonance-doubled render bit-exact. Found: every
+  `2.0 ** (depth·cv)` block-mean path in the backend will raise
+  OverflowError on an absurd CV — the new path clips the exponent;
+  the cutoff family is on the TODO. 86 renders bit-exact.
+* **oscillator PWM** (cb6eea0). `pulse_width` + per-sample `pw_cv` on
+  `square`/`square_blep`, DC-compensated; the falling-edge PolyBLEP
+  runs on the falling edge's own phase with its own increment, exact
+  for widths moving slower than the phase (every edge under a 30 Hz
+  LFO got one correction pair). Alias fraction at width 0.1: 0.0018
+  vs 0.108 naive. `square_wt` stays 50%. 68 renders bit-exact.
+* **adsr `vel`** (115fc17). Edge-latched per note like the drums';
+  stages run in output space so the times stay what the knobs say; a
+  softer re-strike falls at the attack slope instead of jumping.
+  Pre-existing and now pinned: the voice-path ADSR's crossing lands
+  ±1 sample across block sizes. 14 arrays bit-exact.
+* **reverb `freeze`** (5a9d3b4). The tank's Hadamard mix is
+  orthonormal, so unity feedback with the damping bypassed is lossless
+  by construction — energy conserved to < 0.01 dB over 10 s, no gain
+  hunting; a 10 ms integer-count ramp in and out; input muted from the
+  tank, dry untouched. 8 renders bit-exact.
+
+**Lessons from running five at once.** (1) The scratchpad directory is
+shared across parallel agents: three of the five had a patch script
+overwritten by a sibling after it had run — harmless this time,
+because each had already applied it, but the next batch gets
+per-module scratch folders in the prompt. (2) Cherry-pick, not merge:
+linear history, each pass keeps its own message, and the conflicts
+were confined to MODULES.md's shared lists. (3) The recipe scales:
+every agent captured its references from the pristine HEAD source
+(one used `git archive` to be sure) and every one reported bit-exact;
+the unseeded examples (noise, `random` LFO, pluck bursts) had to be
+rendered under `np.random.seed` to be comparable at all — the same
+finding as the swell-strike test, now from five directions. (4) Each
+agent's test lessons are in its TODO entry; the recurring one is
+"the observable must be able to see the thing" — a click window
+must run until the changed writes reach the taps, white noise cannot
+detect a click, a duty-cycle count is biased a sample per cycle.
 
 ---
 
