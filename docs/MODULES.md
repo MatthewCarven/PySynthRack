@@ -342,7 +342,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`cv_scale`](#cv_scale) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`cv_offset`](#cv_offset) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`cv_math`](#cv_math) | CV & Utilities | `a`,`b` (cv) → `min`,`max`,`avg`,`diff`,`mult`,`rect`,`inv` (cv) |
-| [`cv_recorder`](#cv_recorder) | CV & Utilities | `in` (cv), `clock`,`rec`,`clear` (gate) → `out`,`pos` (cv) |
+| [`cv_recorder`](#cv_recorder) | CV & Utilities | `in` (cv), `clock`,`rec`,`clear`,`play`,`reverse` (gate) → `out`,`pos` (cv) |
 | [`sample_hold`](#sample_hold) | CV & Utilities | `in`, `prob_cv` (cv), `trig` (gate) → `out` (cv) |
 | [`slew`](#slew) | CV & Utilities | `in`, `rise_cv`, `fall_cv` (cv), `clock` (gate) → `out` (cv) |
 | [`quantizer`](#quantizer) | CV & Utilities | `in` (cv), `gate` (gate) → `out` (cv), `changed` (gate) |
@@ -4650,11 +4650,48 @@ drifts from the transport. A tempo change after the loop exists crops
 or wraps the fixed buffer until the next sync — documented, not fought;
 `clear` and re-record to re-measure.
 
+**The transport** (love pass, 2026-09-20). The head has a stop, a
+direction and a speed, so the loop is an instrument rather than a tape.
+
+**`play`** (gate; unpatched = playing). While it is high the head runs;
+while it is low the head **stops** — `out` holds the slot under it and
+`pos` holds with it, a frozen modulation (pause the wobble on the
+downbeat) — and when it rises the loop resumes from that same slot. A
+stopped head **writes nothing**: `rec` is still honoured as a state (the
+loop is created if it does not exist, the recorder is armed) and the
+take begins the moment `play` rises. The alternative — a stopped head
+writing the same slot over and over — would in overdub pile a whole
+gesture into one sample, a spike rather than a punch-in. A clocked sync
+tick still snaps a stopped head to 0: the transport wins, so a `play`
+gated from the same clock resumes at the top of the bar.
+
+**`reverse`** (checkbox, OR the `reverse` gate — the freeze / granular
+precedent). The head runs backwards, wrapping from 0 to the loop's end.
+A flip mid-loop keeps the head where it is and turns around — no jump.
+Recording in reverse writes backwards too: a take plays *as performed*
+while reverse stays on and comes back **time-reversed** once it is
+released (the tape ran backwards under the record head). Clocked, the
+hard sync still snaps the head to 0 on the sync tick, whichever way it
+is running.
+
+**`speed`** (`0.5x` / `1x` / `2x`) is how fast the *playback* head
+moves: at `2x` the loop plays twice per length, at `0.5x` once per two
+lengths, read with linear interpolation between slots (a recorded ramp
+stays a ramp). **Recording always runs at 1x** — while `rec` is high the
+head advances one sample per sample whatever `speed` says, so the take
+is real time, and `speed` resumes when `rec` falls: *record at 1x, play
+at any*. A `rec` edge at `0.5x` lands the head on the slot it is over
+first. A speed change mid-loop keeps the head where it is. Under the
+hood the head is an integer count of **half**-samples from the last
+snap (the three speeds are 1 / 2 / 4 half-samples per sample), so every
+speed is bit-exact across block sizes where a float phase would not be.
+
 Mono (a polyphonic `in` collapses to the house sum). Renders are
 block-size independent whenever `in` is patched — every event is an
 integer sample position; the knob path is block-rate by nature. Cost is
 nil: each block is a few vectorized slices. Numpy backend only; silent
-stub under pyo. See `examples/cv_recorder_layers.json`.
+stub under pyo. See `examples/cv_recorder_layers.json` (the layering
+loop) and `examples/cv_recorder_backwards.json` (the transport).
 
 **Ports**
 
@@ -4664,6 +4701,8 @@ stub under pyo. See `examples/cv_recorder_layers.json`.
 | `clock` | in | gate | Optional: `length` in ticks, quantised rec, hard sync at the loop boundary. |
 | `rec` | in | gate | Record while high. The first rising edge creates the loop. |
 | `clear` | in | gate | A rising edge wipes the loop and rewinds; the position holds until the next `rec`. |
+| `play` | in | gate | Optional: the head runs while high and stops while low (`out` and `pos` hold; nothing is written). Unpatched = playing. |
+| `reverse` | in | gate | Optional: high runs the head backwards (ORed with the `reverse` checkbox). |
 | `out` | out | cv | The loop (while recording, what is being written). |
 | `pos` | out | cv | Loop position, 0..1. |
 
@@ -4675,6 +4714,8 @@ stub under pyo. See `examples/cv_recorder_layers.json`.
 | `mode` | `overdub` | replace / overdub | Punch-in overwrite, or add to the existing layer. |
 | `feedback` | `1.0` | 0 … 1 | Overdub: what the old layer is scaled by before the new input is added. |
 | `value` | `0.0` | −1 … 1 | The gesture knob — the input while `in` is unpatched. |
+| `reverse` | `false` | bool | Run the head backwards (OR the `reverse` gate). |
+| `speed` | `1x` | 0.5x / 1x / 2x | Playback head rate; recording always runs at 1x. |
 
 #### `sample_hold`
 
@@ -5537,5 +5578,6 @@ loads in the app. Notable ones referenced above:
 - `freeze_chord_pad.json` — module #100, the spectral freeze: a bar clock plays four sus2 chords on the [`organ`](#organ) ([`sequencer`](#sequencer) → [`chord`](#chord)) for a second each; the clock's `not_a` through [`logic`](#logic) is the [`freeze`](#freeze) gate, so it rises the instant the chord's gate falls and the capture is the chord's sustain — held as a glassy pad (`smear` 0.25) for the rest of the bar, easing out under the next chord over a 300 ms `fade`. Try `smear` 1 (the wash), `pitch` −12 (a sub-pad), `size` 16384 (a longer, smoother moment).
 - `sequencer_reverse_bars.json` — the [`sequencer`](#sequencer)'s `reverse` gate: an eight-step [`pluck`](#pluck) line at eighths, a [`clock_divider`](#clock_divider) `divn` 8 resetting it on every bar line and a bar-pair square ([`lfo`](#lfo) 0.25 Hz, `phase` 17/32 so its edges fall half an eighth *before* the bar lines, through a [`schmitt`](#schmitt)) holding `reverse` high through every second bar — bar 1 climbs `0 3 7 10 12 15 14 19`, bar 2 is its exact mirror (a reset with the gate high lands on the last step), bar 3 climbs again: a palindrome, through a dotted-eighth [`delay`](#delay). Swap the sequencer's `direction` to `pendulum` and the same gate turns it around at the bar lines instead.
 - `freeze_wide_wash.json` — the [`freeze`](#freeze)'s `width` + `decay`: a [`pluck`](#pluck) run (eight eighth-notes, then two seconds of rest) into the freeze at `size` 16384 / `smear` 0.6 / `width` 0.8 / `decay` 6; a 15 BPM [`clock`](#clock) (`pulse_width` 0.95, a short dip then the edge) latches a new hold every four seconds right on the run's last note, so each phrase blooms into a wide wash that falls 10 dB a second and is gone before the next one; `out_l` / `out_r` each through their own little [`reverb`](#reverb) to the two sides. Set `width` 0 to hear the same wash collapse to the centre, `decay` 0 to keep it forever.
+- `cv_recorder_backwards.json` — the [`cv_recorder`](#cv_recorder)'s transport: a bar-long take of a slow triangle [`lfo`](#lfo) (sixteenths on `clock`, `length` 16, `replace` — a fresh take every eight bars) moving a resonant lowpass over a low saw; a [`clock_divider`](#clock_divider) at n=32 holds `reverse` high every other bar, so the wobble runs forwards, then backwards; a second divider at n=16 (`pw` 0.25) fires on the first beat of every bar and, through a [`logic`](#logic) `nand` with NOT-the-take, pulls `play` low there — the wobble freezes on the downbeat for a beat and resumes from the top, never during a take. Both dividers are `reset` by NOT-the-take so their downbeat lands on the loop's own bar (the loop is created on the clock's second tick, when the period is known). `speed` is `1x` — try `2x`.
 - `noise_brown_surf.json` — surf: a seeded `brown` [`noise`](#noise) (seed 7, so the same tide every run) swelling under a 0.12 Hz unipolar sine on its knobless `amp_cv` (a [`cv_offset`](#cv_offset) of 0.2 keeps the trough from going silent) into a resonant 900 Hz lowpass [`filter`](#filter) — waves rolling in and drawing back every eight seconds. Five modules.
 - `stereo_hard_pan.json` — left/right speaker sinks.

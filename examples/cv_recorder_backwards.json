@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "next_id": 13,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "sixteenths at 120 - the transport (looper clock + both dividers)", "params": { "bpm": 120.0, "division": 4.0, "pulse_width": 0.2 } },
+    { "id": 2, "type": "clock", "name": "the TAKE window - high for the first bar of every eight (falls at tick 16.9, honoured on the bar)", "params": { "bpm": 120.0, "division": 0.03125, "pulse_width": 0.132 } },
+    { "id": 3, "type": "logic", "name": "not_a = NOT take -> the dividers' reset (their downbeat lands on the loop's bar, tick 17)", "params": {} },
+    { "id": 4, "type": "clock_divider", "name": "n=32 pw 0.5: divn high for a bar, low for a bar -> REVERSE every other bar", "params": { "n": 32, "m": 2, "swing": 0.0, "pw": 0.5 } },
+    { "id": 5, "type": "clock_divider", "name": "n=16 pw 0.25: divn high on the first beat of every bar -> the freeze", "params": { "n": 16, "m": 2, "swing": 0.0, "pw": 0.25 } },
+    { "id": 6, "type": "logic", "name": "nand = NOT(first beat AND not recording) -> PLAY: the wobble pauses on the downbeat, never during a take", "params": {} },
+    { "id": 7, "type": "lfo", "name": "the thing being recorded - a slow triangle, out of step with the bar", "params": { "waveform": "triangle", "rate": 0.53, "depth": 1.0, "bipolar": true, "cv_depth": 1.0 } },
+    { "id": 8, "type": "cv_recorder", "name": "LOOPER - 16 ticks = a bar, replace: a fresh take every 8 bars; plays forwards / backwards on alternate bars, frozen on each downbeat. speed 1x - try 2x", "params": { "length": 16.0, "mode": "replace", "feedback": 1.0, "value": 0.0, "reverse": false, "speed": "1x" } },
+    { "id": 9, "type": "oscillator", "name": "a low saw drone", "params": { "waveform": "saw_blep", "freq": 65.4064, "amp": 0.5 } },
+    { "id": 10, "type": "filter", "name": "the loop moves the cutoff - two octaves of it", "params": { "mode": "lowpass", "cutoff": 300.0, "resonance": 2.0, "cv_depth": 2.0 } },
+    { "id": 11, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.6 } },
+    { "id": 12, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.6 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 8, "dst_port": "clock" },
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 4, "dst_port": "clock" },
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 5, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "out", "dst_module_id": 8, "dst_port": "rec" },
+    { "src_module_id": 2, "src_port": "out", "dst_module_id": 3, "dst_port": "a" },
+    { "src_module_id": 3, "src_port": "not_a", "dst_module_id": 4, "dst_port": "reset" },
+    { "src_module_id": 3, "src_port": "not_a", "dst_module_id": 5, "dst_port": "reset" },
+    { "src_module_id": 3, "src_port": "not_a", "dst_module_id": 6, "dst_port": "b" },
+    { "src_module_id": 5, "src_port": "divn", "dst_module_id": 6, "dst_port": "a" },
+    { "src_module_id": 6, "src_port": "nand", "dst_module_id": 8, "dst_port": "play" },
+    { "src_module_id": 4, "src_port": "divn", "dst_module_id": 8, "dst_port": "reverse" },
+    { "src_module_id": 7, "src_port": "cv", "dst_module_id": 8, "dst_port": "in" },
+    { "src_module_id": 8, "src_port": "out", "dst_module_id": 10, "dst_port": "cutoff_cv" },
+    { "src_module_id": 9, "src_port": "out", "dst_module_id": 10, "dst_port": "in" },
+    { "src_module_id": 10, "src_port": "out", "dst_module_id": 11, "dst_port": "in" },
+    { "src_module_id": 10, "src_port": "out", "dst_module_id": 12, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 40], "2": [30, 240], "3": [340, 240], "4": [340, 40], "5": [340, 440],
+      "6": [660, 440], "7": [30, 640], "8": [980, 300],
+      "9": [980, 40], "10": [1320, 40], "11": [1620, 20], "12": [1620, 160]
+    }
+  }
+}

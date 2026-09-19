@@ -11,6 +11,16 @@ re-syncs at the boundary; the knob path ramps across the block;
 block-size independence with a patched input; the ``mode`` combo offers
 replace/overdub (the shared-branch trap); the widget sweep; the example.
 
+The transport (the 2026-09-20 love pass): ``play`` low holds ``out`` and
+``pos`` exactly and resumes from the same slot, and a stopped head writes
+nothing (the take starts when play rises); ``reverse`` plays the slots in
+descending order, a mid-loop flip turns around without a jump, a take
+recorded backwards comes back time-reversed, and a clocked loop still
+syncs; ``speed`` 2x plays the loop twice per length, 0.5x once per two
+(interpolated), recording at 2x runs at 1x, a speed change does not jump;
+every feature 50 vs 250 exact; the defaults are the shipped arithmetic
+(an old-engine pin); the ``speed`` combo's CONTENTS; the backwards example.
+
 Plumbing tests run at SR 1000 with 50-sample blocks; the example at 44100.
 """
 from __future__ import annotations
@@ -24,13 +34,14 @@ import pytest
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.module import all_module_types, get_module_type
 from pysynthrack.core.patch import Patch
-from pysynthrack.modules.cv_recorder import CV_RECORDER_MODES
+from pysynthrack.modules.cv_recorder import CV_RECORDER_MODES, CV_RECORDER_SPEEDS
 
 SR = 1000
 BLOCK = 50
 
 
-def _driver(params=None, sr=SR, block=BLOCK, cable_in=True, clock=False, clear=False):
+def _driver(params=None, sr=SR, block=BLOCK, cable_in=True, clock=False, clear=False,
+            play=False, reverse=False):
     patch = Patch()
     m = patch.add_module("cv_recorder", params=params or {})
     keys = {}
@@ -41,14 +52,11 @@ def _driver(params=None, sr=SR, block=BLOCK, cable_in=True, clock=False, clear=F
     rg = patch.add_module("clock")
     patch.connect(rg.id, "out", m.id, "rec")
     keys["rec"] = (rg.id, "out")
-    if clock:
-        ck = patch.add_module("clock")
-        patch.connect(ck.id, "out", m.id, "clock")
-        keys["clock"] = (ck.id, "out")
-    if clear:
-        cl = patch.add_module("clock")
-        patch.connect(cl.id, "out", m.id, "clear")
-        keys["clear"] = (cl.id, "out")
+    for name, wanted in (("clock", clock), ("clear", clear), ("play", play), ("reverse", reverse)):
+        if wanted:
+            g = patch.add_module("clock")
+            patch.connect(g.id, "out", m.id, name)
+            keys[name] = (g.id, "out")
     b = NumpyBackend(sample_rate=sr, block_size=block)
     b.compile(patch)
 
@@ -63,21 +71,27 @@ def _driver(params=None, sr=SR, block=BLOCK, cable_in=True, clock=False, clear=F
     return step
 
 
-def _render(total, params=None, block=BLOCK, sr=SR, x=None, rec=None, clock=None, clear=None):
-    """Render ``total`` samples; ``x``/``rec``/``clock``/``clear`` are functions
-    of the absolute sample index array (or None = unpatched)."""
+def _render(total, params=None, block=BLOCK, sr=SR, x=None, rec=None, clock=None, clear=None,
+            play=None, reverse=None, knobs=None):
+    """Render ``total`` samples; ``x``/``rec``/``clock``/``clear``/``play``/
+    ``reverse`` are functions of the absolute sample index array (or None =
+    unpatched). ``knobs`` is an optional {absolute_sample: {param: value}}
+    schedule applied before the block that starts at that sample (a hand
+    on the panel; the sample must be a block boundary at every size used)."""
     step = _driver(params, sr=sr, block=block, cable_in=x is not None,
-                   clock=clock is not None, clear=clear is not None)
+                   clock=clock is not None, clear=clear is not None,
+                   play=play is not None, reverse=reverse is not None)
     outs, poss = [], []
     for i in range(total // block):
         t = np.arange(i * block, (i + 1) * block)
+        for at, changes in (knobs or {}).items():
+            if t[0] <= at < t[0] + block:
+                assert at == t[0], "knob schedule must sit on a block boundary"
+                step.module.params.update(changes)
         bufs = {"rec": rec(t) if rec is not None else np.zeros(block)}
-        if x is not None:
-            bufs["in"] = x(t)
-        if clock is not None:
-            bufs["clock"] = clock(t)
-        if clear is not None:
-            bufs["clear"] = clear(t)
+        for name, fn in (("in", x), ("clock", clock), ("clear", clear), ("play", play), ("reverse", reverse)):
+            if fn is not None:
+                bufs[name] = fn(t)
         r = step(block, **bufs)
         outs.append(r["out"])
         poss.append(r["pos"])
@@ -97,16 +111,27 @@ def test_registered_with_ports_and_params():
     assert cls.CATEGORY == "CV & Utilities"
     m = cls(1)
     assert [(p.name, p.signal_kind) for p in m.input_ports] == [
-        ("in", "cv"), ("clock", "gate"), ("rec", "gate"), ("clear", "gate")]
+        ("in", "cv"), ("clock", "gate"), ("rec", "gate"), ("clear", "gate"),
+        ("play", "gate"), ("reverse", "gate")]
     assert [(p.name, p.signal_kind) for p in m.output_ports] == [("out", "cv"), ("pos", "cv")]
     assert m.params["mode"] == "overdub" and m.params["length"] == 4.0
+    assert m.params["reverse"] is False and m.params["speed"] == "1x"
     assert CV_RECORDER_MODES == ("replace", "overdub")
+    assert CV_RECORDER_SPEEDS == ("0.5x", "1x", "2x")
 
 
 def test_serialization_round_trip():
     cls = all_module_types()["cv_recorder"]
-    m = cls(2, params={"mode": "replace", "length": 2.0, "feedback": 0.5, "value": -0.3})
+    m = cls(2, params={"mode": "replace", "length": 2.0, "feedback": 0.5, "value": -0.3,
+                       "reverse": True, "speed": "2x"})
     assert cls.from_dict(m.to_dict()).params == m.params
+
+
+def test_an_old_patch_without_the_transport_keys_gets_the_defaults():
+    cls = all_module_types()["cv_recorder"]
+    m = cls.from_dict({"id": 3, "type": "cv_recorder", "name": "old",
+                       "params": {"length": 2.0, "mode": "replace", "feedback": 1.0, "value": 0.0}})
+    assert m.params["reverse"] is False and m.params["speed"] == "1x"
 
 
 # ----- the loop -----------------------------------------------------------------
@@ -257,6 +282,184 @@ def test_clocked_loop_resyncs_at_the_boundary_tick():
     assert 520 not in zeros and 640 not in zeros            # not the free-running wrap
 
 
+# ----- transport: play ------------------------------------------------------------
+
+
+def test_play_low_holds_out_and_pos_and_resumes_from_the_same_slot():
+    # A 100-sample ramp loop; play drops at t=150 (the head over slot 50)
+    # and rises at 200.
+    play = lambda t: ((t < 150) | (t >= 200)).astype(np.float32)
+    out, pos, _ = _render(400, {"length": 0.1}, x=RAMP, rec=REC_FIRST_LOOP, play=play)
+    first = out[:100]
+    assert np.array_equal(out[100:150], first[:50])                 # running
+    assert np.all(out[150:200] == first[50]) and np.all(pos[150:200] == 0.5)   # held, exactly
+    assert np.array_equal(out[200:250], first[50:])                 # resumes from slot 50
+    assert np.array_equal(pos[200:250], pos[50:100])
+
+
+def test_a_stopped_head_writes_nothing_and_the_take_starts_when_play_rises():
+    # Loop 0..100 (ramp). Rec high again 120..180 in replace with the
+    # input at 9.0; play is low 120..160, so only the 160..180 stretch
+    # (slots 20..40 -- the head stopped over slot 20) gets written.
+    rec = lambda t: ((t < 100) | ((t >= 120) & (t < 180))).astype(np.float32)
+    play = lambda t: ((t < 120) | (t >= 160)).astype(np.float32)
+    x = lambda t: np.where(t < 100, RAMP(t), 9.0).astype(np.float32)
+    out, pos, step = _render(500, {"length": 0.1, "mode": "replace"}, x=x, rec=rec, play=play)
+    first = out[:100]
+    assert np.all(out[120:160] == first[20]) and np.all(pos[120:160] == 0.2)   # stopped, held
+    buf = step.backend._state[step.module.id]["buf"]
+    assert np.all(buf[20:40] == 9.0)                                 # the take, from slot 20
+    assert np.array_equal(buf[:20], first[:20]) and np.array_equal(buf[40:], first[40:])
+    assert np.all(out[160:180] == 9.0)                               # what you hear is what you keep
+
+
+def test_rec_while_stopped_creates_the_loop_and_arms_it():
+    # Play is low from the start; rec rises at 30 (the loop is created,
+    # position 0, nothing written); play rises at 60 and the take runs
+    # 60..130 into slots 0..70. Read it off the first full replay.
+    rec = lambda t: ((t >= 30) & (t < 130)).astype(np.float32)
+    play = lambda t: (t >= 60).astype(np.float32)
+    out, pos, step = _render(400, {"length": 0.1, "mode": "replace"}, x=RAMP, rec=rec, play=play)
+    st = step.backend._state[step.module.id]
+    assert st["exists"] and st["L"] == 100
+    assert np.all(out[30:60] == 0.0) and np.all(pos[30:60] == 0.0)  # armed, stopped at the top
+    assert np.array_equal(out[60:130], RAMP(np.arange(60, 130)))    # the take
+    assert np.array_equal(out[160:230], RAMP(np.arange(60, 130)))   # replayed from slot 0 at t=160
+    assert np.all(out[230:260] == 0.0)                              # slots 70..100 never written
+
+
+def test_a_clocked_sync_tick_snaps_a_stopped_head_to_the_top():
+    # The transport wins: with play gated low across a bar boundary the
+    # head still snaps to 0 on the sync tick, so a play gate off the same
+    # clock resumes at the top of the bar.
+    period = 40
+    clock = lambda t: ((t % period) < 5).astype(np.float32)
+    rec = lambda t: ((t >= 45) & (t < 130)).astype(np.float32)    # loop 80..240 (L=160)
+    play = lambda t: (~((t >= 380) & (t < 400))).astype(np.float32)
+    out, pos, step = _render(600, {"length": 4.0}, x=RAMP, rec=rec, clock=clock, play=play)
+    assert step.backend._state[step.module.id]["L"] == 160
+    # Stopped over slot 140 (380 - 240) ... until the sync tick at 400.
+    assert np.all(pos[380:400] == pytest.approx(140 / 160))
+    assert pos[400] == 0.0 and pos[401] == pytest.approx(1 / 160)
+
+
+# ----- transport: reverse ---------------------------------------------------------
+
+
+def test_reverse_gate_plays_the_slots_in_descending_order():
+    rev = lambda t: (t >= 200).astype(np.float32)                   # flips at a loop boundary
+    out, pos, _ = _render(500, {"length": 0.1}, x=RAMP, rec=REC_FIRST_LOOP, reverse=rev)
+    first = out[:100]
+    assert out[200] == first[0]                                     # the head was over slot 0
+    assert np.array_equal(out[201:300], first[99:0:-1])             # then 99, 98, ... 1: a falling ramp
+    assert np.array_equal(out[300:400], out[200:300])               # and again
+    assert pos[200] == 0.0 and pos[201] == pytest.approx(0.99) and pos[299] == pytest.approx(0.01)
+
+
+def test_reverse_checkbox_does_the_same_as_the_gate():
+    knobs = {200: {"reverse": True}}
+    out, _, _ = _render(400, {"length": 0.1}, x=RAMP, rec=REC_FIRST_LOOP, knobs=knobs)
+    first = out[:100]
+    assert out[200] == first[0] and np.array_equal(out[201:300], first[99:0:-1])
+
+
+def test_a_mid_loop_flip_turns_around_without_a_jump():
+    # Reverse from 250 (slot 50) to 280, then forwards again.
+    rev = lambda t: ((t >= 250) & (t < 280)).astype(np.float32)
+    out, pos, _ = _render(400, {"length": 0.1}, x=RAMP, rec=REC_FIRST_LOOP, reverse=rev)
+    first = out[:100]
+    assert out[249] == first[49] and out[250] == first[50] and out[251] == first[49]
+    assert np.array_equal(out[250:280], first[50:20:-1])            # 50 down to 21
+    assert out[280] == first[20] and np.array_equal(out[280:360], first[20:100])   # from 20 forwards
+    assert np.abs(np.diff(out[240:300])).max() < 1.01 / 400          # never more than one ramp step
+
+
+def test_a_take_recorded_in_reverse_plays_as_performed_then_comes_back_time_reversed():
+    # Rec and reverse both high 0..100: slot 0 gets x(0), slot 99 x(1),
+    # ... slot 1 x(99). While reverse stays on the loop plays as
+    # performed; once it is released (t=200) the ramp comes back falling.
+    rev = lambda t: (t < 200).astype(np.float32)
+    out, _, step = _render(400, {"length": 0.1, "mode": "replace"}, x=RAMP, rec=REC_FIRST_LOOP, reverse=rev)
+    buf = step.backend._state[step.module.id]["buf"]
+    assert buf[0] == RAMP(np.array([0]))[0] and np.array_equal(buf[99:0:-1], RAMP(np.arange(1, 100)))
+    assert np.array_equal(out[:100], RAMP(np.arange(100)))          # what you hear is what you keep
+    assert np.array_equal(out[100:200], out[:100])                  # as performed, still in reverse
+    assert out[200] == buf[0] and np.array_equal(out[201:300], RAMP(np.arange(99, 0, -1)))   # time-reversed
+
+
+def test_reverse_while_clocked_still_syncs_at_the_boundary():
+    period = 40
+    clock = lambda t: ((t % period) < 5).astype(np.float32)
+    rec = lambda t: (t < 170).astype(np.float32)                    # created at tick 40, L=160
+    rev = lambda t: (t >= 170).astype(np.float32)
+    out, pos, step = _render(800, {"length": 4.0}, x=RAMP, rec=rec, clock=clock, reverse=rev)
+    assert step.backend._state[step.module.id]["L"] == 160
+    # Running backwards from slot 130 at t=170 ... the sync tick at 200
+    # snaps the head to 0, and it keeps going backwards from there.
+    assert pos[170] == pytest.approx(130 / 160) and pos[199] == pytest.approx(101 / 160)
+    assert pos[200] == 0.0 and pos[201] == pytest.approx(159 / 160)
+    assert pos[360] == 0.0                                          # and the next boundary
+
+
+# ----- transport: speed -----------------------------------------------------------
+
+
+def test_speed_2x_plays_the_loop_twice_per_length():
+    out, pos, _ = _render(400, {"length": 0.1}, x=RAMP, rec=REC_FIRST_LOOP, knobs={100: {"speed": "2x"}})
+    first = out[:100]
+    assert np.array_equal(out[100:150], first[0::2])                # every other slot
+    assert np.array_equal(out[150:200], first[0::2])                # twice per length
+    assert np.array_equal(pos[100:150], pos[0:100:2])
+
+
+def test_speed_half_plays_the_loop_once_per_two_lengths_interpolated():
+    out, pos, _ = _render(600, {"length": 0.1}, x=RAMP, rec=REC_FIRST_LOOP, knobs={100: {"speed": "0.5x"}})
+    first = out[:100].astype(np.float64)
+    assert np.array_equal(out[100:300:2], first)                    # the slots themselves
+    between = 0.5 * (first + np.roll(first, -1))                    # and the mean of each pair
+    assert np.allclose(out[101:300:2], between, atol=1e-7)
+    assert np.array_equal(out[300:500], out[100:300])               # once per two lengths
+    assert pos[101] == pytest.approx(0.005) and pos[299] == pytest.approx(0.995)
+
+
+def test_recording_at_2x_runs_at_1x():
+    # Speed 2x from the start: the 100-sample rec window fills all 100
+    # slots one per sample -- the take is real time -- and playback
+    # after the edge runs at 2x.
+    out, _, step = _render(300, {"length": 0.1, "mode": "replace", "speed": "2x"}, x=RAMP, rec=REC_FIRST_LOOP)
+    buf = step.backend._state[step.module.id]["buf"]
+    assert np.array_equal(buf, RAMP(np.arange(100)).astype(np.float64))
+    assert np.array_equal(out[:100], RAMP(np.arange(100)))
+    assert np.array_equal(out[100:150], out[0:100:2])
+
+
+def test_a_rec_edge_at_half_speed_lands_the_head_on_its_slot():
+    # At 0.5x from t=100 the head sits between slots on odd samples: at
+    # t=201 it is over 50.5. The rec edge there floors it to slot 50 and
+    # the ten-sample take writes 9.0 into 50..60, one slot per sample.
+    rec = lambda t: ((t < 100) | ((t >= 201) & (t < 211))).astype(np.float32)
+    x = lambda t: np.where(t < 100, RAMP(t), 9.0).astype(np.float32)
+    out, pos, step = _render(400, {"length": 0.1, "mode": "replace", "speed": "0.5x"}, x=x, rec=rec)
+    buf = step.backend._state[step.module.id]["buf"]
+    assert pos[200] == 0.5 and pos[201] == 0.5 and pos[210] == pytest.approx(0.59)
+    assert np.all(buf[50:60] == 9.0)
+    assert buf[49] == RAMP(np.array([49]))[0] and buf[60] == RAMP(np.array([60]))[0]
+    assert pos[211] == pytest.approx(0.6) and pos[212] == pytest.approx(0.605)   # 0.5x resumes at 60
+
+
+def test_a_speed_change_mid_loop_does_not_jump():
+    knobs = {150: {"speed": "2x"}, 200: {"speed": "0.5x"}, 250: {"speed": "1x"}}
+    out, pos, _ = _render(400, {"length": 0.1}, x=RAMP, rec=REC_FIRST_LOOP, knobs=knobs)
+    first = out[:100]
+    assert out[149] == first[49] and out[150] == first[50] and out[151] == first[52]   # 1x -> 2x at slot 50
+    # 2x for 50 samples covers 100 slots: back at slot 50 by t=200; then
+    # 0.5x from 50: 50, 50.5, 51 ...
+    assert out[200] == first[50] and out[202] == first[51]
+    assert out[201] == pytest.approx(0.5 * (float(first[50]) + float(first[51])))
+    # 0.5x for 50 samples covers 25 slots: at 75 by t=250, then 1x.
+    assert np.array_equal(out[250:275], first[75:100])
+
+
 # ----- block sizes --------------------------------------------------------------------
 
 
@@ -266,6 +469,59 @@ def test_block_size_independent_with_a_patched_input():
     a_out, a_pos, _ = _render(1000, {"length": 0.1, "feedback": 0.7}, block=50, x=RAMP, rec=rec, clear=clear)
     b_out, b_pos, _ = _render(1000, {"length": 0.1, "feedback": 0.7}, block=250, x=RAMP, rec=rec, clear=clear)
     assert np.array_equal(a_out, b_out) and np.array_equal(a_pos, b_pos)
+
+
+@pytest.mark.parametrize("speed", CV_RECORDER_SPEEDS)
+@pytest.mark.parametrize("clocked", [False, True])
+def test_the_transport_is_block_size_independent(speed, clocked):
+    # Play and reverse gates with edges mid-stream (odd samples), a
+    # second rec take, a clear, at every speed, free-running and clocked.
+    rec = lambda t: (((t >= 37) & (t < 137)) | ((t >= 313) & (t < 371))).astype(np.float32)
+    play = lambda t: (~(((t >= 183) & (t < 227)) | ((t >= 541) & (t < 563)))).astype(np.float32)
+    rev = lambda t: (((t >= 159) & (t < 251)) | ((t >= 433) & (t < 611))).astype(np.float32)
+    clear = lambda t: ((t >= 703) & (t < 706)).astype(np.float32)
+    clock = (lambda t: ((t % 40) < 5).astype(np.float32)) if clocked else None
+    params = {"length": 4.0 if clocked else 0.1, "feedback": 0.7, "speed": speed}
+    a = _render(1000, params, block=50, x=RAMP, rec=rec, clear=clear, play=play, reverse=rev, clock=clock)
+    b = _render(1000, params, block=250, x=RAMP, rec=rec, clear=clear, play=play, reverse=rev, clock=clock)
+    assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+    assert a[1].max() > 0.5 and a[0].std() > 0.0                    # the loop ran, not a silent pass
+
+
+# ----- defaults are the shipped arithmetic --------------------------------------------
+
+
+def _old_engine(x, rec, L, mode, feedback):
+    """The renderer as it shipped on 2026-09-19, free-running: an integer
+    slot ``p``, out = buf[p], write on rec, wrap at L. Pure Python."""
+    buf = np.zeros(L, dtype=np.float64)
+    out = np.zeros(len(x), dtype=np.float64)
+    pos = np.zeros(len(x), dtype=np.float64)
+    p, exists, prev = 0, False, False
+    for t in range(len(x)):
+        on = bool(rec[t] > 0.5)
+        if on and not prev and not exists:
+            exists, p = True, 0
+        prev = on
+        if not exists:
+            continue
+        if on:
+            buf[p] = float(x[t]) if mode == "replace" else buf[p] * feedback + float(x[t])
+        out[t] = buf[p]
+        pos[t] = p / L
+        p = (p + 1) % L
+    return out.astype(np.float32), pos.astype(np.float32)
+
+
+@pytest.mark.parametrize("mode,feedback", [("replace", 1.0), ("overdub", 0.6)])
+def test_defaults_are_the_shipped_arithmetic_bit_exact(mode, feedback):
+    rec = lambda t: (((t >= 37) & (t < 137)) | ((t >= 300) & (t < 350))).astype(np.float32)
+    x = lambda t: (np.sin(t * 0.07) * 0.8).astype(np.float32)
+    t = np.arange(1000)
+    ref_out, ref_pos = _old_engine(x(t), rec(t), 100, mode, feedback)
+    for block in (50, 250):
+        out, pos, _ = _render(1000, {"length": 0.1, "mode": mode, "feedback": feedback}, block=block, x=x, rec=rec)
+        assert np.array_equal(out, ref_out) and np.array_equal(pos, ref_pos)
 
 
 # ----- UI -------------------------------------------------------------------------------
@@ -297,6 +553,27 @@ def test_mode_combo_offers_replace_and_overdub_and_every_param_has_a_widget(monk
         hits = [lb for lb in w if lb == name or lb.startswith(name + " ")]
         assert hits, (name, list(w))
         assert w[hits[0]][0] != "add_input_text", name
+
+
+def test_every_param_gets_a_bounded_widget(monkeypatch):
+    w = _widgets(monkeypatch)
+    labels = list(w)
+    for name in get_module_type("cv_recorder").DEFAULT_PARAMS:
+        hits = [lb for lb in labels if lb == name or lb.startswith(name + " ")]
+        assert hits, (name, labels)
+        assert w[hits[0]][0] != "add_input_text", (name, w[hits[0]])
+    assert all(ord(ch) < 128 for lb in labels for ch in lb), labels   # DPG paints ASCII only
+
+
+def test_speed_combo_carries_the_recorders_speeds_not_the_transient_shapers(monkeypatch):
+    # ``speed`` has a shared combo branch below the TYPE blocks (the
+    # transient shaper's fast/med/slow) -- the same shadowing shape as
+    # ``mode``. Check the CONTENTS, not the label.
+    w = _widgets(monkeypatch)
+    speed = [lb for lb in w if lb == "speed" or lb.startswith("speed ")]
+    assert len(speed) == 1 and w[speed[0]] == ("add_combo", list(CV_RECORDER_SPEEDS))
+    reverse = [lb for lb in w if lb == "reverse" or lb.startswith("reverse ")]
+    assert len(reverse) == 1 and w[reverse[0]][0] == "add_checkbox" and "gate" in reverse[0]
 
 
 # ----- example ------------------------------------------------------------------------
@@ -337,3 +614,68 @@ def test_the_example_loops_a_layering_modulation():
     bar2 = loop[2 * L:3 * L]
     bar3 = loop[3 * L:4 * L]
     assert bar2.std() > 0.05 and not np.array_equal(bar2, bar3)
+
+
+def test_the_backwards_example_freezes_on_the_downbeat_and_alternates_direction():
+    """The transport example: a bar-long take (created on tick 1, the
+    period being known then), both dividers reset onto the loop's bar,
+    ``play`` low for the first beat of every playback bar, ``reverse``
+    high on alternate bars, a fresh take every eight bars that is never
+    interrupted. Measured on the recorder's own ``pos``."""
+    from pysynthrack.io_patch import load_patch
+
+    path = Path(__file__).resolve().parent.parent / "examples" / "cv_recorder_backwards.json"
+    patch = load_patch(path)
+    recs = [m for m in patch if m.TYPE == "cv_recorder"]
+    assert len(recs) == 1 and len(list(patch)) <= 12
+    b = NumpyBackend(sample_rate=44100, block_size=512)
+    b.compile(patch)
+    cap = {"out": [], "pos": [], "play": []}
+    orig = b._render_cv_recorder
+
+    def spy(module, frames, buffers, p):
+        r = orig(module, frames, buffers, p)
+        cap["out"].append(np.asarray(r["out"]).copy())
+        cap["pos"].append(np.asarray(r["pos"]).copy())
+        cap["play"].append(np.asarray(b._input_buffer(p, buffers, module.id, "play")).copy())
+        return r
+
+    b._render_cv_recorder = spy
+    peak = 0.0
+    for i in range(int(44100 * 19 / 512)):
+        np.random.seed(i)
+        out, _devices = b.render_block_multi(512)
+        assert out is not None and np.all(np.isfinite(out))
+        peak = max(peak, float(np.abs(out).max()))
+    assert 0.3 < peak < 0.8
+    pos = np.concatenate(cap["pos"])
+    loop = np.concatenate(cap["out"])
+    play = np.concatenate(cap["play"])
+    tick = 44100 * 0.125                                            # a sixteenth at 120
+    st = b._state[recs[0].id]
+    assert st["exists"] and abs(st["L"] - 16 * tick) < 20          # a bar (16 x the measured period)
+
+    def span(t0, t1, margin=300):
+        return slice(int(round(t0 * tick)) + margin, int(round(t1 * tick)) - margin)
+
+    # The take: ticks 1..17, running forwards, never stopped.
+    assert np.all(play[span(1, 17)] > 0.5)
+    assert np.all(np.diff(pos[span(1, 17)]) >= 0) and loop[span(1, 17)].std() > 0.1
+    # Bars 2..8 (ticks 17 + 16k): frozen at the top for the first beat --
+    # pos held at exactly 0 and out constant -- then backwards on the
+    # even bars (pos falling from ~1) and forwards on the odd ones.
+    for k in range(7):
+        bar = 17 + 16 * k
+        frozen = span(bar, bar + 4)
+        assert np.all(pos[frozen] == 0.0), k
+        assert np.all(loop[frozen] == loop[frozen][0]), k
+        moving = span(bar + 4, bar + 16)
+        d = np.diff(pos[moving])
+        if k % 2 == 0:
+            assert pos[moving][0] > 0.9 and np.all(d <= 0), k          # backwards
+        else:
+            assert pos[moving][0] < 0.1 and np.all(d >= 0), k          # forwards
+        assert loop[moving].std() > 0.1, k                              # the wobble is moving
+    # Bar 9 is the next take: forwards, not frozen, the same tick grid.
+    take2 = span(129, 145)
+    assert np.all(play[take2] > 0.5) and np.all(np.diff(pos[take2]) >= 0)

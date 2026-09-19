@@ -45,6 +45,41 @@ loop's start, so the loop never drifts from the transport. A tempo change
 after the loop exists crops or wraps the fixed buffer until the next sync
 — documented, not fought; ``clear`` and re-record to re-measure.
 
+**Transport** (the 2026-09-20 love pass): the head has a stop, a
+direction and a speed, so the loop is an instrument and not just a tape.
+
+  * ``play`` (gate): unpatched, the loop plays. Patched, the head runs
+    while it is high and **stops** while it is low — ``out`` holds the
+    slot under the head and ``pos`` holds with it (a frozen modulation:
+    pause the wobble on the downbeat), and when ``play`` rises the loop
+    resumes from that same slot. A stopped head **writes nothing**:
+    ``rec`` is still honoured as a state (the loop is created if it does
+    not exist, the recorder is armed), and the take begins the moment
+    ``play`` rises. The alternative — a stopped head writing the same
+    slot over and over — would in overdub pile the whole gesture into
+    one sample, a spike rather than a punch-in. A clocked sync tick
+    still snaps the stopped head to 0: the transport wins, so ``play``
+    gated from the same clock resumes at the top of the bar.
+  * ``reverse`` (checkbox, OR the ``reverse`` gate — the freeze /
+    granular precedent): the head runs backwards, wrapping from 0 to
+    the loop's end. A flip mid-loop keeps the head where it is and
+    turns around — no jump. Recording in reverse writes backwards too:
+    the take plays as performed while reverse stays on, and comes back
+    **time-reversed** once it is released (the tape ran backwards
+    under the record head). Clocked, the hard sync still snaps the head
+    to 0 on the sync tick, whichever way it is running.
+  * ``speed`` (``0.5x`` / ``1x`` / ``2x``): how fast the *playback* head
+    moves. At ``2x`` the loop plays twice per length, at ``0.5x`` once
+    per two lengths, read with linear interpolation between slots (a
+    recorded ramp stays a ramp). **Recording always runs at 1x** —
+    while ``rec`` is high the head advances one sample per sample
+    whatever ``speed`` says, so the take is real time; ``speed`` resumes
+    when ``rec`` falls. ("Record at 1x, play at any.") A ``rec`` edge
+    at ``0.5x`` lands the head on the slot it is over first. A speed
+    change mid-loop keeps the head where it is. The head is an integer
+    count of half-samples from the last snap, so every speed is
+    bit-exact across block sizes.
+
 Mono (a polyphonic ``in`` collapses to the house sum). Renders are
 block-size independent whenever ``in`` is patched — every event is an
 integer sample position; the knob path is block-rate by nature.
@@ -55,6 +90,10 @@ Ports:
     hard sync at the loop boundary.
   * ``rec`` (gate in): record while high.
   * ``clear`` (gate in): rising edge wipes the loop and rewinds.
+  * ``play`` (gate in): optional — the head runs while high, stops
+    while low (``out`` and ``pos`` hold). Unpatched = playing.
+  * ``reverse`` (gate in): optional — high runs the head backwards
+    (ORed with the ``reverse`` checkbox).
   * ``out`` (cv out): the loop (while recording, what is being written).
   * ``pos`` (cv out): loop position, 0..1.
 
@@ -66,6 +105,10 @@ Params:
     new input is added, 0..1. Default 1.
   * ``value``: the gesture knob, −1..1, the input when ``in`` is
     unpatched. Default 0.
+  * ``reverse``: run the head backwards (OR the ``reverse`` gate).
+    Default off.
+  * ``speed``: playback head rate, ``0.5x`` / ``1x`` / ``2x``; recording
+    always runs at ``1x``. Default ``1x``.
 """
 from __future__ import annotations
 
@@ -73,6 +116,8 @@ from ..core.module import Module, register_module_type
 from ..core.port import Port
 
 CV_RECORDER_MODES = ("replace", "overdub")
+#: Playback head rates. Recording always runs at 1x whatever this says.
+CV_RECORDER_SPEEDS = ("0.5x", "1x", "2x")
 
 
 @register_module_type
@@ -87,12 +132,18 @@ class CVRecorder(Module):
         feedback: Overdub scaling of the existing layer, 0..1. Default 1.0.
         value: The gesture knob — the input while ``in`` is unpatched,
             −1..1. Default 0.0.
+        reverse: Run the head backwards (OR the ``reverse`` gate).
+            Default False.
+        speed: Playback head rate, ``0.5x`` / ``1x`` / ``2x``; recording
+            always runs at 1x. Default ``1x``.
 
     Ports:
         in (in, cv): the signal to record; unpatched → ``value``.
         clock (in, gate): optional tempo lock (ticks, quantised rec, sync).
         rec (in, gate): record while high.
         clear (in, gate): rising edge wipes and rewinds.
+        play (in, gate): optional — runs while high, stops while low.
+        reverse (in, gate): optional — high runs the head backwards.
         out (out, cv): the loop.
         pos (out, cv): loop position 0..1.
     """
@@ -104,12 +155,16 @@ class CVRecorder(Module):
         "mode": "overdub",
         "feedback": 1.0,
         "value": 0.0,
+        "reverse": False,
+        "speed": "1x",
     }
     INPUT_PORTS = [
         Port("in", "in", "cv"),
         Port("clock", "in", "gate"),
         Port("rec", "in", "gate"),
         Port("clear", "in", "gate"),
+        Port("play", "in", "gate"),
+        Port("reverse", "in", "gate"),
     ]
     OUTPUT_PORTS = [
         Port("out", "out", "cv"),

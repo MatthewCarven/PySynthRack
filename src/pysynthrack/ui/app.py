@@ -79,7 +79,7 @@ from ..modules.possibility_selector import (
 from ..modules.wavetable_morph import WT_STACKS
 from ..modules.wind import WIND_MODELS
 from ..modules.drift import DRIFT_MODES
-from ..modules.cv_recorder import CV_RECORDER_MODES
+from ..modules.cv_recorder import CV_RECORDER_MODES, CV_RECORDER_SPEEDS
 from ..modules.vowel import VOWEL_VOICES
 from ..modules.freeze import FREEZE_SIZES
 from ..modules.samplehold import SAMPLE_HOLD_MODES
@@ -3462,6 +3462,23 @@ class App:
             # while a clock is cabled; ``feedback`` scales the old layer on
             # overdub; ``value`` is the gesture knob (the input when ``in``
             # is unpatched). ``mode`` hits the shared combo branch below.
+            # The transport: ``reverse`` (ORed with its gate) and ``speed``
+            # (the playback head's rate; recording always runs at 1x) --
+            # ``speed`` must sit HERE, above the transient shaper's shared
+            # ``speed`` combo further down, or it inherits that list.
+            if param_name == "reverse":
+                dpg.add_checkbox(
+                    label=f"{param_name} (or gate)", default_value=bool(current),
+                    callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "speed":
+                dpg.add_combo(
+                    label=f"{param_name} (play; rec is 1x)", items=list(CV_RECORDER_SPEEDS),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
             if param_name == "length":
                 dpg.add_drag_float(
                     label=f"{param_name} (s | x clock)", default_value=float(current),

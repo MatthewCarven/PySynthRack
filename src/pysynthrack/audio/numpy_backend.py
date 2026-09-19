@@ -17718,17 +17718,34 @@ class NumpyBackend(AudioBackend):
 
     _CVREC_LEN_MIN = 0.05
     _CVREC_LEN_MAX = 60.0
+    #: Playback head rate in HALF-samples per sample, by ``speed``. The
+    #: head is an integer in half-samples so 0.5x is a whole step too;
+    #: recording always steps 2 (1x).
+    _CVREC_RATE2 = {"0.5x": 1, "1x": 2, "2x": 4}
 
     def _render_cv_recorder(self, module, frames: int, buffers, patch) -> dict:
         """Fixed-length CV looper (see modules/cv_recorder.py).
 
         The block is walked as segments between EVENTS -- clear edges, rec
-        edges and clock ticks, in that priority at a shared sample -- and
-        each segment is one vectorized pass over the loop buffer (split
-        at the wrap): read ``out = buf[p]``, and while recording write
-        ``buf[p] = x`` (replace) or ``feedback * buf[p] + x`` (overdub)
-        and read the written value back. Positions are integer samples,
-        so a patched-``in`` render is block-size independent.
+        edges, clock ticks, reverse edges and play edges, in that priority
+        at a shared sample -- and each segment is one vectorized pass over
+        the loop buffer: read ``out = buf[head]``, and while recording
+        write ``buf[head] = x`` (replace) or ``feedback * buf[head] + x``
+        (overdub) and read the written value back.
+
+        The head ``h`` is an integer in HALF-samples (0 <= h < 2L). The
+        three speeds are then 1 / 2 / 4 half-samples per sample, reverse
+        is the sign, and a segment's positions are ``h + d * arange(n)``
+        -- an integer count of steps from the last snap, so every speed
+        is bit-exact across block sizes (a float phase would not be). An
+        odd position (0.5x only) reads the mean of the two slots it sits
+        between. Recording always steps 2 (1x -- the take is real time)
+        so every write position is a slot; a rec edge floors an odd head
+        to its slot first. Chunks end at the wrap, so the positions
+        within one write are distinct (an overdub through duplicate
+        fancy indices would not accumulate). With ``play`` patched and
+        low the head does not move: ``out`` is the slot under it, ``pos``
+        holds, and nothing is written.
 
         The loop exists from the first honoured rec edge (position 0
         then, running forever until clear); its sample length is fixed at
@@ -17736,21 +17753,26 @@ class NumpyBackend(AudioBackend):
         ``round(length * interval)`` with a clock (period = the distance
         between its last two rising edges, the slew/euclidean idiom; if
         no period is known yet, seconds). Clocked, rec edges are PENDING
-        until the next tick (quantised punch-in) and the position
-        hard-syncs to 0 on every ``length``-th tick from the loop's
-        start; a rec edge that would CREATE the loop waits until the
-        period is known (the clock's second tick), since the buffer
-        cannot be sized before that. ``clear`` wipes, rewinds, stops recording and drops any
-        pending edge; the position holds at 0 until the next rec edge.
-        With ``in`` unpatched the ``value`` knob is the input, ramped
-        linearly across the block from the previous block's value.
+        until the next tick (quantised punch-in) and the head hard-syncs
+        to 0 on every ``length``-th tick from the loop's start -- at any
+        speed, in either direction, and while stopped (the transport
+        wins, so a ``play`` gated from the same clock resumes at the top
+        of the bar); a rec edge that would CREATE the loop waits until
+        the period is known (the clock's second tick), since the buffer
+        cannot be sized before that. ``clear`` wipes, rewinds, stops
+        recording and drops any pending edge; the position holds at 0
+        until the next rec edge. With ``in`` unpatched the ``value`` knob
+        is the input, ramped linearly across the block from the previous
+        block's value.
         """
-        from ..modules.cv_recorder import CV_RECORDER_MODES
+        from ..modules.cv_recorder import CV_RECORDER_MODES, CV_RECORDER_SPEEDS
 
         cv_in = self._input_buffer(patch, buffers, module.id, "in")
         clock = self._input_buffer(patch, buffers, module.id, "clock")
         rec = self._input_buffer(patch, buffers, module.id, "rec")
         clear = self._input_buffer(patch, buffers, module.id, "clear")
+        play = self._input_buffer(patch, buffers, module.id, "play")
+        rev_gate = self._input_buffer(patch, buffers, module.id, "reverse")
 
         def fparam(name, default, lo, hi):
             try:
@@ -17765,17 +17787,26 @@ class NumpyBackend(AudioBackend):
             mode = "overdub"
         feedback = fparam("feedback", 1.0, 0.0, 1.0)
         value = fparam("value", 0.0, -1.0, 1.0)
+        speed = str(module.params.get("speed", "1x"))
+        if speed not in CV_RECORDER_SPEEDS:
+            speed = "1x"
+        rate2 = self._CVREC_RATE2[speed]
+        try:
+            rev_param = float(module.params.get("reverse", False)) >= 0.5
+        except (TypeError, ValueError):
+            rev_param = bool(module.params.get("reverse", False))
         sr = float(self.sample_rate)
         gh = self._GATE_HIGH
 
         st = self._state.get(module.id)
         if st is None:
             st = self._state[module.id] = {
-                "buf": np.zeros(0, dtype=np.float64), "L": 0, "p": 0,
+                "buf": np.zeros(0, dtype=np.float64), "L": 0, "h": 0,
                 "exists": False, "recording": False, "pending": None,
                 "prev_rec": False, "prev_clear": False, "prev_clock": False,
                 "last_edge": -1, "interval": 0, "n": 0, "ticks": 0,
                 "prev_value": value,
+                "reverse": False, "playing": True,
             }
 
         # --- the input: the cable, or the knob ramped across the block
@@ -17805,6 +17836,21 @@ class NumpyBackend(AudioBackend):
             prev = np.concatenate(([bool(st["prev_clock"])], ck[:-1]))
             events += [(int(t), 2, "tick") for t in np.flatnonzero(ck & ~prev)]
             st["prev_clock"] = bool(ck[-1])
+        # Reverse and play are LEVELS (the checkbox OR the gate; the gate
+        # or "playing"), so their events are every change from the
+        # previous sample's level -- a checkbox flip lands on the block's
+        # first sample, a gate edge on its own sample.
+        rv = np.full(frames, rev_param, dtype=bool)
+        if rev_gate is not None:
+            rv |= rev_gate > gh
+        prev = np.concatenate(([bool(st["reverse"])], rv[:-1]))
+        events += [(int(t), 3, "rev_on" if rv[t] else "rev_off") for t in np.flatnonzero(rv != prev)]
+        if play is not None:
+            pl = play > gh
+            prev = np.concatenate(([bool(st["playing"])], pl[:-1]))
+            events += [(int(t), 4, "play_on" if pl[t] else "play_off") for t in np.flatnonzero(pl != prev)]
+        elif not st["playing"]:
+            events.append((0, 4, "play_on"))       # unpatched = playing
         events.sort()
 
         n0 = int(st["n"])
@@ -17821,7 +17867,7 @@ class NumpyBackend(AudioBackend):
             L = max(1, L)
             st["buf"] = np.zeros(L, dtype=np.float64)
             st["L"] = L
-            st["p"] = 0
+            st["h"] = 0
             st["exists"] = True
             st["ticks"] = 0
 
@@ -17829,6 +17875,19 @@ class NumpyBackend(AudioBackend):
             if on and not st["exists"]:
                 start_loop()
             st["recording"] = bool(on) and bool(st["exists"])
+            if st["recording"]:
+                st["h"] = int(st["h"]) & ~1        # a rec edge lands the head on its slot
+
+        def read(buf, L, idx):
+            """The loop at half-sample positions ``idx``: a slot, or the
+            mean of the two slots an odd position sits between."""
+            slot = idx >> 1
+            y = buf[slot]
+            odd = (idx & 1).astype(bool)
+            if odd.any():
+                nxt = (slot[odd] + 1) % L
+                y[odd] = 0.5 * (y[odd] + buf[nxt])
+            return y
 
         def run(a: int, b: int):
             """Advance the loop over out[a:b] (relative samples)."""
@@ -17836,25 +17895,41 @@ class NumpyBackend(AudioBackend):
                 return
             buf = st["buf"]
             L = int(st["L"])
-            p = int(st["p"])
+            L2 = 2 * L
+            h = int(st["h"])
+            if not st["playing"]:
+                # A stopped head: the slot under it, held; nothing written.
+                out[a:b] = read(buf, L, np.array([h]))[0]
+                pos[a:b] = (h * 0.5) / L
+                return
             recording = bool(st["recording"])
+            d = 2 if recording else rate2          # record at 1x, play at any
+            if st["reverse"]:
+                d = -d
             i = a
             while i < b:
-                n = min(b - i, L - p)
-                seg = x[i:i + n]
+                # Run to the wrap: every position in the chunk is distinct.
+                if d > 0:
+                    n = min(b - i, (L2 - 1 - h) // d + 1)
+                else:
+                    n = min(b - i, h // (-d) + 1)
+                idx = h + d * np.arange(n)
                 if recording:
+                    slot = idx >> 1
+                    seg = x[i:i + n]
                     if mode == "replace":
-                        buf[p:p + n] = seg
+                        buf[slot] = seg
                     else:
-                        buf[p:p + n] *= feedback
-                        buf[p:p + n] += seg
-                out[i:i + n] = buf[p:p + n]
-                pos[i:i + n] = (np.arange(p, p + n, dtype=np.float64)) / L
-                p += n
-                if p >= L:
-                    p = 0
+                        layer = buf[slot] * feedback
+                        layer += seg
+                        buf[slot] = layer
+                    out[i:i + n] = buf[slot]
+                else:
+                    out[i:i + n] = read(buf, L, idx)
+                pos[i:i + n] = (idx * 0.5) / L
+                h = (h + d * n) % L2
                 i += n
-            st["p"] = p
+            st["h"] = h
 
         seg_start = 0
         for t, _prio, kind in events:
@@ -17863,7 +17938,7 @@ class NumpyBackend(AudioBackend):
             if kind == "clear":
                 st["buf"] = np.zeros(0, dtype=np.float64)
                 st["L"] = 0
-                st["p"] = 0
+                st["h"] = 0
                 st["exists"] = False
                 st["recording"] = False
                 st["pending"] = None
@@ -17874,6 +17949,10 @@ class NumpyBackend(AudioBackend):
                     st["pending"] = on          # honoured on the next tick
                 else:
                     apply_rec(on)
+            elif kind in ("rev_on", "rev_off"):
+                st["reverse"] = kind == "rev_on"     # the head turns around where it is
+            elif kind in ("play_on", "play_off"):
+                st["playing"] = kind == "play_on"
             else:  # tick
                 abs_t = n0 + t
                 if int(st["last_edge"]) >= 0:
@@ -17893,7 +17972,7 @@ class NumpyBackend(AudioBackend):
                 if st["exists"] and not created:
                     st["ticks"] = int(st["ticks"]) + 1
                     if int(st["ticks"]) % length_ticks == 0:
-                        st["p"] = 0                # hard sync at the loop boundary
+                        st["h"] = 0                # hard sync at the loop boundary
         run(seg_start, frames)
         st["n"] = n0 + frames
 
