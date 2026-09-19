@@ -32,7 +32,7 @@ Paste the preamble below plus one module spec as the task.
 Dynamics: `compressor` `limiter` `noise_gate` `transient_shaper` ·
 Pitch/frequency: `ring_mod` `freq_shifter` `bitcrusher` ·
 Character/space: `tape` `convolver` ·
-CV tools: `cv_math` `quantizer` `slew` `pitch_detector` ·
+CV tools: `cv_math` `cv_recorder` `quantizer` `slew` `pitch_detector` ·
 Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate` `burst` `arpeggiator` `chord` `chaos` `possibility_selector` `drift` ·
 Voices: `fm_op` `pluck` `bowed` `wind` `modal` `granular` `kick_drum`/`snare_drum`/`hat_drum` `sampler` `organ` ·
 Visual: `scope` `spectrum` ·
@@ -199,6 +199,68 @@ IR loader + partitioned FFT convolution: real rooms, springs, plates, cabs.
   matches IR.
 
 ## CV tools & bridges
+
+### `cv_recorder` (M) — "CV & Utilities" — **SHIPPED 2026-09-19** (see TODO.md / WORKLOG.md) — the modulation looper
+
+The keep-list's "record a knob gesture or incoming CV for N clocked bars,
+loop, overdub" — nothing else in the rack captures *performance*. A
+fixed-length looper (the N-bars kind, not the free-length kind): the
+loop's length is a setting, `rec` writes into it, the loop plays from the
+moment it exists, `clear` wipes it.
+
+- Ports: `in` (cv — the signal to record; UNPATCHED, the module's own
+  `value` knob is the input, so a hand on the slider while `rec` is high
+  is the recorded gesture), `clock` (gate, optional — see below), `rec`
+  (gate — record while high), `clear` (gate — rising edge wipes the loop
+  and rewinds; the position then HOLDS at 0 until the next `rec`) →
+  `out` (cv — the loop; while recording, what is being written), `pos`
+  (cv — the loop position as a 0..1 ramp; 0 while no loop exists).
+- Params: `length` 0.05..60 (4.0 — seconds free-running, CLOCK TICKS
+  while `clock` is patched: the slew v2 "s | x clock" convention) ·
+  `mode` replace | overdub (overdub) · `feedback` 0..1 (1.0 — in overdub,
+  the existing layer is scaled by this before the new input is added:
+  1 = layers pile up, 0.5 = each pass halves what was there) · `value`
+  −1..1 (0.0 — the gesture knob, read once per block and RAMPED
+  linearly across it from the previous block's value so a recorded turn
+  has no steps).
+- DSP: a float64 buffer of `L` samples (`L = round(length·sr)`
+  free-running; `round(length·interval)` clocked, with the clock's
+  period measured from its last two rising edges the way slew/euclidean
+  do — fixed when the loop is created). The loop "exists" from the first
+  `rec` edge: the position ramp starts at 0 then and runs forever
+  (`pos = p / L`) until `clear`. Per sample while `rec` is high:
+  `replace` → `buf[p] = x`; `overdub` → `buf[p] = feedback·buf[p] + x`;
+  `out = buf[p]` (the written value) — while `rec` is low `out = buf[p]`
+  (silence before anything was recorded). Vectorized per segment between
+  events (rec edges, clock ticks, wraps), so cost is nil. CLOCKED: `rec`
+  on AND off edges are honoured on the NEXT clock tick (quantised
+  punch-in, the looper norm — press slightly late and the loop still
+  starts on the bar) and the position hard-syncs to 0 on every
+  `length`-th tick counted from the loop's start, so the loop stays in
+  phase with the transport (a tempo change crops or wraps the fixed
+  buffer until the next sync — documented, not fought). Mono; a `(V, F)`
+  `in` collapses (house sum).
+- Neutral / contracts: nothing patched → `out` 0, `pos` 0, no state
+  growth; `in` patched but never `rec`'d → 0 (the looper is not a
+  pass-through — a `cv_combiner` is); block-size independent when `in`
+  is patched (events at integer sample positions); the knob path is
+  block-rate by nature (documented).
+- Tests: registration; nothing-patched contract; the first pass records
+  a ramp and the second pass plays it back bit-exact; `out` during rec
+  is the written content; replace vs overdub (feedback 1 sums, 0.5
+  halves the old layer; replace punches in only where rec was high);
+  rec low → playback continues; `clear` wipes, rewinds and holds until
+  the next rec; `pos` is a 0..1 ramp of period L; clocked: L =
+  length·interval, rec edges land on the next tick, the loop re-syncs
+  at the boundary tick; knob path ramps across the block; block-size
+  independence (64 vs 512) with a patched in and rec edges mid-stream;
+  the `mode` combo offers replace/overdub (the shared-branch trap);
+  widget sweep; the example.
+- As built, verbatim plus one rule found in the building: a clocked rec
+  edge that would CREATE the loop waits for the clock's second tick
+  (the period is unknown before it, so the buffer cannot be sized) —
+  rec held high from t=0 starts the loop one tick in. 18 tests.
+  Example `cv_recorder_layers.json`.
 
 ### `cv_math` (S) — "CV & Utilities" — **SHIPPED 2026-09-19** (see TODO.md / WORKLOG.md) — `logic` for CVs
 
@@ -1080,9 +1142,10 @@ full specs above.
   rectify, invert of two CV ins, every jack live at once. Same
   zero-param shape as `logic`. **Picked and SHIPPED 2026-09-19 — full
   spec under CV tools (plus `mult`).**
-- `cv_recorder` (M) — record a knob gesture or incoming CV for N
+- ~~`cv_recorder` (M)~~ — record a knob gesture or incoming CV for N
   clocked bars, loop, overdub. A modulation looper — nothing else in
-  the rack captures *performance*.
+  the rack captures *performance*. **Picked and SHIPPED 2026-09-19 —
+  full spec under CV tools.**
 
 **Effects**
 - ~~`rotary` (M)~~ — **SHIPPED 2026-09-14** as `rotary` (Effects):

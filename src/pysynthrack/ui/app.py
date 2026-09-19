@@ -77,6 +77,7 @@ from ..modules.possibility_selector import (
 from ..modules.wavetable_morph import WT_STACKS
 from ..modules.wind import WIND_MODELS
 from ..modules.drift import DRIFT_MODES
+from ..modules.cv_recorder import CV_RECORDER_MODES
 from ..modules.compressor import DETECTOR_MODES
 from ..modules.distortion import DISTORTION_MODES
 from ..modules.meter import METER_MODES
@@ -3213,6 +3214,33 @@ class App:
                 )
                 return
 
+        if module.TYPE == "cv_recorder":
+            # The modulation looper. ``length`` is seconds, or clock ticks
+            # while a clock is cabled; ``feedback`` scales the old layer on
+            # overdub; ``value`` is the gesture knob (the input when ``in``
+            # is unpatched). ``mode`` hits the shared combo branch below.
+            if param_name == "length":
+                dpg.add_drag_float(
+                    label=f"{param_name} (s | x clock)", default_value=float(current),
+                    speed=0.05, min_value=0.05, max_value=60.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "feedback":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "value":
+                dpg.add_slider_float(
+                    label=f"{param_name} (the gesture knob)", default_value=float(current),
+                    min_value=-1.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
         if module.TYPE == "drift":
             # Smooth wandering random. ``rate`` is new values per second;
             # ``glide`` the fraction of each interval spent travelling (0 =
@@ -3506,6 +3534,8 @@ class App:
                 items = list(SAMPLER_MODES)
             elif module.TYPE == "drift":
                 items = list(DRIFT_MODES)
+            elif module.TYPE == "cv_recorder":
+                items = list(CV_RECORDER_MODES)
             else:
                 items = list(FILTER_MODES)
             dpg.add_combo(

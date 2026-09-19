@@ -2695,6 +2695,8 @@ class NumpyBackend(AudioBackend):
             return self._render_chord(module, frames, buffers, patch)
         if module.TYPE == "cv_math":
             return self._render_cv_math(module, frames, buffers, patch)
+        if module.TYPE == "cv_recorder":
+            return self._render_cv_recorder(module, frames, buffers, patch)
         if module.TYPE == "logic":
             return self._render_logic(module, frames, buffers, patch)
         if module.TYPE == "mid_side":
@@ -16517,6 +16519,191 @@ class NumpyBackend(AudioBackend):
         return outs
 
     # ----- Session A utilities (logic / mid_side / octaver) ----------------
+
+    # ----- CV recorder (the modulation looper) --------------------------------
+
+    _CVREC_LEN_MIN = 0.05
+    _CVREC_LEN_MAX = 60.0
+
+    def _render_cv_recorder(self, module, frames: int, buffers, patch) -> dict:
+        """Fixed-length CV looper (see modules/cv_recorder.py).
+
+        The block is walked as segments between EVENTS -- clear edges, rec
+        edges and clock ticks, in that priority at a shared sample -- and
+        each segment is one vectorized pass over the loop buffer (split
+        at the wrap): read ``out = buf[p]``, and while recording write
+        ``buf[p] = x`` (replace) or ``feedback * buf[p] + x`` (overdub)
+        and read the written value back. Positions are integer samples,
+        so a patched-``in`` render is block-size independent.
+
+        The loop exists from the first honoured rec edge (position 0
+        then, running forever until clear); its sample length is fixed at
+        creation: ``round(length * sr)`` free-running, or
+        ``round(length * interval)`` with a clock (period = the distance
+        between its last two rising edges, the slew/euclidean idiom; if
+        no period is known yet, seconds). Clocked, rec edges are PENDING
+        until the next tick (quantised punch-in) and the position
+        hard-syncs to 0 on every ``length``-th tick from the loop's
+        start; a rec edge that would CREATE the loop waits until the
+        period is known (the clock's second tick), since the buffer
+        cannot be sized before that. ``clear`` wipes, rewinds, stops recording and drops any
+        pending edge; the position holds at 0 until the next rec edge.
+        With ``in`` unpatched the ``value`` knob is the input, ramped
+        linearly across the block from the previous block's value.
+        """
+        from ..modules.cv_recorder import CV_RECORDER_MODES
+
+        cv_in = self._input_buffer(patch, buffers, module.id, "in")
+        clock = self._input_buffer(patch, buffers, module.id, "clock")
+        rec = self._input_buffer(patch, buffers, module.id, "rec")
+        clear = self._input_buffer(patch, buffers, module.id, "clear")
+
+        def fparam(name, default, lo, hi):
+            try:
+                x = float(module.params.get(name, default))
+            except (TypeError, ValueError):
+                x = default
+            return min(hi, max(lo, x))
+
+        length = fparam("length", 4.0, self._CVREC_LEN_MIN, self._CVREC_LEN_MAX)
+        mode = str(module.params.get("mode", "overdub"))
+        if mode not in CV_RECORDER_MODES:
+            mode = "overdub"
+        feedback = fparam("feedback", 1.0, 0.0, 1.0)
+        value = fparam("value", 0.0, -1.0, 1.0)
+        sr = float(self.sample_rate)
+        gh = self._GATE_HIGH
+
+        st = self._state.get(module.id)
+        if st is None:
+            st = self._state[module.id] = {
+                "buf": np.zeros(0, dtype=np.float64), "L": 0, "p": 0,
+                "exists": False, "recording": False, "pending": None,
+                "prev_rec": False, "prev_clear": False, "prev_clock": False,
+                "last_edge": -1, "interval": 0, "n": 0, "ticks": 0,
+                "prev_value": value,
+            }
+
+        # --- the input: the cable, or the knob ramped across the block
+        if cv_in is not None:
+            x = cv_in.astype(np.float64)
+        else:
+            pv = float(st["prev_value"])
+            x = pv + (value - pv) * (np.arange(1, frames + 1, dtype=np.float64) / frames)
+        st["prev_value"] = value
+
+        # --- events in this block: (sample, priority, kind)
+        events = []
+        if clear is not None:
+            cr = clear > gh
+            prev = np.concatenate(([bool(st["prev_clear"])], cr[:-1]))
+            events += [(int(t), 0, "clear") for t in np.flatnonzero(cr & ~prev)]
+            st["prev_clear"] = bool(cr[-1])
+        if rec is not None:
+            rr = rec > gh
+            prev = np.concatenate(([bool(st["prev_rec"])], rr[:-1]))
+            changes = np.flatnonzero(rr != prev)
+            events += [(int(t), 1, "rec_on" if rr[t] else "rec_off") for t in changes]
+            st["prev_rec"] = bool(rr[-1])
+        clocked = clock is not None
+        if clocked:
+            ck = clock > gh
+            prev = np.concatenate(([bool(st["prev_clock"])], ck[:-1]))
+            events += [(int(t), 2, "tick") for t in np.flatnonzero(ck & ~prev)]
+            st["prev_clock"] = bool(ck[-1])
+        events.sort()
+
+        n0 = int(st["n"])
+        length_ticks = max(1, int(round(length)))
+        out = np.zeros(frames, dtype=np.float64)
+        pos = np.zeros(frames, dtype=np.float64)
+
+        def start_loop():
+            """The first honoured rec edge: size the buffer, position 0."""
+            if clocked and int(st["interval"]) > 0:
+                L = int(round(length * int(st["interval"])))
+            else:
+                L = int(round(length * sr))
+            L = max(1, L)
+            st["buf"] = np.zeros(L, dtype=np.float64)
+            st["L"] = L
+            st["p"] = 0
+            st["exists"] = True
+            st["ticks"] = 0
+
+        def apply_rec(on: bool):
+            if on and not st["exists"]:
+                start_loop()
+            st["recording"] = bool(on) and bool(st["exists"])
+
+        def run(a: int, b: int):
+            """Advance the loop over out[a:b] (relative samples)."""
+            if b <= a or not st["exists"]:
+                return
+            buf = st["buf"]
+            L = int(st["L"])
+            p = int(st["p"])
+            recording = bool(st["recording"])
+            i = a
+            while i < b:
+                n = min(b - i, L - p)
+                seg = x[i:i + n]
+                if recording:
+                    if mode == "replace":
+                        buf[p:p + n] = seg
+                    else:
+                        buf[p:p + n] *= feedback
+                        buf[p:p + n] += seg
+                out[i:i + n] = buf[p:p + n]
+                pos[i:i + n] = (np.arange(p, p + n, dtype=np.float64)) / L
+                p += n
+                if p >= L:
+                    p = 0
+                i += n
+            st["p"] = p
+
+        seg_start = 0
+        for t, _prio, kind in events:
+            run(seg_start, t)
+            seg_start = t
+            if kind == "clear":
+                st["buf"] = np.zeros(0, dtype=np.float64)
+                st["L"] = 0
+                st["p"] = 0
+                st["exists"] = False
+                st["recording"] = False
+                st["pending"] = None
+                st["ticks"] = 0
+            elif kind in ("rec_on", "rec_off"):
+                on = kind == "rec_on"
+                if clocked:
+                    st["pending"] = on          # honoured on the next tick
+                else:
+                    apply_rec(on)
+            else:  # tick
+                abs_t = n0 + t
+                if int(st["last_edge"]) >= 0:
+                    st["interval"] = abs_t - int(st["last_edge"])
+                st["last_edge"] = abs_t
+                created = False
+                # A pending edge waits for the clock's period to be known
+                # (its second tick) when it would CREATE the loop -- the
+                # buffer cannot be sized before that. Edges on an existing
+                # loop are honoured on any tick.
+                if st["pending"] is not None and (
+                        st["exists"] or int(st["interval"]) > 0):
+                    was = bool(st["exists"])
+                    apply_rec(bool(st["pending"]))
+                    st["pending"] = None
+                    created = bool(st["exists"]) and not was
+                if st["exists"] and not created:
+                    st["ticks"] = int(st["ticks"]) + 1
+                    if int(st["ticks"]) % length_ticks == 0:
+                        st["p"] = 0                # hard sync at the loop boundary
+        run(seg_start, frames)
+        st["n"] = n0 + frames
+
+        return {"out": out.astype(np.float32), "pos": pos.astype(np.float32)}
 
     def _render_cv_math(self, module, frames: int, buffers, patch) -> dict:
         """Two-in CV algebra (see modules/cv_math.py).

@@ -113,8 +113,10 @@ already three light before slice 2 added one -- count with
 > parallel** (five subagents, one module each, own worktrees,
 > cherry-picked): lfo `reset`+`phase`, filter `resonance_cv`,
 > oscillator PWM, adsr `vel`, reverb `freeze` — five examples banked.
-> Suite **3886**, 135 examples. Keep-list left: cv_recorder, vowel,
-> freeze, autopan, midi_output, subpatch containers, snapshot morph.
+> Suite **3886**, 135 examples. Then **`cv_recorder`, module #98** — the
+> modulation looper; `cv_recorder_layers.json` (banked). Suite
+> **3909**, 136 examples. Keep-list left: vowel, freeze, autopan,
+> midi_output, subpatch containers, snapshot morph.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -164,6 +166,59 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-19 — cv_recorder: the modulation looper (module #98)
+
+Matthew: "cv_recorder please Claude" — asked for before the subagent
+batch, interrupted, asked for again after. Spec into MODULE_IDEAS
+first, built to it.
+
+**What it is.** Every modulator in the rack is generated; none of them
+is *you turning a knob*. This records a CV for a fixed loop length and
+plays it back forever. The looper is the fixed-length kind ("N bars"):
+`length` is a setting, `rec` writes while high (the first edge creates
+the loop — the position ramp starts at 0 then and runs until `clear`),
+`mode` replace punches in / overdub adds to the old layer scaled by
+`feedback`, `out` is the loop and, while recording, what is being
+written; `pos` is a 0..1 ramp. With `in` unpatched the module's own
+`value` knob is the input — read once per block and ramped linearly
+across it from the previous block's value, so a recorded hand
+movement has no steps. That is the "knob gesture" of the one-liner.
+
+**Clocked.** With a clock, `length` is ticks (16 sixteenths = a bar)
+and the loop's sample length is fixed from the clock's measured period
+at creation; rec edges — on and off — are honoured on the next tick
+(quantised punch-in), and the position hard-syncs to 0 on every
+`length`-th tick from the loop's start so it never drifts from the
+transport. One rule the building added: a rec edge that would CREATE
+the loop before the clock's period is known (only one tick seen)
+waits for the second tick — the buffer cannot be sized before that.
+The example's rec gate is high from t=0 and the loop starts one
+sixteenth in; documented in the entry.
+
+**How it runs.** The block is walked as segments between events —
+clear, rec edges, clock ticks, in that priority at a shared sample —
+and each segment is a couple of numpy slices over the buffer (split at
+the wrap). Every event is an integer sample position, so a
+patched-`in` render is block-size independent, pinned at 50 vs 250
+samples with rec edges and a clear landing mid-stream. 18 tests:
+record then bit-exact playback, out-while-recording is the written
+value, replace punches in only where rec was high, overdub sums with
+feedback scaling the old layer, clear wipes/rewinds/holds, the pos
+ramp, the clocked length and quantised edges and the boundary re-sync
+under a tempo change, the deferred creation, the knob ramp, the mode
+combo, the example. Example `cv_recorder_layers.json` (banked): every
+other bar overdubs a 0.37 Hz triangle onto a bar-long loop at feedback
+0.6 — the loop that moves the filter evolves (bar RMS 0.54 → 0.24 →
+0.43 → 0.34 across the first eight bars) instead of accumulating.
+**Suite 3909**, 136 examples, **98 modules.**
+
+**The honest gap**, on the TODO: the loop lives in backend state and
+is lost on Stop — a *performance* capture that does not survive the
+session. Saving it in the patch (a `loop` blob param) is the natural
+follow-on, with `play`/`mute`, half-/double-speed and `reverse`.
 
 ---
 

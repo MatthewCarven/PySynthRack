@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "next_id": 12,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "sixteenths at 120 - the looper's clock", "params": { "bpm": 120.0, "division": 4.0, "pulse_width": 0.2 } },
+    { "id": 2, "type": "clock", "name": "REC every other bar - high for a bar, low for a bar (4 s period)", "params": { "bpm": 120.0, "division": 0.125, "pulse_width": 0.53 } },
+    { "id": 3, "type": "lfo", "name": "the thing being recorded - a slow triangle, out of step with the bar", "params": { "waveform": "triangle", "rate": 0.37, "depth": 1.0, "bipolar": true, "cv_depth": 1.0 } },
+    { "id": 4, "type": "cv_recorder", "name": "LOOPER - 16 ticks = a bar; overdub at feedback 0.6, so every other bar adds a layer and the old ones fade",
+      "params": { "length": 16.0, "mode": "overdub", "feedback": 0.6, "value": 0.0 } },
+    { "id": 5, "type": "oscillator", "name": "a low saw drone", "params": { "waveform": "saw_blep", "freq": 65.4064, "amp": 0.5 } },
+    { "id": 6, "type": "filter", "name": "the loop moves the cutoff - two octaves of it", "params": { "mode": "lowpass", "cutoff": 300.0, "resonance": 2.0, "cv_depth": 2.0 } },
+    { "id": 7, "type": "reverb", "name": "room", "params": { "size": 0.6, "decay": 0.5, "damping": 0.5, "mix": 0.25, "cv_depth": 1.0 } },
+    { "id": 8, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.9 } },
+    { "id": 9, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.9 } },
+    { "id": 10, "type": "cv_to_audio", "name": "for the scope", "params": {} },
+    { "id": 11, "type": "scope", "name": "the loop itself - watch it layer", "params": {} }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 4, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "out", "dst_module_id": 4, "dst_port": "rec" },
+    { "src_module_id": 3, "src_port": "cv",  "dst_module_id": 4, "dst_port": "in" },
+    { "src_module_id": 4, "src_port": "out", "dst_module_id": 6, "dst_port": "cutoff_cv" },
+    { "src_module_id": 5, "src_port": "out", "dst_module_id": 6, "dst_port": "in" },
+    { "src_module_id": 6, "src_port": "out", "dst_module_id": 7, "dst_port": "in" },
+    { "src_module_id": 7, "src_port": "out_l", "dst_module_id": 8, "dst_port": "in" },
+    { "src_module_id": 7, "src_port": "out_r", "dst_module_id": 9, "dst_port": "in" },
+    { "src_module_id": 4, "src_port": "out", "dst_module_id": 10, "dst_port": "cv" },
+    { "src_module_id": 10, "src_port": "out", "dst_module_id": 11, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 60], "2": [30, 260], "3": [30, 460], "4": [340, 260],
+      "5": [340, 60], "6": [700, 60], "7": [980, 60], "8": [1240, 20], "9": [1240, 160],
+      "10": [700, 400], "11": [980, 400]
+    }
+  }
+}

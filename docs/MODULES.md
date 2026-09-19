@@ -309,6 +309,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`cv_scale`](#cv_scale) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`cv_offset`](#cv_offset) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`cv_math`](#cv_math) | CV & Utilities | `a`,`b` (cv) → `min`,`max`,`avg`,`diff`,`mult`,`rect`,`inv` (cv) |
+| [`cv_recorder`](#cv_recorder) | CV & Utilities | `in` (cv), `clock`,`rec`,`clear` (gate) → `out`,`pos` (cv) |
 | [`sample_hold`](#sample_hold) | CV & Utilities | `in` (cv), `trig` (gate) → `out` (cv) |
 | [`slew`](#slew) | CV & Utilities | `in`, `rise_cv`, `fall_cv` (cv), `clock` (gate) → `out` (cv) |
 | [`quantizer`](#quantizer) | CV & Utilities | `in` (cv), `gate` (gate) → `out` (cv), `changed` (gate) |
@@ -3996,6 +3997,75 @@ bit-identical to mono. See `examples/cv_math_delayed_vibrato.json`.
 
 **Parameters:** none.
 
+#### `cv_recorder`
+
+**The modulation looper.** Every other modulator in the rack is
+*generated* — an LFO's shape, an envelope's curve, a sequencer's steps, a
+drift's wander — and none of them is *you turning a knob*. This records
+a control voltage for a fixed loop length and plays it back forever: a
+filter sweep you performed once becomes the filter's motion for the rest
+of the piece; a hand-drawn pan becomes a pattern; an LFO caught mid-bar
+becomes a rhythmic modulation that repeats in time with the song. Nothing
+else here captures *performance*.
+
+It is the fixed-length kind of looper (the "N bars" kind): `length` is a
+setting, `rec` writes into it, the loop plays from the moment it exists,
+`clear` wipes it. **Leave `in` unpatched and the module's own `value`
+knob is the input** — a hand on the slider while `rec` is high is the
+recorded gesture (the knob is read once per block and ramped linearly
+across it from the previous block's value, so a recorded turn has no
+steps). `rec` records while high; its first rising edge is when the loop
+starts to exist — the position ramp starts at 0 then and runs forever
+until `clear`. `mode` says what recording does to the buffer:
+**`replace`** overwrites (a punch-in: only the stretch where `rec` was
+high changes); **`overdub`** (default) adds the input to what is there,
+the old layer first scaled by `feedback` — 1 piles layers up, 0.5 halves
+what was there on every pass, so the loop keeps evolving instead of
+accumulating. `out` is the loop, and while recording the value being
+written (in overdub, old + new) — what you hear is what you keep. `pos`
+is the loop position as a 0..1 ramp, a free sync signal. `clear` wipes,
+rewinds and stops recording; the position holds at 0 until the next
+`rec`, so the next take starts at the top.
+
+**Clocked.** Patch a [`clock`](#clock) and `length` is read as **clock
+ticks** instead of seconds (16 sixteenths = a bar); the loop's sample
+length is fixed from the clock's period (measured from its last two
+rising edges) when the loop is created — a `rec` edge that would create
+the loop before the period is known waits for the clock's second tick.
+Two things then keep it musical: `rec` edges, on *and* off, are honoured
+on the **next tick** (quantised punch-in — press slightly late and the
+loop still starts on the bar), and the position **hard-syncs to 0 on
+every `length`-th tick** counted from the loop's start, so it never
+drifts from the transport. A tempo change after the loop exists crops
+or wraps the fixed buffer until the next sync — documented, not fought;
+`clear` and re-record to re-measure.
+
+Mono (a polyphonic `in` collapses to the house sum). Renders are
+block-size independent whenever `in` is patched — every event is an
+integer sample position; the knob path is block-rate by nature. Cost is
+nil: each block is a few vectorized slices. Numpy backend only; silent
+stub under pyo. See `examples/cv_recorder_layers.json`.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | cv | The signal to record. Unpatched → the `value` knob. |
+| `clock` | in | gate | Optional: `length` in ticks, quantised rec, hard sync at the loop boundary. |
+| `rec` | in | gate | Record while high. The first rising edge creates the loop. |
+| `clear` | in | gate | A rising edge wipes the loop and rewinds; the position holds until the next `rec`. |
+| `out` | out | cv | The loop (while recording, what is being written). |
+| `pos` | out | cv | Loop position, 0..1. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `length` | `4.0` | 0.05 … 60 | Loop length — seconds, or clock ticks while `clock` is patched. Fixed when the loop is created. |
+| `mode` | `overdub` | replace / overdub | Punch-in overwrite, or add to the existing layer. |
+| `feedback` | `1.0` | 0 … 1 | Overdub: what the old layer is scaled by before the new input is added. |
+| `value` | `0.0` | −1 … 1 | The gesture knob — the input while `in` is unpatched. |
+
 #### `sample_hold`
 
 Samples `in` on each **rising edge** of the `trig` gate and holds that
@@ -4615,6 +4685,12 @@ loads in the app. Notable ones referenced above:
   (vibrato LFO summed into `pitch_cv`, a 0.15 Hz LFO on `breath_cv` so
   the player breathes) over a `reed` line in the chalumeau register at
   half speed off a [`clock_divider`](#clock_divider), through a chamber.
+- `cv_recorder_layers.json` — the modulation looper, clocked: sixteenths
+  into [`cv_recorder`](#cv_recorder)'s `clock` with `length` 16 (a bar),
+  a slow clock holding `rec` high every other bar, a 0.37 Hz triangle
+  LFO as the thing recorded — each recording bar overdubs another
+  out-of-step layer at `feedback` 0.6, so the loop that moves the
+  filter keeps evolving; a [`scope`](#scope) shows it layering.
 - `cv_math_delayed_vibrato.json` — the classic: a vibrato LFO × the
   note's ADSR through [`cv_math`](#cv_math)'s `mult`, so the wobble is
   absent at the attack and full at the sustain (summed into the pitch

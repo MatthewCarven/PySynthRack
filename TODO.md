@@ -739,6 +739,34 @@ same session.
       anyone is playing). Decide whether that asymmetry should be
       documented as-is or changed; do not change it silently.
 
+## The keep-list, continued (2026-09-19, later)
+
+- [x] **`cv_recorder` — SHIPPED 2026-09-19, module #98.** CV &
+      Utilities. Matthew: "cv_recorder please Claude" (asked for once,
+      interrupted for the subagent batch, asked for again). Spec into
+      MODULE_IDEAS first, built verbatim plus one rule. The modulation
+      looper: `in` (or the `value` knob when unpatched — the recorded
+      GESTURE, ramped across each block), `rec` (record while high; the
+      first edge creates the loop), `clear`, optional `clock`; `out`
+      (the loop; while recording, what is written) + `pos` (0..1).
+      Fixed-length: `length` seconds, or clock TICKS when clocked (16
+      sixteenths = a bar). `mode` replace (punch-in) | overdub (old x
+      `feedback` + new). Clocked: rec on/off edges honoured on the NEXT
+      tick, hard sync to 0 every `length`-th tick, and — found while
+      building — a rec edge that would create the loop waits for the
+      clock's second tick (the period is unknown before it). Events
+      (clear / rec / tick, in that priority at a shared sample) split
+      the block into vectorized slices; a patched-`in` render is
+      block-size independent (pinned 50 vs 250 with rec edges and a
+      clear mid-stream). 18 tests in `tests/test_cv_recorder.py`.
+      Example `cv_recorder_layers.json` (banked): every other bar
+      overdubs an out-of-step LFO at feedback 0.6 onto a bar-long loop
+      that moves a filter — it evolves, never accumulates. Suite
+      **3909**, 136 examples, 98 modules. Follow-ons: a `play` gate or
+      `mute`; half-/double-speed playback; a `reverse`; saving the loop
+      in the patch (today it lives in backend state and is lost on
+      Stop — the honest gap for a *performance* capture).
+
 ## Five love passes in parallel (2026-09-19)
 
 Matthew: "i've banked a bit of credit this session like can i get you to
