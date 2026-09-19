@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "next_id": 18,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "a note every two seconds, held for 1.5", "params": { "bpm": 60.0, "division": 0.5, "pulse_width": 0.75 } },
+    { "id": 2, "type": "sequencer", "name": "four long notes (semitones from C4)",
+      "params": { "steps": 4, "step1_pitch": 0.0, "step1_on": true, "step2_pitch": 7.0, "step2_on": true,
+                  "step3_pitch": 3.0, "step3_on": true, "step4_pitch": 10.0, "step4_on": true } },
+    { "id": 3, "type": "adsr", "name": "slow attack - the vibrato arrives with it", "params": { "attack": 0.6, "decay": 0.3, "sustain": 0.8, "release": 0.5 } },
+    { "id": 4, "type": "lfo", "name": "vibrato LFO - 5.5 Hz", "params": { "waveform": "sine", "rate": 5.5, "depth": 1.0, "bipolar": true, "cv_depth": 1.0 } },
+    { "id": 5, "type": "cv_scale", "name": "vibrato width - 0.03 V is about a third of a semitone", "params": { "scale": 0.03 } },
+    { "id": 6, "type": "cv_math", "name": "VIBRATO x ENVELOPE - mult: no wobble at the attack, full at the sustain", "params": {} },
+    { "id": 7, "type": "cv_combiner", "name": "pitch = note + delayed vibrato", "params": { "mode": "sum" } },
+    { "id": 8, "type": "oscillator", "name": "a saw an octave down", "params": { "waveform": "saw_blep", "freq": 130.8128, "amp": 0.5 } },
+    { "id": 9, "type": "lfo", "name": "shape A - slow triangle", "params": { "waveform": "triangle", "rate": 0.21, "depth": 1.0, "bipolar": true, "cv_depth": 1.0 } },
+    { "id": 10, "type": "lfo", "name": "shape B - slower sine", "params": { "waveform": "sine", "rate": 0.13, "depth": 1.0, "bipolar": true, "cv_depth": 1.0 } },
+    { "id": 11, "type": "cv_math", "name": "SHAPE - max of the two: a curve neither LFO has alone (try min, avg, diff)", "params": {} },
+    { "id": 12, "type": "filter", "name": "the shape opens it - two octaves of cutoff_cv", "params": { "mode": "lowpass", "cutoff": 420.0, "resonance": 1.6, "cv_depth": 2.0 } },
+    { "id": 13, "type": "vca", "name": "the envelope", "params": {} },
+    { "id": 14, "type": "reverb", "name": "room", "params": { "size": 0.6, "decay": 0.5, "damping": 0.5, "mix": 0.25, "cv_depth": 1.0 } },
+    { "id": 15, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.9 } },
+    { "id": 16, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.9 } },
+    { "id": 17, "type": "scope", "name": "the delayed vibrato itself (the mult jack)", "params": {} }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "gate", "dst_module_id": 3, "dst_port": "gate" },
+    { "src_module_id": 4, "src_port": "cv",   "dst_module_id": 5, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "out",  "dst_module_id": 6, "dst_port": "a" },
+    { "src_module_id": 3, "src_port": "cv",   "dst_module_id": 6, "dst_port": "b" },
+    { "src_module_id": 2, "src_port": "cv",   "dst_module_id": 7, "dst_port": "in1" },
+    { "src_module_id": 6, "src_port": "mult", "dst_module_id": 7, "dst_port": "in2" },
+    { "src_module_id": 7, "src_port": "out",  "dst_module_id": 8, "dst_port": "freq_cv" },
+    { "src_module_id": 9, "src_port": "cv",   "dst_module_id": 11, "dst_port": "a" },
+    { "src_module_id": 10, "src_port": "cv",  "dst_module_id": 11, "dst_port": "b" },
+    { "src_module_id": 11, "src_port": "max", "dst_module_id": 12, "dst_port": "cutoff_cv" },
+    { "src_module_id": 8, "src_port": "out",  "dst_module_id": 12, "dst_port": "in" },
+    { "src_module_id": 12, "src_port": "out", "dst_module_id": 13, "dst_port": "audio" },
+    { "src_module_id": 3, "src_port": "cv",   "dst_module_id": 13, "dst_port": "cv" },
+    { "src_module_id": 13, "src_port": "out", "dst_module_id": 14, "dst_port": "in" },
+    { "src_module_id": 14, "src_port": "out_l", "dst_module_id": 15, "dst_port": "in" },
+    { "src_module_id": 14, "src_port": "out_r", "dst_module_id": 16, "dst_port": "in" },
+    { "src_module_id": 6, "src_port": "mult", "dst_module_id": 17, "dst_port": "cv" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 60], "2": [300, 60], "3": [300, 300], "4": [30, 520], "5": [300, 520],
+      "6": [600, 420], "7": [900, 160], "8": [1180, 160],
+      "9": [600, 700], "10": [600, 860], "11": [900, 760], "12": [1460, 160],
+      "13": [1740, 160], "14": [2000, 160], "15": [2260, 100], "16": [2260, 240],
+      "17": [900, 480]
+    }
+  }
+}

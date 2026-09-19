@@ -32,7 +32,7 @@ Paste the preamble below plus one module spec as the task.
 Dynamics: `compressor` `limiter` `noise_gate` `transient_shaper` ·
 Pitch/frequency: `ring_mod` `freq_shifter` `bitcrusher` ·
 Character/space: `tape` `convolver` ·
-CV tools: `quantizer` `slew` `pitch_detector` ·
+CV tools: `cv_math` `quantizer` `slew` `pitch_detector` ·
 Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate` `burst` `arpeggiator` `chord` `chaos` `possibility_selector` `drift` ·
 Voices: `fm_op` `pluck` `bowed` `wind` `modal` `granular` `kick_drum`/`snare_drum`/`hat_drum` `sampler` `organ` ·
 Visual: `scope` `spectrum` ·
@@ -199,6 +199,36 @@ IR loader + partitioned FFT convolution: real rooms, springs, plates, cabs.
   matches IR.
 
 ## CV tools & bridges
+
+### `cv_math` (S) — "CV & Utilities" — **SHIPPED 2026-09-19** (see TODO.md / WORKLOG.md) — `logic` for CVs
+
+The keep-list's "logic-for-CVs, zero params": two CV operands in, every
+two-operand function the rack lacks out at once, no mode combo — you
+swap cables, not settings, exactly like [`logic`](#logic). Filed under
+CV & Utilities beside `cv_scale` / `cv_offset` (the pointwise CV tools),
+not Modulation where the one-liner sat.
+
+- Ports: `a`, `b` (cv in) → `min` (the analog AND), `max` (the analog
+  OR), `avg` ((a+b)/2 — the equal-power blend), `diff` (a − b), `mult`
+  (a × b — the CV×CV multiplier the rack has no other jack for: an
+  envelope on a vibrato's depth), `rect` (|a|, full-wave), `inv` (−a).
+  All cv out, all live every block.
+- Params: none.
+- DSP: elementwise, stateless, exact. An unpatched operand reads **0**,
+  which makes `max`/`min` with only `a` patched the positive / negative
+  half-wave rectifiers, `avg` = a/2, `diff` = a, `mult` = 0 — the
+  normalled trick, documented like `logic`'s NAND. Shape-polymorphic:
+  mono in → mono out; a `(V, F)` operand → `(V, F)` outs with a mono
+  partner broadcast across the voice axis (numpy broadcasting; single
+  voice row ≡ mono).
+- Neutral: both unpatched → all zeros; `diff`/`rect`/`inv`/`max`/`min`
+  of a lone `a` are exact functions of it (bit-exact `diff` == `a`).
+- Tests: registration / zero params / round trip; every output against
+  numpy on random operands (exact); unpatched-`b` identities; both
+  unpatched zeros; poly × mono broadcast and single-voice ≡ mono;
+  float32 out; stateless (two renders equal, no `_state` entry); the
+  example (delayed vibrato via `mult`, a two-LFO `max` on a filter).
+- As built, verbatim. 13 tests. Example `cv_math_delayed_vibrato.json`.
 
 ### `quantizer` (M) — "CV & Utilities" — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
@@ -1046,9 +1076,10 @@ full specs above.
   Wogglebug-style source yet. (`chaos` orbits deterministically;
   drift *stumbles* stochastically — siblings, not rivals.) **Picked
   and SHIPPED 2026-09-19 — full spec above.**
-- `cv_math` (S) — `logic` for CVs: min, max, average, difference,
+- ~~`cv_math` (S)~~ — `logic` for CVs: min, max, average, difference,
   rectify, invert of two CV ins, every jack live at once. Same
-  zero-param shape as `logic`.
+  zero-param shape as `logic`. **Picked and SHIPPED 2026-09-19 — full
+  spec under CV tools (plus `mult`).**
 - `cv_recorder` (M) — record a knob gesture or incoming CV for N
   clocked bars, loop, overdub. A modulation looper — nothing else in
   the rack captures *performance*.

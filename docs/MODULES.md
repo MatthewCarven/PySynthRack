@@ -306,6 +306,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`constant`](#constant) | CV & Utilities | — → `out` (cv) |
 | [`cv_scale`](#cv_scale) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`cv_offset`](#cv_offset) | CV & Utilities | `in` (cv) → `out` (cv) |
+| [`cv_math`](#cv_math) | CV & Utilities | `a`,`b` (cv) → `min`,`max`,`avg`,`diff`,`mult`,`rect`,`inv` (cv) |
 | [`sample_hold`](#sample_hold) | CV & Utilities | `in` (cv), `trig` (gate) → `out` (cv) |
 | [`slew`](#slew) | CV & Utilities | `in`, `rise_cv`, `fall_cv` (cv), `clock` (gate) → `out` (cv) |
 | [`quantizer`](#quantizer) | CV & Utilities | `in` (cv), `gate` (gate) → `out` (cv), `changed` (gate) |
@@ -3816,6 +3817,46 @@ composes into a full affine map. Shape-polymorphic; the scalar `offset`
 broadcasts across the voice axis. Param: `offset` (default 0.0). See
 `examples/cv_utility_demo.json`.
 
+#### `cv_math`
+
+**[`logic`](#logic) for voltages**: two CV operands in, seven functions
+out, all computed every block — no mode combo, you swap cables, not
+settings. The rack could already add CVs ([`cv_combiner`](#cv_combiner)),
+scale and offset them ([`cv_scale`](#cv_scale), [`cv_offset`](#cv_offset))
+and slew them ([`slew`](#slew)); what it could not do is *compare* two of
+them or *multiply* them, and those are the moves that make one modulator
+shape another.
+
+| Jack | Function | What it is for |
+|------|----------|----------------|
+| `min` | min(a, b) | The analog AND: an LFO ducked by an envelope. |
+| `max` | max(a, b) | The analog OR: two slow LFOs make a shape neither has alone. |
+| `avg` | (a + b) / 2 | The blend that never overshoots either. |
+| `diff` | a − b | An LFO minus its slewed self is its rate of change; a pitch minus another is an interval. |
+| `mult` | a × b | The CV×CV multiplier the rack had no other jack for: an envelope on a vibrato's depth (delayed vibrato), a slow LFO fading a fast one in and out. |
+| `rect` | \|a\| | Full-wave: a bipolar LFO folded unipolar at twice the rate. |
+| `inv` | −a | The flip (swap cables for −b). |
+
+Zero parameters, deliberately. An unpatched operand reads **0**, which is
+the normalled trick again: with only `a` patched, `max` is its positive
+half-wave and `min` its negative one (half-wave rectifiers for free),
+`avg` is `a/2`, `diff` is `a` itself bit-exact, `mult` is silence. Both
+unpatched: everything is 0. Stateless, elementwise, exact.
+Shape-polymorphic: mono CVs give mono outs; a voice-aware `(V, F)` operand
+gives `(V, F)` outs with a mono partner broadcast across the voice axis
+(a per-voice pitch times a mono envelope); a single voice row is
+bit-identical to mono. See `examples/cv_math_delayed_vibrato.json`.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `a`, `b` | in | cv | The two operands. Unpatched → 0. |
+| `min`, `max`, `avg`, `diff`, `mult` | out | cv | The pair functions. |
+| `rect`, `inv` | out | cv | The one-operand functions, of `a`. |
+
+**Parameters:** none.
+
 #### `sample_hold`
 
 Samples `in` on each **rising edge** of the `trig` gate and holds that
@@ -4434,6 +4475,12 @@ loads in the app. Notable ones referenced above:
   (vibrato LFO summed into `pitch_cv`, a 0.15 Hz LFO on `breath_cv` so
   the player breathes) over a `reed` line in the chalumeau register at
   half speed off a [`clock_divider`](#clock_divider), through a chamber.
+- `cv_math_delayed_vibrato.json` — the classic: a vibrato LFO × the
+  note's ADSR through [`cv_math`](#cv_math)'s `mult`, so the wobble is
+  absent at the attack and full at the sustain (summed into the pitch
+  with a [`cv_combiner`](#cv_combiner)); beside it a second `cv_math`
+  takes the `max` of two slow LFOs onto a filter cutoff — a shape
+  neither LFO has alone. Try `min`, `avg` and `diff` on that jack.
 - `drift_wander.json` — one [`drift`](#drift), three jobs: its `cv`
   breathes a resonant lowpass over a low saw (2.5 octaves of `cutoff_cv`),
   its `stepped` twin goes through a pentatonic [`quantizer`](#quantizer)

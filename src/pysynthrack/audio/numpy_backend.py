@@ -2686,6 +2686,8 @@ class NumpyBackend(AudioBackend):
             return self._render_arpeggiator(module, frames, buffers, patch)
         if module.TYPE == "chord":
             return self._render_chord(module, frames, buffers, patch)
+        if module.TYPE == "cv_math":
+            return self._render_cv_math(module, frames, buffers, patch)
         if module.TYPE == "logic":
             return self._render_logic(module, frames, buffers, patch)
         if module.TYPE == "mid_side":
@@ -15994,6 +15996,52 @@ class NumpyBackend(AudioBackend):
         return outs
 
     # ----- Session A utilities (logic / mid_side / octaver) ----------------
+
+    def _render_cv_math(self, module, frames: int, buffers, patch) -> dict:
+        """Two-in CV algebra (see modules/cv_math.py).
+
+        Pure elementwise math, stateless, exact. An unpatched operand
+        reads 0 (so ``max``/``min`` of a lone ``a`` are its half-wave
+        rectifiers -- the normalled trick, documented). Shape-polymorphic:
+        operands are fetched with ``collapse=False`` and a mono partner
+        broadcasts across a ``(V, F)`` one; outputs take the voiced shape
+        if either operand is voiced, else mono.
+        """
+        a_in = self._input_buffer(patch, buffers, module.id, "a", collapse=False)
+        b_in = self._input_buffer(patch, buffers, module.id, "b", collapse=False)
+        if a_in is None and b_in is None:
+            z = np.zeros(frames, dtype=np.float32)
+            return {k: z for k in ("min", "max", "avg", "diff", "mult", "rect", "inv")}
+        a = a_in.astype(np.float32, copy=False) if a_in is not None else np.zeros(frames, dtype=np.float32)
+        b = b_in.astype(np.float32, copy=False) if b_in is not None else np.zeros(frames, dtype=np.float32)
+        voiced = a.ndim == 2 or b.ndim == 2
+        if voiced:
+            if a.ndim == 1:
+                a = a[None, :]
+            if b.ndim == 1:
+                b = b[None, :]
+            if a.shape[0] != b.shape[0] and a.shape[0] != 1 and b.shape[0] != 1:
+                # Two voiced operands of different widths: line them up on
+                # the smaller count (the extra rows have no partner).
+                v = min(a.shape[0], b.shape[0])
+                a, b = a[:v], b[:v]
+        out = {
+            "min": np.minimum(a, b),
+            "max": np.maximum(a, b),
+            "avg": (a + b) * np.float32(0.5),
+            "diff": a - b,
+            "mult": a * b,
+            "rect": np.abs(a),
+            "inv": -a,
+        }
+        if voiced:
+            # A mono-only-a function still comes back voiced-shaped when
+            # the other operand is voiced, so every jack agrees on width.
+            width = max(a.shape[0], b.shape[0])
+            for k, arr in out.items():
+                if arr.shape[0] != width:
+                    out[k] = np.broadcast_to(arr, (width, frames)).copy()
+        return {k: np.ascontiguousarray(v, dtype=np.float32) for k, v in out.items()}
 
     def _render_logic(self, module, frames: int, buffers, patch) -> dict:
         """Two-in gate algebra (see modules/logic.py).

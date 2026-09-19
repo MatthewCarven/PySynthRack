@@ -741,6 +741,21 @@ same session.
 
 ## The keep-list, continued (2026-09-19)
 
+- [x] **`cv_math` — SHIPPED 2026-09-19, module #97.** CV & Utilities
+      (filed beside cv_scale/cv_offset, not under Modulation where the
+      one-liner sat). Matthew: "cv_math please Claude". `logic` for
+      voltages: `a`, `b` in → `min` `max` `avg` `diff` `mult` `rect`
+      `inv` out, all live, zero params. `mult` is the addition to the
+      one-liner — the CV x CV multiplier the rack had no jack for (an
+      envelope on a vibrato's depth). An unpatched operand reads 0, so a
+      lone `a` makes `max`/`min` its half-wave rectifiers and `diff` a
+      bit-exact passthrough (the normalled trick, like logic's NAND).
+      Shape-polymorphic with numpy broadcasting (poly x mono; two polys
+      of different width line up on the smaller). Stateless, exact. 13
+      tests. Example `cv_math_delayed_vibrato.json` (banked): vibrato
+      LFO x ADSR through `mult` (absent at the attack, full at the
+      sustain) + `max` of two slow LFOs on a filter. Suite **3762**, 130
+      examples, 97 modules.
 - [x] **`drift` — SHIPPED 2026-09-19, module #96.** Modulation. Matthew:
       "drift please Claude?" Spec into MODULE_IDEAS first, built to it
       verbatim. A smooth wandering random CV: targets every `1/rate` s
@@ -943,7 +958,7 @@ halves), then built — the selector's precedent.
       * Modulation: `function_generator` — **SHIPPED 2026-08-23**, see
         § "The function generator" below,
         ~~`drift`~~ (SHIPPED 2026-09-19, #96 — see § "The keep-list,
-        continued"), `cv_math` (S — logic-for-CVs, zero params),
+        continued"), ~~`cv_math`~~ (SHIPPED 2026-09-19, #97, same §),
         `cv_recorder` (M — the modulation looper; nothing else
         captures performance).
       * Effects: ~~`rotary`~~ (SHIPPED 2026-09-14, module #91 — see below),

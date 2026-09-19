@@ -107,9 +107,11 @@ already three light before slice 2 added one -- count with
 > struck string, struck resonator, bowed string, blown pipe.
 >
 > 2026-09-19: **`drift`, module #96** — the keep-list's smooth
-> wandering random; `drift_wander.json` (banked). Suite **3745**, 129
-> examples. Keep-list left: cv_math, cv_recorder, vowel, freeze,
-> autopan, midi_output, subpatch containers, snapshot morph.
+> wandering random; `drift_wander.json` (banked). Then **`cv_math`,
+> module #97** — `logic` for voltages; `cv_math_delayed_vibrato.json`
+> (banked). Suite **3762**, 130 examples. Keep-list left: cv_recorder,
+> vowel, freeze, autopan, midi_output, subpatch containers, snapshot
+> morph.
 
 **Outstanding: nothing on the MODULE board** — every module is heard and
 seen, as of 2026-08-21. Two older non-module items are still open and are
@@ -159,6 +161,47 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-19 — cv_math: logic for voltages (module #97)
+
+Matthew: "cv_math please Claude I look forward to testing all these
+components". The keep-list's "logic-for-CVs, zero params" — spec into
+MODULE_IDEAS first (filed under CV & Utilities beside `cv_scale` /
+`cv_offset` rather than Modulation, where the one-liner sat), built
+verbatim plus one jack.
+
+**What it is.** `logic`'s shape exactly: two operands in, every
+function out at once, no mode combo, swap cables not settings. `min`
+and `max` are the analog AND/OR (an LFO ducked by an envelope; two slow
+LFOs making a shape neither has alone), `avg` the blend, `diff` the
+difference (an LFO minus its slewed self is its rate of change),
+`rect` |a|, `inv` −a — and **`mult`**, the one jack the one-liner
+didn't name and the one the rack most lacked: a CV×CV multiplier. The
+`vca` takes audio, `cv_scale` a constant; nothing multiplied two
+voltages, so "an envelope on a vibrato's depth" — delayed vibrato, the
+oldest synth trick there is — needed a workaround. Now it's a cable.
+
+**The normalled trick, again.** An unpatched operand reads 0, so a lone
+`a` makes `max` its positive half-wave and `min` its negative one
+(half-wave rectifiers for free, the way `logic`'s NAND idles high),
+`avg` is a/2, `diff` is `a` bit-exact, `mult` is silence. Documented
+and pinned. Shape-polymorphic via numpy broadcasting: a `(V, F)`
+operand against a mono one gives `(V, F)` on every jack (the a-only
+functions broadcast too, so all seven agree on width); two polys of
+different width line up on the smaller. Stateless — no `_state` entry
+ever, pinned.
+
+**13 tests**, `examples/cv_math_delayed_vibrato.json` (banked): a
+vibrato LFO × the note's ADSR through `mult`, summed into the pitch
+with a `cv_combiner` — no wobble at the 0.6 s attack, full at the
+sustain (pinned: the first half-second's wobble under a third of the
+later one's) — and a second `cv_math` taking the `max` of two slow
+LFOs onto a filter cutoff, with a scope on the delayed vibrato.
+MODULES.md entry (a jack table), index row, appendix; README 97
+modules (CV & Utilities 13). **Suite 3762**, 130 examples, **97
+modules.** An S that stayed S: forty minutes, no surprises.
 
 ---
 

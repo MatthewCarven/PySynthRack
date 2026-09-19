@@ -28,6 +28,7 @@ from .cvoffset import CVOffset
 from .cvscale import CVScale
 from .cv_gates import CVGates
 from .cv_keyboard import CVKeyboard
+from .cv_math import CVMath
 from .cvtoaudio import CVToAudio
 from .cvtofrequency import CVToFrequency
 from .delay import Delay
@@ -124,6 +125,7 @@ __all__ = [
     "CVCombiner",
     "CVGates",
     "CVKeyboard",
+    "CVMath",
     "CVOffset",
     "CVScale",
     "CVToAudio",

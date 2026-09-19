@@ -5,14 +5,14 @@ A modular software synthesizer in Python with a drag-cable node-graph UI. Think 
 ## Status: active development (pre-1.0)
 
 PySynthRack has grown well past its first prototype into a working instrument:
-**96 modules** across seven categories, a full CV/modulation system, MIDI,
+**97 modules** across seven categories, a full CV/modulation system, MIDI,
 recording, and a node editor with zoom, live meters, and per-patch layout
 persistence. It's still pre-1.0 — the patch format and APIs can shift — but you
 can build real patches in it today.
 
 ### What works
 
-- **96 modules** in seven Add-menu categories:
+- **97 modules** in seven Add-menu categories:
   - **Sources (22)** — oscillator (sine / saw / square / triangle, each in
     naive, PolyBLEP/PolyBLAMP `*_blep`, and wavetable `*_wt` flavours),
     supersaw, wavetable morph (with single-cycle WAV import), FM operator,
@@ -36,8 +36,9 @@ can build real patches in it today.
     smooth wandering random (drift).
   - **Routing & VCA (6)** — VCA, 4-in mixer, an 8×8 matrix mixer with
     feedback, mid/side, audio/CV combiners.
-  - **CV & Utilities (12)** — audio↔CV bridges, Schmitt trigger, constant, CV
-    scale/offset, slew limiter, sample & hold, scale quantizer, chord builder,
+  - **CV & Utilities (13)** — audio↔CV bridges, Schmitt trigger, constant, CV
+    scale/offset, CV math (min / max / avg / diff / mult / rect / inv), slew
+    limiter, sample & hold, scale quantizer, chord builder,
     oscilloscope tap, level meter.
   - **Outputs (8)** — mono / left / right / stereo speaker outs, per-device
     output routing (with an optional per-sink buffer size), a ring-governed
@@ -79,7 +80,7 @@ for the design write-up.
 src/pysynthrack/
 ├── core/            # Pure-Python model: Port, Module, Patch (no audio, no UI)
 ├── audio/           # AudioBackend interface + numpy (reference) / pyo backends
-├── modules/         # The 96 module type definitions — ports & params, no DSP
+├── modules/         # The 97 module type definitions — ports & params, no DSP
 ├── io_patch/        # JSON save / load
 ├── ui/              # DearPyGui app — node editor, palette, transport, meters
 ├── _crash.py        # Crash-log wiring (GUI + audio-thread hooks)
