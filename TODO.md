@@ -1138,7 +1138,7 @@ sampler examples need it).
 *The love passes (twenty-three):*
 - [ ] `vowel_giant_child.json` — giant → child over 25 s while the mouth talks; does constant-Q read as "the same vowel, a different throat"? EYES: the `formant` drag + `formant_cv_depth` in the vowel block.
 - [ ] `pluck_velocity_color.json` — the accents ring bright, the soft picks thud; A/B by flipping `vel_color` 0.8 → 0. Then `midi_input.velocity_cv -> pluck.vel` live.
-- [ ] `lfo_random_replay.json` — the same 12-step random wah every 2 s bar: does the written-down accident read musically? EYES: `seed` on the lfo node.
+- [ ] `lfo_random_replay.json` — the same 12-step random wah every 2 s bar: does the written-down accident read musically? EYES: `seed` on the lfo node — SEEN 2026-09-20 in a screenshot of Matthew's LFO-into-LFO siren patch (two lfo nodes with `reset` jack, `phase` `0.00 cyc`, `seed` 0; the oscillator's `pw_cv` jack, `pulse_width` and `pw_cv_depth` `0.50 width/unit`): every widget paints, ASCII, bounded. The live-drag checks (phase re-anchoring on a running LFO) and all ears items remain.
 - [ ] `sample_hold_prob_sweep.json` — the melody frees up around 5 s and gets stuck around 15 s, every 20 s. EYES: the `prob_cv_depth` drag and the new jack.
 - [ ] `clock_swing.json` — a 0.3 shuffle on the hats against a dead-straight `div4` kick; does it swing? EYES: the `swing (0.33 = triplet)` slider.
 - [ ] `sequencer_reverse_bars.json` — the palindrome: bar 1 up, bar 2 its mirror. Try `direction` pendulum on it (the gate turns it around at the bar lines). EYES: the third jack on both sequencer panels.
