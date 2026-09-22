@@ -2025,7 +2025,32 @@ class App:
             # is the sweep width (0..1); ``manual`` is the centre delay in
             # ms; ``feedback`` is bipolar regeneration (-0.95..0.95, hollow
             # <-> ringing); ``mix`` is dry/wet; ``cv_depth`` scales rate_cv
+            # (octaves per unit). Love pass: ``division`` is clock ticks per
+            # sweep (only while the ``clock`` jack is patched); ``spread``
+            # is the L/R LFO phase offset (0 mono, 0.5 the shipped
+            # quadrature, 1 a half cycle); ``manual_depth`` scales manual_cv
             # (octaves per unit).
+            if param_name == "division":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.05,
+                    min_value=0.25, max_value=64.0, format="%.2f ticks",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "spread":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "manual_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f oct/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
             if param_name == "rate":
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=0.01,

@@ -109,6 +109,7 @@ The full map:
 | `motion_eq.band{i}_q_cv` | `1.0` (shared, `q_cv_depth`) | Q doublings | `q_i · 2^(d·mean cv)` (clipped 0.1…20) |
 | `chorus.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `flanger.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
+| `flanger.manual_cv` | `1.0` (`manual_depth`) | octaves | `manual · 2^(d·cv[n])`, **per sample**, clamped 0.1…10 ms; in through-zero mode it moves the reference tap too, so the crossing travels; mono (a `(V, F)` source is summed) |
 | `phaser.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `phaser.manual_cv` | `1.0` (`manual_depth`) | octaves | `center · 2^(d·cv[n])`, **per sample**, clamped 100…6000 Hz; mono (a `(V, F)` source is summed) |
 | `ring_mod.freq_cv` | `1.0` (`freq_cv_depth`) | octaves | `freq · 2^(freq_cv_depth·cv[n])`, per-sample (internal carrier; bypassed when `carrier` patched) |
@@ -158,10 +159,10 @@ law's own clamp) and `slew` rise/fall ±5 (`_SLEW_MAX_OCT`); `pitch_shifter`
 clips in the same octave space at ±3 (its ±36-semitone rail). Per-sample
 array powers (`oscillator.freq_cv`, `fm_op`, `ring_mod`, `supersaw`,
 `wavetable_morph`, `resampler`) are numpy and never raise; they are not
-routed. The `phaser`'s per-sample `manual_cv` jack goes through
-`_pow2_clipped` anyway — it takes an array as happily as a scalar, and
-the free non-finite-reads-as-zero rule is worth having on a jack whose
-output lands in a filter coefficient.
+routed. The two per-sample `manual_cv` jacks (`phaser`, `flanger`) go
+through `_pow2_clipped` anyway — it takes an array as happily as a
+scalar, and the free non-finite-reads-as-zero rule is worth having on a
+jack whose output lands in a ring-buffer read index.
 
 **Every block mean is taken in float64 and scrubbed before anything clamps
 it.** `mean cv` above is one reduction, `NumpyBackend._finite_mean`, and it
@@ -371,7 +372,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`convolver`](#convolver) | Effects | `in` (audio) → `out_l`,`out_r` (audio) |
 | [`chorus`](#chorus) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`rotary`](#rotary) | Effects | `in` (audio), `fast` (gate) → `out_l`,`out_r`,`out` (audio) |
-| [`flanger`](#flanger) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
+| [`flanger`](#flanger) | Effects | `in` (audio), `rate_cv`,`manual_cv` (cv), `clock` (gate) → `out_l`,`out_r` (audio) |
 | [`phaser`](#phaser) | Effects | `in` (audio), `rate_cv`,`manual_cv` (cv), `clock` (gate) → `out_l`,`out_r` (audio) |
 | [`vocoder`](#vocoder) | Effects | `mod`,`carrier` (audio) → `out` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv), `reset` (gate) → `cv` (cv) |
@@ -3778,7 +3779,8 @@ goes hollow and metallic. Where the [`chorus`](#chorus) uses a longer delay
 and *no* feedback to thicken a sound, the flanger uses a shorter delay
 *with* feedback for that resonant sweep — the two are close cousins. The
 sweep is spread across a **stereo pair** (`out_l` / `out_r`) with the L and
-R LFOs a quarter-cycle apart, for a wide, rotating image.
+R LFOs a phase apart, for a wide, rotating image — `spread` is that phase
+offset.
 
 **Ports**
 
@@ -3786,6 +3788,8 @@ R LFOs a quarter-cycle apart, for a wide, rotating image.
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to flange (voice sources summed to mono). Unpatched → silence. |
 | `rate_cv` | in | cv | Modulates the LFO rate (1 V/oct × `cv_depth`). Optional. |
+| `manual_cv` | in | cv | Moves the centre delay **per sample** (1 V/oct × `manual_depth`), clamped to the knob's 0.1…10 ms. Voice sources summed to mono. Optional. |
+| `clock` | in | gate | Tempo-syncs the sweep: one full sweep every `division` ticks. Optional — unpatched, `rate` rules. |
 | `out_l` | out | audio | Left channel (dry + swept comb). |
 | `out_r` | out | audio | Right channel (dry + swept comb). |
 
@@ -3793,12 +3797,15 @@ R LFOs a quarter-cycle apart, for a wide, rotating image.
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
-| `rate` | `0.3` | 0.05 … 10 Hz | LFO sweep speed. Slow = a long ocean-liner sweep; faster = warble. |
+| `rate` | `0.3` | 0.05 … 10 Hz | LFO sweep speed, free-running. Slow = a long ocean-liner sweep; faster = warble. Also the fallback whenever `clock` is unpatched. |
+| `division` | `4.0` | 0.25 … 64 ticks | **Clock sync only.** How many `clock` ticks one full sweep takes. `4` = a sweep per bar of four; `1` = a sweep per beat. |
 | `depth` | `0.7` | 0 … 1 | Sweep width — how far the comb slides across the spectrum. |
 | `manual` | `1.5` | 0.1 … 10 ms | Centre delay. Short = high/tight whoosh; long = low, hollow sweep. |
 | `feedback` | `0.5` | −0.95 … 0.95 | Regeneration, **bipolar**. `0` = plain comb; `+` = ringing; `−` = hollow/metallic. |
 | `mix` | `0.5` | 0 … 1 | Dry/wet. The comb is deepest near `0.5`; `0` is a bit-exact dry passthrough on both channels. |
+| `spread` | `0.5` | 0 … 1 | L/R LFO phase offset. `0` = both combs on one LFO (a centred mono sweep); `0.5` = a quarter cycle apart (what the module shipped with); `1` = half a cycle, the channels counter-sweeping. |
 | `cv_depth` | `1.0` | 0 … 4 oct/unit | Octaves of LFO-rate shift per unit of `rate_cv`. |
+| `manual_depth` | `1.0` | 0 … 4 oct/unit | Octaves of centre-delay shift per unit of `manual_cv`. |
 | `through_zero` | `false` | off / on | Off = the standard positive-delay flanger. On = **through-zero**: a fixed reference tap plus a moving tap swept through it for the dramatic tape "jet". |
 | `polarity` | `1.0` | −1 … 1 | Through-zero only. `+1` = additive **bloom** (bright at the crossing); `−1` = subtractive **null** (cancellation hole); blended between. |
 
@@ -3818,9 +3825,47 @@ block-size independence, and `mix = 0` is still a bit-exact dry passthrough.
 See `examples/flanger_jet_sweep.json` (standard sweep) and
 `examples/flanger_through_zero.json` (the tape jet through zero).
 
+**Tempo sync (`clock` + `division`).** Patch a gate into `clock` and the
+sweep stops being a speed in Hz and becomes a *length in beats*: one full
+comb sweep every `division` ticks of whatever is cabled — `4` a sweep per
+bar of four, `8` a two-bar sweep, `1` a sweep per beat, `0.5` twice a beat.
+The period is the distance between the last two rising edges, carried
+across blocks and keyed to an absolute sample count (the same idiom
+[`slew`](#slew) uses, and the reason the measurement is bit-identical at
+any block size), so the sweep follows a tempo that moves. Until two edges
+have arrived the free-running `rate` knob still drives it — a freshly
+patched clock never stalls the sweep. While the lock holds, `rate` and
+`rate_cv` step **aside**: the sweep length is the cable's. The locked
+phase is a pure function of the absolute sample index rather than an
+accumulator, which makes a *synced* sweep **exactly** bit-identical at 64
+and 512 — strictly better than the free-running one, whose float phase
+accumulator drifts about 1e-10 (phaser) / 3e-8 (flanger) over three
+seconds.
+
+**Stereo (`spread`).** The L and R combs have always run from one LFO with
+their phases offset; `spread` is that offset, and `0.5` is exactly the
+quarter cycle the module shipped with. Turn it to `0` and both channels
+sweep together — one comb, dead centre, mono-safe. Turn it to `1` and they
+run a half cycle apart: when the left comb is at the top of its travel the
+right is at the bottom, the widest the pair goes. Measured L/R correlation
+on a noise bed at `depth` 1: **1.000** at `spread` 0, **0.579** at `0.5`,
+**0.497** at `1`.
+
+**The manual jack (`manual_cv` + `manual_depth`).** `manual` is the comb's
+centre delay; `manual_cv` is that knob as a jack, read **per sample** and
+scaled by `manual_depth` in octaves per unit (clamped to the knob's own
+0.1…10 ms). Turn `depth` to 0 and the LFO stops entirely — then an
+[`audio_to_cv`](#audio_to_cv) follower or an [`adsr`](#adsr) into
+`manual_cv` sweeps the comb from the playing itself: the envelope flanger,
+where the notch position tracks how hard you hit rather than a clock. In
+**through-zero** mode the jack moves the *reference* tap as well as the
+moving one, so the crossing itself travels and the jet passes through zero
+wherever the envelope puts it.
+
 **Patching.** `… → vca → flanger → L/R speakers`. Try positive feedback for
 a bright, ringing sweep, negative for a hollow one; feed a slow envelope or
-LFO into `rate_cv` for an auto-flanger that breathes.
+LFO into `rate_cv` for an auto-flanger that breathes. See
+`examples/flanger_jet.json` for the clocked, wide, through-zero version.
 
 ---
 
@@ -6058,4 +6103,12 @@ loads in the app. Notable ones referenced above:
   identical whatever `spread` says, because an envelope sweep is mono).
   Set `manual_depth` to 0 to hear the same riff through a *fixed* notch
   pattern, which is what the module did before this jack existed.
+- `flanger_jet.json` — the clocked jet: a seeded [`noise`](#noise) bed
+  gated into bursts by a [`clock`](#clock)'s own pulse (through an
+  [`adsr`](#adsr)/[`vca`](#vca)) and flanged in **through-zero** at
+  `polarity` +1, with `spread` **1** (the two channels a half cycle apart)
+  and the same clock in the flanger's `clock` jack at `division` 8 — one
+  sweep every two bars, so the crossing lands on a bar line instead of
+  wherever it drifted to. Drop `spread` to 0 to hear the same jet collapse
+  to the centre; unpatch `clock` and it free-runs at `rate` again.
 - `stereo_hard_pan.json` — left/right speaker sinks.

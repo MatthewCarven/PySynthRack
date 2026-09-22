@@ -18,6 +18,30 @@ Coverage:
   - Stereo: the two channels are decorrelated (quadrature LFO).
   - CV: ``rate_cv`` alters the sweep; an all-zero ``rate_cv`` is a noop.
   - Integration: osc -> flanger -> L/R speakers renders audible audio.
+
+Love pass (2026-09-22), three features all OFF at their defaults:
+  - Pins: the default render is pinned to literals computed from the
+    shipped code, and every new knob at its default / every new jack
+    unpatched is bit-exactly that.
+  - ``spread``: the L/R LFO phase offset the quadrature used to hard-code.
+    0 makes the channels bit-identical, 0.5 IS the shipped quadrature,
+    and the LEFT channel never moves (its offset is 0 at any spread).
+    Correlation measured at 0 / 0.5 / 1.
+  - ``clock`` + ``division``: the sweep as a length in ticks. Ignored
+    unpatched (``division`` then changes nothing); needs two edges; the
+    locked sweep rate is measured off the DELAY (cross-correlation, not
+    a tone's AM -- see the test); and the locked render is EXACTLY
+    block-size independent (the free-running one only approximately --
+    an absolute-sample phase schedule against a float accumulator).
+  - ``manual_cv`` + ``manual_depth``: the centre delay as a per-sample
+    jack, measured by where an impulse's tap lands (an octave of CV
+    halves or doubles the delay, in BOTH modes -- in through-zero the
+    reference tap moves with it, so the crossing travels). Depth-scales,
+    disabled at depth 0, per-sample rather than block-mean, clamped to
+    the knob's own rails, voice sources summed, NaN reads as no
+    modulation.
+  - Widgets: every param gets a bounded widget.
+  - Example: ``flanger_jet.json``.
 """
 from __future__ import annotations
 
@@ -97,11 +121,14 @@ class TestModel:
         assert isinstance(fl, Flanger)
         assert fl.params == {
             "rate": 0.3,
+            "division": 4.0,
             "depth": 0.7,
             "manual": 1.5,
             "feedback": 0.5,
             "mix": 0.5,
+            "spread": 0.5,
             "cv_depth": 1.0,
+            "manual_depth": 1.0,
             "through_zero": False,
             "polarity": 1.0,
         }
@@ -111,6 +138,8 @@ class TestModel:
         assert [(p.name, p.signal_kind) for p in fl.input_ports] == [
             ("in", "audio"),
             ("rate_cv", "cv"),
+            ("manual_cv", "cv"),
+            ("clock", "gate"),
         ]
         assert [(p.name, p.signal_kind) for p in fl.output_ports] == [
             ("out_l", "audio"),
@@ -453,3 +482,475 @@ class TestThroughZero:
         c = _run(*_rig(prm, block=333), sig, block=333)[0]
         m = min(a.shape[0], c.shape[0])
         assert np.max(np.abs(a[:m] - c[:m])) == 0.0
+
+
+# ----- Love pass 2026-09-22: spread / clock+division / manual_cv --------------
+
+# The default render, pinned to literals computed from the code as it
+# shipped (seeded noise, block 512). Every "OFF at its default" claim
+# below leans on this.
+_PIN_IDX = (0, 1, 511, 512, 2000, 4095)
+_PIN_L = (0.0002460306859575212, 0.05974910780787468, 0.17219002544879913,
+          -0.1301274448633194, -0.19941115379333496, -0.04489603638648987)
+_PIN_R = (0.0002460306859575212, 0.05974910780787468, 0.18407094478607178,
+          -0.11562705039978027, 0.09172980487346649, 0.1644388735294342)
+
+
+def _noise(n=4096, seed=7, amp=0.4):
+    rng = np.random.default_rng(seed)
+    return (amp * rng.standard_normal(n)).astype(np.float32)
+
+
+def _rig_jacks(params=None, block=F, manual=False, clock=False):
+    """A flanger with optional ``manual_cv`` / ``clock`` cables attached."""
+    patch = Patch()
+    src = patch.add_module("oscillator")
+    fl = patch.add_module("flanger", params=params or {})
+    patch.connect(src.id, "out", fl.id, "in")
+    man = clk = None
+    if manual:
+        man = patch.add_module("lfo")
+        patch.connect(man.id, "cv", fl.id, "manual_cv")
+    if clock:
+        clk = patch.add_module("clock")
+        patch.connect(clk.id, "out", fl.id, "clock")
+    b = NumpyBackend(sample_rate=SR, block_size=block)
+    b.compile(patch)
+    return patch, src, fl, b, man, clk
+
+
+def _run_jacks(rig, signal, manual_cv=None, gate=None, block=F):
+    patch, src, fl, b, man, clk = rig
+    n = (signal.shape[-1] // block) * block
+    ls, rs = [], []
+    for k in range(n // block):
+        sl = slice(k * block, (k + 1) * block)
+        bufs = {(src.id, "out"): signal[..., sl].astype(np.float32)}
+        if man is not None:
+            bufs[(man.id, "cv")] = manual_cv[..., sl].astype(np.float32)
+        if clk is not None:
+            bufs[(clk.id, "out")] = gate[sl].astype(np.float32)
+        o = b._render_flanger(fl, block, bufs, patch)
+        ls.append(o["out_l"])
+        rs.append(o["out_r"])
+    return np.concatenate(ls), np.concatenate(rs)
+
+
+def _plain(params=None, signal=None, block=F):
+    sig = _noise() if signal is None else signal
+    return _run(*_rig(params, block=block), sig, block=block)
+
+
+def _ticks(n, period, width=8):
+    g = np.zeros(n, dtype=np.float32)
+    for i in range(0, n, period):
+        g[i:i + width] = 1.0
+    return g
+
+
+def _corr(a, b):
+    a = a.astype(np.float64) - a.mean()
+    b = b.astype(np.float64) - b.mean()
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+
+def _tap(y, lo=4, hi=800):
+    """Sample lag of the loudest echo after the dry impulse."""
+    return int(np.argmax(np.abs(y[lo:hi]))) + lo
+
+
+class TestDefaultsArePinned:
+    def test_the_default_render_matches_the_shipped_literals(self):
+        l, r = _plain()
+        assert [float(l[i]) for i in _PIN_IDX] == list(_PIN_L)
+        assert [float(r[i]) for i in _PIN_IDX] == list(_PIN_R)
+
+    def test_every_new_knob_at_its_default_is_the_default_render(self):
+        base = _plain()
+        explicit = _plain({"spread": 0.5, "division": 4.0,
+                           "manual_depth": 1.0})
+        assert np.array_equal(base[0], explicit[0])
+        assert np.array_equal(base[1], explicit[1])
+
+
+class TestSpread:
+    def test_zero_makes_the_two_channels_bit_identical(self):
+        l, r = _plain({"spread": 0.0})
+        assert np.array_equal(l, r)
+
+    def test_the_left_channel_never_moves(self):
+        # The L offset is 0 at any spread, so ``spread`` is purely a
+        # right-channel control -- nothing to un-learn about the mono sum.
+        ref = _plain({"spread": 0.0})[0]
+        for sp in (0.25, 0.5, 0.75, 1.0):
+            assert np.array_equal(_plain({"spread": sp})[0], ref)
+
+    def test_the_right_channel_does_move(self):
+        a = _plain({"spread": 0.0})[1]
+        for sp in (0.25, 0.5, 1.0):
+            assert not np.array_equal(_plain({"spread": sp})[1], a)
+
+    def test_correlation_falls_as_the_pair_opens(self):
+        # Measured on a noise bed at depth 1: 1.000 / 0.579 / 0.497.
+        sig = _noise(n=SR)
+        c0 = _corr(*_plain({"spread": 0.0, "depth": 1.0}, sig))
+        c5 = _corr(*_plain({"spread": 0.5, "depth": 1.0}, sig))
+        c1 = _corr(*_plain({"spread": 1.0, "depth": 1.0}, sig))
+        assert c0 == pytest.approx(1.0, abs=1e-6)
+        assert 0.45 < c5 < 0.7
+        assert 0.4 < c1 < 0.6
+        assert c1 < c5 < c0
+
+    def test_it_works_in_through_zero_too(self):
+        sig = _noise(n=SR)
+        p = {"through_zero": True, "depth": 1.0, "manual": 6.0}
+        assert np.array_equal(*_plain(dict(p, spread=0.0), sig))
+        assert _corr(*_plain(dict(p, spread=1.0), sig)) < 0.99
+
+
+class TestClockSync:
+    def test_division_does_nothing_with_the_clock_unpatched(self):
+        a = _plain({"division": 0.25})
+        b = _plain({"division": 64.0})
+        assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+
+    def test_one_edge_is_not_a_period(self):
+        # A period needs two edges; until then the rate knob still drives
+        # the sweep, bit-for-bit as if nothing were patched.
+        sig = _noise(n=SR)
+        gate = np.zeros(SR, dtype=np.float32)
+        gate[100:108] = 1.0                       # exactly one rising edge
+        rig = _rig_jacks({"division": 4.0}, clock=True)
+        l, r = _run_jacks(rig, sig, gate=gate)
+        free = _plain({"division": 4.0}, sig)
+        assert np.array_equal(l, free[0]) and np.array_equal(r, free[1])
+
+    def test_the_sweep_takes_division_ticks(self):
+        # MEASURE THE RIGHT OBSERVABLE. A tone's AM is the phaser's
+        # observable, not the flanger's: a comb has a notch every 1/delay
+        # Hz, so one tone crosses many of them per sweep and the envelope
+        # says nothing useful (the first draft of this test read 2.50 Hz
+        # where 0.5 was wanted). What the flanger sweeps is the DELAY, so
+        # measure the delay: pure wet (``mix`` 1, no feedback) makes the
+        # output a delayed copy of the input, and the lag that maximises
+        # the cross-correlation of a short window against the input IS
+        # the delay. That lag series wobbles at exactly the sweep rate.
+        n = SR * 12
+        sig = _noise(n=n, seed=17, amp=0.5)
+        gate = _ticks(n, SR // 2)                 # a 2 Hz clock
+        win, step, maxlag = 4096, 2048, 600
+        for div in (2.0, 4.0):
+            rig = _rig_jacks(
+                {"rate": 0.05, "division": div, "depth": 1.0,
+                 "feedback": 0.0, "mix": 1.0, "manual": 5.0, "spread": 0.0},
+                clock=True,
+            )
+            wet, _r = _run_jacks(rig, sig, gate=gate)
+            x = sig.astype(np.float64)
+            y = wet.astype(np.float64)
+            lags = []
+            start = SR * 2                        # after the lock engages
+            while start + win + maxlag < y.size:
+                seg = y[start:start + win]
+                ref = x[start - maxlag:start + win]
+                c = np.correlate(ref, seg, mode="valid")   # maxlag+1 taps
+                lags.append(maxlag - int(np.argmax(c)))
+                start += step
+            lag = np.asarray(lags, dtype=np.float64)
+            lag -= lag.mean()
+            S = np.abs(np.fft.rfft(lag))
+            f = np.fft.rfftfreq(lag.size, step / SR)
+            band = f > 0.02
+            got = float(f[band][np.argmax(S[band])])
+            want = 1.0 / (0.5 * div)              # ticks are 0.5 s apart
+            assert got == pytest.approx(want, rel=0.1), (div, got, want)
+
+    def test_a_locked_sweep_is_exactly_block_size_independent(self):
+        # Keying the locked phase to the ABSOLUTE sample index instead of
+        # accumulating it buys identical bits at 64 and 512.
+        n = 44032                       # a whole number of 512s AND of 64s
+        sig = _noise(n=n, seed=3)
+        gate = _ticks(n, 64)            # locks at sample 64, before any
+        #                                 block boundary the two disagree on
+        p = {"division": 32.0, "depth": 0.8, "feedback": 0.5, "spread": 0.7}
+        a = _run_jacks(_rig_jacks(p, clock=True, block=512), sig,
+                       gate=gate, block=512)
+        b = _run_jacks(_rig_jacks(p, clock=True, block=64), sig,
+                       gate=gate, block=64)
+        assert np.array_equal(a[0], b[0])
+        assert np.array_equal(a[1], b[1])
+
+    def test_the_free_running_sweep_only_drifts_a_little(self):
+        # Honest counterpart: the shipped float phase accumulator is NOT
+        # bit-exact across block sizes (~3e-8 over a second here), which
+        # is why the clocked path does not use one.
+        n = 44032
+        sig = _noise(n=n, seed=3)
+        a = _plain({"depth": 0.8, "feedback": 0.5}, sig, block=512)[0]
+        b = _plain({"depth": 0.8, "feedback": 0.5}, sig, block=64)[0]
+        assert float(np.abs(a - b).max()) < 1e-5
+
+    def test_a_faster_clock_sweeps_faster(self):
+        n = SR * 4
+        sig = _noise(n=n, seed=5)
+        p = {"division": 4.0, "depth": 1.0, "spread": 0.0}
+        slow = _run_jacks(_rig_jacks(p, clock=True), sig,
+                          gate=_ticks(n, SR // 2))[0]
+        fast = _run_jacks(_rig_jacks(p, clock=True), sig,
+                          gate=_ticks(n, SR // 4))[0]
+        assert not np.array_equal(slow, fast)
+
+    def test_the_lock_survives_a_through_zero_flip(self):
+        # ``through_zero`` re-inits the ring; the measured period must
+        # survive that clear or the sweep would fall back to the knob.
+        n = SR
+        sig = _noise(n=n, seed=9)
+        gate = _ticks(n, 64)
+        patch, src, fl, b, _m, clk = _rig_jacks({"division": 32.0},
+                                                clock=True)
+        for k in range(n // F):
+            if k == 3:
+                fl.set_param("through_zero", True)
+            sl = slice(k * F, (k + 1) * F)
+            b._render_flanger(fl, F, {(src.id, "out"): sig[sl],
+                                      (clk.id, "out"): gate[sl]}, patch)
+        assert b._state[fl.id]["interval"] == 64
+        assert b._state[fl.id]["period"] == 64 * 32.0
+
+
+class TestManualCv:
+    def test_manual_depth_does_nothing_with_the_jack_unpatched(self):
+        a = _plain({"manual_depth": 0.0})
+        b = _plain({"manual_depth": 4.0})
+        assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+
+    def test_an_octave_of_cv_halves_or_doubles_the_delay(self):
+        # Measured off the impulse response: the echo lands at 33 / 66 /
+        # 132 samples for cv -1 / 0 / +1 with ``manual`` at 1.5 ms.
+        n = SR
+        imp = _impulse(n)
+        p = {"depth": 0.0, "feedback": 0.0, "mix": 0.5, "manual": 1.5,
+             "manual_depth": 1.0, "spread": 0.0}
+        taps = {}
+        for c in (-1.0, 0.0, 1.0):
+            rig = _rig_jacks(p, manual=True)
+            l, _r = _run_jacks(rig, imp, manual_cv=np.full(n, c, np.float32))
+            taps[c] = _tap(l)
+        assert taps[0.0] == pytest.approx(1.5 * SR / 1000.0, abs=1.5)
+        assert taps[-1.0] == pytest.approx(taps[0.0] / 2.0, abs=1.5)
+        assert taps[1.0] == pytest.approx(taps[0.0] * 2.0, abs=1.5)
+
+    def test_through_zero_moves_its_reference_tap_too(self):
+        # With depth 0 the two through-zero taps sit on top of each other
+        # at the centre delay, so the impulse's echo IS the reference tap:
+        # it has to travel with the jack, or the crossing would be stuck.
+        n = SR
+        imp = _impulse(n)
+        p = {"through_zero": True, "polarity": 1.0, "depth": 0.0,
+             "feedback": 0.0, "mix": 0.5, "manual": 3.0,
+             "manual_depth": 1.0, "spread": 0.0}
+        taps = {}
+        for c in (-1.0, 0.0):
+            rig = _rig_jacks(p, manual=True)
+            l, _r = _run_jacks(rig, imp, manual_cv=np.full(n, c, np.float32))
+            taps[c] = _tap(l)
+        assert taps[0.0] == pytest.approx(3.0 * SR / 1000.0, abs=2.0)
+        assert taps[-1.0] == pytest.approx(taps[0.0] / 2.0, abs=2.0)
+
+    def test_depth_scales_the_jack(self):
+        n = 4096
+        sig = _noise(n=n)
+        a = _run_jacks(_rig_jacks({"manual_depth": 2.0}, manual=True), sig,
+                       manual_cv=np.full(n, 0.5, np.float32))
+        b = _run_jacks(_rig_jacks({"manual_depth": 1.0}, manual=True), sig,
+                       manual_cv=np.full(n, 1.0, np.float32))
+        assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+
+    def test_depth_zero_is_the_unpatched_render(self):
+        n = 4096
+        sig = _noise(n=n)
+        a = _run_jacks(_rig_jacks({"manual_depth": 0.0}, manual=True), sig,
+                       manual_cv=np.full(n, 0.9, np.float32))
+        b = _plain({}, sig)
+        assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+
+    def test_a_zero_cv_is_a_noop(self):
+        n = 4096
+        sig = _noise(n=n)
+        a = _run_jacks(_rig_jacks({"manual_depth": 2.0}, manual=True), sig,
+                       manual_cv=np.zeros(n, np.float32))
+        b = _plain({}, sig)
+        assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+
+    def test_the_jack_is_per_sample_not_block_mean(self):
+        # A CV whose mean over every block is 0 but which moves inside the
+        # block: a block-mean jack would be a noop here, a per-sample one
+        # is not.
+        n = 4096
+        sig = _noise(n=n)
+        cv = np.tile(np.concatenate([np.full(256, 1.0, np.float32),
+                                     np.full(256, -1.0, np.float32)]), 8)
+        a = _run_jacks(_rig_jacks({"manual_depth": 2.0}, manual=True), sig,
+                       manual_cv=cv)
+        b = _plain({}, sig)
+        assert not np.array_equal(a[0], b[0])
+
+    def test_the_modulated_centre_stays_inside_the_knob_rails(self):
+        # The jack is clamped to the same 0.1..10 ms the knob is, which is
+        # what keeps the read inside the ring however hard the CV pushes.
+        n = 8192
+        sig = _noise(n=n)
+        cv = np.linspace(-40.0, 40.0, n).astype(np.float32)
+        for tz in (False, True):
+            a = _run_jacks(
+                _rig_jacks({"manual_depth": 4.0, "manual": 5.0,
+                            "feedback": 0.9, "through_zero": tz},
+                           manual=True),
+                sig, manual_cv=cv,
+            )
+            assert np.all(np.isfinite(a[0])) and np.all(np.isfinite(a[1]))
+            assert float(np.abs(a[0]).max()) < 50.0
+
+    def test_a_voice_source_is_summed_to_mono(self):
+        n = 2048
+        sig = _noise(n=n)
+        # 0.25 + 0.5 is exact in float32, so the collapse is bit-exact
+        # rather than merely close -- no tolerance to argue about.
+        rows = np.stack([np.full(n, 0.25, np.float32),
+                         np.full(n, 0.5, np.float32)])
+        a = _run_jacks(_rig_jacks({"manual_depth": 1.5}, manual=True), sig,
+                       manual_cv=rows)
+        b = _run_jacks(_rig_jacks({"manual_depth": 1.5}, manual=True), sig,
+                       manual_cv=np.full(n, 0.75, np.float32))
+        assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+
+    def test_a_non_finite_cv_reads_as_no_modulation(self):
+        n = 2048
+        sig = _noise(n=n)
+        cv = np.full(n, 0.5, np.float32)
+        cv[500] = np.nan
+        cv[900] = np.inf
+        a = _run_jacks(_rig_jacks({"manual_depth": 2.0}, manual=True), sig,
+                       manual_cv=cv)
+        assert np.all(np.isfinite(a[0])) and np.all(np.isfinite(a[1]))
+
+
+def test_all_three_features_live_stay_block_size_independent():
+    n = 44032
+    sig = _noise(n=n, seed=13)
+    cv = (0.8 * np.sin(2 * np.pi * 0.7 * np.arange(n) / SR)).astype(np.float32)
+    gate = _ticks(n, 64)
+    for tz in (False, True):
+        p = {"spread": 0.83, "division": 24.0, "manual_depth": 1.7,
+             "depth": 0.6, "feedback": 0.6, "mix": 0.55, "manual": 2.0,
+             "through_zero": tz}
+        a = _run_jacks(_rig_jacks(p, manual=True, clock=True, block=512),
+                       sig, manual_cv=cv, gate=gate, block=512)
+        b = _run_jacks(_rig_jacks(p, manual=True, clock=True, block=64),
+                       sig, manual_cv=cv, gate=gate, block=64)
+        assert np.array_equal(a[0], b[0]), tz
+        assert np.array_equal(a[1], b[1]), tz
+
+
+# ----- UI ---------------------------------------------------------------------
+
+
+def _widgets(monkeypatch):
+    from unittest import mock
+
+    pytest.importorskip("dearpygui.dearpygui")
+    import pysynthrack.ui.app as app_mod
+    monkeypatch.setenv("PYSYNTHRACK_BACKEND", "numpy")
+    monkeypatch.setattr(app_mod, "dpg", mock.MagicMock())
+    app = app_mod.App()
+    app.patch = Patch()
+    module = app.patch.add_module("flanger")
+    kinds = ("add_combo", "add_drag_float", "add_slider_float", "add_input_text",
+             "add_input_float", "add_checkbox", "add_drag_int")
+    before = {k: len(getattr(app_mod.dpg, k).call_args_list) for k in kinds}
+    app._create_node_for_module(module)
+    out = {}
+    for k in kinds:
+        for call in getattr(app_mod.dpg, k).call_args_list[before[k]:]:
+            out[str(call.kwargs.get("label"))] = (k, call.kwargs.get("format"))
+    return out
+
+
+def test_every_param_gets_a_bounded_widget(monkeypatch):
+    w = _widgets(monkeypatch)
+    labels = list(w)
+    for name in Flanger.DEFAULT_PARAMS:
+        hits = [lb for lb in labels if lb == name or lb.startswith(name + " ")]
+        assert hits, (name, labels)
+        assert w[hits[0]][0] != "add_input_text", (name, w[hits[0]])
+    # And the new three reached the FLANGER's own branch, not somebody
+    # else's same-named one ("matching a label is not matching the widget").
+    assert w["division"][1] == "%.2f ticks"
+    assert w["manual_depth"][1] == "%.2f oct/unit"
+    assert w["spread"][0] == "add_slider_float"
+    assert w["manual"][1] == "%.2f ms"
+
+
+# ----- example ----------------------------------------------------------------
+
+
+def _render_example(name, tweak=None, seconds=6.0, block=F):
+    from pathlib import Path
+
+    from pysynthrack.io_patch import load_patch
+
+    path = Path(__file__).resolve().parent.parent / "examples" / name
+    patch = load_patch(path)
+    if tweak:
+        tweak(patch)
+    b = NumpyBackend(sample_rate=SR, block_size=block)
+    b.compile(patch)
+    cap = []
+    orig = b._render_flanger
+
+    def spy(module, frames, buffers, p):
+        r = orig(module, frames, buffers, p)
+        cap.append((r["out_l"].copy(), r["out_r"].copy()))
+        return r
+
+    b._render_flanger = spy
+    peak = 0.0
+    for _ in range(int(SR * seconds / block)):
+        out, _devices = b.render_block_multi(block)
+        assert out is not None and np.all(np.isfinite(out))
+        peak = max(peak, float(np.abs(out).max()))
+    return (peak,
+            np.concatenate([c[0] for c in cap]),
+            np.concatenate([c[1] for c in cap]))
+
+
+def _set(**kw):
+    def t(patch):
+        m = next(x for x in patch if x.TYPE == "flanger")
+        for k, v in kw.items():
+            m.set_param(k, v)
+    return t
+
+
+def test_the_jet_example_is_wide_clocked_and_through_zero():
+    peak, l, r = _render_example("flanger_jet.json")
+    assert 0.3 < peak < 0.8
+    # ``spread`` 1 is a real stereo pair; 0 collapses it to one comb.
+    assert _corr(l, r) < 0.95
+    _p, l0, r0 = _render_example("flanger_jet.json", tweak=_set(spread=0.0))
+    assert np.array_equal(l0, r0)
+
+    # The clock cable is doing work: pull it and the sweep free-runs.
+    def unclock(patch):
+        fl = next(x for x in patch if x.TYPE == "flanger")
+        for c in list(patch.cables):
+            if c.dst_module_id == fl.id and c.dst_port == "clock":
+                patch.disconnect(c.src_module_id, c.src_port,
+                                 c.dst_module_id, c.dst_port)
+
+    _p, lu, _ru = _render_example("flanger_jet.json", tweak=unclock)
+    assert not np.array_equal(l, lu)
+    # And so is through-zero.
+    _p, lf, _rf = _render_example("flanger_jet.json",
+                                  tweak=_set(through_zero=False))
+    assert not np.array_equal(l, lf)

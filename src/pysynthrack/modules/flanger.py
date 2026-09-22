@@ -20,9 +20,35 @@ sibling the chorus's docs point at.
 
 The sweep is spread across a **stereo pair** — ``out_l`` and ``out_r``
 run their own comb from the same mono input, with the L and R LFOs a
-quarter-cycle apart, so the notches sweep out of step between the
-channels for a wide, rotating image. Patch ``out_l`` / ``out_r`` into the
-``left_speaker_output`` / ``right_speaker_output`` modules.
+phase apart, so the notches sweep out of step between the channels for a
+wide, rotating image. ``spread`` is that phase offset: **0** puts both
+combs on the same LFO (one sweep, dead centre), **0.5** is the
+quarter-cycle quadrature the module shipped with, and **1** runs them a
+half cycle apart — when one channel's comb is at the top of its travel
+the other's is at the bottom, the widest the pair goes. Patch ``out_l`` /
+``out_r`` into the ``left_speaker_output`` / ``right_speaker_output``
+modules.
+
+**Tempo sync.** Patch a gate into ``clock`` and the sweep stops being a
+speed in Hz and becomes a *length in beats*: one full comb sweep every
+``division`` ticks of whatever is cabled (4 = a sweep per bar of four,
+8 = a two-bar sweep, 1 = a sweep per beat, 0.5 = twice a beat). The
+period is measured between the last two rising edges, so the sweep
+follows a tempo that moves; until two edges have arrived the ``rate``
+knob still drives it, and with ``clock`` unpatched ``rate`` is all there
+is. While the lock holds, ``rate`` and ``rate_cv`` step aside entirely —
+the sweep length is the cable's, and the phase is keyed to the absolute
+sample count rather than accumulated, so a synced sweep renders
+bit-identically at any block size.
+
+**The manual jack.** ``manual`` is the centre delay; ``manual_cv`` is
+that knob as a jack, read **per sample** and scaled by ``manual_depth``
+in octaves per unit. Turn ``depth`` to 0 and the LFO stops entirely;
+then an ``audio_to_cv`` follower or an ``adsr`` into ``manual_cv`` sweeps
+the comb from the playing itself — the envelope flanger. In
+through-zero mode the jack moves the **reference** tap as well as the
+moving one, so the crossing itself travels: the jet passes through zero
+wherever the envelope puts it.
 
 **Through-zero mode.** With ``through_zero`` enabled the flanger becomes a
 *through-zero* (tape) flanger. Instead of summing the dry signal with a
@@ -57,6 +83,9 @@ Controls:
     tape-style through-zero flanger described above.
   * ``polarity`` — through-zero only: ``+1`` additive bloom (bright),
     ``−1`` subtractive null (cancellation), blended in between.
+  * ``spread`` — the L/R LFO phase offset, 0..1 (0 mono, 0.5 the shipped
+    quadrature, 1 a half cycle apart).
+  * ``division`` — with ``clock`` patched, how many ticks one sweep takes.
 
 A ``rate_cv`` input modulates the LFO rate (1 V/oct, scaled by
 ``cv_depth`` in octaves per unit), so an envelope or a second LFO can
@@ -70,6 +99,9 @@ Use cases:
     a build.
   * ``through_zero`` on with a slow ``rate`` for the dramatic tape "jet"
     sweep that thins through zero and blooms back.
+  * ``depth`` 0 + an envelope into ``manual_cv`` for the envelope flanger.
+  * A ``clock`` into the sync jack with ``division`` 8 for a jet that
+    takes exactly two bars, however the tempo moves.
 
 Ports:
   * ``in`` (audio): the signal to flange. A polyphonic (voice-aware)
@@ -77,6 +109,11 @@ Ports:
     -> silence.
   * ``rate_cv`` (cv): modulates the LFO rate (1 V/oct * ``cv_depth``).
     Optional; unpatched means the LFO runs at ``rate``.
+  * ``manual_cv`` (cv): moves the centre delay per sample (1 V/oct *
+    ``manual_depth`` on ``manual``). A polyphonic source is summed to
+    mono. Optional; unpatched means the comb sits at ``manual``.
+  * ``clock`` (gate): tempo-syncs the sweep — one sweep every
+    ``division`` ticks. Optional; unpatched means ``rate`` rules.
   * ``out_l`` (audio): left channel (dry + swept comb A).
   * ``out_r`` (audio): right channel (dry + swept comb B).
 """
@@ -91,7 +128,10 @@ class Flanger(Module):
     """Swept resonant comb flanger (mono in, L/R out, bipolar feedback).
 
     Parameters:
-        rate: LFO sweep speed in Hz (0.05 .. 10).
+        rate: LFO sweep speed in Hz (0.05 .. 10). The free-running speed,
+            and the fallback whenever ``clock`` is unpatched.
+        division: Clock ticks per sweep (0.25 .. 64) — used only while
+            ``clock`` is patched. 4 = one sweep per bar of four.
         depth: Sweep amount, 0 (static comb) .. 1 (wide sweep).
         manual: Centre delay in milliseconds (0.1 .. 10). The comb sweeps
             around this delay; shorter = higher/tighter, longer = lower.
@@ -100,7 +140,12 @@ class Flanger(Module):
             positive = ringing; negative = hollow/metallic.
         mix: Dry/wet balance, dry (0) -> wet (1). The comb is deepest near
             0.5; 0 is a bit-exact dry passthrough on both channels.
+        spread: L/R LFO phase offset, 0 .. 1 (0 = both combs sweep
+            together, 0.5 = a quarter cycle apart — the shipped
+            quadrature, 1 = half a cycle, counter-sweeping).
         cv_depth: Octaves of LFO-rate shift per unit of ``rate_cv``.
+        manual_depth: Octaves of ``manual`` (centre-delay) shift per unit
+            of ``manual_cv`` (0 .. 4).
         through_zero: False = standard positive-delay flanger (unchanged).
             True = tape-style through-zero flanger (reference + moving tap
             whose relative delay sweeps through zero).
@@ -112,6 +157,10 @@ class Flanger(Module):
         in (in, audio): signal to flange (voice sources summed to mono).
             Unpatched -> silence.
         rate_cv (in, cv): modulates LFO rate (1 V/oct * ``cv_depth``).
+        manual_cv (in, cv): moves the centre delay per sample
+            (1 V/oct * ``manual_depth``). Voice sources summed to mono.
+        clock (in, gate): tempo-syncs the sweep — one sweep every
+            ``division`` ticks. Unpatched -> the ``rate`` knob.
         out_l (out, audio): left channel.
         out_r (out, audio): right channel.
     """
@@ -120,17 +169,22 @@ class Flanger(Module):
     CATEGORY = "Effects"
     DEFAULT_PARAMS = {
         "rate": 0.3,
+        "division": 4.0,
         "depth": 0.7,
         "manual": 1.5,
         "feedback": 0.5,
         "mix": 0.5,
+        "spread": 0.5,
         "cv_depth": 1.0,
+        "manual_depth": 1.0,
         "through_zero": False,
         "polarity": 1.0,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),
         Port("rate_cv", "in", "cv"),
+        Port("manual_cv", "in", "cv"),
+        Port("clock", "in", "gate"),
     ]
     OUTPUT_PORTS = [
         Port("out_l", "out", "audio"),

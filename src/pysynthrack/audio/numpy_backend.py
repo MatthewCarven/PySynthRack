@@ -11609,6 +11609,17 @@ class NumpyBackend(AudioBackend):
         ``polarity`` knob picks the crossing character (+1 additive bloom,
         -1 subtractive null). ``mix == 0`` stays a bit-exact dry copy in
         either mode, and the standard path is left byte-for-byte unchanged.
+
+        Love pass (2026-09-22), all three OFF at their defaults so the
+        shipped render is bit-identical: a ``clock`` jack that locks the
+        sweep to the cable (one comb sweep every ``division`` ticks, via
+        :meth:`_mod_clock_sync`); ``spread``, which is the L/R LFO phase
+        offset the quarter-cycle quadrature used to hard-code (0.5 is that
+        quadrature, 0 collapses the pair to one comb, 1 counter-sweeps);
+        and ``manual_cv``, a per-sample octave jack on the centre delay so
+        an envelope can sweep the comb with ``depth`` at 0 -- in
+        through-zero mode it moves the reference tap too, so the crossing
+        itself travels.
         """
         src = self._input_buffer(patch, buffers, module.id, "in")
         if src is None:
@@ -11624,19 +11635,16 @@ class NumpyBackend(AudioBackend):
         cv_depth = float(module.params.get("cv_depth", 1.0))
         tz_on = float(module.params.get("through_zero", 0.0)) >= 0.5
         polarity = float(module.params.get("polarity", 1.0))
+        spread = float(module.params.get("spread", 0.5))
+        division = float(module.params.get("division", 4.0))
+        manual_depth = float(module.params.get("manual_depth", 1.0))
         depth = min(max(depth, 0.0), 1.0)
         mix = min(max(mix, 0.0), 1.0)
         feedback = min(max(feedback, -0.95), 0.95)   # bipolar, below runaway
         manual_ms = min(max(manual_ms, 0.1), 10.0)
         polarity = min(max(polarity, -1.0), 1.0)
-
-        # rate_cv: 1 V/oct on the LFO rate, block-mean -- a sub-audio LFO,
-        # so one rate per block is the right cost/quality trade-off (the
-        # same cadence the chorus and LFO modules use for their rate_cv).
-        rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
-        if rate_cv is not None and rate_cv.size > 0:
-            rate = rate * self._pow2_clipped(cv_depth * self._finite_mean(rate_cv))
-        rate = min(max(rate, 0.01), 20.0)
+        spread = min(max(spread, 0.0), 1.0)
+        division = min(max(division, self._MOD_DIV_MIN), self._MOD_DIV_MAX)
 
         # Through-zero sweeps the moving tap out to ~2x the centre delay, so
         # its line is longer; standard mode keeps the original length so its
@@ -11650,7 +11658,9 @@ class NumpyBackend(AudioBackend):
             or state["buf"].shape != (2, L)
             or state.get("tz") != tz_on
         ):
+            keep = {k: state[k] for k in self._MOD_CLOCK_KEYS if k in state}
             state.clear()
+            state.update(keep)
             state["buf"] = np.zeros((2, L), dtype=np.float64)
             state["write_idx"] = 0
             state["phase"] = 0.0
@@ -11664,16 +11674,51 @@ class NumpyBackend(AudioBackend):
             e = np.empty(0, dtype=np.float32)
             return {"out_l": e, "out_r": e.copy()}
 
+        # rate_cv: 1 V/oct on the LFO rate, block-mean -- a sub-audio LFO,
+        # so one rate per block is the right cost/quality trade-off (the
+        # same cadence the chorus and LFO modules use for their rate_cv).
+        rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
+        if rate_cv is not None and rate_cv.size > 0:
+            rate = rate * self._pow2_clipped(cv_depth * self._finite_mean(rate_cv))
+        rate = min(max(rate, 0.01), 20.0)
+
         x = src.astype(np.float64)                        # (F,)
 
-        # One sine LFO, L and R a quarter-cycle apart, so the two combs
-        # sweep out of step (stereo width).
+        # manual_cv: the centre delay as a jack -- 1 V/oct x ``manual_depth``
+        # on the millisecond knob, read PER SAMPLE so an envelope or a pedal
+        # can sweep the comb with the LFO's ``depth`` at 0. Unpatched leaves
+        # the centre the scalar it always was, so the shipped render is
+        # untouched. A voice source is summed to mono, like ``in``.
+        manual_cv = self._input_buffer(patch, buffers, module.id, "manual_cv")
+        if manual_cv is not None and manual_cv.size > 0:
+            man = np.clip(
+                manual_ms * self._pow2_clipped(
+                    manual_depth * manual_cv.astype(np.float64)
+                ),
+                0.1, 10.0,
+            )                                             # (F,) milliseconds
+        else:
+            man = None
+
+        # One sine LFO; ``spread`` sets how far apart the L and R phases
+        # run (0 = together, 0.5 = the shipped quarter-cycle quadrature,
+        # 1 = a half cycle apart), so the two combs sweep out of step.
+        # ``clock`` patched and locked replaces the free-running phase line
+        # with an absolute-sample one (one sweep per ``division`` ticks);
+        # unpatched, the shipped expression below runs untouched.
         inc = rate / sr
         n = np.arange(frames, dtype=np.float64)
-        offs = np.array([0.0, 0.25])                      # quadrature L / R
-        ph = (phase0 + offs[:, None] + n[None, :] * inc) % 1.0    # (2, F)
+        offs = np.array([0.0, 0.5 * spread])      # L / R LFO phase offset
+        sync = self._mod_clock_sync(
+            module, frames, buffers, patch, state, division, rate, phase0
+        )
+        if sync is None:
+            ph = (phase0 + offs[:, None] + n[None, :] * inc) % 1.0    # (2, F)
+            new_phase = (phase0 + frames * inc) % 1.0
+        else:
+            pb, new_phase = sync
+            ph = (pb[None, :] + offs[:, None]) % 1.0                  # (2, F)
         lfo = np.sin(2.0 * np.pi * ph)                            # (2, F)
-        new_phase = (phase0 + frames * inc) % 1.0
 
         out = np.empty((2, frames), dtype=np.float64)
         rows = np.arange(2)
@@ -11681,7 +11726,7 @@ class NumpyBackend(AudioBackend):
 
         if not tz_on:
             # ---- Standard positive-delay flanger (unchanged path) --------
-            manual_samp = manual_ms * sr / 1000.0
+            manual_samp = (manual_ms if man is None else man) * sr / 1000.0
             sweep_samp = (self._FLANGER_SWEEP_MS * depth) * sr / 1000.0
             delay = manual_samp + sweep_samp * lfo                    # (2, F)
             np.clip(delay, self._FLANGER_MIN_SAMP, float(L - 2), out=delay)
@@ -11705,15 +11750,24 @@ class NumpyBackend(AudioBackend):
             # ``polarity`` blends the crossing: +1 additive bloom, -1 null.
             # Feedback taps the moving read (floored at _FLANGER_TZ_MOVE_MIN
             # so it stays stable when the tap nears the write head).
-            D0 = manual_ms * sr / 1000.0
             move_min = self._FLANGER_TZ_MOVE_MIN
-            d_ref = min(max(D0, self._FLANGER_MIN_SAMP), float(L - 2))
-            sweep_samp = depth * max(D0 - move_min, 0.0)
+            if man is None:
+                D0 = manual_ms * sr / 1000.0
+                d_ref = min(max(D0, self._FLANGER_MIN_SAMP), float(L - 2))
+                d_ref_seq = None
+                sweep_samp = depth * max(D0 - move_min, 0.0)
+            else:
+                # manual_cv moves the REFERENCE tap too, so the crossing
+                # itself travels: the zero is wherever the envelope put it.
+                D0 = man * sr / 1000.0                            # (F,)
+                d_ref = 0.0
+                d_ref_seq = np.clip(D0, self._FLANGER_MIN_SAMP, float(L - 2))
+                sweep_samp = depth * np.maximum(D0 - move_min, 0.0)
             dm = D0 + sweep_samp * lfo                                # (2, F)
             np.clip(dm, move_min, float(L - 2), out=dm)
             for i in range(frames):
-                # fixed reference tap (same delay both channels, own rows)
-                rpa = wp - d_ref
+                # reference tap (same delay both channels, own rows)
+                rpa = wp - (d_ref if d_ref_seq is None else d_ref_seq[i])
                 ja = int(np.floor(rpa))
                 fa = rpa - ja
                 a = (
