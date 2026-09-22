@@ -710,14 +710,38 @@ level for all of them:
 |--------|------|------------|-------------|
 | `white` | flat | uniform ±1 per sample, hard-bounded | hiss; hats, the classic S&H source |
 | `pink` | −3 dB/oct | 3rd-order pinking IIR | rain, rushing water; gentler as a CV |
-| `brown` | −6 dB/oct | a *leaky* integrator (one-pole, 10 Hz corner) | surf, thunder, wind through a wall; a slow smooth wander as a CV |
+| `brown` | −6 dB/oct | a *leaky* integrator (one-pole; the `corner` knob, default 10 Hz) | surf, thunder, wind through a wall; a slow smooth wander as a CV |
 | `violet` | +6 dB/oct | the first difference | thin, airy hiss; breath, cymbal tops |
 
 Brown's corner is what keeps it from wandering off as DC (a true
-integrator of white is a random walk): below 10 Hz it flattens, from
-~20 Hz up it is the textbook −6 dB/oct. Its RMS-match scale is exact —
-`sqrt(1 − a²)` for the pole `a` — rather than a fitted constant. `amp`
-scales both jacks: white is hard-bounded to ±amp; the filtered colours'
+integrator of white is a random walk): below it the spectrum flattens,
+from about an octave above it the tilt is the textbook −6 dB/oct. Its
+RMS-match scale is exact — `sqrt(1 − a²)` for the pole `a` — rather
+than a fitted constant.
+
+`corner` (2 … 40 Hz, default 10) is that leak as a knob, and it is
+**brown's alone** — white, pink and violet ignore it entirely. It moves
+where the roll-off *starts*, not the tilt above it. Measured over
+8 seeds × 20 s:
+
+| `corner` | slope 400–800 → 800–1600 Hz | 2–20 Hz over 200–2000 Hz | RMS vs white |
+|---------|------------------------------|---------------------------|--------------|
+| 2 Hz | −6.00 dB/oct | +39.0 dB | −0.26 dB |
+| 10 Hz (default) | −6.00 dB/oct | +33.0 dB | −0.13 dB |
+| 40 Hz | −5.98 dB/oct | +23.5 dB | −0.02 dB |
+
+So the knob is worth about 15 dB of low-frequency wander: **low** is
+distant thunder and deep swell (as a CV, a wander that takes seconds to
+cross the room), **high** is tight, hissy wind and surf. The level does
+not move with it — the RMS-match scale is derived from the same pole,
+so brown stays within 0.3 dB of white at every corner (pooled RMS
+spread across the three: 0.14 dB). Turning it live renormalises the
+carried integrator state, so a sweep is a change of tilt and not a bang
+(un-renormalised, a 2 → 40 Hz jump measured a peak around 4× full
+scale and a one-sample step of 2.2 in a stream whose typical step is
+0.012).
+
+`amp` scales both jacks: white is hard-bounded to ±amp; the filtered colours'
 occasional peaks run past it (pink and brown to roughly 2·amp over a few
 seconds, violet to 1.4·amp — the speaker limiter handles the audio path).
 
@@ -729,7 +753,9 @@ seeded `sample_hold` melody comes back identical after a reload. The
 seed alone is the key (not seed-plus-module), so **two noise modules
 with the same seed produce the same stream** by design — patch one
 brown to the left and its twin to the right for correlated stereo;
-give them different seeds for two independent streams. Changing the
+give them different seeds for two independent streams
+(`examples/noise_stereo_pair.json` is exactly that pair, with the
+measured correlation both ways). Changing the
 seed re-creates the generator.
 
 `amp_cv` is a per-sample linear amplitude, knobless by the house rule
@@ -741,8 +767,9 @@ to `(V, F)` with a per-voice level: every voice hears the same noise
 under its own envelope (one stream, not V independent ones); a mono CV
 keeps the output mono. Output is otherwise mono — a source has no voice
 context of its own and broadcasts cleanly to any per-voice consumer.
-See `examples/noise_hat.json`, `examples/noise_wind.json` and
-`examples/noise_brown_surf.json`.
+See `examples/noise_hat.json`, `examples/noise_wind.json`,
+`examples/noise_brown_surf.json` and `examples/noise_stereo_pair.json`
+(the two-seed stereo pair).
 
 **Ports**
 
@@ -757,6 +784,7 @@ See `examples/noise_hat.json`, `examples/noise_wind.json` and
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
 | `color` | `white` | white / pink / brown / violet | Spectral tilt (flat / −3 / −6 / +6 dB/oct). |
+| `corner` | `10.0` | 2 … 40 Hz | **Brown only** — where its −6 dB/oct roll-off starts. Low = more low-frequency wander (thunder), high = tighter (wind, surf). The level is unchanged by it; the other colours ignore it. |
 | `amp` | `1.0` | 0 … 1 | Level on both jacks (white hard-bounded; other colours RMS-matched to it). |
 | `seed` | `0` | ≥ 0 | 0 = free-running (different every run); N = a private generator, the same stream every run and at every buffer size. Same seed on two modules = the same stream. |
 
@@ -5580,4 +5608,5 @@ loads in the app. Notable ones referenced above:
 - `freeze_wide_wash.json` — the [`freeze`](#freeze)'s `width` + `decay`: a [`pluck`](#pluck) run (eight eighth-notes, then two seconds of rest) into the freeze at `size` 16384 / `smear` 0.6 / `width` 0.8 / `decay` 6; a 15 BPM [`clock`](#clock) (`pulse_width` 0.95, a short dip then the edge) latches a new hold every four seconds right on the run's last note, so each phrase blooms into a wide wash that falls 10 dB a second and is gone before the next one; `out_l` / `out_r` each through their own little [`reverb`](#reverb) to the two sides. Set `width` 0 to hear the same wash collapse to the centre, `decay` 0 to keep it forever.
 - `cv_recorder_backwards.json` — the [`cv_recorder`](#cv_recorder)'s transport: a bar-long take of a slow triangle [`lfo`](#lfo) (sixteenths on `clock`, `length` 16, `replace` — a fresh take every eight bars) moving a resonant lowpass over a low saw; a [`clock_divider`](#clock_divider) at n=32 holds `reverse` high every other bar, so the wobble runs forwards, then backwards; a second divider at n=16 (`pw` 0.25) fires on the first beat of every bar and, through a [`logic`](#logic) `nand` with NOT-the-take, pulls `play` low there — the wobble freezes on the downbeat for a beat and resumes from the top, never during a take. Both dividers are `reset` by NOT-the-take so their downbeat lands on the loop's own bar (the loop is created on the clock's second tick, when the period is known). `speed` is `1x` — try `2x`.
 - `noise_brown_surf.json` — surf: a seeded `brown` [`noise`](#noise) (seed 7, so the same tide every run) swelling under a 0.12 Hz unipolar sine on its knobless `amp_cv` (a [`cv_offset`](#cv_offset) of 0.2 keeps the trough from going silent) into a resonant 900 Hz lowpass [`filter`](#filter) — waves rolling in and drawing back every eight seconds. Five modules.
+- `noise_stereo_pair.json` — one seed, one stream: two `brown` [`noise`](#noise) modules at `corner` 4 Hz (a deep, slow swell) through a resonant 500 Hz lowpass [`filter`](#filter) each, into the left and right speaker sinks. As shipped the seeds differ (3 and 8) and the pair is wide — measured channel correlation 0.09, two independent tides. Set **both seeds the same** and it collapses to dead mono (correlation 1.000, the two sides bit-identical): the seed alone is the key, so a twin is the same stream, not a second one. Six modules. Try `corner` 40 on both for tight surf instead of distant thunder.
 - `stereo_hard_pan.json` — left/right speaker sinks.

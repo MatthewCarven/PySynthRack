@@ -5804,8 +5804,13 @@ class NumpyBackend(AudioBackend):
     # Brown (red) noise is white through a LEAKY integrator: a one-pole
     # with its pole just under 1. A true integrator of white is a random
     # walk with unbounded variance (it wanders off as DC); the leak puts
-    # a corner under it, and at 10 Hz that corner sits below anything
-    # audible, so from ~20 Hz up the tilt is the textbook -6 dB/oct.
+    # a corner under it, and at the default 10 Hz that corner sits below
+    # anything audible, so from ~20 Hz up the tilt is the textbook
+    # -6 dB/oct. Love pass: the corner is the module's ``corner`` param
+    # (2..40 Hz, NOISE_CORNER_*), this constant its default -- lower
+    # lets the wander reach further down (2-20 Hz sits 39 dB over
+    # 200-2000 Hz at 2 Hz against 23.5 dB at 40), the slope above it is
+    # -6.00 dB/oct either way.
     # The pole is derived from the sample rate per render
     # (1 - 2*pi*fc/sr) and the RMS-match scale falls out of the same
     # number: a leaky integrator of white with variance s^2 has
@@ -8361,10 +8366,26 @@ class NumpyBackend(AudioBackend):
         at block seams and the stream is the same at any block size),
         then scaled to RMS-match white so ``amp`` means one level for
         all colours: ``pink`` through the class-level pinking IIR
-        (``_PINK_SCALE``), ``brown`` through a leaky integrator with a
-        ``_BROWN_CORNER_HZ`` corner (scale ``sqrt(1 - a^2)``), ``violet``
+        (``_PINK_SCALE``), ``brown`` through a leaky integrator whose
+        corner is the ``corner`` param (2..40 Hz, default
+        ``_BROWN_CORNER_HZ``; scale ``sqrt(1 - a^2)`` from the same
+        pole, so the level does not move with the knob), ``violet``
         through a first difference (``_VIOLET_SCALE``). Switching colour
         drops the other colours' filter state.
+
+        ``corner`` is brown's alone -- the other colours never read it.
+        It is where the -6 dB/oct roll-off starts, not the tilt above
+        it: measured, the 400-800 -> 800-1600 Hz slope is -6.00 dB/oct
+        at 2, 10 and 40 Hz while the 2-20 Hz band moves from 39.0 dB
+        over 200-2000 Hz (corner 2, distant thunder) to 23.5 dB (corner
+        40, tight wind). Moving the knob renormalises the carried
+        integrator state by the ratio of the old and new scales: the
+        stationary level of the unscaled integrator is 1/scale, so
+        carrying it across unchanged would step the output (a 2 -> 40 Hz
+        jump measured a peak around 4x full scale) -- with the
+        renormalisation the seam is smaller than a typical sample step
+        and the stream settles into the new tilt over the new time
+        constant.
 
         The die: ``seed`` 0 (default) draws from numpy's GLOBAL rng --
         the shipped free-running behaviour, so ``np.random.seed`` still
@@ -8390,12 +8411,22 @@ class NumpyBackend(AudioBackend):
         consumers treat buffers as read-only, exactly as fan-out from
         any single output already does.
         """
+        from ..modules.noise import NOISE_CORNER_MAX, NOISE_CORNER_MIN
+
         color = str(module.params.get("color", "white"))
         amp = float(module.params.get("amp", 1.0))
         try:
             seed = int(module.params.get("seed", 0))
         except (TypeError, ValueError):
             seed = 0
+        try:
+            corner = float(module.params.get("corner", self._BROWN_CORNER_HZ))
+        except (TypeError, ValueError):
+            corner = self._BROWN_CORNER_HZ
+        if not math.isfinite(corner):
+            # min/max don't propagate NaN -- scrub before you clamp.
+            corner = self._BROWN_CORNER_HZ
+        corner = min(max(corner, NOISE_CORNER_MIN), NOISE_CORNER_MAX)
 
         state = self._state.setdefault(module.id, {})
 
@@ -8417,6 +8448,9 @@ class NumpyBackend(AudioBackend):
         for key in ("pink_zi", "brown_zi", "violet_zi"):
             if key != color + "_zi":
                 state.pop(key, None)
+        if color != "brown":
+            # The renormalisation key rides with brown's own state.
+            state.pop("brown_scale", None)
 
         if color == "pink":
             zi = state.get("pink_zi")
@@ -8428,13 +8462,21 @@ class NumpyBackend(AudioBackend):
             state["pink_zi"] = zf
             sig = (filtered * self._PINK_SCALE).astype(np.float32)
         elif color == "brown":
-            pole = 1.0 - 2.0 * math.pi * self._BROWN_CORNER_HZ / float(self.sample_rate)
+            pole = 1.0 - 2.0 * math.pi * corner / float(self.sample_rate)
+            scale = math.sqrt(1.0 - pole * pole)
             zi = state.get("brown_zi")
             if zi is None:
                 zi = np.zeros(1, dtype=np.float64)
+            prev_scale = state.get("brown_scale")
+            if prev_scale is not None and prev_scale != scale:
+                # The knob moved between blocks: renormalise the carried
+                # state into the new scale so the output is continuous
+                # (see the docstring -- otherwise the seam bangs).
+                zi = zi * (prev_scale / scale)
+            state["brown_scale"] = scale
             filtered, zf = lfilter((1.0,), (1.0, -pole), white, zi=zi)
             state["brown_zi"] = zf
-            sig = (filtered * math.sqrt(1.0 - pole * pole)).astype(np.float32)
+            sig = (filtered * scale).astype(np.float32)
         elif color == "violet":
             zi = state.get("violet_zi")
             if zi is None:

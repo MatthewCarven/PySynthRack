@@ -87,7 +87,11 @@ from ..modules.compressor import DETECTOR_MODES
 from ..modules.distortion import DISTORTION_MODES
 from ..modules.meter import METER_MODES
 from ..modules.waveshaper import WAVESHAPER_MODES
-from ..modules.noise import NOISE_COLORS
+from ..modules.noise import (
+    NOISE_COLORS,
+    NOISE_CORNER_MAX,
+    NOISE_CORNER_MIN,
+)
 from ..modules.oscillator import PULSE_WIDTH_MAX, PULSE_WIDTH_MIN, WAVEFORMS
 from ..modules.quantizer import (
     CUSTOM_KEYS as QUANTIZER_CUSTOM_KEYS,
@@ -3867,8 +3871,10 @@ class App:
             # Noise. ``color`` is the spectral tilt (white / pink / brown
             # / violet -- NOISE_COLORS is the module's own list, so only
             # the noise gets these items; pluck's ``color`` is a 0..1
-            # slider in its own branch above); ``seed`` keys the die (0 =
-            # free-running, N = the same stream every run, the house
+            # slider in its own branch above); ``corner`` is brown's leak
+            # in Hz (2..40 -- low = deep wander, high = tight; the other
+            # colours ignore it, hence the label); ``seed`` keys the die
+            # (0 = free-running, N = the same stream every run, the house
             # drag_int); ``amp`` falls through to the shared 0..1 slider.
             if param_name == "color":
                 dpg.add_combo(
@@ -3878,6 +3884,15 @@ class App:
                     width=120,
                     callback=self._on_param_changed,
                     user_data=user_data,
+                )
+                return
+            if param_name == "corner":
+                dpg.add_drag_float(
+                    label=f"{param_name} (brown only)",
+                    default_value=float(current), speed=0.2,
+                    min_value=NOISE_CORNER_MIN, max_value=NOISE_CORNER_MAX,
+                    format="%.1f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
             if param_name == "seed":

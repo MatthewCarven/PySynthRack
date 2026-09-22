@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "next_id": 7,
+  "modules": [
+    { "id": 1, "type": "noise", "name": "brown L (seed 3)", "params": { "color": "brown", "corner": 4.0, "amp": 0.3, "seed": 3 } },
+    { "id": 2, "type": "filter", "name": "shoreline L", "params": { "mode": "lowpass", "cutoff": 500.0, "resonance": 1.5, "cv_depth": 1.0, "res_cv_depth": 1.0 } },
+    { "id": 3, "type": "noise", "name": "brown R (seed 8 - set both seeds the same for mono)", "params": { "color": "brown", "corner": 4.0, "amp": 0.3, "seed": 8 } },
+    { "id": 4, "type": "filter", "name": "shoreline R", "params": { "mode": "lowpass", "cutoff": 500.0, "resonance": 1.5, "cv_depth": 1.0, "res_cv_depth": 1.0 } },
+    { "id": 5, "type": "left_speaker_output", "name": "Left ear", "params": { "gain": 0.8 } },
+    { "id": 6, "type": "right_speaker_output", "name": "Right ear", "params": { "gain": 0.8 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 2, "dst_port": "in" },
+    { "src_module_id": 2, "src_port": "out", "dst_module_id": 5, "dst_port": "in" },
+    { "src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "in" },
+    { "src_module_id": 4, "src_port": "out", "dst_module_id": 6, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 40],
+      "2": [360, 40],
+      "5": [680, 40],
+      "3": [40, 320],
+      "4": [360, 320],
+      "6": [680, 320]
+    }
+  }
+}

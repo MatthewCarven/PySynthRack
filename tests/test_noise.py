@@ -19,6 +19,15 @@ Coverage:
     above the corner (a two-band A/B), RMS ≈ white ±1 dB, filter state
     carried and evolving, a colour switch drops the other colours'
     state, no DC wander (block means stay small).
+  - Corner (love pass 2): the default is BIT-EXACT with the shipped
+    10 Hz arithmetic; the slope above the corner is −6 dB/oct at 2 / 10
+    / 40 Hz while the 2–20 Hz band climbs from +24 to +40 dB over
+    200–2000 Hz as the knob falls; the level is flat across corners
+    (pooled RMS spread < 0.5 dB); white/pink/violet ignore it; seeded
+    streams stay bit-exact 64 vs 512 at every corner; out-of-range, NaN
+    and junk values fall back inside the range; a live corner change is
+    BIT-EXACT with the renormalised reconstruction and its seam is an
+    order smaller than the un-renormalised one.
   - Violet (love pass): +6 dB/oct ±1 dB, RMS ≈ white ±1 dB, peaks
     hard-bounded at sqrt(2)·amp, state carried.
   - Seed (love pass): seed N is reproducible across two backends and
@@ -39,7 +48,10 @@ Coverage:
     (a 0..1 slider) is NOT shadowed by the noise combo.
   - Example: ``noise_brown_surf.json`` loads, is small, renders in the
     0.3..0.8 peak window, swells under its LFO, and -- being seeded -- is
-    bit-identical on a second render.
+    bit-identical on a second render. ``noise_stereo_pair.json`` (love
+    pass 2) is two brown modules into left/right: as shipped (different
+    seeds) |corr| < 0.3, and the SAME patch with both seeds equal is
+    dead mono (corr > 0.999, the documented one-seed-one-stream rule).
   - Integration: white→filter→speaker renders audible audio; noise.cv→
     SampleHold (clocked) yields a bounded random staircase; noise.cv→
     CVToAudio→speaker (the audio-via-bridge path) renders.
@@ -58,7 +70,13 @@ import pysynthrack.modules  # noqa: F401  (registers types)
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core import Patch
 from pysynthrack.core.module import get_module_type
-from pysynthrack.modules.noise import NOISE_COLORS, Noise
+from pysynthrack.modules.noise import (
+    NOISE_COLORS,
+    NOISE_CORNER_DEFAULT,
+    NOISE_CORNER_MAX,
+    NOISE_CORNER_MIN,
+    Noise,
+)
 
 SR = 44100
 
@@ -83,12 +101,17 @@ def _render(color="white", amp=1.0, frames=512, seed=0, noise_seed=0):
     return backend._render_noise(nz, frames, {}, patch)
 
 
-def _stream(color, frames, block, noise_seed, amp=1.0):
-    """A seeded stream rendered ``block`` frames at a time, concatenated."""
+def _stream(color, frames, block, noise_seed, amp=1.0, corner=None):
+    """A seeded stream rendered ``block`` frames at a time, concatenated.
+
+    ``corner`` None leaves the param off the patch entirely -- the
+    default path, which must stay bit-exact with the shipped code.
+    """
+    params = {"color": color, "amp": amp, "seed": noise_seed}
+    if corner is not None:
+        params["corner"] = corner
     patch = Patch()
-    nz = patch.add_module(
-        "noise", params={"color": color, "amp": amp, "seed": noise_seed}
-    )
+    nz = patch.add_module("noise", params=params)
     backend = NumpyBackend(sample_rate=SR, block_size=block)
     backend.compile(patch)
     return np.concatenate(
@@ -123,7 +146,12 @@ class TestModel:
         patch = Patch()
         nz = patch.add_module("noise")
         assert isinstance(nz, Noise)
-        assert nz.params == {"color": "white", "amp": 1.0, "seed": 0}
+        assert nz.params == {
+            "color": "white",
+            "corner": 10.0,
+            "amp": 1.0,
+            "seed": 0,
+        }
 
     def test_colors_constant(self):
         assert NOISE_COLORS == ("white", "pink", "brown", "violet")
@@ -403,6 +431,206 @@ class TestBrown:
         assert np.allclose(half, full * 0.5, atol=1e-6)
 
 
+# ----- Corner (brown's leak, love pass 2) ------------------------------------
+
+
+def _brown_by_hand(seed, corner, blocks, block=512):
+    """Brown rebuilt from the documented die and the documented filter:
+    ``default_rng(seed).uniform`` through ``1/(1 - a z^-1)`` scaled by
+    ``sqrt(1 - a^2)``. The reference the module must match to the bit."""
+    a = 1.0 - 2.0 * math.pi * corner / float(SR)
+    scale = math.sqrt(1.0 - a * a)
+    rng = np.random.default_rng(seed)
+    white = rng.uniform(-1.0, 1.0, block * blocks).astype(np.float32)
+    y, _zf = lfilter((1.0,), (1.0, -a), white, zi=np.zeros(1))
+    return (y * scale).astype(np.float32)
+
+
+class TestCorner:
+    def test_default_and_bounds(self):
+        nz = Patch().add_module("noise")
+        assert nz.params["corner"] == NOISE_CORNER_DEFAULT == 10.0
+        assert (NOISE_CORNER_MIN, NOISE_CORNER_MAX) == (2.0, 40.0)
+
+    def test_default_is_the_shipped_ten_hz_arithmetic_bit_exact(self):
+        """THE pin: an unset corner is the 10 Hz leaky integrator the
+        module shipped with, to the bit (not merely close)."""
+        got = _stream("brown", 512 * 8, 512, noise_seed=21)
+        assert np.array_equal(got, _brown_by_hand(21, 10.0, 8))
+
+    def test_naming_the_default_changes_nothing(self):
+        assert np.array_equal(
+            _stream("brown", 512 * 4, 512, noise_seed=22),
+            _stream("brown", 512 * 4, 512, noise_seed=22, corner=10.0),
+        )
+
+    def test_the_knob_actually_moves_the_stream(self):
+        a = _stream("brown", 512 * 4, 512, noise_seed=23, corner=2.0)
+        b = _stream("brown", 512 * 4, 512, noise_seed=23, corner=40.0)
+        assert not np.array_equal(a, b)
+        assert np.array_equal(b, _brown_by_hand(23, 40.0, 4))
+
+    def test_slope_stays_minus_six_above_every_corner(self):
+        """The corner is where the roll-off STARTS, not the tilt above
+        it: a two-band A/B an octave apart at 400-800 / 800-1600 Hz is
+        -6 dB/oct at 2, 10 and 40 Hz alike (measured -6.16 / -6.16 /
+        -6.14 on this window; -6.00 over 8 seeds x 20 s)."""
+        for corner in (2.0, 10.0, 40.0):
+            sig = _stream("brown", SR * 4, 512, noise_seed=24, corner=corner)
+            assert -7.0 < _octave_slope(sig) < -5.0, corner
+
+    def test_low_frequency_energy_climbs_as_the_corner_falls(self):
+        """What the knob DOES move: the 2-20 Hz band against 200-2000 Hz
+        (measured +40.0 / +33.9 / +24.2 dB at corner 2 / 10 / 40)."""
+        lf = {}
+        for corner in (2.0, 10.0, 40.0):
+            sig = _stream("brown", SR * 4, 512, noise_seed=25, corner=corner)
+            lf[corner] = _band_db(sig, 2, 20, nperseg=32768) - _band_db(
+                sig, 200, 2000, nperseg=32768
+            )
+        assert lf[2.0] > lf[10.0] > lf[40.0]
+        assert 35.0 < lf[2.0] < 45.0, lf
+        assert 29.0 < lf[10.0] < 38.0, lf
+        assert 19.0 < lf[40.0] < 29.0, lf
+        assert lf[2.0] - lf[40.0] > 12.0, lf     # the knob is worth ~16 dB
+
+    def test_level_is_flat_across_corners(self):
+        """The RMS-match scale is DERIVED from the pole (sqrt(1 - a^2)),
+        so the level must not move with the knob. Pooled over 6 seeds x
+        10 s (brown's RMS is dominated by its lowest octaves, so one
+        short window is a small sample of it): measured spread 0.14 dB,
+        and each corner within 0.16 dB of white."""
+        white = np.concatenate(
+            [_stream("white", SR * 10, 512, noise_seed=s) for s in range(31, 37)]
+        ).std()
+        rms = {}
+        for corner in (2.0, 10.0, 40.0):
+            rms[corner] = np.concatenate(
+                [
+                    _stream("brown", SR * 10, 512, noise_seed=s, corner=corner)
+                    for s in range(31, 37)
+                ]
+            ).std()
+        spread = 20.0 * math.log10(max(rms.values()) / min(rms.values()))
+        assert spread < 0.5, rms
+        for corner, r in rms.items():
+            assert abs(20.0 * math.log10(r / white)) < 0.5, (corner, r, white)
+
+    @pytest.mark.parametrize("color", ["white", "pink", "violet"])
+    def test_the_other_colours_ignore_it(self, color):
+        a = _stream(color, 512 * 4, 512, noise_seed=26, corner=2.0)
+        b = _stream(color, 512 * 4, 512, noise_seed=26, corner=40.0)
+        assert np.array_equal(a, b)
+        assert np.array_equal(a, _stream(color, 512 * 4, 512, noise_seed=26))
+
+    @pytest.mark.parametrize("corner", [2.0, 10.0, 40.0])
+    def test_seeded_stream_bit_exact_64_vs_512(self, corner):
+        # Equal-length prefixes -- 512 * 8 frames is a whole number of
+        # both block sizes (compare unequal lengths and array_equal is
+        # False for the boring reason).
+        small = _stream("brown", 512 * 8, 64, noise_seed=27, corner=corner)
+        big = _stream("brown", 512 * 8, 512, noise_seed=27, corner=corner)
+        assert small.shape == big.shape
+        assert np.array_equal(small, big)
+
+    def test_out_of_range_is_clamped_to_the_documented_window(self):
+        assert np.array_equal(
+            _stream("brown", 512 * 2, 512, noise_seed=28, corner=0.25),
+            _stream("brown", 512 * 2, 512, noise_seed=28, corner=NOISE_CORNER_MIN),
+        )
+        assert np.array_equal(
+            _stream("brown", 512 * 2, 512, noise_seed=28, corner=5000.0),
+            _stream("brown", 512 * 2, 512, noise_seed=28, corner=NOISE_CORNER_MAX),
+        )
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), "wide"])
+    def test_junk_falls_back_to_the_default(self, bad):
+        # min/max don't propagate NaN, so the scrub comes first.
+        got = _stream("brown", 512 * 2, 512, noise_seed=29, corner=bad)
+        assert np.array_equal(got, _brown_by_hand(29, 10.0, 2))
+
+    def test_a_none_corner_falls_back_to_the_default(self):
+        # (``_stream`` leaves the param OFF for None, so set it by hand.)
+        patch = Patch()
+        nz = patch.add_module("noise", params={"color": "brown", "seed": 29})
+        nz.set_param("corner", None)
+        backend = _backend()
+        backend.compile(patch)
+        got = np.concatenate(
+            [backend._render_noise(nz, 512, {}, patch)["out"].copy() for _ in range(2)]
+        )
+        assert np.array_equal(got, _brown_by_hand(29, 10.0, 2))
+
+    def test_a_live_corner_change_is_renormalised_not_a_bang(self):
+        """Moving the knob between blocks renormalises the carried
+        integrator state. MEASURED: the module's output after the switch
+        is bit-exact with the renormalised reconstruction, and its seam
+        step is an order smaller than the un-renormalised one (which
+        jumped up to 2.2 in a stream whose typical step is 0.012)."""
+        for seed, (a, b) in [(3, (2.0, 40.0)), (5, (40.0, 2.0))]:
+            nblocks = 40
+            patch = Patch()
+            nz = patch.add_module(
+                "noise", params={"color": "brown", "corner": a, "seed": seed}
+            )
+            backend = _backend()
+            backend.compile(patch)
+            pre = np.concatenate(
+                [backend._render_noise(nz, 512, {}, patch)["out"].copy()
+                 for _ in range(nblocks)]
+            )
+            nz.set_param("corner", b)
+            post = backend._render_noise(nz, 512, {}, patch)["out"].copy()
+
+            # The same die, rebuilt by hand, both ways.
+            pa = 1.0 - 2.0 * math.pi * a / float(SR)
+            pb = 1.0 - 2.0 * math.pi * b / float(SR)
+            sa, sb = math.sqrt(1.0 - pa * pa), math.sqrt(1.0 - pb * pb)
+            rng = np.random.default_rng(seed)
+            white = rng.uniform(-1.0, 1.0, 512 * (nblocks + 1)).astype(np.float32)
+            _y, zi = lfilter(
+                (1.0,), (1.0, -pa), white[: 512 * nblocks], zi=np.zeros(1)
+            )
+            raw, _ = lfilter((1.0,), (1.0, -pb), white[512 * nblocks:], zi=zi)
+            ren, _ = lfilter(
+                (1.0,), (1.0, -pb), white[512 * nblocks:], zi=zi * (sa / sb)
+            )
+            raw = (raw * sb).astype(np.float32)
+            ren = (ren * sb).astype(np.float32)
+
+            assert np.array_equal(post, ren), (seed, a, b)
+            jump_ren = abs(float(post[0]) - float(pre[-1]))
+            jump_raw = abs(float(raw[0]) - float(pre[-1]))
+            assert jump_ren < 0.1, (seed, a, b, jump_ren)
+            assert jump_ren < 0.5 * jump_raw, (seed, a, b, jump_ren, jump_raw)
+
+    def test_a_steady_corner_never_renormalises(self):
+        """The renormalisation must not touch a stream whose knob is
+        standing still -- that is what keeps the default bit-exact."""
+        patch = Patch()
+        nz = patch.add_module("noise", params={"color": "brown", "seed": 30})
+        backend = _backend()
+        backend.compile(patch)
+        got = np.concatenate(
+            [backend._render_noise(nz, 512, {}, patch)["out"].copy() for _ in range(6)]
+        )
+        assert np.array_equal(got, _brown_by_hand(30, 10.0, 6))
+
+    def test_the_scale_key_rides_with_browns_state(self):
+        patch = Patch()
+        nz = patch.add_module("noise", params={"color": "brown", "seed": 31})
+        backend = _backend()
+        backend.compile(patch)
+        backend._render_noise(nz, 512, {}, patch)
+        st = backend._state[nz.id]
+        assert st["brown_scale"] == math.sqrt(
+            1.0 - (1.0 - 2.0 * math.pi * 10.0 / SR) ** 2
+        )
+        nz.set_param("color", "white")
+        backend._render_noise(nz, 512, {}, patch)
+        assert "brown_scale" not in st and "brown_zi" not in st
+
+
 # ----- Violet ----------------------------------------------------------------
 
 
@@ -654,6 +882,30 @@ def _widgets(monkeypatch, type_name, params=None):
     return out
 
 
+def _widget_kwargs(monkeypatch, type_name, params=None):
+    """Like ``_widgets`` but keeps every kwarg (so a bound can be
+    checked, not just the widget kind), under ``label`` with the dpg
+    call name under ``_kind``."""
+    pytest.importorskip("dearpygui.dearpygui")
+    import pysynthrack.ui.app as app_mod
+    monkeypatch.setenv("PYSYNTHRACK_BACKEND", "numpy")
+    monkeypatch.setattr(app_mod, "dpg", mock.MagicMock())
+    app = app_mod.App()
+    app.patch = Patch()
+    module = app.patch.add_module(type_name, params=params)
+    kinds = ("add_combo", "add_drag_float", "add_slider_float", "add_input_text",
+             "add_input_float", "add_checkbox", "add_drag_int", "add_input_int")
+    before = {k: len(getattr(app_mod.dpg, k).call_args_list) for k in kinds}
+    app._create_node_for_module(module)
+    out = {}
+    for k in kinds:
+        for call in getattr(app_mod.dpg, k).call_args_list[before[k]:]:
+            kwargs = dict(call.kwargs)
+            kwargs["_kind"] = k
+            out[str(kwargs.get("label"))] = kwargs
+    return out
+
+
 class TestUI:
     def test_every_param_gets_a_bounded_widget(self, monkeypatch):
         w = _widgets(monkeypatch, "noise")
@@ -671,6 +923,18 @@ class TestUI:
     def test_seed_is_a_drag_int(self, monkeypatch):
         w = _widgets(monkeypatch, "noise", params={"seed": 7})
         assert w["seed"][0] == "add_drag_int"
+
+    def test_corner_is_a_bounded_hz_drag(self, monkeypatch):
+        kw = _widget_kwargs(monkeypatch, "noise", params={"corner": 4.0})
+        hit = [lb for lb in kw if lb == "corner" or lb.startswith("corner ")]
+        assert hit, list(kw)
+        call = kw[hit[0]]
+        assert call["_kind"] == "add_drag_float"
+        assert call["format"] == "%.1f Hz"
+        assert call["min_value"] == NOISE_CORNER_MIN
+        assert call["max_value"] == NOISE_CORNER_MAX
+        assert call["default_value"] == 4.0
+        assert hit[0].isascii()          # the UI font is ASCII-only
 
     def test_pluck_colour_is_not_shadowed_by_the_noise_combo(self, monkeypatch):
         # pluck's ``color`` is a 0..1 exciter brightness slider; the
@@ -722,6 +986,76 @@ class TestExample:
         # to the bit without any global seeding.
         _p1, a = _render_example(3.0)
         _p2, b = _render_example(3.0)
+        assert np.array_equal(a, b)
+
+
+# ----- The stereo pair (love pass 2) -----------------------------------------
+
+
+def _stereo_pair_patch(same_seed=False):
+    """The shipped pair, optionally with the right seed set to the
+    left's -- the SAME patch twice, which is the whole demonstration."""
+    from pysynthrack.io_patch import load_patch
+
+    path = (
+        Path(__file__).resolve().parent.parent / "examples" / "noise_stereo_pair.json"
+    )
+    patch = load_patch(path)
+    noises = [m for m in patch if m.TYPE == "noise"]
+    if same_seed:
+        for nz in noises[1:]:
+            nz.set_param("seed", noises[0].params["seed"])
+    return patch, noises
+
+
+def _render_patch(patch, seconds=8.0, block=512):
+    b = NumpyBackend(sample_rate=SR, block_size=block)
+    b.compile(patch)
+    outs = []
+    for _ in range(int(SR * seconds / block)):
+        out, _devices = b.render_block_multi(block)
+        assert out is not None and np.all(np.isfinite(out))
+        outs.append(np.asarray(out).copy())
+    return np.concatenate(outs)
+
+
+class TestStereoPairExample:
+    def test_is_small_two_seeded_browns_into_left_and_right(self):
+        patch, noises = _stereo_pair_patch()
+        assert len(list(patch)) <= 10
+        assert len(noises) == 2
+        for nz in noises:
+            assert nz.params["color"] == "brown"
+            assert int(nz.params["seed"]) != 0
+            assert NOISE_CORNER_MIN <= float(nz.params["corner"]) <= NOISE_CORNER_MAX
+        sinks = {m.TYPE for m in patch}
+        assert "left_speaker_output" in sinks and "right_speaker_output" in sinks
+        # Different seeds as shipped, and the hint lives in the node name.
+        assert noises[0].params["seed"] != noises[1].params["seed"]
+        assert any("seed" in str(m.name).lower() for m in noises)
+
+    def test_peak_window(self):
+        sig = _render_patch(_stereo_pair_patch()[0])
+        peak = float(np.abs(sig).max())
+        assert 0.3 < peak < 0.8, peak
+        assert sig[:, 0].std() > 0.05 and sig[:, 1].std() > 0.05
+
+    def test_shipped_seeds_are_wide(self):
+        sig = _render_patch(_stereo_pair_patch()[0])
+        corr = float(np.corrcoef(sig[:, 0], sig[:, 1])[0, 1])
+        assert abs(corr) < 0.3, corr          # measured 0.087
+
+    def test_the_same_seed_is_dead_mono(self):
+        """The documented feature: the seed alone is the key, so the
+        twin is the SAME stream -- the pair collapses to the centre."""
+        sig = _render_patch(_stereo_pair_patch(same_seed=True)[0])
+        corr = float(np.corrcoef(sig[:, 0], sig[:, 1])[0, 1])
+        assert corr > 0.999, corr
+        assert np.array_equal(sig[:, 0], sig[:, 1])
+
+    def test_is_reproducible_run_to_run(self):
+        a = _render_patch(_stereo_pair_patch()[0], seconds=2.0)
+        b = _render_patch(_stereo_pair_patch()[0], seconds=2.0)
         assert np.array_equal(a, b)
 
 

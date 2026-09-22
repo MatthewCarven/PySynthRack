@@ -22,9 +22,10 @@ all of them:
     gentler as a modulation source.
   * ``brown`` (red) — −6 dB/oct, the tilt of surf, thunder and wind
     heard through a wall: a *leaky* integrator of the white (a one-pole
-    with a 10 Hz corner, so it rolls off as −6 dB/oct from ~20 Hz up
-    without wandering off as DC the way a true random walk would).
-    Deep and rumbling; as a CV it is a slow, smooth wander.
+    whose corner is the ``corner`` knob, default 10 Hz, so it rolls off
+    as −6 dB/oct from an octave or so above that corner without
+    wandering off as DC the way a true random walk would). Deep and
+    rumbling; as a CV it is a slow, smooth wander.
   * ``violet`` — +6 dB/oct, the first difference of the white: thin,
     airy hiss with almost nothing below 1 kHz. The mirror of brown;
     useful for breath and cymbal tops.
@@ -35,6 +36,21 @@ occasional peaks run past ``±amp`` (pink and brown to roughly ``2·amp``
 over a few seconds, violet to ``1.4·amp`` — normal for filtered noise;
 the speaker limiter handles the audio path, and CV destinations are
 scaled to taste with :class:`CVScale`/:class:`CVOffset`).
+
+Param ``corner`` (Hz, default 10.0, range 2..40) is brown's leak —
+and *only* brown's: white, pink and violet ignore it. It is where the
+−6 dB/oct roll-off starts, so it sets how far down the wander reaches
+rather than the tilt above it: measured over 8 seeds × 20 s the slope
+between the 400–800 and 800–1600 Hz bands is −6.00 dB/oct at every
+corner, while the 2–20 Hz band sits 39.0 dB over the 200–2000 Hz band
+at ``corner`` 2, 33.0 dB at 10 and 23.5 dB at 40. Low is distant
+thunder and deep swell (as a CV, a wander that takes seconds to cross
+the room); high is tight, hissy wind and surf. The level does not move
+with the knob — the RMS-match scale is derived from the same pole
+(``sqrt(1 - a^2)``), and brown lands within 0.3 dB of white's RMS at
+every corner. Turning it live renormalises the carried integrator
+state, so a sweep is a change of tilt and not a bang (unrenormalised, a
+2 → 40 Hz jump measured a peak around 4× full scale).
 
 Param ``seed`` (int, default 0) picks the die. ``0`` is free-running:
 the stream comes from numpy's global generator and is different every
@@ -68,6 +84,13 @@ from ..core.port import Port
 
 NOISE_COLORS = ("white", "pink", "brown", "violet")
 
+# ``corner`` (brown's leak) in Hz. 2 Hz is about as low as the leak can
+# go before a block-long stretch of brown reads as DC; 40 Hz is where
+# the roll-off starts eating the bottom of the audible band.
+NOISE_CORNER_DEFAULT = 10.0
+NOISE_CORNER_MIN = 2.0
+NOISE_CORNER_MAX = 40.0
+
 
 @register_module_type
 class Noise(Module):
@@ -76,6 +99,10 @@ class Noise(Module):
     Parameters:
         color: ``"white"`` (flat), ``"pink"`` (−3 dB/oct), ``"brown"``
             (−6 dB/oct) or ``"violet"`` (+6 dB/oct). Default ``"white"``.
+        corner: Brown's leak in Hz (2..40, default 10.0) — where its
+            −6 dB/oct roll-off starts. Low = more low-frequency
+            wander (thunder), high = tighter (wind, surf). The level
+            is unchanged by it; the other colours ignore it.
         amp: Linear level applied to both outputs. Default 1.0.
         seed: 0 = free-running (numpy's global generator); any other
             int keys a private generator so the stream repeats run to
@@ -91,7 +118,12 @@ class Noise(Module):
 
     TYPE = "noise"
     CATEGORY = "Sources"
-    DEFAULT_PARAMS = {"color": "white", "amp": 1.0, "seed": 0}
+    DEFAULT_PARAMS = {
+        "color": "white",
+        "corner": NOISE_CORNER_DEFAULT,
+        "amp": 1.0,
+        "seed": 0,
+    }
     INPUT_PORTS = [
         Port("amp_cv", "in", "cv"),
     ]
