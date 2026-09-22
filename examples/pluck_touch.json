@@ -14,8 +14,8 @@
       "params": { "probability": 0.1, "length": 8, "range": 1.0, "bipolar": false, "seed": 11 } },
     { "id": 4, "type": "cv_scale", "name": "x0.65 - the accent span", "params": { "scale": 0.65 } },
     { "id": 5, "type": "cv_offset", "name": "+0.35 - the softest pick still speaks (vel 0.35..1.0)", "params": { "offset": 0.35 } },
-    { "id": 6, "type": "pluck", "name": "STRING - THE TOUCH: vel_color 0.8 + vel_position 0.9, pick at 0.12 (by the bridge). A hard pick is loud, bright and nasal; a soft one is quiet, dull AND round - the softest pick here (vel 0.41) lands at 0.32, a third of the way in.",
-      "params": { "decay": 1.1, "damping": 0.35, "color": 0.85, "vel_color": 0.8, "position": 0.12, "vel_position": 0.9, "level": 0.75 } },
+    { "id": 6, "type": "pluck", "name": "STRING - THE TOUCH: vel_color 0.8 + vel_position 0.9, pick at 0.12 (by the bridge). A hard pick is loud, bright and nasal; a soft one is quiet, dull AND round - the softest pick here (vel 0.41) lands at 0.32, a third of the way in. carry on, so each re-pluck superposes exactly on the ringing string",
+      "params": { "decay": 1.1, "damping": 0.35, "color": 0.85, "vel_color": 0.8, "position": 0.12, "vel_position": 0.9, "carry": true, "level": 0.75 } },
     { "id": 7, "type": "reverb", "name": "a little room",
       "params": { "size": 0.55, "decay": 0.45, "damping": 0.45, "mix": 0.22 } },
     { "id": 8, "type": "stereo_speaker_output", "name": "Output", "params": { "gain": 0.9 } }

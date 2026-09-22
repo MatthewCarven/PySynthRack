@@ -41,6 +41,13 @@ bit-exactly as a plain hit at the effective position (the formula, both
 clamps), the loop is untouched, block-size independence, per-voice
 latching, the widget, the example.
 
+``carry`` (the same pass, default OFF): whether a hit carries the loop's
+allpass state instead of clearing it. Carried, a re-pluck is EXACT
+superposition (two hits minus one hit == the second hit alone, to one
+float32 ulp); cleared -- the shipped default -- it misses by 51% of the
+ring. Tuning is untouched either way. The default is pinned as the old
+path.
+
 Pitch/decay tests run at 44100 Hz (they measure real frequencies);
 plumbing tests run fast at SR 1000.
 """
@@ -1147,6 +1154,102 @@ def test_vel_position_latches_per_voice():
     assert np.array_equal(on[0], mono)
 
 
+# ----- carry: should a hit clear the allpass state at all? -------------------
+
+
+def _superposition_residual(carry):
+    """max|B - A - C| and the ring's amplitude at the re-pluck.
+
+    A = one hit. B = the same plus a re-pluck at block 20 sample 100.
+    C = the SAME re-pluck alone on a silent string -- a velocity-0 first
+    hit is a silent hit that still advances the counter, so C's burst is
+    seeded identically to B's second one. The loop is linear, so B - A
+    must BE C; whatever is left is the hit disturbing the ringing string.
+    """
+    params = {"decay": 3.0, "damping": 0.0, "color": 0.5, "carry": carry}
+    kw = dict(params=params, n_blocks=60)
+    a = _two_hit_render(1.0, first=1.0, second=False, **kw)
+    b_ = _two_hit_render(1.0, first=1.0, **kw)
+    c = _two_hit_render(1.0, first=0.0, **kw)
+    e = 20 * 512 + 100
+    ring = float(np.abs(a[e - 2048 : e]).max())
+    return float(np.abs((b_ - a) - c).max()), ring
+
+
+def test_carry_makes_a_repluck_exact_superposition():
+    """The 2026-09-22 finding. The module has always claimed a re-pluck
+    "superposes on the ringing string -- the loop is linear, so
+    click-free by construction", and the allpass clear every hit performs
+    is the one thing that made that false: measured, two hits minus one
+    hit misses the second hit alone by 0.117 absolute -- 28% of the ring
+    at THIS re-pluck (0.23 s in, where the ring is still 0.42); the same
+    residual is 51% of the ring half a second in, so quote it with its
+    instant. With ``carry`` the residual is 3e-08 -- one float32 ulp on a
+    0.6-peak signal, i.e. the claim is now literally true."""
+    off, ring = _superposition_residual(False)
+    on, ring2 = _superposition_residual(True)
+    assert ring == ring2 and ring > 0.1
+    assert off > 0.05, off                        # absolute, ~0.117
+    assert off / ring > 0.2, off / ring           # the clear, ~28% here
+    assert on < 1e-6, on                          # carried: float32 noise
+    assert on / ring < 1e-5
+    assert off / on > 1e5
+
+
+def test_carry_is_off_by_default_and_is_the_shipped_path():
+    """Default OFF, and the key absent renders bit-exactly as the key at
+    False -- the shipped sound is untouched until someone ticks the box.
+    (The love pass also captured reference renders of every pluck example
+    and of mono/voiced drivers at blocks 512 and 64: all bit-exact.)"""
+    assert get_module_type("pluck").DEFAULT_PARAMS["carry"] is False
+    absent = {"decay": 3.0, "color": 0.5}
+    false = {"decay": 3.0, "color": 0.5, "carry": False}
+    assert np.array_equal(_two_hit_render(0.6, params=absent),
+                          _two_hit_render(0.6, params=false))
+    assert not np.array_equal(_two_hit_render(0.6, params=absent),
+                              _two_hit_render(0.6, params={**absent,
+                                                           "carry": True}))
+
+
+@pytest.mark.parametrize("cv", [-2.0, 0.0, 2.0])
+def test_carry_does_not_move_the_tuning(cv):
+    """Carrying the state is a state decision, not a tuning one: the
+    string still lands within 5 cents across C2..C6 (measured: the two
+    settings agree to the milli-hertz on a lone pluck)."""
+    on = _render_pluck_tail(cv, seconds=0.9,
+                            params={"damping": 0.6, "carry": True})
+    sr = 44100
+    expected = 261.6255653005986 * 2.0**cv
+    measured = _partial_freq(on[len(on) // 3 :], sr, expected)
+    cents = 1200.0 * np.log2(measured / expected)
+    assert abs(cents) < 5.0, (cv, measured, cents)
+
+
+def test_carry_survives_rapid_repitched_replucks():
+    """The stress the clear was presumably guarding against: a re-pluck
+    every 23 ms with the pitch thrown four octaves around. The loop's
+    allpass coefficient is always |c| < 1, so a carried state decays
+    rather than accumulating -- finite, and bounded within a few percent
+    of the cleared render (measured peak 2.94 cleared / 3.00 carried)."""
+    peaks = []
+    for carry in (False, True):
+        rng = np.random.default_rng(3)
+        step = _driver({"decay": 4.0, "damping": 0.0, "color": 0.9,
+                        "carry": carry}, sr=44100, block=512, vel=True)
+        out, cv = [], 0.0
+        for i in range(200):
+            trig = np.zeros(512, dtype=np.float32)
+            if i % 2 == 0:
+                trig[int(rng.integers(0, 512))] = 1.0
+                cv = float(rng.uniform(-2.0, 2.0))
+            out.append(step(np.full(512, cv, dtype=np.float32), trig,
+                            np.ones(512, dtype=np.float32)))
+        sig = np.concatenate(out)
+        assert np.all(np.isfinite(sig))
+        peaks.append(float(np.abs(sig).max()))
+    assert peaks[1] < 1.15 * peaks[0], peaks
+
+
 # ----- widgets ---------------------------------------------------------------
 
 
@@ -1179,6 +1282,7 @@ def test_every_param_gets_a_bounded_widget(monkeypatch):
     assert w["decay"][1].endswith(" s")
     assert w["vel_color"][0] == "add_slider_float"  # 0..1, beside color
     assert w["vel_position"][0] == "add_slider_float"  # 0..1, beside position
+    assert w["carry"][0] == "add_checkbox"  # a switch, not a knob
     assert "vel" not in w  # a jack, not a knob
 
 
@@ -1304,7 +1408,8 @@ def test_the_velocity_color_example_dulls_the_soft_picks():
 def test_the_touch_example_rounds_the_soft_picks():
     """examples/pluck_touch.json: the same accent loop into ``vel``, now
     with ``vel_color`` 0.8 AND ``vel_position`` 0.9 on a string picked
-    close to the bridge (``position`` 0.12).
+    close to the bridge (``position`` 0.12), ``carry`` on so each
+    re-pluck superposes exactly on the one still ringing.
 
     Rendered as shipped and again with ``vel_position`` forced to 0 (the
     only difference, so the pitch and the colour confounds cancel), each
@@ -1358,6 +1463,7 @@ def test_the_touch_example_rounds_the_soft_picks():
     pl = next(m for m in patch if m.TYPE == "pluck")
     assert pl.params["vel_position"] == 0.9
     assert pl.params["vel_color"] == 0.8
+    assert pl.params["carry"] is True
     assert 0.0 < pl.params["position"] < 0.2  # picked near the bridge
 
     shipped, vel, gate, cv = render(None)

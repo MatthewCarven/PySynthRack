@@ -3736,7 +3736,9 @@ class App:
             # source); ``position`` is the pick-position comb and
             # ``vel_position`` is how far a soft hit slides that pick
             # towards the middle of the string (both 0..1, both inert
-            # without a ``vel`` source); ``level`` trims the output.
+            # without a ``vel`` source); ``carry`` is a tickbox and
+            # falls through to the shared bool branch; ``level`` trims
+            # the output.
             if param_name == "decay":
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=0.05,

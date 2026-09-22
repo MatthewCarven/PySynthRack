@@ -85,6 +85,22 @@ moves a pick, it does not fit one. With ``vel_color`` up too a soft
 note is quieter, duller **and** rounder while an accent stays loud,
 bright and plucky. The loop is untouched, as always: same t60.
 
+**Does a hit need to clear the string's allpass state?** No, and
+``carry`` (default off) is the switch. Every hit relocks the pitch
+and clears the loop's fractional-delay state; measured with a zero
+burst, that clear *alone* steps the output by **51%** of the ring at
+the same pitch (51.4% into G4, 51.5% into C5 at the same instant;
+28% at another re-pluck, 7-18% on the velocity pass's hits -- it
+throws away one sample of loop state, and how big that sample is
+depends on where in the waveform the hit lands), while carrying the
+state makes the step **exactly 0** and a re-pluck **exact
+superposition** — two hits minus one hit is the second hit alone to
+one float32 ulp, which is the property this module has always
+claimed and the clear alone broke. Tuning, peak and stability are
+identical either way. ``carry`` is default-off only because turning
+it on changes the sound of every patch that re-plucks a ringing
+string; on is the recommendation.
+
 Voice-awareness: shape follows the inputs — mono ``(F,)`` in gives mono
 out, ``(V, F)`` gives per-voice strings with no crosstalk. ``vel``
 follows the same rule: a ``(V, F)`` bus latches per voice from its own
@@ -114,6 +130,10 @@ Params:
     middle of the string (0.5), 0..1; a hit at velocity 1.0 is
     always exactly ``position``, and ``position`` 0 stays off.
     Default 0 (off).
+  * ``carry``: keep the loop's allpass state through a hit instead
+    of clearing it — a re-pluck becomes exact superposition
+    instead of a 51%-of-the-ring step. Default False (the shipped
+    sound); True is the recommendation.
   * ``level``: output level 0..1. Default 0.5.
 """
 from __future__ import annotations
@@ -145,6 +165,11 @@ class Pluck(Module):
             position), 0, 1)``; a full-velocity (or unpatched) hit
             is exactly ``position``, and ``position`` 0 stays off.
             Default 0.
+        carry: Carry the loop's allpass (fractional-delay) state
+            through a hit instead of clearing it -- the clear is a
+            51%-of-the-ring step, and carrying makes a re-pluck
+            exact superposition (measured). Default False = the
+            shipped sound; True is the recommendation.
         level: Output level. Default 0.5.
 
     Ports:
@@ -164,6 +189,7 @@ class Pluck(Module):
         "vel_color": 0.0,
         "position": 0.2,
         "vel_position": 0.0,
+        "carry": False,
         "level": 0.5,
     }
     INPUT_PORTS = [

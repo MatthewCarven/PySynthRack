@@ -16073,6 +16073,36 @@ class NumpyBackend(AudioBackend):
         says. A hit ABOVE velocity 1 slides the other way, towards the
         bridge, to the clamp. ``position`` 0 is the documented OFF for the
         comb and stays off: the knob moves a pick, it does not fit one.
+
+        ``carry`` (2026-09-22, love pass, default OFF): whether a hit
+        CARRIES the loop's allpass (fractional-delay) state instead of
+        clearing it. Measured, at C4, ``decay`` 3, ``damping`` 0, a
+        re-pluck 0.5 s in:
+
+          * the clear is a step of **51.3% of the ring's amplitude** at the
+            same pitch, 51.4% into G4, 51.5% into C5 -- measured with a
+            ZERO burst, so it is the artifact alone. The fraction depends
+            on WHERE in the waveform the hit lands (the clear throws away
+            one sample of loop state, and a sample is not an envelope):
+            another re-pluck instant measures 28%, the velocity pass
+            measured 7-18% on its own hits. It is never small;
+          * carrying the state, that step is **exactly 0.000%** -- and the
+            relock a hit performs is then bit-identical to the block-mean
+            pitch follow the string does anyway, at any pitch;
+          * carried, a re-pluck is EXACT superposition: two hits minus one
+            hit equals the second hit alone to 3e-08 (one float32 ulp),
+            against 51% with the clear. The module has always CLAIMED that
+            ("the loop is linear, so plucks superpose") -- the clear is the
+            one thing that made it false;
+          * tuning is untouched either way (G4 -0.95 ct, C5 +0.84 ct,
+            identical to the milli-hertz), and so is the peak; 200 rapid
+            re-plucks over four octaves stay finite and bounded both ways.
+
+        So the clear buys nothing and costs half the ring. It is still the
+        DEFAULT only because turning it off changes the sound of every
+        pluck patch that re-plucks a ringing string -- that is Matthew's
+        call to make with his ears, not a measurement's. ``carry`` True is
+        the recommendation.
         """
         pitch = self._input_buffer(
             patch, buffers, module.id, "pitch_cv", collapse=False
@@ -16123,6 +16153,10 @@ class NumpyBackend(AudioBackend):
         vel_position = min(
             1.0, max(0.0, float(module.params.get("vel_position", 0.0)))
         )
+        # carry: keep the loop's allpass state through a hit instead of
+        # clearing it. Default False = the shipped sound; see the
+        # docstring for the numbers that say True is better.
+        carry = bool(module.params.get("carry", False))
         position = min(1.0, max(0.0, float(module.params.get("position", 0.2))))
         level = float(module.params.get("level", 0.5))
 
@@ -16279,7 +16313,12 @@ class NumpyBackend(AudioBackend):
                     ring[v, start : start + first] += burst[:first]
                     if n_int > first:
                         ring[v, : n_int - first] += burst[first:]
-                    st["ap_z"][v] = 0.0
+                    if not carry:
+                        # The allpass state is the one thing a hit does
+                        # NOT superpose. Measured at 51% of the ring
+                        # (docstring); ``carry`` keeps it, and then a
+                        # re-pluck is exact superposition.
+                        st["ap_z"][v] = 0.0
                     st["active"][v] = True
                     seg_start = e
             # Early-out bookkeeping: a decayed string goes fully silent.
@@ -16288,6 +16327,12 @@ class NumpyBackend(AudioBackend):
                     st["active"][v] = False
                     ring[v, :] = 0.0
                     out[v, :] = 0.0
+                    # Zero the allpass state with the ring, so a fresh
+                    # pluck on a dead string is a fresh pluck under
+                    # ``carry`` too. Render-neutral for the shipped path:
+                    # nothing reads ``ap_z`` while a voice is inactive,
+                    # and the next hit clears it anyway.
+                    st["ap_z"][v] = 0.0
 
         out *= level
         result = out if voiced else out[0]

@@ -1176,6 +1176,27 @@ With `vel_color` up too, a quiet note is quieter, duller **and** rounder
 while an accent stays loud, bright and plucky: that is
 `examples/pluck_touch.json`.
 
+**Should a hit clear the string's allpass state?** (2026-09-22 — the
+honest physics.) Every hit relocks the pitch *and* clears the loop's
+fractional-delay state. Measured with a **zero** burst, so the clear is
+alone in the frame, that clear steps the output by **51%** of the ring's
+amplitude at the same pitch (51.4% into G4, 51.5% into C5 at the same
+instant; 28% at another re-pluck, 7–18% on the velocity pass's hits —
+it throws away one sample of loop state, and how big that sample is
+depends on where in the waveform the hit lands). Carry the state instead
+and the step is **exactly 0**, and a re-pluck becomes **exact
+superposition**: two hits minus one hit equals the second hit alone to
+one float32 ulp (3e-08), which is the property this module has always
+claimed and the clear alone made false. Tuning is identical either way
+(G4 −0.95 ct, C5 +0.84 ct, to the milli-hertz), so is the peak, and 200
+rapid re-plucks thrown four octaves around stay finite and bounded both
+ways — the loop's allpass always has |c| < 1, so a carried state decays
+rather than accumulating. **The clear buys nothing and costs half the
+ring.** It is still the default only because turning it off changes the
+sound of every patch that re-plucks a ringing string, which is an ears
+decision rather than a measurement's: `carry` (default off) is the
+switch, and on is the recommendation.
+
 The live use is `midi_input.velocity_cv → pluck.vel` beside
 `pitch_cv → pitch_cv` and `gate → trigger`: a harder key plays louder,
 per voice — and with `vel_color` up, brighter. Sequenced accents:
@@ -1205,6 +1226,7 @@ by the bridge, so the soft picks go round as well as dull.
 | `vel_color` | `0.0` | 0 … 1 | How much a soft hit darkens `color`: the hit's colour is `clamp(color + vel_color · (vel − 1))`. A full-velocity or unpatched hit is always exactly `color`; 0 = off. |
 | `position` | `0.2` | 0 … 1 | Pick-position comb on the burst; 0 disables. Small = by the bridge (bright, nasal), 0.5 = the middle of the string (round). |
 | `vel_position` | `0.0` | 0 … 1 | How far a soft hit's pick slides towards the middle of the string: the hit's position is `clamp(position + vel_position · (1 − vel) · (0.5 − position), 0, 1)`. A full-velocity or unpatched hit is always exactly `position`, and `position` 0 stays off; 0 = off. |
+| `carry` | `false` | tickbox | Carry the loop's allpass (fractional-delay) state through a hit instead of clearing it — the clear is a ~51%-of-the-ring step and carrying makes a re-pluck exact superposition (measured). Off = the shipped sound; **on is the recommendation**. |
 | `level` | `0.5` | 0 … 1 | Output level. |
 
 #### `bowed`
@@ -5962,7 +5984,9 @@ loads in the app. Notable ones referenced above:
   string towards the middle (the softest here, velocity 0.41, lands at 0.32),
   where the comb notches the second harmonic and the fundamental takes over;
   measured, every hit's low-harmonic balance falls, the soft picks hardest
-  (mean 0.69×, correlation +0.70 with the velocity).
+  (mean 0.69×, correlation +0.70 with the velocity). `carry` is **on**, so each
+  re-pluck superposes exactly on the string still ringing instead of stepping
+  it — untick it to hear the difference the clear makes.
 - `pluck_velocity_color.json` — the same picked line with the [`pluck`](#pluck)'s `vel_color` at 0.8: each pick's velocity now sets the burst's colour as well as its level (`color` 0.8 at full velocity, 0.24 at the softest), so the accents ring bright and the quiet picks thud — measured, every hit's first-50 ms centroid sits below the `vel_color` 0 render's, 0.61× at velocity 0.36. The ring-down is untouched; turn `vel_color` to 0 and it is `pluck_velocity.json` again.
 - `delay_freeze_stutter.json` — the beat-repeat: a sixteenth-note [`pluck`](#pluck) phrase into a 187.5 ms (dotted-sixteenth) [`delay`](#delay), a 15 BPM [`clock`](#clock)'s [`logic`](#logic) `not_a` holding the delay's `freeze` for the second two seconds of every four — the last one-and-a-half notes stutter, tumbling against the grid, while the phrase carries on dry over the top through `mix`.
 - `tape_stop_drop.json` — the tape-stop drop: an eighth-note saw riff ([`clock`](#clock) → [`sequencer`](#sequencer) → [`oscillator`](#oscillator) → [`adsr`](#adsr)/[`vca`](#vca)) on [`tape`](#tape) (`sat` 0.3, `wow` 0.15, `mix` 1), a 7.5 BPM clock's [`logic`](#logic) `not_a` pulling the tape's `stop` for the last 1.6 s of every 8 — the beat dives over `stop_time` 1.25 s, halts, and spins back up over `start_time` 0.6 s.
