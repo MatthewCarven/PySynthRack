@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "next_id": 12,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "one chord every four seconds, held three", "params": { "bpm": 60.0, "division": 0.25, "pulse_width": 0.75 } },
+    { "id": 2, "type": "sequencer", "name": "three slow roots (semitones from C4)",
+      "params": { "steps": 3, "direction": "forward", "seed": 1, "step1_pitch": -24.0, "step1_on": true, "step2_pitch": -19.0, "step2_on": true, "step3_pitch": -17.0, "step3_on": true } },
+    { "id": 3, "type": "adsr", "name": "slow in, slow out", "params": { "attack": 0.5, "decay": 0.3, "sustain": 0.9, "release": 0.9 } },
+    { "id": 4, "type": "supersaw", "name": "the buzz - a wide supersaw", "params": { "freq": 65.40639, "detune": 0.35, "blend": 0.8, "spread": 0.0, "amp": 0.5 } },
+    { "id": 5, "type": "lfo", "name": "the MOUTH at audio rate - 25 Hz bipolar triangle, the whole A..U range", "params": { "waveform": "triangle", "rate": 25.0, "depth": 1.0, "bipolar": true, "cv_depth": 1.0, "phase": 0.0, "seed": 1 } },
+    { "id": 6, "type": "vowel", "name": "VOWEL - cv_rate SAMPLE: the mouth moves per sample, so the sweep rings the vowel instead of smearing it",
+      "params": { "vowel": 2.0, "voice": "tenor", "resonance": 1.6, "gain": 18.0, "mix": 1.0, "cv_depth": 2.0, "cv_rate": "sample", "formant": 0.0, "formant_cv_depth": 1.0 } },
+    { "id": 7, "type": "vca", "name": "the envelope", "params": {} },
+    { "id": 8, "type": "reverb", "name": "a small room - the robot is in a corridor", "params": { "size": 0.5, "decay": 0.5, "damping": 0.6, "mix": 0.25, "cv_depth": 1.0 } },
+    { "id": 9, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.8 } },
+    { "id": 10, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.8 } },
+    { "id": 11, "type": "scope", "name": "the buzzing vowel", "params": {} }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out",  "dst_module_id": 2, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "cv",   "dst_module_id": 4, "dst_port": "freq_cv" },
+    { "src_module_id": 2, "src_port": "gate", "dst_module_id": 3, "dst_port": "gate" },
+    { "src_module_id": 4, "src_port": "out_l", "dst_module_id": 6, "dst_port": "in" },
+    { "src_module_id": 5, "src_port": "cv",   "dst_module_id": 6, "dst_port": "vowel_cv" },
+    { "src_module_id": 6, "src_port": "out",  "dst_module_id": 7, "dst_port": "audio" },
+    { "src_module_id": 3, "src_port": "cv",   "dst_module_id": 7, "dst_port": "cv" },
+    { "src_module_id": 7, "src_port": "out",  "dst_module_id": 11, "dst_port": "in" },
+    { "src_module_id": 11, "src_port": "out", "dst_module_id": 8, "dst_port": "in" },
+    { "src_module_id": 8, "src_port": "out_l", "dst_module_id": 9, "dst_port": "in" },
+    { "src_module_id": 8, "src_port": "out_r", "dst_module_id": 10, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 60], "2": [300, 60], "3": [300, 300], "4": [600, 60], "5": [600, 380],
+      "6": [900, 160], "7": [1200, 160], "11": [1460, 160], "8": [1720, 160],
+      "9": [1980, 100], "10": [1980, 240]
+    }
+  }
+}

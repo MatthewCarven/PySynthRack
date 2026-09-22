@@ -18193,13 +18193,105 @@ class NumpyBackend(AudioBackend):
     #: octaves) is clipped to +-4 BEFORE ``2 ** e`` -- the house overflow
     #: guard (the filter pass found an absurd CV can overflow the power).
     _VOWEL_SHIFT_OCT_LIMIT = 4.0
+    #: ``cv_rate`` "sample": the grid the per-sample vowel is rounded to,
+    #: in vowels. Five biquads cannot be rebuilt every sample, so the
+    #: block is split into runs of constant quantised vowel instead.
+    #: Measured (220 Hz sine, 30 Hz triangle across the whole range,
+    #: against a true per-sample rebuild): 0.02 vowels is -62 dB and
+    #: ~70 runs per 512-sample block; 0.05 is -55 dB, 0.1 only -43 dB
+    #: and audibly steppy; 0.01 buys 6 dB more for twice the runs.
+    #: 0.02 vowels is ~1% of a formant frequency, about 17 cents.
+    _VOWEL_CV_STEP = 0.02
+
+    def _vowel_coefs(self, voice, vowel, resonance, ratio, custom=None):
+        """The five RBJ constant-peak bandpasses for ONE vowel position.
+
+        Factored out of ``_render_vowel`` so the block path and the
+        per-sample path build coefficients with the same arithmetic --
+        the block path has to stay bit-identical to the shipped filter.
+        Frequency and bandwidth are both multiplied by ``ratio`` (the
+        formant shift), so Q = F/BW is preserved; a frequency past
+        0.45 sr parks there. ``custom`` (or None) is the ``custom``
+        voice's five frequencies.
+        """
+        from ..modules.vowel import N_FORMANTS, vowel_formants
+
+        freqs, gains, bws = vowel_formants(voice, vowel, custom)
+        sr = float(self.sample_rate)
+        coefs = []
+        for k in range(N_FORMANTS):
+            f = min(freqs[k] * ratio, 0.45 * sr)
+            q = max(0.1, (f / (bws[k] * ratio)) * resonance)
+            w0 = 2.0 * np.pi * f / sr
+            alpha = np.sin(w0) / (2.0 * q)
+            a0 = 1.0 + alpha
+            b = np.array([alpha / a0, 0.0, -alpha / a0])
+            a = np.array([1.0, -2.0 * np.cos(w0) / a0, (1.0 - alpha) / a0])
+            coefs.append((b, a, gains[k]))
+        return coefs
+
+    def _vowel_per_sample(self, st, x, cv, vowel, cv_depth, voice, resonance,
+                          ratio, custom):
+        """``cv_rate`` "sample": the vowel follows the CV sample by sample.
+
+        Five biquads per sample is not affordable, so the MODULATION is
+        quantised: the CV's contribution is rounded to
+        ``_VOWEL_CV_STEP`` vowels, the block is split into runs where
+        that rounded vowel is constant, and each run is one ``lfilter``
+        call per formant with ``zi`` carried across the seam -- the
+        filter state is never reset, which is why the seams do not
+        click (measured: the max sample-to-sample step of a swept sine
+        matches a true per-sample rebuild's to within 0.3%).
+
+        The grid is relative to the KNOB, not absolute, so the knob is
+        always exact: an idle jack (or ``cv_depth`` 0) rounds to step 0
+        and gives the block-mean render bit for bit. The STEP COUNT is
+        what gets clipped to the 0..4 range, so samples pinned at A or
+        U collapse into one run instead of one each, and the cast to
+        int cannot overflow on an absurd CV. Coefficients are cached
+        per step (at most 201 of them) and the cache is dropped when
+        anything else about the filter changes.
+        """
+        q = self._VOWEL_CV_STEP
+        c = np.asarray(cv, dtype=np.float64)
+        c = np.where(np.isfinite(c), c, 0.0)          # scrub before the clamp
+        lo = int(math.ceil((0.0 - vowel) / q))
+        hi = int(math.floor((4.0 - vowel) / q))
+        gi = np.clip(np.rint(cv_depth * c / q), lo, hi).astype(np.int64)
+        group = (voice, round(vowel, 9), round(resonance, 6), round(ratio, 9), custom)
+        if st.get("group") != group:
+            st["group"] = group
+            st["cache"] = {}
+        cache = st["cache"]
+        cuts = np.flatnonzero(gi[1:] != gi[:-1]) + 1
+        starts = np.concatenate(([0], cuts))
+        ends = np.concatenate((cuts, [gi.size]))
+        wet = np.empty_like(x)
+        for a, b in zip(starts, ends):
+            step = int(gi[a])
+            coefs = cache.get(step)
+            if coefs is None:
+                coefs = cache[step] = self._vowel_coefs(
+                    voice, vowel + step * q, resonance, ratio, custom)
+            seg = x[:, a:b]
+            acc = np.zeros_like(seg)
+            for k, (bb, aa, g) in enumerate(coefs):
+                y, zf = lfilter(bb, aa, seg, axis=-1, zi=st["zi"][k])
+                st["zi"][k] = zf
+                acc += g * y
+            wet[:, a:b] = acc
+        last = int(gi[-1])
+        st["key"] = (voice, round(vowel + last * q, 6), round(resonance, 6),
+                     round(ratio, 9), custom)
+        st["coefs"] = cache[last]
+        return wet
 
     def _render_vowel(self, module, frames: int, buffers, patch) -> np.ndarray:
         """Five-formant vowel filter (see modules/vowel.py).
 
-        ``vowel_formants(voice, vowel_eff)`` gives F1..F5 (Hz), linear
-        gains and bandwidths for the block's effective vowel (the knob
-        plus ``cv_depth`` x the block-mean CV, clamped 0..4); each
+        ``vowel_formants(voice, vowel_eff, custom)`` gives F1..F5 (Hz),
+        linear gains and bandwidths for the block's effective vowel (the
+        knob plus ``cv_depth`` x the block-mean CV, clamped 0..4); each
         formant is an RBJ constant-peak bandpass with Q = F/BW x
         ``resonance``, run by one ``lfilter`` call along the last axis
         (so a ``(V, F)`` input is V parallel filters with ``zi`` of shape
@@ -18215,8 +18307,23 @@ class NumpyBackend(AudioBackend):
         five outputs are summed with the table's gains, ``gain`` dB
         applied, then ``out = dry (1 - mix) + wet mix``; at ``mix`` 0 the
         input buffer is returned untouched -- the effects neutral.
+
+        ``cv_rate`` "sample" hands ``vowel_cv`` to
+        ``_vowel_per_sample`` instead of averaging it -- the vowel then
+        follows the CV per sample, quantised into runs (see there).
+        ``voice`` "custom" reads ``f1``..``f5`` and passes them as the
+        formant FREQUENCIES; the bandwidths and levels stay the tenor
+        table's, so ``vowel`` goes on morphing the resonances.
         """
-        from ..modules.vowel import N_FORMANTS, VOWEL_VOICES, vowel_formants
+        from ..modules.vowel import (
+            N_FORMANTS,
+            VOWEL_CUSTOM_DEFAULT_FREQS,
+            VOWEL_CUSTOM_FREQ_MAX,
+            VOWEL_CUSTOM_FREQ_MIN,
+            VOWEL_CV_RATES,
+            VOWEL_VOICE_CHOICES,
+            VOWEL_VOICE_CUSTOM,
+        )
 
         x_in = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
         if x_in is None:
@@ -18236,14 +18343,46 @@ class NumpyBackend(AudioBackend):
             return x_in
         vowel = fparam("vowel", 0.0, 0.0, 4.0)
         voice = str(module.params.get("voice", "tenor"))
-        if voice not in VOWEL_VOICES:
+        if voice not in VOWEL_VOICE_CHOICES:
             voice = "tenor"
+        # The custom voice's own formant frequencies. Read only for
+        # ``custom`` so the table voices keep hashing to a key of None
+        # -- the f1..f5 knobs must not invalidate their coefficients.
+        custom = None
+        if voice == VOWEL_VOICE_CUSTOM:
+            custom = tuple(
+                fparam(f"f{k + 1}", VOWEL_CUSTOM_DEFAULT_FREQS[k],
+                       VOWEL_CUSTOM_FREQ_MIN, VOWEL_CUSTOM_FREQ_MAX)
+                for k in range(N_FORMANTS)
+            )
         resonance = fparam("resonance", 1.0, self._VOWEL_RES_MIN, self._VOWEL_RES_MAX)
         gain = 10.0 ** (fparam("gain", 6.0, -12.0, 24.0) / 20.0)
         cv_depth = fparam("cv_depth", 2.0, -10.0, 10.0)
+        cv_rate = str(module.params.get("cv_rate", "block"))
+        if cv_rate not in VOWEL_CV_RATES:
+            cv_rate = "block"
         cv = self._input_buffer(patch, buffers, module.id, "vowel_cv")
-        if cv is not None:
-            vowel = min(4.0, max(0.0, vowel + cv_depth * float(np.mean(cv))))
+        # "sample" needs a CV that is actually one value per frame; a
+        # short or odd buffer falls soft back to the block mean, and so
+        # does depth 0 (where the two are the same render anyway, and
+        # the block path is the cheap one).
+        per_sample = (
+            cv_rate == "sample" and cv is not None and cv.ndim == 1
+            and frames > 0 and cv.shape[0] == frames and cv_depth != 0.0
+        )
+        if cv is not None and cv.size and not per_sample:
+            # The mean is taken in float64 for the same reason as
+            # formant_cv below: np.mean of a float32 buffer ACCUMULATES in
+            # float32, so a CONSTANT cv of 0.3 reads 0.29999998 over 64
+            # samples and 0.30000001 over 512 -- an ulp that moves the
+            # coefficients and breaks block-size independence. n * v is
+            # exact in 53 bits, so the float64 mean of a constant is that
+            # constant at any block size. A non-finite mean is ignored
+            # (the knob alone), because Python's min/max do not propagate
+            # NaN -- they silently collapse it to A.
+            cv_mean = float(np.mean(cv, dtype=np.float64))
+            if np.isfinite(cv_mean):
+                vowel = min(4.0, max(0.0, vowel + cv_depth * cv_mean))
         # The throat size: semitones on the knob, octaves per unit on the
         # jack, one value per block for every voice (like vowel_cv). The
         # mean is taken in float64: a float32 accumulation of a CONSTANT
@@ -18263,38 +18402,32 @@ class NumpyBackend(AudioBackend):
         voiced = x_in.ndim == 2
         x = (x_in if voiced else x_in[None, :]).astype(np.float64)
         V = x.shape[0]
-        sr = float(self.sample_rate)
 
         st = self._state.get(module.id)
         if st is None or st.get("V") != V:
             st = self._state[module.id] = {
-                "V": V, "key": None, "coefs": None,
+                "V": V, "key": None, "coefs": None, "group": None, "cache": {},
                 "zi": np.zeros((N_FORMANTS, V, 2), dtype=np.float64),
             }
-        key = (voice, round(vowel, 6), round(resonance, 6), round(ratio, 9))
-        if st["key"] != key:
-            freqs, gains, bws = vowel_formants(voice, vowel)
-            coefs = []
-            for k in range(N_FORMANTS):
-                # Frequency and bandwidth scale together (constant Q); a
-                # ratio of exactly 1.0 leaves both bit-identical to the
-                # table, so an unshifted render is the pre-shift render.
-                f = min(freqs[k] * ratio, 0.45 * sr)
-                q = max(0.1, (f / (bws[k] * ratio)) * resonance)
-                w0 = 2.0 * np.pi * f / sr
-                alpha = np.sin(w0) / (2.0 * q)
-                a0 = 1.0 + alpha
-                b = np.array([alpha / a0, 0.0, -alpha / a0])
-                a = np.array([1.0, -2.0 * np.cos(w0) / a0, (1.0 - alpha) / a0])
-                coefs.append((b, a, gains[k]))
-            st["key"] = key
-            st["coefs"] = coefs
-
-        wet = np.zeros_like(x)
-        for k, (b, a, g) in enumerate(st["coefs"]):
-            y, zf = lfilter(b, a, x, axis=-1, zi=st["zi"][k])
-            st["zi"][k] = zf
-            wet += g * y
+        if per_sample:
+            wet = self._vowel_per_sample(st, x, cv, vowel, cv_depth, voice,
+                                         resonance, ratio, custom)
+        else:
+            # Frequency and bandwidth scale together (constant Q); a ratio
+            # of exactly 1.0 leaves both bit-identical to the table, so an
+            # unshifted render is the pre-shift render. ``custom`` is None
+            # for every table voice, so their key is the shipped key.
+            key = (voice, round(vowel, 6), round(resonance, 6), round(ratio, 9),
+                   custom)
+            if st["key"] != key:
+                st["key"] = key
+                st["coefs"] = self._vowel_coefs(voice, vowel, resonance, ratio,
+                                                custom)
+            wet = np.zeros_like(x)
+            for k, (b, a, g) in enumerate(st["coefs"]):
+                y, zf = lfilter(b, a, x, axis=-1, zi=st["zi"][k])
+                st["zi"][k] = zf
+                wet += g * y
         wet *= gain
         out = wet if mix >= 1.0 else x * (1.0 - mix) + wet * mix
         result = out if voiced else out[0]

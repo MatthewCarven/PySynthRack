@@ -98,7 +98,7 @@ The full map:
 | `clock.bpm_cv` | `1.0` (`bpm_cv_depth`) | tempo doublings | `bpm · 2^(d·mean cv)`, block-rate; exponent clipped ±6 (×64) before the power; mono (a `(V, F)` source is averaged) |
 | `cv_recorder.speed_cv` | `1.0` (`speed_cv_depth`) | head-rate doublings, **quantised** | `floor(base · 2^(d·mean cv) + 0.5)` half-steps per sample, clamped 1…8 — the reachable rates are 0.5x…4x in 0.25x steps and 0 is not one of them; block-rate; exponent clipped ±4 before the power; a non-finite CV reads as 0; mono (a `(V, F)` source is averaged) |
 | `crossover.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
-| `vowel.vowel_cv` | `2.0` | vowels (0 = A … 4 = U) | `vowel + d·mean cv`, clamped 0…4 |
+| `vowel.vowel_cv` | `2.0` | vowels (0 = A … 4 = U) | `vowel + d·mean cv`, clamped 0…4, the mean in float64 so a constant CV is block-size exact; at `cv_rate` `sample` it is `vowel + d·cv[n]` per sample instead, quantised to 0.02-vowel runs |
 | `vowel.formant_cv` | `1.0` (`formant_cv_depth`) | octaves | every formant's frequency and bandwidth × `2^(formant/12 + d·mean cv)` (constant Q), block-rate; exponent clipped ±4 before the power; one value for every voice |
 | `freeze.pitch_cv` | `1.0` (`pitch_cv_depth`) | octaves | frozen layer at `2^(pitch/12 + d·mean cv)`, block-rate; exponent clipped ±4 before the power; mono (a `(V, F)` source is averaged) |
 | `freeze.width_cv` | `1.0` (`width_cv_depth`) | width (0…1, the knob's unit) | `clip(width + d·mean cv, 0, 1)`, block-rate, the mean taken in **float64** (a float32 mean of a constant CV moves with the block size at the ulp); applied to the scatter of every frame synthesised from then on, so the field opens and closes across one `size` window rather than stepping at the block boundary — which is why a moving CV cannot click. Mono (a `(V, F)` source is averaged) |
@@ -337,7 +337,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`wavetable_morph`](#wavetable_morph) | Sources | `freq_cv`,`position_cv`,`amp_cv` (cv) → `out` (audio) |
 | [`filter`](#filter) | Filters & EQ | `in` (audio), `cutoff_cv` (cv), `resonance_cv` (cv) → `out` (audio) |
 | [`crossover`](#crossover) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
-| [`vowel`](#vowel) | Filters & EQ | `in` (audio), `vowel_cv` (cv), `formant_cv` (cv) → `out` (audio) |
+| [`vowel`](#vowel) | Filters & EQ | `in` (audio), `vowel_cv` (cv, block or per-sample), `formant_cv` (cv) → `out` (audio) |
 | [`parametric_eq`](#parametric_eq) | Filters & EQ | `in` (audio) → `out` (audio) |
 | [`sweep_eq`](#sweep_eq) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `out` (audio) |
 | [`motion_eq`](#motion_eq) | Filters & EQ | `in` (audio), `band{i}_freq_cv`, `band{i}_gain_cv`, `band{i}_q_cv` ×4 (cv) → `out` (audio) |
@@ -1682,8 +1682,10 @@ every formant synthesizer (and the Csound manual) carry. `vowel` is a
 continuous 0..4 knob: 0 is A, 1 E, 2 I, 3 O, 4 U, and 1.5 is halfway
 from E to I (frequencies interpolate geometrically, bandwidths
 linearly, levels in dB). `vowel_cv` moves it — `cv_depth` vowels per
-unit, read per block — so a slow LFO is the talking-filter cliché and an
-envelope is a mouth opening on every note. `voice` picks the table;
+unit, read per block, or per *sample* at `cv_rate` `sample` — so a slow
+LFO is the talking-filter cliché, an envelope is a mouth opening on
+every note and a 30 Hz one is a robot. `voice` picks the table (or
+`custom`, five formant frequencies of your own);
 `resonance` multiplies every formant's Q (1 = the table's bandwidths;
 higher is narrower, more vowel, more ring); `gain` is makeup (a formant
 bank passes only what sits near its peaks, so the wet is ~15 dB down on
@@ -1712,24 +1714,71 @@ filter. Measured: noise through tenor A peaks at 342 / 661 / 1338 Hz at
 `resonance` 2 keeps its Q (8.06 → 8.18 at +12, the −3 dB bandwidth
 31 → 61 Hz).
 
+`cv_rate` is how often `vowel_cv` is read. `block` (the default) takes
+the block's mean — one vowel per buffer, cheap, and block-size exact
+whatever the buffer (the mean is taken in float64: a float32
+accumulation of a *constant* 0.3 reads 0.29999998 over 64 samples and
+0.30000001 over 512, an ulp that moved the coefficients and broke that
+exactness until 2026-09-22). `sample` follows the CV **per sample** —
+the audio-rate mouth, where a 25–60 Hz LFO on the jack buzzes the vowel
+instead of smearing it. Five biquads cannot be rebuilt every sample, so
+the modulation is *quantised*: the CV's contribution is rounded to
+0.02-vowel steps around the knob, the block is split into runs where
+that rounded vowel is constant, and each run is one `lfilter` call with
+the filter state carried across the seam. The step was picked by
+measurement — 0.02 vowels is ~1% of a formant frequency (17 cents) and
+lands 62 dB below a true per-sample rebuild on a 30 Hz sweep, where
+0.05 is 55 dB down and 0.1 only 43 dB and audibly steppy. Nothing
+clicks, because a seam changes coefficients without resetting state:
+measured, a swept sine's biggest sample-to-sample step is *smaller* in
+`sample` (0.00367) than in `block` (0.00498), which jumps once per
+buffer. Because the grid is relative to the knob, the knob is always
+exact, so an idle jack (or `cv_depth` 0, or an unpatched jack) renders
+`sample` bit-identically to `block`. It costs what it costs: measured
+over 10 s with a 30 Hz LFO at depth 4, the module takes 0.59× realtime
+in `sample` against 0.010× in `block`, and past roughly 100 Hz of
+modulation every sample becomes its own run and it settles near 1.1×.
+Audibly, the per-sample read puts energy where the block read cannot —
+on a 220 Hz sine under a 30 Hz sweep the second-order sidebands at
+±60 Hz come up 9–11 dB and the third-order at −90 Hz by 30 dB.
+
+`voice` `custom` is your own mouth. `f1`…`f5` (Hz, 50…8000) replace the
+table's five formant **frequencies**; the bandwidths and levels stay the
+*tenor* table's at the current `vowel` position, which is what the knob
+then morphs. So a custom voice is a fixed formant chord and `vowel`
+shapes its resonances instead of moving them — five parallel resonators
+you tune by hand. The bandwidths being the table's in Hz rather than
+scaled to your frequencies is the thing to know: measured at
+`resonance` 2, the −3 dB width stays ~40 Hz whether `f1` is 300 Hz or
+2500 Hz, so Q runs from 7.4 up to 63 — `resonance` is the knob that
+fixes a custom voice's character. The knob still bites: with `f1`
+parked at 650 Hz, `vowel` 0 → 3 takes the measured width from 40.6 to
+35.6 Hz (tenor A's 80 Hz band to tenor O's 70) without moving the peak.
+The defaults are tenor A (650 / 1080 / 2650 / 2900 / 3250), so `custom`
+starts out sounding like the tenor's A, and the `f` knobs are ignored
+entirely by the five table voices.
+
 Five RBJ constant-peak bandpasses (Q = F/BW × `resonance`) in parallel,
 summed with the table's gains; coefficients are rebuilt only when the
 effective vowel, the voice, the resonance or the formant ratio changes,
 and the biquads carry their state across blocks, so a render is
-block-size independent at a constant vowel and shift. Voice-aware like
+block-size independent at a constant vowel and shift — and in `sample`
+mode too, because runs are cut at buffer boundaries and `lfilter`
+carries its state across a cut exactly. Voice-aware like
 [`filter`](#filter): a `(V, F)` input gives `(V, F)` out with one
 filter state per voice row, and a single voice row is bit-identical to
-mono. Measured: white noise through tenor A/E/I/O/U peaks at 666 / 397 /
-285 / 378 / 361 Hz against table F1s of 650 / 400 / 290 / 400 / 350.
-Numpy backend only; silent stub under pyo. See `examples/vowel_talk.json`
-and `examples/vowel_giant_child.json`.
+mono; `vowel_cv` is one stream for every voice in both modes.
+Measured: white noise through tenor A/E/I/O/U peaks at 666 / 397 / 285 /
+378 / 361 Hz against table F1s of 650 / 400 / 290 / 400 / 350.
+Numpy backend only; silent stub under pyo. See `examples/vowel_talk.json`,
+`examples/vowel_giant_child.json` and `examples/vowel_robot_talk.json`.
 
 **Ports**
 
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | The source (voice-aware). Unpatched → silence. |
-| `vowel_cv` | in | cv | Adds `cv_depth` × mean CV to `vowel` per block; clamped 0…4. |
+| `vowel_cv` | in | cv | Adds `cv_depth` × CV to `vowel`, clamped 0…4: the block mean (float64) at `cv_rate` `block`, per sample — quantised to 0.02-vowel runs — at `sample`. A non-finite CV is ignored. |
 | `formant_cv` | in | cv | Adds `formant_cv_depth` × mean CV octaves to the formant shift per block; the exponent is clipped ±4 before the power. |
 | `out` | out | audio | The vowel. |
 
@@ -1743,8 +1792,10 @@ and `examples/vowel_giant_child.json`.
 | `gain` | `6.0` | −12 … 24 dB | Makeup. |
 | `mix` | `1.0` | 0 … 1 | Dry/wet; 0 = bit-exact dry. |
 | `cv_depth` | `2.0` | 0 … 4 | Vowels per CV unit on `vowel_cv`. |
+| `cv_rate` | `block` | block / sample | How often `vowel_cv` is read. `block` = the block mean (cheap, bit-exact). `sample` = per sample, quantised to 0.02-vowel runs (~0.6× realtime at a 30 Hz sweep). |
 | `formant` | `0.0` | −24 … 24 st | Throat size: every formant's frequency and bandwidth × `2^(formant/12)` (Q kept). Up = child, down = giant. |
 | `formant_cv_depth` | `1.0` | 0 … 4 | Octaves per CV unit on `formant_cv` (1 = 1 V/oct). |
+| `f1` … `f5` | `650` / `1080` / `2650` / `2900` / `3250` | 50 … 8000 Hz | The `custom` voice's five formant frequencies. Ignored for the table voices. The bandwidths and levels stay the tenor table's. |
 
 #### `parametric_eq`
 
@@ -5637,6 +5688,14 @@ loads in the app. Notable ones referenced above:
   1.2) with a 0.09 Hz unipolar triangle on `vowel_cv` at `cv_depth` 4,
   so the mouth slides A → E → I → O → U and back over eleven seconds;
   an ADSR on a VCA, a hall, a scope on the vowel.
+- `vowel_robot_talk.json` — the audio-rate mouth: a low [`supersaw`](#supersaw)
+  on three slow roots through the [`vowel`](#vowel) filter in `cv_rate`
+  `sample`, with a **25 Hz** bipolar triangle on `vowel_cv` at `cv_depth` 2 —
+  the whole A…U range traversed fifty times a second, which at a per-sample
+  read rings the vowel into a buzzing, ring-mod-ish robot instead of smearing
+  it the way a block-rate read would. `resonance` 1.6, `gain` 18 as makeup, an
+  ADSR on a VCA, a small room, a scope on the vowel. Runs about 0.6× realtime
+  — the per-sample mode is the expensive one.
 - `vowel_giant_child.json` — the talking pad grows and shrinks: the same
   [`supersaw`](#supersaw) on two long notes through the
   [`vowel`](#vowel) filter with the 0.09 Hz triangle on `vowel_cv`,

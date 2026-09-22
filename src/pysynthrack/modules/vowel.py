@@ -17,9 +17,11 @@ alto, countertenor, tenor, bass) — the same numbers every formant
 synthesizer and the Csound manual carry. ``vowel`` is a continuous 0..4
 knob: 0 is A, 1 E, 2 I, 3 O, 4 U, and 1.5 is halfway from E to I —
 frequencies interpolate geometrically, bandwidths linearly, levels in
-dB. ``vowel_cv`` moves it (``cv_depth`` vowels per unit, read per block),
-so a slow LFO is the talking-filter cliché and an envelope is a mouth
-opening on every note. ``voice`` picks the table; ``resonance``
+dB. ``vowel_cv`` moves it (``cv_depth`` vowels per unit, read per block —
+or per SAMPLE at ``cv_rate`` ``sample``), so a slow LFO is the
+talking-filter cliché, an envelope is a mouth opening on every note and
+a 30 Hz one is a robot. ``voice`` picks the table (or ``custom``, five
+formant frequencies of your own); ``resonance``
 multiplies every formant's Q (1 = the table's bandwidths, higher =
 narrower, more vowel, more ring); ``gain`` is makeup (a formant bank
 passes only what sits near its peaks, so the wet is ~15 dB down on a
@@ -45,6 +47,39 @@ out past 19 kHz anyway). At ``formant`` 0 with nothing on the jack the
 ratio is exactly 1 and the render is bit-identical to the unshifted
 filter.
 
+``cv_rate`` is how often ``vowel_cv`` is read. ``block`` (the default)
+takes the block's mean: one vowel per buffer, cheap, and bit-exact at
+any block size. ``sample`` follows the CV per SAMPLE — the audio-rate
+mouth, where a 30 Hz LFO on the jack is a buzzing ring-mod-ish vowel
+instead of a smear. Rebuilding five biquads every sample is not
+affordable, so the modulation is QUANTISED: the CV's contribution is
+rounded to 0.02-vowel steps around the knob, the block is split into
+runs where that rounded vowel is constant, and each run is one
+``lfilter`` call with the filter state carried across the seam. The
+step was picked by measurement — 0.02 vowels is about 1% of a formant
+frequency (17 cents) and sits 62 dB below a true per-sample rebuild on
+a 30 Hz sweep, where 0.1 vowels is only 43 dB down and audibly steppy.
+Because the grid is relative to the knob, the knob itself is always
+exact: with the jack idle (or ``cv_depth`` 0) ``sample`` is the
+``block`` render bit for bit, and nothing clicks at the seams because
+the biquad state is carried, not reset. It costs what it costs — a
+30 Hz sweep is ~70 runs per 512-sample block, about 0.6x realtime for
+this module alone against 0.01x for ``block``, and past roughly 100 Hz
+of modulation every sample is its own run.
+
+``voice`` ``custom`` is your own mouth. ``f1``..``f5`` (Hz) replace the
+table's five formant FREQUENCIES; the bandwidths and levels stay the
+TENOR table's at the current ``vowel`` position, which is what the knob
+then morphs. So a custom voice is a fixed formant chord and ``vowel``
+shapes its resonances rather than moving them — five parallel
+resonators you tune by hand, with ``resonance`` as the global Q knob
+and ``formant`` still scaling frequency and bandwidth together. The
+bandwidths being the table's in HZ (not scaled to your frequencies)
+means a formant dragged up gets relatively narrower and one dragged
+down relatively broader; ``resonance`` is the knob for that. The
+defaults are tenor A — 650 / 1080 / 2650 / 2900 / 3250 — so ``custom``
+starts out sounding like the tenor's A.
+
 Voice-aware like [`filter`](#filter): a ``(V, F)`` input gives ``(V, F)``
 out with one filter state per voice row; a single voice row is
 bit-identical to mono. Coefficients are rebuilt only when the effective
@@ -54,7 +89,9 @@ render is block-size independent at a constant vowel and shift.
 
 Ports:
   * ``in`` (audio): the source. Unpatched → silence.
-  * ``vowel_cv`` (cv): adds ``cv_depth`` × mean CV to ``vowel`` per block.
+  * ``vowel_cv`` (cv): adds ``cv_depth`` × CV to ``vowel`` — the block
+    mean at ``cv_rate`` ``block``, per sample (quantised to 0.02-vowel
+    steps) at ``sample``.
   * ``formant_cv`` (cv): adds ``formant_cv_depth`` × mean CV octaves to
     the formant shift per block.
   * ``out`` (audio): the vowel.
@@ -66,6 +103,11 @@ Params:
   * ``gain``: makeup in dB, −12..24. Default 6.
   * ``mix``: dry/wet, 0..1. Default 1 (0 = bit-exact dry).
   * ``cv_depth``: vowels per CV unit on ``vowel_cv``. Default 2.
+  * ``cv_rate``: block / sample — how often ``vowel_cv`` is read.
+    Default block (the cheap, bit-exact one).
+  * ``f1``..``f5``: the ``custom`` voice's five formant frequencies in
+    Hz, 50..8000. Ignored unless ``voice`` is ``custom``. Defaults
+    650 / 1080 / 2650 / 2900 / 3250 (tenor A).
   * ``formant``: throat size in semitones, −24..24 (up = smaller, a
     child; down = larger, a giant). Default 0 (bit-exact unshifted).
   * ``formant_cv_depth``: octaves per CV unit on ``formant_cv``.
@@ -79,7 +121,21 @@ from ..core.module import Module, register_module_type
 from ..core.port import Port
 
 VOWEL_NAMES = ("a", "e", "i", "o", "u")
+#: The voice types the formant table carries.
 VOWEL_VOICES = ("soprano", "alto", "countertenor", "tenor", "bass")
+#: What the ``voice`` combo offers: the table's voices plus ``custom``,
+#: which takes its frequencies from the ``f1``..``f5`` params instead.
+VOWEL_VOICE_CUSTOM = "custom"
+VOWEL_VOICE_CHOICES = VOWEL_VOICES + (VOWEL_VOICE_CUSTOM,)
+#: How often ``vowel_cv`` is read. ``block`` is the block mean (the
+#: shipped behaviour, bit-exact at any block size); ``sample`` follows
+#: the CV per sample, quantised into runs of constant vowel.
+VOWEL_CV_RATES = ("block", "sample")
+#: The ``custom`` voice's default formant frequencies: tenor A.
+VOWEL_CUSTOM_DEFAULT_FREQS = (650.0, 1080.0, 2650.0, 2900.0, 3250.0)
+#: The custom formant frequency knobs' bounds, Hz.
+VOWEL_CUSTOM_FREQ_MIN = 50.0
+VOWEL_CUSTOM_FREQ_MAX = 8000.0
 
 #: The classic five-formant table: per voice type, per vowel,
 #: ``(frequencies Hz, levels dB, bandwidths Hz)`` for F1..F5.
@@ -124,7 +180,7 @@ FORMANTS = {
 N_FORMANTS = 5
 
 
-def vowel_formants(voice: str, vowel: float):
+def vowel_formants(voice: str, vowel: float, custom_freqs=None):
     """The five formants for a continuous ``vowel`` position 0..4.
 
     Interpolates between the two neighbouring table rows: frequencies
@@ -132,7 +188,16 @@ def vowel_formants(voice: str, vowel: float):
     linearly, levels linearly in dB. Returns ``(freqs, gains, bws)`` as
     lists of five floats — gains LINEAR (the dB already undone). Out-of-
     range positions clamp, so a CV past U holds U; an unknown voice
-    falls back to ``tenor``.
+    falls back to ``tenor`` — and so does ``custom``, which is not in
+    the table.
+
+    ``custom_freqs``, when given, REPLACES the five interpolated
+    frequencies (the caller passes the ``f1``..``f5`` params for the
+    ``custom`` voice). The bandwidths and levels still come from the
+    table — tenor's, since ``custom`` falls back to it — so ``vowel``
+    goes on morphing the resonances of a formant chord whose pitches
+    are yours. With ``custom_freqs`` None the helper is exactly what it
+    always was.
     """
     table = FORMANTS.get(voice, FORMANTS["tenor"])
     v = min(float(len(VOWEL_NAMES) - 1), max(0.0, float(vowel)))
@@ -142,7 +207,10 @@ def vowel_formants(voice: str, vowel: float):
     fb, db, bb = table[VOWEL_NAMES[i0 + 1]]
     freqs, gains, bws = [], [], []
     for k in range(N_FORMANTS):
-        freqs.append(math.exp((1.0 - t) * math.log(fa[k]) + t * math.log(fb[k])))
+        if custom_freqs is None:
+            freqs.append(math.exp((1.0 - t) * math.log(fa[k]) + t * math.log(fb[k])))
+        else:
+            freqs.append(float(custom_freqs[k]))
         gains.append(10.0 ** (((1.0 - t) * da[k] + t * db[k]) / 20.0))
         bws.append((1.0 - t) * ba[k] + t * bb[k])
     return freqs, gains, bws
@@ -154,12 +222,16 @@ class Vowel(Module):
 
     Parameters:
         vowel: 0..4 — A, E, I, O, U and everything between. Default 0.
-        voice: Table — soprano / alto / countertenor / tenor / bass.
-            Default tenor.
+        voice: Table — soprano / alto / countertenor / tenor / bass, or
+            ``custom`` (frequencies from ``f1``..``f5``). Default tenor.
         resonance: Q multiplier on every formant, 0.25..4. Default 1.
         gain: Makeup in dB, −12..24. Default 6.
         mix: Dry/wet, 0..1 (0 = bit-exact dry). Default 1.
         cv_depth: Vowels per CV unit on ``vowel_cv``. Default 2.
+        cv_rate: ``block`` (the block mean, bit-exact) or ``sample``
+            (per-sample, quantised to 0.02-vowel runs). Default block.
+        f1..f5: The ``custom`` voice's formant frequencies in Hz,
+            50..8000. Ignored for the table voices. Defaults tenor A.
         formant: Throat size in semitones, −24..24 — every formant's
             frequency and bandwidth × ``2 ** (formant / 12)`` (Q kept).
             Default 0.
@@ -168,7 +240,8 @@ class Vowel(Module):
 
     Ports:
         in (in, audio): the source (voice-aware).
-        vowel_cv (in, cv): moves ``vowel``, block mean.
+        vowel_cv (in, cv): moves ``vowel`` — block mean, or per sample
+            at ``cv_rate`` ``sample``.
         formant_cv (in, cv): moves the formant shift, block mean.
         out (out, audio): the vowel.
     """
@@ -182,8 +255,14 @@ class Vowel(Module):
         "gain": 6.0,
         "mix": 1.0,
         "cv_depth": 2.0,
+        "cv_rate": "block",
         "formant": 0.0,
         "formant_cv_depth": 1.0,
+        "f1": VOWEL_CUSTOM_DEFAULT_FREQS[0],
+        "f2": VOWEL_CUSTOM_DEFAULT_FREQS[1],
+        "f3": VOWEL_CUSTOM_DEFAULT_FREQS[2],
+        "f4": VOWEL_CUSTOM_DEFAULT_FREQS[3],
+        "f5": VOWEL_CUSTOM_DEFAULT_FREQS[4],
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),

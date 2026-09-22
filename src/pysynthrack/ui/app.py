@@ -81,7 +81,12 @@ from ..modules.wind import WIND_MODELS
 from ..modules.drift import DRIFT_MODES
 from ..modules.cv_recorder import (
     CV_RECORDER_MODES, CV_RECORDER_PLAY_MODES, CV_RECORDER_SPEEDS)
-from ..modules.vowel import VOWEL_VOICES
+from ..modules.vowel import (
+    VOWEL_CUSTOM_FREQ_MAX,
+    VOWEL_CUSTOM_FREQ_MIN,
+    VOWEL_CV_RATES,
+    VOWEL_VOICE_CHOICES,
+)
 from ..modules.freeze import FREEZE_SIZES
 from ..modules.samplehold import SAMPLE_HOLD_MODES
 from ..modules.compressor import DETECTOR_MODES
@@ -3424,10 +3429,14 @@ class App:
             # Formant filter. ``vowel`` slides A > E > I > O > U (0..4);
             # ``voice`` picks the formant table; ``resonance`` multiplies
             # every formant's Q; ``gain`` is makeup in dB; ``cv_depth``
-            # is vowels per unit on vowel_cv; ``formant`` is the throat
-            # size in semitones (down = giant, up = child) and
-            # ``formant_cv_depth`` octaves per unit on formant_cv.
-            # ``mix`` rides the generic slider.
+            # is vowels per unit on vowel_cv; ``cv_rate`` is how often
+            # that jack is read (block mean or per sample -- it is NOT
+            # called ``mode``, which the shared combo branch would have
+            # shadowed); ``formant`` is the throat size in semitones
+            # (down = giant, up = child) and ``formant_cv_depth``
+            # octaves per unit on formant_cv; ``f1``..``f5`` are the
+            # custom voice's formant frequencies. ``mix`` rides the
+            # generic slider.
             if param_name == "vowel":
                 dpg.add_slider_float(
                     label=f"{param_name} (A E I O U)", default_value=float(current),
@@ -3437,9 +3446,24 @@ class App:
                 return
             if param_name == "voice":
                 dpg.add_combo(
-                    label=param_name, items=list(VOWEL_VOICES),
+                    label=param_name, items=list(VOWEL_VOICE_CHOICES),
                     default_value=str(current),
                     width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_rate":
+                dpg.add_combo(
+                    label=f"{param_name} (vowel_cv)", items=list(VOWEL_CV_RATES),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("f1", "f2", "f3", "f4", "f5"):
+                dpg.add_drag_float(
+                    label=f"{param_name} (custom)", default_value=float(current),
+                    speed=5.0, min_value=VOWEL_CUSTOM_FREQ_MIN,
+                    max_value=VOWEL_CUSTOM_FREQ_MAX, format="%.0f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
             if param_name == "resonance":

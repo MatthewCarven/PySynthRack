@@ -10,6 +10,23 @@ half blend; voice-aware `(V, F)` in/out with a single row ≡ mono;
 block-size independence at a constant vowel; the clamp; the voice combo
 offers the five voices; the widget sweep; the example.
 
+The love pass of 2026-09-22, three follow-ons: (a) `vowel_cv`'s block
+mean is taken in float64, so a CONSTANT cv is block-size exact (it was
+not: the float32 accumulation reads 0.29999998 over 64 samples and
+0.30000001 over 512), and a non-finite cv is ignored rather than
+silently collapsed to A by Python's non-propagating `min`/`max`;
+(b) `cv_rate` `sample` follows the CV per sample by quantising the
+modulation into runs of constant vowel -- pinned against a TRUE
+per-sample rebuild (-62 dB), against clicks (its max sample step is
+smaller than the block mode's), by its sidebands (the 2nd-order pair
+9-11 dB up on the block mode's), by the run collapsing (a constant cv
+is one coefficient set; a clamped sweep uses fewer than an unclamped
+one), and by being the block render BIT FOR BIT whenever nothing moves;
+(c) `voice` `custom` takes its five frequencies from `f1`..`f5` and the
+tenor table's bandwidths and levels, measured: the -3 dB bandwidth stays
+~40 Hz from f1 300 Hz to 2500 Hz (so Q runs 7.4 -> 63) and the `vowel`
+knob moves the bandwidth, not the peak.
+
 The formant shift (love pass, 2026-09-20): `formant` +12 / -12 puts
 noise-through-A's peak at 2x / 0.5x the table F1, measured; `formant_cv`
 +1 at depth 1 == the knob at +12 bit-exact, depth 0 and cv 0 are the
@@ -35,7 +52,12 @@ from pysynthrack.core.patch import Patch
 from pysynthrack.modules.vowel import (
     FORMANTS,
     N_FORMANTS,
+    VOWEL_CUSTOM_DEFAULT_FREQS,
+    VOWEL_CUSTOM_FREQ_MAX,
+    VOWEL_CUSTOM_FREQ_MIN,
+    VOWEL_CV_RATES,
     VOWEL_NAMES,
+    VOWEL_VOICE_CHOICES,
     VOWEL_VOICES,
     vowel_formants,
 )
@@ -71,15 +93,35 @@ def _noise(n, seed=1):
     return np.random.default_rng(seed).uniform(-1.0, 1.0, n).astype(np.float32)
 
 
-def _render(params=None, seconds=1.0, block=512, cv_value=None, x=None, cv_port="vowel_cv"):
-    step = _driver(params, cv=cv_value is not None, block=block, cv_port=cv_port)
+def _render(params=None, seconds=1.0, block=512, cv_value=None, x=None,
+            cv_port="vowel_cv", cv_sig=None, want_step=False):
+    """Render x through a vowel. ``cv_value`` is a constant on the jack,
+    ``cv_sig`` a per-sample CV signal (what ``cv_rate`` "sample" wants)."""
+    step = _driver(params, cv=cv_value is not None or cv_sig is not None,
+                   block=block, cv_port=cv_port)
     if x is None:
         x = _noise(int(SR * seconds))
     out = []
     for i in range(0, len(x) - block + 1, block):
-        cvb = np.full(block, cv_value, dtype=np.float32) if cv_value is not None else None
+        if cv_sig is not None:
+            cvb = np.asarray(cv_sig[i:i + block], dtype=np.float32)
+        elif cv_value is not None:
+            cvb = np.full(block, cv_value, dtype=np.float32)
+        else:
+            cvb = None
         out.append(step(x[i:i + block], cvb))
-    return np.concatenate(out)
+    y = np.concatenate(out)
+    return (y, step) if want_step else y
+
+
+def _tri(n, hz):
+    """A bipolar triangle sample by sample -- the CV an LFO would send."""
+    ph = (np.arange(n) * (hz / SR)) % 1.0
+    return (4.0 * np.abs(ph - 0.5) - 1.0).astype(np.float32)
+
+
+def _sine(n, hz, amp=0.8):
+    return (amp * np.sin(2 * np.pi * hz * np.arange(n) / SR)).astype(np.float32)
 
 
 def _spectrum(sig):
@@ -467,7 +509,9 @@ def test_voice_combo_offers_the_five_voices_and_every_param_has_a_widget(monkeyp
     for k in kinds:
         for call in getattr(app_mod.dpg, k).call_args_list[before[k]:]:
             widgets[str(call.kwargs.get("label"))] = (k, call.kwargs.get("items"))
-    assert widgets["voice"] == ("add_combo", list(VOWEL_VOICES))
+    assert widgets["voice"] == ("add_combo", list(VOWEL_VOICE_CHOICES))
+    rate = next(lb for lb in widgets if lb.startswith("cv_rate"))
+    assert widgets[rate] == ("add_combo", list(VOWEL_CV_RATES))
     formats = {}
     for k in kinds:
         for call in getattr(app_mod.dpg, k).call_args_list[before[k]:]:
@@ -480,6 +524,17 @@ def test_voice_combo_offers_the_five_voices_and_every_param_has_a_widget(monkeyp
     assert widgets[formant][0] == "add_drag_float" and formats[formant].endswith(" st")
     assert widgets["formant_cv_depth"][0] == "add_drag_float"
     assert "oct/unit" in formats["formant_cv_depth"]
+    # The custom voice's five frequency knobs are bounded Hz drags.
+    bounds = {}
+    for k in kinds:
+        for call in getattr(app_mod.dpg, k).call_args_list[before[k]:]:
+            bounds[str(call.kwargs.get("label"))] = (call.kwargs.get("min_value"),
+                                                     call.kwargs.get("max_value"))
+    for i in range(1, N_FORMANTS + 1):
+        lb = next(x for x in widgets if x.startswith(f"f{i}"))
+        assert widgets[lb][0] == "add_drag_float", lb
+        assert formats[lb].endswith(" Hz"), lb
+        assert bounds[lb] == (VOWEL_CUSTOM_FREQ_MIN, VOWEL_CUSTOM_FREQ_MAX), lb
     assert all(ord(ch) < 128 for lb in widgets for ch in lb)
 
 
@@ -543,3 +598,404 @@ def test_the_giant_child_example_grows_the_throat_an_octave_each_way():
         peak = max(peak, float(np.abs(out).max()))
     assert 0.3 < peak < 0.8, peak
     assert min(ratios) < 0.55 and max(ratios) > 1.9, (min(ratios), max(ratios))
+
+
+# ----- (a) the block mean in float64 (love pass, 2026-09-22) ---------------------
+
+
+def test_the_float32_mean_of_a_constant_really_does_move_with_the_block_size():
+    # Self-test the tripwire before trusting it: np.mean ACCUMULATES in the
+    # buffer's own dtype, so the float32 mean of a constant 0.3 is a
+    # different number at 64 samples than at 512. In float64 the product
+    # n * v is exact in 53 bits, so the mean IS the constant, at any size.
+    v64, v512 = np.full(64, 0.3, np.float32), np.full(512, 0.3, np.float32)
+    assert float(np.mean(v64)) != float(np.mean(v512))
+    assert float(np.mean(v64)) == pytest.approx(0.29999998, abs=1e-8)
+    exact = float(np.float32(0.3))
+    assert float(np.mean(v64, dtype=np.float64)) == exact
+    assert float(np.mean(v512, dtype=np.float64)) == exact
+
+
+@pytest.mark.parametrize("cv", [0.3, 0.7, 0.15, 1.3])
+def test_a_constant_vowel_cv_renders_the_same_at_64_and_512(cv):
+    # The finding: the block mean landed an ulp apart at the two block
+    # sizes, the coefficients followed it, and a static patch was not
+    # block-size exact. (The key rounds to 6 dp but the COEFFICIENTS are
+    # built from the unrounded vowel, so the rounding never hid it.)
+    x = _noise(512 * 8, 13)
+    p = {"vowel": 1.0, "resonance": 1.3, "cv_depth": 1.0}
+    assert np.array_equal(_render(p, x=x, block=512, cv_value=cv),
+                          _render(p, x=x, block=64, cv_value=cv))
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_a_non_finite_vowel_cv_is_ignored_rather_than_snapped_to_a_vowel(bad):
+    # Python's min/max do not propagate NaN -- ``min(4, max(0, nan))`` is
+    # 0.0, so an unscrubbed NaN used to jump the filter to A and an inf to
+    # U. Both are now ignored, the way formant_cv's already were: the knob
+    # alone, and the render is the unpatched one bit for bit.
+    x = _noise(512 * 4, 17)
+    assert np.array_equal(_render({"vowel": 3.0}, x=x, cv_value=bad),
+                          _render({"vowel": 3.0}, x=x))
+
+
+# ----- (b) cv_rate: the per-sample mouth -----------------------------------------
+
+
+def test_cv_rate_defaults_to_block_and_a_pre_love_pass_patch_still_loads():
+    assert VOWEL_CV_RATES == ("block", "sample")
+    d = Patch()
+    d.add_module("vowel", params={"vowel": 1.0})
+    raw = d.to_dict()
+    for m in raw["modules"]:
+        for gone in ("cv_rate", "f1", "f2", "f3", "f4", "f5"):
+            m["params"].pop(gone, None)
+    vw = next(m for m in Patch.from_dict(raw) if m.TYPE == "vowel")
+    assert vw.params["cv_rate"] == "block"
+    assert [vw.params[f"f{k + 1}"] for k in range(N_FORMANTS)] == \
+        list(VOWEL_CUSTOM_DEFAULT_FREQS)
+
+
+def test_sample_mode_with_nothing_moving_is_the_block_render_bit_exact():
+    # The quantisation grid is relative to the KNOB, not absolute, so step
+    # 0 IS the knob: an idle jack, cv_depth 0 and an unpatched jack all
+    # give the block-mean render bit for bit. Flipping cv_rate on a still
+    # patch is silent, which is the whole point of a knob-relative grid.
+    x = _noise(512 * 8, 21)
+    zero = np.zeros(len(x), np.float32)
+    wob = _tri(len(x), 37.0)
+    p = {"vowel": 1.3, "cv_depth": 2.0, "resonance": 1.4}
+    assert np.array_equal(_render({**p, "cv_rate": "sample"}, x=x, cv_sig=zero),
+                          _render({**p, "cv_rate": "block"}, x=x, cv_sig=zero))
+    z = {**p, "cv_depth": 0.0}
+    assert np.array_equal(_render({**z, "cv_rate": "sample"}, x=x, cv_sig=wob),
+                          _render({**z, "cv_rate": "block"}, x=x, cv_sig=wob))
+    assert np.array_equal(_render({**p, "cv_rate": "sample"}, x=x),
+                          _render({**p, "cv_rate": "block"}, x=x))
+    # An unknown cv_rate falls back to block rather than failing.
+    assert np.array_equal(_render({**p, "cv_rate": "audio"}, x=x, cv_sig=wob),
+                          _render({**p, "cv_rate": "block"}, x=x, cv_sig=wob))
+
+
+def test_sample_mode_is_block_size_independent():
+    # Runs are cut at buffer boundaries, and lfilter carries zi across a
+    # cut exactly, so WHERE the runs are split cannot matter.
+    x = _noise(512 * 8, 23)
+    wob = _tri(len(x), 37.0)
+    p = {"vowel": 2.0, "cv_rate": "sample", "cv_depth": 2.0, "resonance": 1.5}
+    assert np.array_equal(_render(p, x=x, block=512, cv_sig=wob),
+                          _render(p, x=x, block=64, cv_sig=wob))
+
+
+def _sideband_db(y, carrier=220.0, freqs=(130.0, 160.0, 190.0, 250.0, 280.0, 310.0)):
+    seg = y[SR // 4:].astype(np.float64)
+    spec = np.abs(np.fft.rfft(seg * np.hanning(len(seg))))
+    fr = np.fft.rfftfreq(len(seg), 1.0 / SR)
+    car = spec[(fr > carrier - 3) & (fr < carrier + 3)].max()
+    return [float(20 * np.log10(spec[(fr > f - 4) & (fr < f + 4)].max() / car))
+            for f in freqs]
+
+
+def test_sample_mode_follows_the_cv_inside_the_block_and_makes_richer_sidebands():
+    # The audible claim, measured where it lives: a 220 Hz sine through a
+    # 30 Hz vowel sweep. Reading the CV once per 512-sample buffer samples
+    # the modulation at 86 Hz; reading it per sample does not, and the
+    # difference shows as higher-order sidebands. Measured, relative to
+    # the carrier, at 130 / 160 / 190 / 250 / 280 / 310 Hz:
+    #   block  -57.1 -27.0 -20.7 -16.6 -21.0 -30.1
+    #   sample -26.6 -16.0 -21.8 -21.7 -12.0 -33.0
+    # The 2nd-order pair (160 / 280 Hz) is 11.0 / 9.0 dB up and the
+    # 3rd-order at 130 Hz 30.5 dB up -- the ring-mod-ish buzz.
+    n = 512 * 172
+    x = _sine(n, 220.0)
+    cv = _tri(n, 30.0)
+    p = {"vowel": 2.0, "cv_depth": 2.0, "resonance": 1.6, "gain": 0.0}
+    blk = _sideband_db(_render({**p, "cv_rate": "block"}, x=x, cv_sig=cv))
+    smp = _sideband_db(_render({**p, "cv_rate": "sample"}, x=x, cv_sig=cv))
+    assert smp[1] - blk[1] > 6.0, (blk, smp)          # 160 Hz
+    assert smp[4] - blk[4] > 6.0, (blk, smp)          # 280 Hz
+    assert smp[0] - blk[0] > 20.0, (blk, smp)         # 130 Hz
+
+
+def test_sample_mode_does_not_click():
+    # A seam is a coefficient change with the filter STATE carried, not
+    # reset, so nothing pops. The tripwire calibrates itself against the
+    # BLOCK mode, which jumps coefficients once per buffer and is not a
+    # clicking filter: measured, the swept sine's biggest sample-to-sample
+    # step is 0.00367 in sample mode against 0.00498 in block mode -- the
+    # finer-grained mode is the SMOOTHER one.
+    n = 512 * 172
+    x = _sine(n, 220.0)
+    cv = _tri(n, 30.0)
+    p = {"vowel": 2.0, "cv_depth": 2.0, "resonance": 1.6, "gain": 0.0}
+    blk = _render({**p, "cv_rate": "block"}, x=x, cv_sig=cv)[SR // 4:]
+    smp = _render({**p, "cv_rate": "sample"}, x=x, cv_sig=cv)[SR // 4:]
+    blk_step = float(np.abs(np.diff(blk.astype(np.float64))).max())
+    smp_step = float(np.abs(np.diff(smp.astype(np.float64))).max())
+    assert smp_step <= blk_step, (smp_step, blk_step)
+    # And a sanity ceiling: a 220 Hz sine at this level cannot step more
+    # than 2 pi f A / sr per sample even with no filter at all.
+    assert smp_step < 2 * np.pi * 220.0 * float(np.abs(smp).max()) / SR * 1.2
+
+
+def _per_sample_oracle(params, x, cv):
+    """Coefficients rebuilt EVERY sample, transposed DF2 in pure Python --
+    the thing the quantised mode approximates. Same state layout scipy's
+    lfilter carries in zi, so the two are comparable sample by sample."""
+    vowel = float(params["vowel"])
+    depth = float(params["cv_depth"])
+    res = float(params["resonance"])
+    v = np.clip(vowel + depth * cv.astype(np.float64), 0.0, 4.0)
+    z = np.zeros((N_FORMANTS, 2))
+    y = np.zeros(len(x))
+    for i in range(len(x)):
+        freqs, gains, bws = vowel_formants("tenor", v[i])
+        xi = float(x[i])
+        acc = 0.0
+        for k in range(N_FORMANTS):
+            f = min(freqs[k], 0.45 * SR)
+            q = max(0.1, (f / bws[k]) * res)
+            w0 = 2.0 * np.pi * f / SR
+            alpha = np.sin(w0) / (2.0 * q)
+            a0 = 1.0 + alpha
+            b0, b2 = alpha / a0, -alpha / a0
+            a1, a2 = -2.0 * np.cos(w0) / a0, (1.0 - alpha) / a0
+            yi = b0 * xi + z[k, 0]
+            z[k, 0] = -a1 * yi + z[k, 1]
+            z[k, 1] = b2 * xi - a2 * yi
+            acc += gains[k] * yi
+        y[i] = acc
+    return y
+
+
+def test_the_quantised_vowel_tracks_a_true_per_sample_rebuild():
+    # The accuracy the 0.02-vowel grid buys, against the filter nobody can
+    # afford: measured -61.7 dB for sample mode and -8.9 dB for block mode
+    # on a 30 Hz sweep. 0.02 vowels is about 1% of a formant frequency.
+    n = 512 * 8
+    x = _sine(n, 220.0)
+    cv = _tri(n, 30.0)
+    p = {"vowel": 2.0, "cv_depth": 2.0, "resonance": 1.6, "gain": 0.0}
+    ref = _per_sample_oracle(p, x, cv)
+    rms = np.sqrt(np.mean(ref ** 2))
+
+    def err(mode):
+        y = _render({**p, "cv_rate": mode}, x=x, cv_sig=cv).astype(np.float64)
+        return 20 * np.log10(np.sqrt(np.mean((y - ref) ** 2)) / rms)
+
+    smp, blk = err("sample"), err("block")
+    assert smp < -50.0, smp
+    assert smp < blk - 40.0, (smp, blk)
+
+
+def test_the_run_split_collapses_constant_and_clamped_runs():
+    # Count the doors. A constant CV is ONE coefficient set however long
+    # the render; the cache can never exceed the 201 points of the 0..4
+    # grid; and a sweep that spends most of its time PINNED at A or U
+    # (depth 10) uses fewer sets than one that does not (depth 2) --
+    # because the step COUNT is what gets clipped, so the clamped samples
+    # share a run instead of getting one each.
+    x = _noise(512 * 8, 27)
+    p = {"vowel": 2.0, "cv_rate": "sample", "resonance": 1.4}
+
+    def cache(params, cv_sig):
+        _y, step = _render(params, x=x, cv_sig=cv_sig, want_step=True)
+        return step.backend._state[step.module.id]["cache"]
+
+    assert len(cache({**p, "cv_depth": 2.0},
+                     np.full(len(x), 0.4, np.float32))) == 1
+    wide = len(cache({**p, "cv_depth": 10.0}, _tri(len(x), 50.0)))
+    full = len(cache({**p, "cv_depth": 2.0}, _tri(len(x), 50.0)))
+    assert full <= 201 and wide < full, (wide, full)
+
+
+@pytest.mark.parametrize("bad", [1e9, np.nan, -np.inf])
+def test_an_absurd_or_non_finite_cv_in_sample_mode_stays_finite(bad):
+    # Scrub before the clamp, clip the step COUNT before the cast: an
+    # int64 cast of rint(1e9 / 0.02) would have been nonsense.
+    x = _noise(512 * 4, 33)
+    p = {"vowel": 2.0, "cv_rate": "sample", "cv_depth": 2.0}
+    y = _render(p, x=x, cv_sig=np.full(len(x), bad, np.float32))
+    assert np.all(np.isfinite(y))
+    mixed = _tri(len(x), 21.0)
+    mixed[::97] = np.nan
+    assert np.all(np.isfinite(_render(p, x=x, cv_sig=mixed)))
+
+
+def test_sample_mode_is_voice_aware():
+    # vowel_cv is collapsed to one stream, so every voice row takes the
+    # same per-sample vowel -- each row equals its own mono render.
+    n = 512 * 6
+    a, b = _noise(n, 41), _noise(n, 43)
+    cv = _tri(n, 29.0)
+    p = {"vowel": 2.0, "cv_rate": "sample", "cv_depth": 2.0, "resonance": 1.4}
+    step = _driver(p, cv=True)
+    rows = []
+    for i in range(0, n, 512):
+        blk = np.stack([a[i:i + 512], np.zeros(512, np.float32), b[i:i + 512]])
+        rows.append(step(blk, cv[i:i + 512]))
+    got = np.concatenate(rows, axis=-1)
+    assert got.shape == (3, n) and np.all(got[1] == 0.0)
+    assert np.array_equal(got[0], _render(p, x=a, cv_sig=cv))
+    assert np.array_equal(got[2], _render(p, x=b, cv_sig=cv))
+
+
+# ----- (c) the custom voice ------------------------------------------------------
+
+
+def test_custom_is_offered_and_starts_as_the_tenor_a():
+    assert VOWEL_VOICE_CHOICES == VOWEL_VOICES + ("custom",)
+    assert "custom" not in FORMANTS                    # it is not a table row
+    m = all_module_types()["vowel"](1)
+    assert [m.params[f"f{k + 1}"] for k in range(N_FORMANTS)] == \
+        list(VOWEL_CUSTOM_DEFAULT_FREQS)
+    assert list(VOWEL_CUSTOM_DEFAULT_FREQS) == list(FORMANTS["tenor"]["a"][0])
+
+
+def test_custom_takes_the_frequencies_and_the_tenor_bandwidths_and_levels():
+    mine = (300.0, 900.0, 1500.0, 2000.0, 4000.0)
+    freqs, gains, bws = vowel_formants("custom", 3.0, mine)
+    t_freqs, t_gains, t_bws = vowel_formants("tenor", 3.0)
+    assert freqs == list(mine)
+    assert bws == t_bws and gains == t_gains          # borrowed from tenor
+    assert freqs != t_freqs
+    # With no custom frequencies "custom" is just tenor -- it is not in
+    # the table, so it falls back like any unknown voice.
+    assert vowel_formants("custom", 3.0) == vowel_formants("tenor", 3.0)
+    # And the argument is honoured whoever asks, so the helper stays pure.
+    assert vowel_formants("bass", 1.0, mine)[0] == list(mine)
+
+
+def _peak_bw_near(H, fr, near, frac=0.12):
+    """Peak frequency and -3 dB bandwidth of the resonance within +-12% of
+    `near` -- tighter than _peak_bw_skirt's octave, because a custom F1
+    can be parked right next to F2."""
+    band = (fr > near * (1 - frac)) & (fr < near * (1 + frac))
+    i = int(np.argmax(np.where(band, H, 0.0)))
+    half = H[i] / np.sqrt(2.0)
+    lo = i
+    while lo > 0 and H[lo] > half:
+        lo -= 1
+    hi = i
+    while hi < len(H) - 1 and H[hi] > half:
+        hi += 1
+    return float(fr[i]), float(fr[hi] - fr[lo])
+
+
+def test_custom_with_the_tenor_as_frequencies_is_the_tenor_at_vowel_zero():
+    # The pin the spec asked for. Note it is NOT a bit-exactness claim by
+    # construction: the table path computes exp((1-t)ln fa + t ln fb),
+    # and exp(log(650)) is 649.9999999999999, so the two coefficient sets
+    # agree to a part in 1e15 rather than exactly (the float32 output
+    # happens to round them together, but that is luck, not a contract).
+    x = _noise(512 * 8, 47)
+    same = {f"f{k + 1}": float(FORMANTS["tenor"]["a"][0][k]) for k in range(N_FORMANTS)}
+    cust = _render({"voice": "custom", "vowel": 0.0, "gain": 0.0,
+                    "resonance": 2.0, **same}, x=x)
+    tenor = _render({"voice": "tenor", "vowel": 0.0, "gain": 0.0,
+                     "resonance": 2.0}, x=x)
+    assert np.allclose(cust, tenor, atol=1e-6)
+    H0, fr = _impulse_response({"voice": "custom", "vowel": 0.0, "gain": 0.0,
+                                "resonance": 2.0, **same})
+    H1, _ = _impulse_response({"voice": "tenor", "vowel": 0.0, "gain": 0.0,
+                               "resonance": 2.0})
+    for f in FORMANTS["tenor"]["a"][0][:3]:
+        p0, _b0 = _peak_bw_near(H0, fr, float(f))
+        p1, _b1 = _peak_bw_near(H1, fr, float(f))
+        assert abs(p0 - p1) < 0.02 * p1 and abs(p0 - f) < 0.02 * f, (f, p0, p1)
+
+
+@pytest.mark.parametrize("f1,bw,q", [(300.0, 40.56, 7.40), (650.0, 40.56, 16.01),
+                                     (1200.0, 40.06, 29.99), (2500.0, 39.56, 63.15)])
+def test_a_custom_f1_lands_where_you_asked_with_the_tables_bandwidth(f1, bw, q):
+    # The documented consequence, measured on the impulse response (the
+    # module is an LTI filter at a fixed vowel, so |H| is exact): the
+    # bandwidth stays the TABLE's in Hz (80 Hz for tenor A's F1, halved
+    # to ~40 by resonance 2) wherever you put the formant, so Q climbs
+    # from 7.4 at 300 Hz to 63 at 2500 Hz. That is why `resonance` is the
+    # knob for a custom voice's character.
+    H, fr = _impulse_response({"voice": "custom", "vowel": 0.0, "gain": 0.0,
+                               "resonance": 2.0, "f1": f1})
+    peak, meas_bw = _peak_bw_near(H, fr, f1)
+    assert abs(peak - f1) < 0.02 * f1, (f1, peak)
+    assert meas_bw == pytest.approx(bw, rel=0.05)
+    assert peak / meas_bw == pytest.approx(q, rel=0.05)
+
+
+def test_the_vowel_knob_morphs_a_custom_voices_resonances_not_its_pitches():
+    # A custom voice is a fixed formant CHORD: the knob moves the
+    # bandwidths and levels (tenor A's F1 bw 80 -> tenor O's 70, so the
+    # measured -3 dB width goes 40.6 -> 35.6 at resonance 2) while the
+    # peak stays exactly where f1 put it.
+    base = {"voice": "custom", "gain": 0.0, "resonance": 2.0, "f1": 650.0}
+    Ha, fr = _impulse_response({**base, "vowel": 0.0})
+    Ho, _ = _impulse_response({**base, "vowel": 3.0})
+    pa, ba = _peak_bw_near(Ha, fr, 650.0)
+    po, bo = _peak_bw_near(Ho, fr, 650.0)
+    assert abs(pa - 650.0) < 0.02 * 650.0 and abs(po - 650.0) < 0.02 * 650.0
+    assert ba == pytest.approx(40.56, rel=0.05)
+    assert bo == pytest.approx(35.55, rel=0.05)
+    assert bo / ba == pytest.approx(70.0 / 80.0, rel=0.05)
+
+
+def test_the_f_knobs_do_nothing_to_a_table_voice():
+    # f1..f5 are read only for "custom", so they must not invalidate a
+    # table voice's cached coefficients or change a note of its render.
+    x = _noise(512 * 6, 51)
+    assert np.array_equal(_render({"voice": "tenor", "f1": 4000.0, "f5": 120.0}, x=x),
+                          _render({"voice": "tenor"}, x=x))
+    assert np.array_equal(_render({"voice": "kazoo", "vowel": 1.0}, x=x),
+                          _render({"voice": "tenor", "vowel": 1.0}, x=x))
+
+
+def test_a_custom_frequency_is_clamped_to_the_widgets_range():
+    # The knobs are 50..8000 Hz and the renderer clamps to the same
+    # bounds, so a hand-edited patch cannot push a formant past Nyquist.
+    x = _noise(512 * 4, 53)
+    assert np.array_equal(_render({"voice": "custom", "f1": 1e9}, x=x),
+                          _render({"voice": "custom", "f1": VOWEL_CUSTOM_FREQ_MAX}, x=x))
+    assert np.array_equal(_render({"voice": "custom", "f1": -5.0}, x=x),
+                          _render({"voice": "custom", "f1": VOWEL_CUSTOM_FREQ_MIN}, x=x))
+    assert np.all(np.isfinite(_render({"voice": "custom", "f1": 1e9}, x=x)))
+
+
+def test_the_custom_voice_and_sample_mode_work_together():
+    # The two follow-ons share the coefficient cache, keyed per quantised
+    # step and dropped whenever the voice, knob, resonance, shift or the
+    # custom frequencies change -- so a custom voice swept per sample is
+    # still block-size exact and still not the block render.
+    x = _noise(512 * 8, 57)
+    cv = _tri(len(x), 31.0)
+    p = {"voice": "custom", "vowel": 2.0, "cv_rate": "sample", "cv_depth": 2.0,
+         "f1": 420.0, "f2": 1500.0}
+    assert np.array_equal(_render(p, x=x, cv_sig=cv, block=512),
+                          _render(p, x=x, cv_sig=cv, block=64))
+    assert not np.array_equal(_render(p, x=x, cv_sig=cv),
+                              _render({**p, "cv_rate": "block"}, x=x, cv_sig=cv))
+
+
+# ----- the robot example ---------------------------------------------------------
+
+
+def test_the_robot_talk_example_buzzes_per_sample():
+    from pysynthrack.io_patch import load_patch
+
+    path = Path(__file__).resolve().parent.parent / "examples" / "vowel_robot_talk.json"
+    patch = load_patch(path)
+    assert len(list(patch)) <= 12
+    vw = next(m for m in patch if m.TYPE == "vowel")
+    assert vw.params["cv_rate"] == "sample"
+    assert any(c.dst_module_id == vw.id and c.dst_port == "vowel_cv" for c in patch.cables)
+    b = NumpyBackend(sample_rate=SR, block_size=512)
+    b.compile(patch)
+    np.random.seed(1)
+    peak = 0.0
+    for _ in range(int(SR * 5 / 512)):
+        out, _devices = b.render_block_multi(512)
+        assert out is not None and np.all(np.isfinite(out))
+        peak = max(peak, float(np.abs(out).max()))
+    assert 0.3 < peak < 0.8, peak
+    # It really used the per-sample path: the 25 Hz mouth swept dozens of
+    # quantised vowel positions, so the coefficient cache is full of them
+    # (a block-rate read would have left one key per block at most).
+    assert len(b._state[vw.id]["cache"]) > 50
