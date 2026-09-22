@@ -19659,15 +19659,25 @@ class NumpyBackend(AudioBackend):
         """Nine-drawbar additive organ (see modules/organ.py).
 
         Per voice the nine partials render as ONE vectorized sine call
-        over a (9, F) phase-ramp block — pitch is read per block (mean,
-        the pluck idiom) so within a block every partial's frequency is
-        constant and the phase ramp is a plain ``arange`` (the
-        oscillator's constant-frequency indexing, ``phases[0] = start``
-        — which is what makes the lone-8' drawbar bit-exact against a
-        mono sine oscillator). Phase state advances for every voice
-        every block whether audible or not (the oscillator's rule), so
-        activity gating never moves phases; only the sine evaluation is
-        skipped for silent voices.
+        over a (9, F) phase-ramp block — pitch is read per block (mean
+        in float64, the pluck idiom) so within a block every partial's
+        frequency is constant and the phase ramp is a plain ``arange``
+        (the oscillator's constant-frequency indexing, ``phases[0] =
+        start`` — which is what makes the lone-8' drawbar bit-exact
+        against a mono sine oscillator over a block).
+
+        What the ramp is added to is a phase ORIGIN plus an INTEGER
+        count of samples since that origin, not a per-block float
+        accumulator: ``ph(k) = (origin + inc * k) % 1`` for the absolute
+        index ``k``. The origin is re-anchored only when a voice's
+        increment changes, so a held pitch never accumulates at all and
+        every block partition renders the identical sample — a float
+        ``phase += inc * frames`` carried per block drifted a float32
+        ulp within a second or two (2026-09-22 fix; the scanner's own
+        integer-counted phase was the model). Phase state ages for
+        every voice every block whether audible or not (the
+        oscillator's rule), so activity gating never moves phases; only
+        the sine evaluation is skipped for silent voices.
 
         The gate envelope is an integer-counted linear ramp:
         ``env = clamp(count ± n, 0..R) / R`` with the COUNT carried as
@@ -19680,7 +19690,9 @@ class NumpyBackend(AudioBackend):
         high on the previous sample (from-silence single trigger —
         legato and chord additions don't re-fire), and the strike is a
         decaying sine added to voice row 0 (monophonic hardware). A
-        re-qualifying strike replaces a still-ringing one.
+        re-qualifying strike replaces a still-ringing one. Its decay
+        and phase are integer-counted from the strike too, for the same
+        reason (``_organ_perc_pour``).
 
         Partials at or above Nyquist get a zero gain for that voice
         this block (masked, never aliased); the constant-RMS
@@ -19753,26 +19765,55 @@ class NumpyBackend(AudioBackend):
                 {
                     "V": V,
                     "click_len": click_len,
+                    # Phase ORIGIN per (voice, partial) + the integer count
+                    # of samples since that origin + the increment the
+                    # origin was set for (see the phase-ramp block below).
                     "phases": np.zeros((V, ORGAN_BARS), dtype=np.float64),
+                    "phase_n": np.zeros(V, dtype=np.int64),
+                    "phase_inc": np.zeros((V, ORGAN_BARS), dtype=np.float64),
                     "count": np.zeros(V, dtype=np.int64),  # ramp position 0..R
                     "prev_gate": np.zeros(V, dtype=bool),
                     "hits": np.zeros(V, dtype=np.int64),
                     "click_tail": np.zeros((V, click_len), dtype=np.float64),
                     "prev_any": False,
-                    "perc_amp": 0.0,
-                    "perc_phase": 0.0,
+                    "perc_amp": 0.0,  # the strike's amplitude AT the strike
+                    "perc_n": 0,      # integer samples since the strike
                     "perc_inc": 0.0,
                 }
             )
         phases = st["phases"]
 
-        # Per-voice block frequency (block-mean pitch, pluck idiom).
+        # Per-voice block frequency (block-mean pitch, pluck idiom). The
+        # mean accumulates in float64: a float32 accumulator sums a
+        # constant CV to a slightly different total per block LENGTH, so
+        # the "constant pitch" the caller thinks it sent would arrive as
+        # a different frequency under a different block size.
         freqs = np.empty(V, dtype=np.float64)
         for v in range(V):
             p_row = row(pitch, v)
-            cv = float(np.mean(p_row)) if p_row is not None else 0.0
+            cv = float(np.mean(p_row, dtype=np.float64)) if p_row is not None else 0.0
             freqs[v] = self._ORGAN_C4 * self._pow2_clipped(cv)
         incs = (freqs[:, None] * ratios[None, :]) / sr  # (V, 9)
+
+        # --- the phase ORIGIN: re-anchor only when the pitch moves -----
+        # A per-block float accumulator (``phase += inc * frames``) takes
+        # a different rounding path under a different block partition and
+        # drifts a float32 ulp inside a second. Instead every block's
+        # ramp is ``origin + inc * k`` with ``k`` the ABSOLUTE integer
+        # sample index since the origin, so sample k is the same number
+        # whichever block it lands in. The origin only moves when this
+        # voice's increment changes (a new block-mean pitch) — under a
+        # held pitch it never moves at all, and the render is exact for
+        # as long as you care to run it.
+        ph_inc = st["phase_inc"]
+        phase_n = st["phase_n"]
+        moved = np.flatnonzero(~np.all(incs == ph_inc, axis=1))
+        if moved.size:
+            phases[moved] = (
+                phases[moved] + ph_inc[moved] * phase_n[moved][:, None]
+            ) % 1.0
+            phase_n[moved] = 0
+            ph_inc[moved] = incs[moved]
 
         gate_high = self._GATE_HIGH
         G = np.empty((V, frames), dtype=bool)
@@ -19826,13 +19867,12 @@ class NumpyBackend(AudioBackend):
             if audible:
                 mask = (freqs[v] * ratios) < (sr * 0.5)
                 g_eff = gains * mask
-                ph = (phases[v][:, None] + incs[v][:, None] * arange_f) % 1.0
+                k = float(phase_n[v]) + arange_f  # absolute sample index
+                ph = (phases[v][:, None] + incs[v][:, None] * k[None, :]) % 1.0
                 tone = np.einsum(
                     "pf,p->f", np.sin(2.0 * np.pi * ph), g_eff
                 )
                 out[v] = tone * mul * env
-            # Phases advance every block regardless of audibility.
-            phases[v] = (phases[v] + incs[v] * frames) % 1.0
 
             # --- key clicks (seeded bursts + carry tail) ---------------
             tail = st["click_tail"][v]
@@ -19859,6 +19899,10 @@ class NumpyBackend(AudioBackend):
                 out[v] += scratch[:frames]
                 st["click_tail"][v] = scratch[frames:]
 
+        # Every voice's phase origin ages by the whole block, audible or
+        # not (the oscillator's rule: activity gating never moves phase).
+        phase_n += frames
+
         # --- percussion: one module-wide from-silence generator --------
         if perc_ratio is not None:
             cursor = 0
@@ -19874,7 +19918,7 @@ class NumpyBackend(AudioBackend):
                         # replace it (single generator).
                         self._organ_perc_pour(st, out[0], cursor, e, perc_g)
                         st["perc_amp"] = perc_level * level
-                        st["perc_phase"] = 0.0
+                        st["perc_n"] = 0
                         st["perc_inc"] = inc
                         cursor = e
                         fired_at = e
@@ -19998,21 +20042,32 @@ class NumpyBackend(AudioBackend):
 
     def _organ_perc_pour(self, st, row, start, end, perc_g) -> None:
         """Render the percussion strike into ``row[start:end]``, carrying
-        amplitude/phase state. The envelope's first poured sample is the
-        full carried amplitude (a strike fired at ``start`` sounds AT
-        ``start``)."""
-        amp = float(st["perc_amp"])
+        the strike's amplitude and the integer count of samples since it
+        fired. The envelope's first poured sample is the full strike
+        amplitude (a strike fired at ``start`` sounds AT ``start``).
+
+        Both the decay and the phase are functions of that absolute
+        count — ``amp0 * g**k`` and ``(inc * k) % 1`` — never of a
+        carried float: ``g**n1 * g**n2`` is not ``g**(n1 + n2)`` in
+        binary, so a per-segment carry made the strike (and its
+        1e-6 cut-off, which used to be tested once per pour) depend on
+        where the block boundaries happened to fall. The cut-off is now
+        per SAMPLE, so it lands on the same sample at any block size.
+        """
+        amp0 = float(st["perc_amp"])
         n = end - start
-        if amp <= 1e-6 or n <= 0:
-            if amp <= 1e-6:
+        if amp0 <= 1e-6 or n <= 0:
+            if amp0 <= 1e-6:
                 st["perc_amp"] = 0.0
             return
-        k = np.arange(n, dtype=np.float64)
-        env = amp * np.power(perc_g, k)
-        ph = (st["perc_phase"] + st["perc_inc"] * k) % 1.0
+        k = float(st["perc_n"]) + np.arange(n, dtype=np.float64)
+        env = amp0 * np.power(perc_g, k)
+        env[env <= 1e-6] = 0.0
+        ph = (st["perc_inc"] * k) % 1.0
         row[start:end] += np.sin(2.0 * np.pi * ph) * env
-        st["perc_amp"] = amp * (perc_g ** n)
-        st["perc_phase"] = (st["perc_phase"] + st["perc_inc"] * n) % 1.0
+        st["perc_n"] = int(st["perc_n"]) + n
+        if amp0 * (perc_g ** float(st["perc_n"])) <= 1e-6:
+            st["perc_amp"] = 0.0  # nothing left to pour but zeros
 
     # ----- Modal rendering -------------------------------------------------
 

@@ -1498,7 +1498,19 @@ and chord additions do *not* re-fire it (the strike lands on voice
 row 0; monophonic hardware). Partials at/above Nyquist are masked,
 never aliased. Pitch reads per block (external vibrato tracks at block
 rate); phases, ramps, click tails and the percussion strike all carry
-across blocks — bit-exact at any block size.
+across blocks — **bit-exact at any block size, and since 2026-09-22
+that holds for as long as you run it.** Nothing in the voice is a
+per-block float accumulator any more: a partial's phase is an *origin*
+plus an integer count of samples since that origin (the origin only
+moves when the pitch does), the percussion's decay, phase and 1e-6
+cut-off are all counted from the strike, and the per-block pitch read
+averages in float64. The old carried-float phase drifted a float32 ulp
+somewhere between 0.2 s and 1.8 s, and the percussion tail died on a
+different sample at every block size; both are pinned at 64 / 128 /
+512 / 1000 over ten seconds now. (Fixing it moved the shipped renders,
+by design — at most a float32 ulp or two from the phase and percussion
+work, plus a pitch correction of under 10⁻⁴ cents where a float32
+block-mean had been rounding a held CV.)
 
 **The scanner** (`vibrato`, 2026-09-19) is the third tonewheel
 signature, the console's six-way knob. The hardware is a short tapped

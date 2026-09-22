@@ -10,6 +10,15 @@ percussion register single-triggers from silence only (legato does NOT
 re-fire); voice rows are independent and a (1, F) render equals mono;
 everything is bit-exact across block splits.
 
+Block-size exactness (2026-09-22): the partial phases are an ORIGIN plus
+an integer sample count, the percussion's decay/phase/cut-off are counted
+from the strike, and the per-block pitch read averages in float64 — so
+64 / 128 / 512 / 1000 render the identical sample over TEN SECONDS, tone
+path and whole organ alike. The pins used to stop at 4096 frames, which
+is the only reason the drift (a float32 ulp inside a second, and a
+percussion tail that died on a different sample per block size) went
+unseen.
+
 The scanner (2026-09-19 love pass): ``vibrato`` off is never even called
 (a raising stand-in proves it) so the pre-scanner render is untouched;
 V3's pitch deviation is MEASURED via the Hilbert instantaneous frequency
@@ -111,7 +120,17 @@ def test_serialization_round_trip():
 
 def test_lone_8ft_drawbar_bit_exact_against_sine_oscillator():
     """The source's neutral: one full 8' bar, click 0 → after the 1 ms
-    onset ramp the output IS the mono sine oscillator, bit for bit."""
+    onset ramp the output IS the mono sine oscillator, bit for bit.
+
+    Still exact over a block, which is where the relationship is
+    defined: from a zero origin the organ's ``inc * k`` over the
+    absolute index and the oscillator's ``arange * inc`` are the same
+    numbers. They part company only across MANY blocks, and in the
+    organ's favour — the oscillator still carries a per-block float
+    accumulator (``phase += frames * inc``), which is exactly the thing
+    the organ stopped doing on 2026-09-22; see the 10 s pin below. The
+    second half of this test measures that gap instead of pretending it
+    is not there."""
     bars = {f"bar{i + 1}": 0 for i in range(ORGAN_BARS)}
     bars["bar3"] = 8  # 8' — ratio 1.0
     step = _driver({**bars, "click": 0.0, "level": 0.5})
@@ -127,6 +146,23 @@ def test_lone_8ft_drawbar_bit_exact_against_sine_oscillator():
     organ_out = step(None, np.ones(F))  # unpatched pitch → C4
     osc_out = b._render_oscillator(patch.get(osc.id), F)
     assert np.array_equal(organ_out[RAMP:], osc_out[RAMP:])
+
+    # 10 s in 256-frame blocks: the two agree to a float32 ulp or two,
+    # the oscillator's accumulator being the one that moved.
+    step2 = _driver({**bars, "click": 0.0, "level": 0.5})
+    patch2 = Patch()
+    osc2 = patch2.add_module(
+        "oscillator", params={"freq": C4, "amp": 0.5, "waveform": "sine"}
+    )
+    b2 = NumpyBackend(sample_rate=SR, block_size=256)
+    b2.compile(patch2)
+    N = 10 * SR // 256
+    org_long = np.concatenate([step2(None, np.ones(256)) for _ in range(N)])
+    osc_long = np.concatenate(
+        [b2._render_oscillator(patch2.get(osc2.id), 256) for _ in range(N)]
+    )
+    eps = np.finfo(np.float32).eps
+    assert np.abs(org_long[RAMP:] - osc_long[RAMP:]).max() <= 4.0 * eps
 
 
 # ----- the drawbar law -------------------------------------------------------
@@ -351,23 +387,96 @@ def test_unpatched_gate_is_silence():
 
 
 def test_block_size_independent_bit_exact():
-    """Ramps, clicks and the percussion register all carry across any
-    block split — bit-exact 64 vs 1024."""
-    F = 4096
+    """Ramps, clicks, the percussion register and the partial phases all
+    carry across any block split — bit-exact at 64 / 128 / 512 / 1000
+    over TEN SECONDS.
+
+    The old pin spanned 4096 frames, which is exactly why it never saw
+    the 2026-09-22 finding: the per-block float phase accumulator drifts
+    a float32 ulp somewhere between 0.2 s and 1.8 s, and the
+    percussion's 1e-6 cut-off used to be tested once per POUR, so it
+    landed on a different sample under a different block size (0.568 s
+    in at SR 8000). The pitch here is 0.25 + 7/12 on purpose: its
+    float32 block-MEAN is not block-size stable, so this also pins the
+    float64 accumulator on the per-block pitch read."""
+    F = 10 * SR
     gate = np.zeros(F, dtype=np.float32)
-    gate[100:1500] = 1.0
-    gate[2000:] = 1.0
-    pitch = np.full(F, 0.25, dtype=np.float32)
+    gate[100:F // 3] = 1.0
+    gate[F // 3 + 500:] = 1.0
+    pitch = np.full(F, 0.25 + 7.0 / 12.0, dtype=np.float32)
 
     def chunked(block):
         step = _driver({"click": 0.5, "perc": "2nd"}, block=block)
         out = np.empty(F, dtype=np.float32)
         for s in range(0, F, block):
-            e = s + block
+            e = min(F, s + block)
             out[s:e] = step(pitch[s:e], gate[s:e])
         return out
 
-    assert np.array_equal(chunked(64), chunked(1024))
+    ref = chunked(512)
+    for block in (64, 128, 1000):
+        assert np.array_equal(chunked(block), ref), block
+
+
+def test_partial_phase_is_an_origin_plus_an_integer_count():
+    """THE 2026-09-22 fix, on the tone path alone: every block's ramp is
+    ``origin + inc * k`` over the ABSOLUTE integer sample index, so a
+    held note renders the identical sample at any block size for as long
+    as you run it — pinned over 10 s at 44.1 kHz, where the old
+    accumulator had already diverged by 0.22 s (block 1000) / 1.78 s
+    (block 64) and reached a full float32 ulp by 30 s. Under a held
+    pitch the origin is never re-anchored at all, so nothing
+    accumulates."""
+    sr = 44100
+    F = 10 * sr
+    gate = np.ones(F, dtype=np.float32)
+    pitch = np.full(F, 0.25, dtype=np.float32)
+
+    def chunked(block):
+        step = _driver(_lone8({"vibrato": "off"}), block=block, sr=sr)
+        return _chunked(step, gate, block, pitch)
+
+    ref = chunked(512)
+    for block in (64, 128, 1000):
+        assert np.array_equal(chunked(block), ref), block
+
+    # The state IS an origin plus a count, and the origin holds still.
+    step = _driver(_lone8({}), block=256, sr=sr)
+    for _ in range(3):
+        step(pitch[:256], gate[:256])
+    st = step.backend._state[step.org.id]
+    assert int(st["phase_n"][0]) == 768
+    assert float(np.abs(st["phases"]).max()) == 0.0  # never re-anchored
+
+
+def test_percussion_decay_is_counted_from_the_strike():
+    """The strike's envelope and phase are ``amp0 * g**k`` and
+    ``(inc * k) % 1`` over the absolute count since it fired, and its
+    cut-off is applied per SAMPLE — so the tail dies on the same sample
+    whatever the block size, and the state is dropped once there is
+    nothing left but zeros."""
+    F = 6 * SR
+    gates = np.zeros((1, F), dtype=np.float32)
+    gates[0, 100:] = 1.0
+    pitch = np.zeros_like(gates)
+
+    def chunked(block):
+        step = _driver({"click": 0.0, "perc": "2nd", "perc_level": 1.0},
+                       block=block)
+        return _chunked(step, gates, block, pitch), step
+
+    ref, st_ref = chunked(512)
+    for block in (64, 128, 1000):
+        assert np.array_equal(chunked(block)[0], ref), block
+    st = st_ref.backend._state[st_ref.org.id]
+    assert st["perc_amp"] == 0.0  # the strike is long dead
+    # ...and it was COUNTED to the analytic cut-off, not carried: with
+    # amp0 = perc_level * level = 0.5 and the fast t60, amp0·g^k crosses
+    # 1e-6 at k ≈ 4559 samples.
+    g = 10.0 ** (-3.0 / (SR * 0.3))
+    dead_at = np.log(1e-6 / 0.5) / np.log(g)
+    assert 4550.0 < dead_at < 4570.0, dead_at
+    assert int(st["perc_n"]) >= dead_at
 
 
 # ----- the scanner vibrato / chorus ------------------------------------------
@@ -533,20 +642,29 @@ def test_scanner_alone_is_block_size_independent_bit_exact():
 
 def test_organ_with_scanner_block_size_independent_bit_exact():
     """The whole organ, sweep running, v1 → c3 switched on a shared
-    boundary: bit-exact 64 vs 512 over 4096 frames — the span the
-    organ's own float phase accumulator is exact over (it drifts a
-    float32 ulp after ~0.5 s at any setting, scanner or not)."""
-    F = 4096
+    boundary: bit-exact at 64 / 128 / 512 / 1000 over TEN SECONDS. The
+    old pin stopped at 4096 frames — the span the organ's own float
+    phase accumulator happened to be exact over; since 2026-09-22 the
+    partials, the gate ramp, the click tails, the percussion and the
+    scanner are ALL integer-counted, so there is no such span any
+    more."""
+    F = 10 * SR
     gate = np.zeros(F, dtype=np.float32)
-    gate[100:1500] = 1.0
-    gate[2000:] = 1.0
+    gate[100:F // 3] = 1.0
+    gate[F // 3 + 500:] = 1.0
     pitch = np.full(F, 0.25, dtype=np.float32)
+    # 64000 is lcm(64, 128, 512, 1000): the one switch point below 10 s
+    # that starts a block at every size tested.
+    switch = 64000
 
     def run(block):
         step = _driver({"click": 0.5, "perc": "2nd", "vibrato": "v1"}, block=block)
-        return _chunked(step, gate, block, pitch, schedule=((1024, {"vibrato": "c3"}),))
+        return _chunked(step, gate, block, pitch,
+                        schedule=((switch, {"vibrato": "c3"}),))
 
-    assert np.array_equal(run(64), run(512))
+    ref = run(512)
+    for block in (64, 128, 1000):
+        assert np.array_equal(run(block), ref), block
 
 
 @pytest.mark.parametrize(

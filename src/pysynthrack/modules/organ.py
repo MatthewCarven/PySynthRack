@@ -73,9 +73,23 @@ dry has finished.
 
 Voice-awareness follows the inputs (the ``pluck`` contract): mono
 ``(F,)`` pitch/gate give mono out; ``(V, F)`` give per-voice organs.
-Pitch is read per block (mean) — vibrato tracks at block rate. Phases,
-ramp levels, click tails and the percussion state all carry across
-blocks. Numpy backend only; silent stub under pyo.
+Pitch is read per block (mean, accumulated in float64) — vibrato tracks
+at block rate. Phases, ramp levels, click tails and the percussion
+state all carry across blocks. Numpy backend only; silent stub under
+pyo.
+
+**Block-size exactness.** Nothing in the voice carries a float that a
+different block partition would round differently. A partial's phase
+is an ORIGIN plus the integer count of samples since that origin —
+``ph(k) = (origin + inc*k) % 1`` — and the origin is re-anchored only
+when a voice's block-mean pitch changes, so a held note never
+accumulates at all. The percussion strike's decay, phase and 1e-6
+cut-off are likewise functions of the integer count since it fired,
+applied per sample rather than once per rendered segment. Before
+2026-09-22 both were per-block accumulators: the phase drifted a
+float32 ulp inside a second or two and the percussion tail died on a
+different sample at every block size. 64 / 128 / 512 / 1000 now render
+the identical sample over ten seconds and beyond.
 
 Ports:
   * ``pitch_cv`` (cv, in): 1 V/oct, C4 = 0 V. Unpatched → C4.
