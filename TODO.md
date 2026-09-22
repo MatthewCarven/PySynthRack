@@ -739,6 +739,246 @@ same session.
       anyone is playing). Decide whether that asymmetry should be
       documented as-is or changed; do not change it silently.
 
+## Eleven follow-ons in parallel (2026-09-22, the fifth batch)
+
+Matthew: "Pick another 10 or items from the todo for existing modules
+and lets run a few together ok please Claude?" — eleven agents (the
+phaser/flanger pair travels together), every item taken from the lists
+below. Pushed first, so the worktrees branched from HEAD. Four
+conflicts, all trivial except one real one (two agents rewrote the same
+`rate_cv` block; the move was taken and the `_finite_mean` fix
+re-applied). Suite **4536 → 5265**, 164 examples. Ears/eyes are in the
+listening checklist above.
+
+- [x] **`vowel` — follow-on list CLOSED — SHIPPED 2026-09-22
+      (845ea1c).** float64 block mean (the known finding: a constant CV
+      read 0.29999998 at 64 and 0.30000001 at 512 — 3 of 4 constant CVs
+      rendered differently before, none after; the four LFO-patched
+      references moved ≤ 2.6e-7, −135 dB RMS, and the seven un-modulated
+      ones stayed bit-exact); `cv_rate` `block|sample` (the per-sample
+      mouth, CV quantised to 0.02 vowels AROUND THE KNOB so an idle jack
+      is bit-identical to block mode — the step measured against a true
+      per-sample oracle at −62 / −55 / −43 dB for 0.02 / 0.05 / 0.1;
+      0.59x realtime against 0.010x); `voice` `custom` + `f1..f5` (your
+      frequencies, the tenor table's bandwidths in Hz — so Q runs 7.4 →
+      63 from 300 Hz to 2500 Hz and `resonance` is the knob that fixes a
+      custom voice). 34 → 65 tests. `vowel_robot_talk.json` banked (25
+      Hz, not 30–60: 45 Hz put the patch at 0.98x realtime).
+- [x] **`noise` — `corner` + the stereo pair — SHIPPED 2026-09-22
+      (53c9728).** Brown's leak 2..40 Hz; slope −6.00 dB/oct at every
+      corner, 2–20 Hz energy +39.0 / +33.0 / +23.5 dB over 200–2000 Hz
+      at 2 / 10 / 40; level flat (0.14 dB spread) because the RMS match
+      is derived from the same pole. **Found: a live corner change bangs
+      (step 2.2, ~4x full scale) unless the carried integrator state is
+      renormalised** — done, and it cannot fire while the knob is still.
+      21 reference renders bit-exact. 73 → 100 tests.
+      `noise_stereo_pair.json` banked (corr 0.087 as shipped, 1.000 with
+      equal seeds — pinned both ways).
+- [x] **`clock` — `swing_cv` — SHIPPED 2026-09-22 (d89dadc).**
+      `clamp(swing + depth·mean cv, 0, 0.75)`, float64 mean, **latched
+      at each even period start** and held through the odd period after
+      it so a moving CV never drags a pulse in flight. A 0.5 Hz LFO over
+      10 s emits exactly the straight clock's 80 edges at every depth;
+      even edges land on the straight clock's samples at 64 and 512, odd
+      ones up to 44 samples (1 ms) apart with an identical count — the
+      honest story for a block-rate CV. 33 clock rows bit-exact at
+      default. `clock_swing_breathe.json` banked.
+- [x] **`clock_divider` — steady gate lengths on a swung clock — SHIPPED
+      2026-09-22 (d54912a).** Lengths came off the LAST interval:
+      `divn` flapped 10750/5787 at 8 Hz / swing 0.3, and `div2/4/8`
+      (always on even pulses, always measuring the short side) sat ~30%
+      under their period (3858 where 5512 was right). Now the mean of
+      the last two intervals — exact for a swung clock, exact for a
+      steady one, and it flattens a straight clock's 2-sample rounding
+      wobble too. Only falling edges move; every rising edge is
+      bit-exact across 22 references. One shipped render moves:
+      `cv_recorder_backwards` reads two divider gates as LEVELS
+      (1.5e-4 peak over 120772 samples).
+- [ ] **`clock_divider`: a `divn` gate longer than the swing's short
+      side still merges into the next one** (17 of 32 gates at `pw` 0.9,
+      swing 0.3 — measured before and after the 09-22 pass). The
+      scheduler cannot un-write an emitted sample, so the cure is a
+      prospective length cap that knows the short side; a blunt
+      `min(interval, interval_prev)` would wrongly shorten `div2/4/8`.
+      Low priority — keep `pw` under the short side, or use `divn` for
+      triggers.
+- [x] **`freeze` — `width_cv`, `latch`, 32768 — SHIPPED 2026-09-22
+      (c7ff869).** `width_cv` rotates the stored per-region scatter by
+      the current width (free), corr(L,R) tracking `cos(w·pi/2)` at
+      0.951 / 0.707 / 0.000; `latch` makes every rising edge TOGGLE the
+      hold (cumsum parity XORed with the carried state, 64 = 512 = 1000
+      pinned); `FREEZE_SIZES` gains 32768 (743 ms — an arpeggio frozen
+      on its last note comes back with all three notes inside 30 dB).
+      **65536 measured and left OFF the knob: 11.2 ms of synthesis every
+      371 ms against an 11.61 ms block — a permanent near-overrun.**
+      `_freeze_lock_index` vectorised on the way (integer-identical,
+      fuzzed over 4025 spectra, 6 ms → 0.33 ms at 32768). 46 reference
+      renders bit-exact. 49 → 67 tests. `freeze_drone_breathe.json`
+      banked. **Lesson: the capture window is a Hann, so the instant at
+      the gate edge is the QUIETEST part of what you hold.**
+- [ ] **`freeze` follow-ons:** the capture spike is the layer's BIRTH
+      block (frames 0..4 must all exist at once — 10.1 ms mono / 20.0 ms
+      with width at 32768), so spreading the prefill or starting the
+      read a hop later might put 65536 back on the knob; and
+      `_freeze_lock_index` only rejects bins under an absolute 1e-12, so
+      a pure triad still yields 3079 "peaks" at 32768 from its own
+      numerical floor — a relative floor (−120 dB) would make the
+      capture nearly free but changes the region map, so it needs its
+      own reference-render pass.
+- [ ] **`freeze.pitch_cv` has the same float32 block-mean bug** (found
+      by the vowel agent while self-testing; the freeze renderer was
+      excluded from the CV sweep's remit). One line, plus a
+      reference-render check.
+- [x] **`cv_recorder` — `speed_cv` + the one-shot — SHIPPED 2026-09-22
+      (9a8e5cf).** The rate jack is QUANTISED onto the half-sample grid
+      (`floor(base·2^(d·mean cv) + 0.5)` half-steps, clamped 1..8 =
+      0.5x..4x in 0.25x steps, 0 unreachable) because an integer
+      half-step is what makes every rate identical at block 50 and 250 —
+      shipped and documented as a stepped control, a tape machine's
+      speed selector with more notches. `play_mode` `gate|one_shot`: a
+      rising edge runs exactly one lap of TRAVEL and holds the slot it
+      just played. Added rule the spec missed: at `one_shot`, `rec` runs
+      the head (a stopped head writes nothing, so recording would have
+      been impossible). 32 reference arrays bit-exact. 44 → 185 tests.
+      `cv_recorder_oneshot.json` banked. Note: a lap longer than the gap
+      between triggers degrades into a retriggered sweep.
+- [x] **`pluck` — `vel_position` — SHIPPED 2026-09-22 (d35bd0c).**
+      A soft hit's pick slides towards the middle:
+      `clamp(position + vel_position·(1 − vel)·(0.5 − position), 0, 1)`,
+      latched at the edge, anchored at vel 1.0 so the knob is inert
+      without a velocity source. `position` 0 is the comb's documented
+      OFF and stays off (the spec's formula would have switched it on).
+      **The centroid claim does not hold — a comb notches, it does not
+      tilt:** the first null falls 2597 → 686 Hz at vel 0.3, and the
+      2+3-over-1 balance 5.76 → 1.39. 88 reference renders bit-exact.
+      45 → 64 tests. `pluck_touch.json` banked.
+- [x] **`pluck` — the allpass-clear QUESTION, answered — `carry`
+      SHIPPED default-OFF 2026-09-22 (4675958).** Measured with a zero
+      burst: the clear steps the output by **51% of the ring** (51.4%
+      into G4, 51.5% into C5; 28% elsewhere — it discards one sample of
+      loop state), while carrying it gives a step of exactly 0 and
+      **exact superposition** (two hits minus one = the second alone to
+      one float32 ulp — the property the module always claimed).
+      Tuning, peak, stability identical either way.
+- [ ] **`pluck`: listen, then consider flipping `carry` to default ON.**
+      Strictly better on every measured observable; shipped OFF only
+      because ON changes the sound of every re-pluck. `pluck_touch.json`
+      has it on — untick to A/B. If the ears agree: flip the default,
+      recapture the pluck reference renders, document loudly.
+- [x] **organ — the block-size FINDING CLOSED — SHIPPED 2026-09-22
+      (4517234, 5b54a64, a3894c4).** Three accumulators, not one: the
+      partial phase (parting at 0.221 s block-1000 vs 512, 5.96e-8 by
+      30 s), **the percussion — the largest (9.69e-7), because it tested
+      its 1e-6 cut-off once per pour so the tail died on a different
+      sample per block size** — and a float32 block-mean that made a
+      held pitch itself block-dependent. All three integer-counted or
+      float64; 64/128/512/1000 bit-identical over 10 s, checked to 60 s.
+      What moved: ≤ 1.013e-6 (8.5 ulps, −153 dBFS) from the phase and
+      percussion work; up to 4.01e-4 (−86 dBFS) from the float64 mean —
+      a 7e-5-cent pitch correction. Plus the scanner's rounded-triangle
+      sweep (crest 1.12 / 3rd harmonic 0.287 vs the sine's 1.44 / 0.000;
+      the swing table widened 1.4x to hold V3 at 41.8 cents) and a
+      scanner phase that survives off → on. 33 → 37 tests.
+- [ ] **`_render_oscillator` still carries the per-block
+      `phase += frames·inc` accumulator the organ just dropped** — same
+      drift, much wider blast radius (its mono fast path is the
+      reference for the organ's lone-8' pin, which now measures the gap
+      instead of asserting exactness over many blocks). Worth a scoped
+      session.
+- [x] **tape + chorus — the ulp FINDING CLOSED — SHIPPED 2026-09-22
+      (063e7d5, 3f161fa).** THREE mechanisms: the ring read
+      (`absidx - delay` rounds at the index's magnitude and the ring
+      length depends on the block size — the whole of the drift path's
+      error, 95/90/78 differing samples at 64/128/1000), the wow/flutter
+      phase accumulators, and **scipy** (`lfilter` short-circuits
+      `len(a) == 1` to `np.convolve` + a separate `+= zi`, splitting each
+      65-tap sum at the block boundary — the shared 4x oversampler was
+      never block-exact; fixed by carrying raw tail samples at 1.00x the
+      cost, where forcing scipy's recursive path was 2.7x slower). The
+      chorus shared both of the first two, worse (487 differing samples)
+      while its docstring claimed exactness. Both now bit-exact at
+      64/128/512/1000 over 4 s with everything on; shipped renders moved
+      ≤ half a float32 ulp on 0.006% of samples. **The shared
+      oversampler moved — `distortion` and `waveshaper` ride it; both
+      suites and both reference renders are clean.** 72 → 83 tests.
+      **Lesson: exposure is part of the assertion** — the old 20000-
+      sample pin passed throughout because the bug needs ~0.5 s to show.
+- [ ] **Four more renderers read a ring index the tape's old way** —
+      `_render_rotary`, `_render_flanger`, `_render_delay_core` and the
+      organ's scanner all form `absidx - delay`; `flanger`/`phaser` also
+      carry the float LFO phase (the 09-22 phaser pass worked AROUND it
+      for the clocked path only, and pinned the free-running drift at
+      < 1e-6 / < 1e-5 so this fix will not break those tests). Rotary
+      and organ both CLAIM block-size independence in their docstrings.
+      One batched pass, same probe: 4 s at 64/128/512/1000.
+- [ ] **`chorus.rate_cv` is the chorus's one remaining block-size
+      dependence**, by design (a block-mean rate re-anchors the sweep
+      every block). Closing it means a per-sample rate — a behaviour
+      change, not a bug fix. Decide before doing.
+- [x] **The linear-CV sweep — SHIPPED 2026-09-22 (6307908).** One
+      `_finite_mean(cv, default=0.0)` beside `_pow2_clipped`, **39 call
+      sites**. float64: **fifteen modules rendered differently at 64
+      than at 512 with only a steady CV on a jack** (filter mono +
+      per-voice, crossover, sweep_eq, motion_eq, tilt_eq, loudness,
+      compressor, reverb, flanger, phaser, lfo, slew mono + voice,
+      wavetable_morph, bowed, wind) — all exact now. The scrub: Python's
+      `min`/`max` do not propagate NaN, so a clamp read a NaN as a rail
+      (`loudness` rendered non-finite; `bitcrusher`'s `int(round(nan))`
+      raised out of the audio thread). 120 of 156 examples bit-exact; of
+      the 36 that moved, 34 are ulp-level. `tests/test_cv_scrub.py`, 187
+      tests. **Lesson: monkeypatching the reduction back to float32
+      restored all 36 moved renders bit-exactly — the cheapest possible
+      proof that nothing but the dtype moved.**
+- [ ] **EARS DECISION: `bowed_cello` (5.2e-2) and `wind_duet` (1.0e-4)
+      moved above ulp level** — chaotic physical models amplifying a
+      one-ulp input change over seconds. Both were NEVER block-size
+      exact before (1.1e-5 / 6.0e-6 between 64 and 512) and both are now,
+      so the new render is the exact one and the change is like a
+      different bow-noise seed. Keep, or revert those two sites?
+- [ ] **The voice-collapse means are still float32** (`_input_buffer`'s
+      `sum(axis=0)` and the per-module `mean(axis=0)` sidechain/macro
+      collapses) — a different reduction (across voices, per sample) that
+      changes buffer dtypes, so it wants its own reference-render pass.
+      Also `render_block_multi`'s CV meter readout (a UI number, not a
+      clamp) — decide whether a NaN cable should paint 0 rather than nan.
+- [x] **The patch loader fails soft AND SAYS SO — SHIPPED 2026-09-22
+      (357d99b).** The 2026-09-16 defect closed: `Patch.from_dict` now
+      runs every cable past `Patch.cable_problem` (what `connect`
+      checks), drops the failures, and reports them on
+      `patch.load_warnings` → GUI status line + console, CLI stderr. It
+      never raises over a cable. All 156 examples load clean and lose no
+      cable; 24 re-render bit-exact. Duplicate destinations deliberately
+      NOT policed (choosing a winner would change how a patch plays).
+      `tests/test_loader_warnings.py`, 180 tests; reverting the
+      validation fails 13 of them. **Consequence: open a drifted patch,
+      save, and the dead cable is gone from the file for good.**
+- [ ] **Loader follow-on:** the editor could OFFER TO REPAIR a dropped
+      cable (nearest-name port match) rather than only naming it.
+- [x] **`phaser` + `flanger` — their FIRST love pass — SHIPPED
+      2026-09-22 (af3ce58, 19b1724).** Both gained a `clock` jack +
+      `division` (the sweep becomes a length in beats: 1.0007 / 0.5003 /
+      0.2502 Hz measured against 1 / 0.5 / 0.25), `spread` (the L/R LFO
+      offset the quarter-cycle quadrature hard-coded; default 0.5 IS
+      that, and 0.5×0.5 is exact in binary so it is bit-exactly today;
+      corr 1.000 / 0.698 / 0.675 phaser, 1.000 / 0.579 / 0.497 flanger)
+      and `manual_cv` + `manual_depth` (phaser notch 1489 / 2943 / 5676
+      Hz at cv −1 / 0 / +1; flanger tap 33 / 66 / 132 samples, and in
+      through-zero it moves the REFERENCE tap too, so the crossing
+      travels). **Found: a rate re-read once a block put 5.6e-2 between
+      the 64- and 512-sample renders — audible** — so the locked phase
+      is keyed to the absolute sample index and a clocked sweep is
+      exactly bit-identical across block sizes, better than the
+      free-running one. `rate`/`rate_cv` stand aside while the lock
+      holds (a block-mean rate would re-anchor every block and put the
+      block-dependence straight back). Two briefed features already
+      existed — the flanger's through-zero and the phaser's `center` as
+      its manual knob — reported rather than rebuilt. 22 reference
+      renders bit-exact. 64 → 116 tests. `phaser_envelope_sweep.json` +
+      `flanger_jet.json` banked. **Lesson: measure the right observable
+      — a phaser's rate reads off a tone's AM, but a comb has a notch
+      every 1/delay Hz, so the flanger's rate must be measured as a
+      DELAY by cross-correlation lag.**
+
 ## Ten follow-ons in parallel (2026-09-20, the fourth batch)
 
 Matthew: "Pick another 10 or items from the todo for existing modules
@@ -1135,7 +1375,15 @@ sampler examples need it).
 - [ ] `possibility_selector_kit.json` — whether x which drums + the harp. EYES: cells paint one hue per output (red / blue / green / purple), amber for `?` and subsets; right-click a cell opens FOUR checkboxes (never seen in a window yet).
 - [ ] `possibility_reroll_divider.json` — kick and snare hold a take for four bars then re-decide on bar 5; the hat re-deals every bar.
 
-*The love passes (twenty-three):*
+*The love passes (thirty-one):*
+- [ ] `noise_stereo_pair.json` — two brown tides, one per side (corr 0.09). Set **both seeds the same** and it should collapse to dead centre. Then sweep the new `corner` knob live on a brown: 2 Hz (distant thunder) to 40 Hz (tight wind) — it should not click.
+- [ ] `vowel_robot_talk.json` — the 25 Hz buzz: does the audio-rate mouth read as a robot or as noise? EYES: the `cv_rate` combo and the five `f1..f5` Hz drags under `voice` custom.
+- [ ] `clock_swing_breathe.json` — straight at 0 s, full triplet at 10 s, straight at 20 s, forever, over a kick that must NOT flutter (that's the divider fix). EYES: the `swing_cv_depth` drag.
+- [ ] `freeze_drone_breathe.json` — a 743 ms capture (`size` 32768) with `latch` on: one trigger holds it, the next releases. Does the longer window read as "an average of a phrase"? EYES: `latch`, `width_cv_depth`, the extended `size` combo.
+- [ ] `cv_recorder_oneshot.json` — a gesture fired as a one-shot at a different rate each time. Flip `speed` and `play_mode` live. EYES: the `play_mode` combo, `speed_cv_depth`.
+- [ ] `pluck_touch.json` — soft notes dull AND round, accents bright and plucky. **Then the decision: untick `carry` and A/B a re-pluck** — with it on, a hit no longer interrupts the ringing string.
+- [ ] `phaser_envelope_sweep.json` — the envelope phaser (every note drags the notches up 2.5 octaves). `flanger_jet.json` — through-zero at `spread` 1, one sweep every two bars. EYES: `division` / `spread` / `manual_depth` on both nodes.
+- [ ] **A-B the two chaotic ones** — `bowed_cello.json` and `wind_duet.json` render differently after the CV sweep (exactly, where they were block-dependent before). Do they still sound right? If yes, nothing to do; if not, say so and I'll revert those two sites.
 - [ ] `vowel_giant_child.json` — giant → child over 25 s while the mouth talks; does constant-Q read as "the same vowel, a different throat"? EYES: the `formant` drag + `formant_cv_depth` in the vowel block.
 - [ ] `pluck_velocity_color.json` — the accents ring bright, the soft picks thud; A/B by flipping `vel_color` 0.8 → 0. Then `midi_input.velocity_cv -> pluck.vel` live.
 - [ ] `lfo_random_replay.json` — the same 12-step random wah every 2 s bar: does the written-down accident read musically? EYES: `seed` on the lfo node — SEEN 2026-09-20 in a screenshot of Matthew's LFO-into-LFO siren patch (two lfo nodes with `reset` jack, `phase` `0.00 cyc`, `seed` 0; the oscillator's `pw_cv` jack, `pulse_width` and `pw_cv_depth` `0.50 width/unit`): every widget paints, ASCII, bounded. The live-drag checks (phase re-anchoring on a running LFO) and all ears items remain.

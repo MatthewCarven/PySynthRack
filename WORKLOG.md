@@ -126,6 +126,15 @@ already three light before slice 2 added one -- count with
 > (the scanner), tape `stop` — five examples banked. Suite **4206**,
 > 147 examples.
 >
+> 2026-09-22: **eleven follow-ons in parallel** — vowel (list CLOSED),
+> noise `corner`, clock `swing_cv` + the divider's gate lengths, freeze
+> `width_cv`/`latch`/32768, cv_recorder `speed_cv` + one-shot, pluck
+> `vel_position` + `carry`, the organ and tape/chorus exactness
+> findings CLOSED, a NaN + float64 sweep over every block-mean CV, the
+> patch loader's dead-cable report, and the first love pass for
+> `phaser` + `flanger` — eight examples banked. Suite **5265**, 164
+> examples.
+>
 > 2026-09-20: **`freeze`, module #100** — the spectral freeze, phase-
 > locked so the hold is stationary; `freeze_chord_pad.json` (banked).
 > Suite **4245**, 148 examples, **100 modules**. Then **ten follow-ons
@@ -184,6 +193,149 @@ partner), granular (three pre-sliced pieces), `clock_divider`, the
 possibility follow-ons, the 2026-08-04 keep-list — Matthew wants modules
 for a while (2026-09-11). The feedback-door generalization waits for its
 own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
+
+---
+
+## 2026-09-22 — eleven follow-ons in parallel (the fifth batch)
+
+Matthew, after a lost afternoon: "Pick another 10 or items from the todo
+for existing modules and lets run a few together ok please Claude?" —
+eleven agents in the end (the phaser and flanger travel as a pair),
+every item lifted from the TODO's own follow-on and finding lists.
+Everything was pushed first, so the worktrees branched from HEAD.
+Cherry-picked in landing order; four conflicts, all trivial (adjacent
+import lines, adjacent CV-depth rows, appendix bullets — both sides
+kept each time) except one that needed care: two agents rewrote the
+same `rate_cv` block in the phaser and flanger, one adding the house
+`_finite_mean`, the other moving the block below the clamps — resolved
+by taking the move and re-applying the fix. Full suite on the merged
+main: **5265 passed**, 164 examples. Eight examples banked. Mid-batch
+Matthew offered the last agent an out — "if it wants to just write a
+plan for the next pass that is cool too" — which was relayed; it did
+not need it.
+
+**The theme of the batch: a finding is usually more than one bug.** Two
+of the three exactness items named one mechanism and turned out to have
+three. The tape's "ulp at rare samples" was (1) the ring read
+(`absidx - delay` rounds at the index's magnitude, and the ring length
+depends on the block size — the whole of the drift path's error), (2)
+the wow/flutter phase accumulators (`ph + frames*inc` rounds once a
+block, so partitions part within a second), and (3) **scipy**:
+`lfilter` short-circuits `len(a) == 1` to `np.convolve` plus a separate
+`+= zi`, splitting each 65-tap sum at the block boundary — so the
+shared 4x oversampler was never block-exact. Fixed by carrying raw tail
+samples, exact at 1.00x the cost (forcing scipy's recursive path was
+also exact but 2.7x slower). The chorus had it worse — 487 differing
+samples — while its docstring claimed exactness outright. The organ's
+"phase accumulator" was likewise three: the phase, the percussion
+(which tested its 1e-6 cut-off once per pour, so the strike's tail died
+on a different sample at every block size — the LARGEST of the three at
+9.7e-7), and a float32 block-mean making a held pitch itself
+block-dependent.
+
+**What landed** (each with tests, docs, reference renders bit-exact at
+the default unless stated):
+
+* **noise `corner`** (53c9728) — brown's leak becomes a knob (2..40 Hz).
+  The slope stays −6.00 dB/oct at every corner while the 2–20 Hz energy
+  moves ~15 dB. Unasked-for and right: a live corner change BANGS (a 4x
+  peak) unless the carried integrator state is renormalised by
+  `scale_old/scale_new`; it cannot fire while the knob stands still, so
+  the default stays bit-exact. `noise_stereo_pair.json` banked.
+* **the patch loader** (357d99b) — dead cables now DROP and SAY SO:
+  `Patch.cable_problem` checks what `connect` checks, the survivors
+  load, the casualties land on `patch.load_warnings` → the GUI status
+  line + console, the CLI's stderr. All 156 examples clean; 24 re-render
+  bit-exact. Duplicate destinations are deliberately NOT policed —
+  picking a winner would change how an existing patch plays. Known
+  one-way consequence: open a drifted patch, save, and the dead cable is
+  gone from the file.
+* **cv_recorder `speed_cv` + one-shot** (9a8e5cf) — the rate jack ships
+  STEPPED (0.5x–4x in 0.25x notches) on purpose: an integer half-step is
+  what makes every rate identical at block 50 and 250. It also caught
+  the spec's arithmetic (1..8 half-steps is 0.5x–4x, not the 0.25x–2x I
+  wrote). `cv_recorder_oneshot.json` banked.
+* **the CV sweep** (6307908) — one `_finite_mean` helper, 39 call sites.
+  **Fifteen modules rendered differently at 64 than at 512 with nothing
+  but a steady CV on a jack** (a float32 mean of a float32 buffer reads
+  a held 0.3 as 0.29999998 over 64 samples, 0.30000001 over 512); all
+  fifteen are exact now. The NaN wart is closed before any clamp —
+  `loudness` genuinely rendered non-finite on a NaN CV, `bitcrusher`
+  raised out of the audio thread. 120 of 156 examples bit-exact; the 36
+  that moved all patch a routed CV, 34 by an ulp. The two exceptions are
+  the chaotic models amplifying that ulp: **`bowed_cello` 5.2e-2 and
+  `wind_duet` 1.0e-4** — both were NEVER block-size exact before and are
+  now, so the new render is the exact one; flagged for ears.
+* **freeze `width_cv` + `latch` + 32768** (c7ff869) — stopped at 32768,
+  not 65536, and showed its working: at 65536 the steady-state synthesis
+  is 11.2 ms every 371 ms against an 11.61 ms block, a permanent
+  near-overrun. Half that bill was paid by vectorising the peak-region
+  map (integer-identical, fuzzed over 4025 spectra, 6 ms → 0.33 ms),
+  which speeds up every window. It rejected a cheaper `width_cv` design
+  because it would step at block boundaries, and corrected its own
+  hypothesis: the capture window is a Hann, so the instant AT the gate
+  edge is the quietest part of what you hold — aim the edge a beat late.
+* **vowel: the follow-on list CLOSED** (845ea1c) — float64 mean,
+  `cv_rate` `block|sample`, `voice` `custom` + `f1..f5`. The per-sample
+  mouth quantises the CV to 0.02-vowel steps AROUND THE KNOB (measured
+  against a true per-sample oracle: 0.02 → −62 dB, 0.05 → −55, 0.1 → −43
+  and steppy), so flipping `cv_rate` on a still patch is bit-for-bit
+  silent. Its click tripwire calibrates against BLOCK mode rather than a
+  magic number — and found block mode's once-a-buffer coefficient jump
+  is the bigger discontinuity (0.00498 vs 0.00367).
+* **tape + chorus exactness** (063e7d5, 3f161fa) — above. Both bit-exact
+  at 64/128/512/1000 over four seconds with everything on; shipped
+  renders moved at most HALF a float32 ulp on 0.006% of samples.
+* **clock `swing_cv` + the divider's gate lengths** (d89dadc, d54912a) —
+  the swing is LATCHED at each even period start and held through the
+  odd period after it, so a moving CV never drags a pulse already in
+  flight into a double edge or none (a 0.5 Hz LFO over 10 s emits
+  exactly the straight clock's 80 edges at every depth). The divider
+  took its gate length from the LAST interval, and a swung clock
+  alternates long/short — `divn` flapped 10750/5787 samples and
+  `div2/4/8`, always landing on even pulses, always measured the SHORT
+  side and sat ~30% under their true period. Lengths come off the mean
+  of the last two intervals now; even a straight clock's 2-sample
+  rounding wobble flattens. One shipped render moves
+  (`cv_recorder_backwards` reads divider gates as levels, 1.5e-4 peak);
+  every rising edge in all 22 references is identical.
+* **organ: the finding CLOSED** (4517234, 5b54a64, a3894c4) — above,
+  plus the scanner's rounded-triangle sweep (`arcsin(0.98 sin)/arcsin
+  0.98`: crest 1.12, third harmonic 0.287 against the sine's 1.44/0.000,
+  A/B'd against the same renderer with the rounding off) and a scanner
+  phase that survives off → on. The swing table was retuned 1.4x wider
+  to hold V3 at 41.8 cents, because the cents are the contract.
+* **pluck `vel_position` + `carry`** (d35bd0c, 4675958) — and the open
+  allpass-clear QUESTION, answered: the clear every hit performs steps
+  the output by **51% of the ring** (it throws away one sample of loop
+  state, and a sample is not an envelope), while carrying it makes the
+  step exactly 0 and a re-pluck **exact superposition** — two hits minus
+  one equals the second alone to one float32 ulp, the property the
+  module always claimed and the clear made false. Tuning, peak and
+  stability identical. Shipped default OFF anyway: turning it on changes
+  every re-pluck, which is an ears call. `vel_position` corrected the
+  spec twice (`position` 0 is the comb's documented OFF and my formula
+  would have switched it back on; and the centroid claim doesn't hold —
+  a comb notches rather than tilts, so it reported the first null
+  falling 2597 → 686 Hz at velocity 0.3).
+* **phaser + flanger** (af3ce58, 19b1724) — the rack's two untouched
+  modulation effects: a `clock` jack with `division` (the sweep becomes
+  a length in beats, 1.0007/0.5003/0.2502 Hz measured against
+  1/0.5/0.25), `spread` (the L/R offset the quarter-cycle quadrature had
+  been hard-coding — 0.5 IS that, and `0.5*0.5` is exact in binary, so
+  the default is bit-exactly today), and `manual_cv` + depth. The find:
+  a rate re-read once a block put **5.6e-2** between the 64- and
+  512-sample renders — audible — because the sweep rides a float phase
+  accumulator; keying the LOCKED phase to the absolute sample index
+  makes a clocked sweep exactly bit-identical, better than the
+  free-running one. Two of the briefed six features already existed
+  (the flanger's through-zero, the phaser's `center` as its manual
+  knob); it said so and shipped what was actually missing.
+
+**Eight examples banked:** `noise_stereo_pair`, `cv_recorder_oneshot`,
+`freeze_drone_breathe`, `vowel_robot_talk`, `clock_swing_breathe`,
+`pluck_touch`, `phaser_envelope_sweep`, `flanger_jet`. **Thirty-six
+love passes in four days.** Suite **5265**, 164 examples, 100 modules.
 
 ---
 
