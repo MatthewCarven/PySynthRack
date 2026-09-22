@@ -19644,12 +19644,29 @@ class NumpyBackend(AudioBackend):
     _ORGAN_PERC_T60 = {"fast": 0.3, "slow": 1.0}
     _ORGAN_PERC_RATIO = {"2nd": 2.0, "3rd": 3.0}
     # The scanner (see modules/organ.py): a 412 rpm motor sweeps the line
-    # once per turn. Peak-to-peak sweep per depth index (v1/c1, v2/c2,
-    # v3/c3) -- tuned by measurement, V3 lands at +/-41 cents. The line
-    # centre is the half-swing plus a margin (never below 2 samples, so a
-    # read never crosses the write head); every switch crossfades gains
-    # and depth over an integer-counted ramp.
+    # once per turn. The line centre is the half-swing plus a margin
+    # (never below 2 samples, so a read never crosses the write head);
+    # every switch crossfades gains and depth over an integer-counted
+    # ramp.
     _ORGAN_SCAN_HZ = 412.0 / 60.0
+    # The pickup traces a ROUNDED TRIANGLE across the taps, not a sine
+    # (2026-09-22): a sine driven through an arcsine,
+    #     s(ph) = arcsin(R * sin(2*pi*ph)) / arcsin(R),
+    # the exact triangle as R -> 1 and a plain sine as R -> 0. At 0.98
+    # the argument never reaches arcsin's singularity, so s is analytic
+    # -- rounded corners, no kink to tick -- while the pitch deviation
+    # (the sweep's SLOPE) is 88% of the way from a sine to the
+    # flat-topped square a linear sweep would make: crest factor 1.095
+    # against a sine's 1.414 and a square's 1.0, third harmonic 0.272
+    # against a square's 1/3 (measured on the shape; see the module
+    # docstring for the measurement on the rendered audio).
+    _ORGAN_SCAN_ROUND = 0.98
+    # Peak-to-peak sweep per depth index (v1/c1, v2/c2, v3/c3), expressed
+    # as the SINE-equivalent swing, because what is pinned is the cents:
+    # V3 lands at +/-41. The rounded triangle's peak slope is arcsin(R)/R
+    # = 1.398x shallower than a sine's, so the line is scaled by that in
+    # _organ_scanner and actually swings 0.49 / 0.98 / 1.54 ms. Keeping
+    # the swing instead of the cents would have dropped V3 to +/-29.
     _ORGAN_SCAN_SWING_MS = (0.35, 0.70, 1.10)
     _ORGAN_SCAN_MARGIN_S = 1e-4
     _ORGAN_SCAN_FADE_S = 0.04
@@ -19952,9 +19969,17 @@ class NumpyBackend(AudioBackend):
         phase accumulator would not be. One counter for all voices: one
         scanner per console.
 
-        ``delay = A * (1 + sin) + margin`` -- the line starts at (almost)
+        ``delay = A * (1 + s) + margin`` -- the line starts at (almost)
         zero delay for every depth, the way the real pickup starts at
-        tap 0, and ``A`` is the half-swing of the setting. Three values
+        tap 0, and ``A`` is the half-swing of the setting. ``s`` is the
+        ROUNDED TRIANGLE the pickup really traces,
+        ``arcsin(R*sin(2*pi*ph)) / arcsin(R)`` at ``R`` =
+        ``_ORGAN_SCAN_ROUND``: a sine's corners pulled out towards a
+        triangle's without ever reaching them, so the pitch deviation
+        -- which is the sweep's slope -- is flat-topped instead of
+        sinusoidal while every derivative stays continuous. ``A`` is
+        scaled by ``arcsin(R)/R`` to hold the cents where the sine put
+        them. Three values
         crossfade on any switch -- dry gain, wet gain, ``A`` -- along one
         integer-counted linear ramp (the gate-ramp idiom: ``from + (to -
         from) * count / R``, snapping to ``to`` exactly at ``R``). V
@@ -19967,13 +19992,18 @@ class NumpyBackend(AudioBackend):
         """
         V = out.shape[0]
         swings = self._ORGAN_SCAN_SWING_MS
-        a_max = 0.5 * swings[-1] * sr / 1000.0
+        # arcsin(R)/R: the rounded triangle's peak slope is that much
+        # shallower than a sine's, so the line swings that much wider
+        # and the cents land where the sine left them.
+        rnd = self._ORGAN_SCAN_ROUND
+        slope = float(np.arcsin(rnd) / rnd)
+        a_max = 0.5 * swings[-1] * sr / 1000.0 * slope
         margin = max(2.0, sr * self._ORGAN_SCAN_MARGIN_S)
         fade = max(1, int(round(sr * self._ORGAN_SCAN_FADE_S)))
         span = int(np.ceil(2.0 * a_max + margin)) + 4
 
         if vib != "off":
-            a = 0.5 * swings[int(vib[1]) - 1] * sr / 1000.0
+            a = 0.5 * swings[int(vib[1]) - 1] * sr / 1000.0 * slope
             g = 0.5 if vib[0] == "c" else 1.0
             target = np.array([1.0 - g, g, a], dtype=np.float64)
         else:
@@ -20023,7 +20053,8 @@ class NumpyBackend(AudioBackend):
         n0 = int(st["scan_n"])
         absidx = n0 + np.arange(frames, dtype=np.int64)
         ph = (absidx * (self._ORGAN_SCAN_HZ / sr)) % 1.0
-        delay = a_t * (1.0 + np.sin(2.0 * np.pi * ph)) + margin
+        sweep = np.arcsin(rnd * np.sin(2.0 * np.pi * ph)) / np.arcsin(rnd)
+        delay = a_t * (1.0 + sweep) + margin
         np.clip(delay, 2.0, float(L - 2), out=delay)
 
         buf[:, absidx % L] = out

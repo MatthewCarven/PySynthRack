@@ -46,11 +46,25 @@ The scanner is the third tonewheel signature: ``vibrato`` is the
 console's six-way knob. The hardware is a short tapped delay line swept
 by a rotating capacitor pickup on a 412 rpm motor — **~6.87 Hz**, the
 one rate every Hammond vibrato ever had — and V1/V2/V3 switch in more of
-the line (peak-to-peak sweep 0.35 / 0.7 / 1.1 ms, a sine here where the
-real pickup traces a rounded triangle), so the pitch wobbles about
-±13 / ±26 / ±41 cents (measured, not just predicted: a sinusoidal delay
-of half-swing ``A`` deviates the pitch ratio by ``2*pi*f*A`` at its
-peak). C1/C2/C3 are the *same* swept signal mixed with the un-delayed
+the line, so the pitch wobbles about ±13 / ±26 / ±41 cents (measured on
+the module's own output via the analytic signal, not just predicted).
+
+The pickup traces a **rounded triangle**, not a sine (2026-09-22): the
+sweep is ``arcsin(R * sin(2*pi*ph)) / arcsin(R)`` at ``R`` = 0.98 — a
+sine driven through an arcsine, the exact triangle as ``R`` goes to 1
+and a plain sine as it goes to 0. At 0.98 the argument never reaches
+arcsin's singularity, so the shape is analytic — rounded corners,
+nothing to tick — while the pitch deviation, which is the sweep's
+SLOPE, comes out flat-topped: measured crest factor (peak / RMS of the
+cents curve) **1.12** against the old sine's 1.44 and an ideal square's
+1.00, with a third harmonic at **0.287** of the fundamental where a
+sine has none. A triangle's peak slope is ``arcsin(R)/R`` = 1.398x
+shallower than a sine's, so the line swings that much wider — 0.49 /
+0.98 / 1.54 ms peak-to-peak rather than the old 0.35 / 0.70 / 1.10 —
+and the cents land where they did (41.7 → 41.8 at V3). The cents are
+the contract; keeping the old swing would have thinned V3 to ±29.
+
+C1/C2/C3 are the *same* swept signal mixed with the un-delayed
 dry in equal parts, ``0.5 * (dry + scanned)`` — the chorus: the
 scanned copy sits a fraction of a millisecond behind the dry, so the
 sum is a comb whose notches sweep with the scanner, and averaging

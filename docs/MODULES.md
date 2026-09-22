@@ -1516,12 +1516,32 @@ block-mean had been rounding a held CV.)
 signature, the console's six-way knob. The hardware is a short tapped
 delay line swept by a rotating capacitor pickup on a 412 rpm motor —
 **~6.87 Hz**, the one rate every Hammond vibrato ever had — and
-V1/V2/V3 switch in more of the line: peak-to-peak sweep 0.35 / 0.7 /
-1.1 ms (a sine sweep here; the real pickup traces a rounded triangle),
-so the pitch wobbles **±13 / ±26 / ±41 cents** (measured on the
-module's own output via the analytic signal, not just predicted: a
-sinusoidal delay of half-swing *A* deviates the pitch ratio by
-2π·f·A at its peak). C1/C2/C3 are the *same* swept signal mixed with
+V1/V2/V3 switch in more of the line, so the pitch wobbles **±13 /
+±26 / ±41 cents** (measured on the module's own output via the
+analytic signal, not just predicted).
+
+The pickup traces a **rounded triangle**, not a sine (2026-09-22).
+The sweep is `arcsin(R·sin 2πφ) / arcsin(R)` at `R` = 0.98 — a sine
+driven through an arcsine, which is the exact triangle as `R` → 1 and
+a plain sine as `R` → 0. At 0.98 the argument never reaches arcsin's
+singularity, so the shape stays analytic (rounded corners, nothing to
+tick) while the pitch deviation — the sweep's *slope* — comes out
+flat-topped. Measured at V3 against the same renderer with the shape
+turned back down to a sine:
+
+| sweep | peak cents | crest (peak/RMS) | 3rd harmonic |
+|---|---|---|---|
+| sine (before) | 41.7 | 1.44 | 0.000 |
+| rounded triangle | 41.8 | **1.12** | **0.287** |
+| ideal square | — | 1.00 | 0.333 |
+
+A triangle's peak slope is `arcsin(R)/R` = 1.398× shallower than a
+sine's, so the line swings that much wider — **0.49 / 0.98 / 1.54 ms**
+peak-to-peak rather than the old 0.35 / 0.70 / 1.10 — and the cents
+land where they did. The cents are the contract: keeping the old swing
+instead would have thinned V3 to ±29.
+
+C1/C2/C3 are the *same* swept signal mixed with
 the un-delayed dry in equal parts — `0.5 · (dry + scanned)` — which is
 why C is a **chorus**: the scanned copy sits a fraction of a
 millisecond behind the dry, so their sum is a comb whose notches sweep

@@ -520,6 +520,30 @@ def _wobble(y, f0, sr, skip=None, trim=4000, k=200):
     return float(np.abs(cents).max()), float(freqs[np.argmax(spec)])
 
 
+def _cents_curve(y, f0, sr, trim=4000, k=200):
+    """``_wobble``'s deviation curve itself, mean removed — so the SHAPE
+    of the wobble can be measured, not just its depth."""
+    seg = y[sr:].astype(np.float64)
+    phase = np.unwrap(np.angle(hilbert(seg)))
+    inst = (np.diff(phase) * sr / (2.0 * np.pi))[trim:-trim]
+    f_t = np.convolve(inst, np.ones(k) / k, mode="valid")
+    cents = 1200.0 * np.log2(f_t / f0)
+    return cents - cents.mean()
+
+
+def _harmonic_ratio(curve, mult, sr, rate=SCAN_HZ):
+    """|H(mult·rate)| / |H(rate)| of a deviation curve — 0 for a sine,
+    1/3 for a square at the third."""
+    n = len(curve)
+    spec = np.abs(np.fft.rfft(curve * np.hanning(n)))
+
+    def at(m):
+        k = int(round(m * rate * n / sr))
+        return float(spec[k - 2 : k + 3].max())
+
+    return at(mult) / at(1)
+
+
 def test_vibrato_off_never_touches_the_scanner():
     """Count the doors: at ``off`` the scanner is not called at all (a
     raising stand-in would fail the render) and no ring is allocated —
@@ -547,6 +571,48 @@ def test_v3_pitch_deviation_measured_at_the_scanner_rate():
     depth, rate = _wobble(out, C4, sr)
     assert 0.8 * V3_CENTS < depth < 1.2 * V3_CENTS, depth
     assert abs(rate - SCAN_HZ) < 0.3, rate
+
+
+def test_the_sweep_is_a_rounded_triangle_not_a_sine():
+    """(2026-09-22) The pickup traces a ROUNDED TRIANGLE across the taps,
+    so the pitch deviation is flat-topped rather than sinusoidal.
+    Measured on the module's own output at V3, A/B'd against the same
+    renderer with the shape parameter turned down to zero — which IS the
+    sine that shipped, so nothing but the shape differs between the two
+    renders:
+
+        shape             peak cents   crest (peak/RMS)   3rd harmonic
+        sine (was)           41.7          1.44               0.000
+        rounded triangle     41.8          1.12               0.287
+        (square, ideal)        —           1.00               0.333
+
+    The cents are the contract and they did not move: the swing is
+    scaled by arcsin(R)/R to make up for the triangle's shallower peak
+    slope (keeping the 0.35/0.70/1.10 ms swing instead would have
+    dropped V3 to ±29 cents)."""
+    sr = 44100
+    shipped = NumpyBackend._ORGAN_SCAN_ROUND
+
+    def curve(round_):
+        with mock.patch.object(NumpyBackend, "_ORGAN_SCAN_ROUND", round_):
+            step = _driver(_lone8({"vibrato": "v3"}), block=4096, sr=sr)
+            out = _chunked(step, np.ones(sr * 4, dtype=np.float32), 4096)
+        return _cents_curve(out, C4, sr)
+
+    def shape(c):
+        peak = float(np.abs(c).max())
+        rms = float(np.sqrt(np.mean(c ** 2)))
+        return peak, peak / rms, _harmonic_ratio(c, 3, sr)
+
+    p_t, crest_t, h3_t = shape(curve(shipped))
+    p_s, crest_s, h3_s = shape(curve(1e-7))  # R → 0 is exactly the sine
+
+    assert 1.40 < crest_s < 1.46, crest_s   # a sinusoidal deviation
+    assert h3_s < 0.01, h3_s
+    assert 1.09 < crest_t < 1.15, crest_t   # flat-topped, not square
+    assert 0.25 < h3_t < 0.32, h3_t
+    assert abs(p_t - p_s) < 0.02 * p_s, (p_t, p_s)  # the cents held
+    assert 0.8 * V3_CENTS < p_t < 1.2 * V3_CENTS, p_t
 
 
 def test_vibrato_depths_increase_v1_v2_v3():
