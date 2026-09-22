@@ -110,6 +110,7 @@ The full map:
 | `chorus.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `flanger.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `phaser.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
+| `phaser.manual_cv` | `1.0` (`manual_depth`) | octaves | `center · 2^(d·cv[n])`, **per sample**, clamped 100…6000 Hz; mono (a `(V, F)` source is summed) |
 | `ring_mod.freq_cv` | `1.0` (`freq_cv_depth`) | octaves | `freq · 2^(freq_cv_depth·cv[n])`, per-sample (internal carrier; bypassed when `carrier` patched) |
 | `freq_shifter.shift_cv` | `200.0` (`shift_cv_depth`) | Hz (linear, additive) | `shift + shift_cv_depth·cv[n]`, per-sample; a shift adds Hz, not V/oct; clamped ±Nyquist |
 | `resampler.pitch_cv` | `12.0` | semitones | `st + d·cv` (semitone space) |
@@ -157,7 +158,10 @@ law's own clamp) and `slew` rise/fall ±5 (`_SLEW_MAX_OCT`); `pitch_shifter`
 clips in the same octave space at ±3 (its ±36-semitone rail). Per-sample
 array powers (`oscillator.freq_cv`, `fm_op`, `ring_mod`, `supersaw`,
 `wavetable_morph`, `resampler`) are numpy and never raise; they are not
-routed.
+routed. The `phaser`'s per-sample `manual_cv` jack goes through
+`_pow2_clipped` anyway — it takes an array as happily as a scalar, and
+the free non-finite-reads-as-zero rule is worth having on a jack whose
+output lands in a filter coefficient.
 
 **Every block mean is taken in float64 and scrubbed before anything clamps
 it.** `mean cv` above is one reduction, `NumpyBackend._finite_mean`, and it
@@ -368,7 +372,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`chorus`](#chorus) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
 | [`rotary`](#rotary) | Effects | `in` (audio), `fast` (gate) → `out_l`,`out_r`,`out` (audio) |
 | [`flanger`](#flanger) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
-| [`phaser`](#phaser) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
+| [`phaser`](#phaser) | Effects | `in` (audio), `rate_cv`,`manual_cv` (cv), `clock` (gate) → `out_l`,`out_r` (audio) |
 | [`vocoder`](#vocoder) | Effects | `mod`,`carrier` (audio) → `out` (audio) |
 | [`lfo`](#lfo) | Modulation | `rate_cv` (cv), `reset` (gate) → `cv` (cv) |
 | [`adsr`](#adsr) | Modulation | `gate` (gate), `vel` (cv) → `cv` (cv) |
@@ -3835,8 +3839,8 @@ the notches into ringing, vocal peaks. Where the [`flanger`](#flanger)'s
 notches come from a short *delay* (evenly, harmonically spaced and metallic),
 the phaser's come from *allpass phase* (spread unevenly, softer and rounder)
 — it is the third of the modulation trio. The sweep is spread across a
-**stereo pair** (`out_l` / `out_r`) with the L and R LFOs a quarter-cycle
-apart, for a wide, rotating image.
+**stereo pair** (`out_l` / `out_r`) with the L and R LFOs a phase apart,
+for a wide, rotating image — `spread` is that phase offset.
 
 **Ports**
 
@@ -3844,6 +3848,8 @@ apart, for a wide, rotating image.
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to phase (voice sources summed to mono). Unpatched → silence. |
 | `rate_cv` | in | cv | Modulates the LFO rate (1 V/oct × `cv_depth`). Optional. |
+| `manual_cv` | in | cv | Moves the sweep centre **per sample** (1 V/oct × `manual_depth` on `center`), clamped to the knob's 100…6000 Hz. Voice sources summed to mono. Optional. |
+| `clock` | in | gate | Tempo-syncs the sweep: one full sweep every `division` ticks. Optional — unpatched, `rate` rules. |
 | `out_l` | out | audio | Left channel (dry + swept notch chain). |
 | `out_r` | out | audio | Right channel (dry + swept notch chain). |
 
@@ -3851,13 +3857,16 @@ apart, for a wide, rotating image.
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
-| `rate` | `0.5` | 0.05 … 10 Hz | LFO sweep speed. Slow = a long breathing sweep; faster = warble. |
+| `rate` | `0.5` | 0.05 … 10 Hz | LFO sweep speed, free-running. Slow = a long breathing sweep; faster = warble. Also the fallback whenever `clock` is unpatched. |
+| `division` | `4.0` | 0.25 … 64 ticks | **Clock sync only.** How many `clock` ticks one full sweep takes. `4` = a sweep per bar of four; `1` = a sweep per beat. |
 | `depth` | `0.6` | 0 … 1 | Sweep width, in octaves around `center` (±2 octaves at `1`). |
 | `center` | `800` | 100 … 6000 Hz | Centre frequency of the notch sweep. Low = throaty; high = airy. |
 | `feedback` | `0.4` | −0.95 … 0.95 | Resonance, **bipolar**. `0` = plain notches; `+` = ringing/vocal; `−` = hollow. |
 | `stages` | `6` | 4 / 6 / 8 | Allpass stages = two / three / four notches. More = deeper, busier. |
 | `mix` | `0.5` | 0 … 1 | Dry/wet. The notches are deepest near `0.5`; `0` is a bit-exact dry passthrough on both channels. |
+| `spread` | `0.5` | 0 … 1 | L/R LFO phase offset. `0` = both chains on one LFO (a centred mono sweep); `0.5` = a quarter cycle apart (what the module shipped with); `1` = half a cycle, the channels counter-sweeping. |
 | `cv_depth` | `1.0` | 0 … 4 oct/unit | Octaves of LFO-rate shift per unit of `rate_cv`. |
+| `manual_depth` | `1.0` | 0 … 4 oct/unit | Octaves of sweep-centre shift per unit of `manual_cv`. |
 
 Patch the outputs into [`left_speaker_output`](#left_speaker_output) and
 [`right_speaker_output`](#right_speaker_output). Like the flanger, the
@@ -3867,6 +3876,43 @@ state and the feedback memory carry across blocks, so the render is still
 exactly **block-size independent** (bit-identical at 512 / 4096 / 333). See
 `examples/phaser_sweep.json` (a self-playing chord swept by the phaser, with
 a slow LFO drifting the sweep rate through `rate_cv`).
+
+**Tempo sync (`clock` + `division`).** Patch a gate into `clock` and the
+sweep stops being a speed in Hz and becomes a *length in beats*: one full
+notch sweep every `division` ticks of whatever is cabled — `4` a sweep per
+bar of four, `8` a two-bar sweep, `1` a sweep per beat, `0.5` twice a beat.
+The period is the distance between the last two rising edges, carried
+across blocks and keyed to an absolute sample count (the same idiom
+[`slew`](#slew) uses, and the reason the measurement is bit-identical at
+any block size), so the sweep follows a tempo that moves. Until two edges
+have arrived the free-running `rate` knob still drives it — a freshly
+patched clock never stalls the sweep. While the lock holds, `rate` and
+`rate_cv` step **aside**: the sweep length is the cable's. The locked
+phase is a pure function of the absolute sample index rather than an
+accumulator, which makes a *synced* sweep **exactly** bit-identical at 64
+and 512 — strictly better than the free-running one, whose float phase
+accumulator drifts about 1e-10 (phaser) / 3e-8 (flanger) over three
+seconds.
+
+**Stereo (`spread`).** The L and R allpass chains have always run from one
+LFO with their phases offset; `spread` is that offset, and `0.5` is exactly
+the quarter cycle the module shipped with. Turn it to `0` and both chains
+sweep together — one notch pattern, dead centre, mono-safe. Turn it to `1`
+and they run a half cycle apart: when the left chain's notches are at the
+top of their travel the right's are at the bottom, the widest the pair
+goes. Measured L/R correlation on a noise bed at `depth` 1: **1.000** at
+`spread` 0, **0.698** at `0.5`, **0.675** at `1`.
+
+**The manual jack (`manual_cv` + `manual_depth`).** `center` is the
+phaser's *manual* knob — where the notches sit before the LFO moves them —
+and `manual_cv` is that knob as a jack, read **per sample** and scaled by
+`manual_depth` in octaves per unit (clamped to the knob's own 100…6000 Hz).
+Turn `depth` to 0 and the LFO stops entirely; then an
+[`audio_to_cv`](#audio_to_cv) follower or an [`adsr`](#adsr) into
+`manual_cv` sweeps the notches from the playing itself. That is the classic
+**envelope phaser** — the notch position tracks how hard you hit rather
+than a clock — and it stacks with the LFO if you leave `depth` up. See
+`examples/phaser_envelope_sweep.json`.
 
 **Patching.** `… → vca → phaser → L/R speakers`. Raise `feedback` for a
 resonant, vocal sweep and `stages` for a deeper one; feed a slow envelope or
@@ -6000,4 +6046,16 @@ loads in the app. Notable ones referenced above:
 - `noise_brown_surf.json` — surf: a seeded `brown` [`noise`](#noise) (seed 7, so the same tide every run) swelling under a 0.12 Hz unipolar sine on its knobless `amp_cv` (a [`cv_offset`](#cv_offset) of 0.2 keeps the trough from going silent) into a resonant 900 Hz lowpass [`filter`](#filter) — waves rolling in and drawing back every eight seconds. Five modules.
 - `noise_stereo_pair.json` — one seed, one stream: two `brown` [`noise`](#noise) modules at `corner` 4 Hz (a deep, slow swell) through a resonant 500 Hz lowpass [`filter`](#filter) each, into the left and right speaker sinks. As shipped the seeds differ (3 and 8) and the pair is wide — measured channel correlation 0.09, two independent tides. Set **both seeds the same** and it collapses to dead mono (correlation 1.000, the two sides bit-identical): the seed alone is the key, so a twin is the same stream, not a second one. Six modules. Try `corner` 40 on both for tight surf instead of distant thunder.
 - `clock_swing_breathe.json` — the groove breathing: a 100 BPM sixteenth [`clock`](#clock) with **nothing** on its `swing` knob and a 0.05 Hz unipolar sine [`lfo`](#lfo) (`phase` 0.75) on its new `swing_cv` at `swing_cv_depth` 0.33 — dead straight at 0 s, full triplet shuffle at 10 s, straight again at 20 s, forever. Closed hats ride the breathing sixteenths; a [`clock_divider`](#clock_divider)'s `div4` fires a kick that never budges (edge parity is pulse parity, so the /4 lands on even pulses only) and its `divn` at `n` 3 holds a saw bass through an [`adsr`](#adsr) — that held gate is the divider's own love pass audible: its length is now steady (3.5 ms of spread across the whole sweep, against 148 ms under the old last-interval rule), so the bass note stops flapping between long and short as the shuffle moves. Ten modules; set `swing_cv_depth` to 0.5 for the hard shuffle at the top of the breath.
+- `phaser_envelope_sweep.json` — the envelope phaser: a sixteenth-note
+  [`sequencer`](#sequencer) riff on a saw voice, its [`adsr`](#adsr) split
+  two ways — into the [`vca`](#vca) as usual *and* into the
+  [`phaser`](#phaser)'s new `manual_cv` at `manual_depth` 2.5. Every note's
+  envelope drags the notches up about two and a half octaves and lets them
+  fall back, so the sweep is *played* rather than clocked; `feedback` 0.7
+  and `stages` 8 make it vocal. A slow `depth` 0.18 LFO drifts underneath
+  at `spread` 0.6 for the stereo (measured L/R correlation 0.51, against
+  1.000 with `spread` 0 — and with `depth` at 0 the two channels are
+  identical whatever `spread` says, because an envelope sweep is mono).
+  Set `manual_depth` to 0 to hear the same riff through a *fixed* notch
+  pattern, which is what the module did before this jack existed.
 - `stereo_hard_pan.json` — left/right speaker sinks.

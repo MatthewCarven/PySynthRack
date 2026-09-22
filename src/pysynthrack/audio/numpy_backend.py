@@ -10786,7 +10786,7 @@ class NumpyBackend(AudioBackend):
         # cadence the LFO module uses for its own rate_cv).
         rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
         if rate_cv is not None and rate_cv.size > 0:
-            rate = rate * self._pow2_clipped(cv_depth * float(np.mean(rate_cv)))
+            rate = rate * self._pow2_clipped(cv_depth * self._finite_mean(rate_cv))
         rate = min(max(rate, 0.01), 20.0)
 
         max_ms = self._CHORUS_MAX_MS
@@ -11454,6 +11454,120 @@ class NumpyBackend(AudioBackend):
             "out_r": ((1.0 - mix) * dry + mix * wet_r).astype(np.float32),
         }
 
+    # ----- Modulation-effect clock sync ------------------------------------
+
+    # ``division`` rail for the modulation effects' ``clock`` jack: how many
+    # clock ticks one LFO sweep may be stretched over (a sixteenth of a
+    # tick to sixteen bars of four).
+    _MOD_DIV_MIN = 0.25
+    _MOD_DIV_MAX = 64.0
+    # State keys :meth:`_mod_clock_sync` owns. A module that re-inits its
+    # DSP state (the phaser on a ``stages`` change, the flanger on a
+    # ``through_zero`` flip) carries these across the clear, so flipping a
+    # knob mid-stream doesn't throw away a period it has already measured.
+    _MOD_CLOCK_KEYS = ("samples", "prev_clock", "last_edge", "interval",
+                       "anchor", "period")
+
+    def _mod_clock_sync(self, module, frames: int, buffers, patch, state,
+                        division: float, rate: float, phase0: float):
+        """Absolute-sample LFO phase for a clock-synced modulation sweep.
+
+        Returns ``None`` while ``clock`` is unpatched, or patched but still
+        short of the two rising edges a period needs -- the caller then
+        runs its shipped free-running phase line, unchanged to the bit.
+        Otherwise returns ``(phase, end_phase)``: a ``(frames,)`` array of
+        LFO phase, one value per sample, and the phase just past the block.
+
+        Edges are found the way :meth:`_render_slew` finds them (a lagged
+        compare against ``_GATE_HIGH``, the previous block's last sample
+        carried in ``prev_clock``) and keyed to a running ABSOLUTE sample
+        counter, so the measured ``interval`` is the same integer whatever
+        the block size. What is new here is that the *phase* is keyed that
+        way too:
+
+            phase[n] = ((n - anchor) / period) % 1.0,
+            period = interval * division samples
+
+        Nothing accumulates, so the phase at sample n is the same number
+        at any block size -- the integer-tick lesson. (A float phase
+        accumulator is not: the shipped free-running sweep already drifts
+        ~1e-10 over three seconds at 64 vs 512, and a rate re-read once a
+        block would have drifted ~5e-2, which is audible.) When the
+        measured period changes, the anchor is re-derived at THAT EDGE's
+        own sample from the phase there, so the sweep keeps its place
+        rather than jumping -- and the re-derivation is integer-rounded,
+        which quantises away the free-running accumulator's drift as the
+        lock engages. The block where the lock engages is the one block
+        that is part free-running (before the edge) and part locked.
+
+        While the lock holds, ``rate`` and ``rate_cv`` step aside entirely
+        -- the sweep length is the cable's. ``rate`` is passed in only to
+        place the free-running stretch before the lock engages.
+        """
+        clock = self._input_buffer(patch, buffers, module.id, "clock")
+        base = int(state.get("samples", 0))
+        state["samples"] = base + frames
+        if clock is None:
+            state["prev_clock"] = False
+            state["last_edge"] = -1
+            state["interval"] = 0
+            state["anchor"] = -1
+            state["period"] = 0.0
+            return None
+
+        hi = clock > self._GATE_HIGH
+        lag = np.empty(frames, dtype=bool)
+        lag[0] = bool(state.get("prev_clock", False))
+        lag[1:] = hi[:-1]
+        state["prev_clock"] = bool(hi[-1])
+
+        last_edge = int(state.get("last_edge", -1))
+        interval = int(state.get("interval", 0))
+        anchor = int(state.get("anchor", -1))
+        period = float(state.get("period", 0.0))
+        inc = rate / self.sample_rate
+
+        # Split the block at every edge that CHANGES the period. Each
+        # stretch carries the (anchor, period) in force across it; a
+        # period of 0 means "not locked yet, run free".
+        segs = []
+        start = 0
+        for n in np.flatnonzero(hi & ~lag).tolist():
+            now = base + n
+            new_interval = now - last_edge if last_edge >= 0 else interval
+            last_edge = now
+            if new_interval <= 0 or new_interval == interval:
+                continue
+            if n > start:
+                segs.append((start, n, anchor, period))
+            if period > 0.0:
+                at = ((now - anchor) / period) % 1.0
+            else:
+                at = (phase0 + n * inc) % 1.0
+            interval = new_interval
+            period = interval * division
+            anchor = now - int(round(at * period))
+            start = n
+        segs.append((start, frames, anchor, period))
+
+        state["last_edge"] = last_edge
+        state["interval"] = interval
+        state["anchor"] = anchor
+        state["period"] = period
+        if period <= 0.0:
+            return None
+
+        ph = np.empty(frames, dtype=np.float64)
+        for (lo, hi_i, an, pe) in segs:
+            if hi_i <= lo:
+                continue
+            idx = np.arange(lo, hi_i, dtype=np.float64)
+            if pe > 0.0:
+                ph[lo:hi_i] = ((base + idx - an) / pe) % 1.0
+            else:
+                ph[lo:hi_i] = (phase0 + idx * inc) % 1.0
+        return ph, float(((base + frames - anchor) / period) % 1.0)
+
     # ----- Flanger rendering ----------------------------------------------
 
     # Longest delay the flanger line can address, in milliseconds. The comb
@@ -11655,6 +11769,16 @@ class NumpyBackend(AudioBackend):
         memory carry across blocks, so the render is exactly block-size
         independent. A polyphonic input is summed to mono first, and
         ``mix == 0`` is a bit-exact dry passthrough on both channels.
+
+        Love pass (2026-09-22), all three OFF at their defaults so the
+        shipped render is bit-identical: a ``clock`` jack that locks the
+        sweep to the cable (one notch sweep every ``division`` ticks, via
+        :meth:`_mod_clock_sync`); ``spread``, which is the L/R LFO phase
+        offset the quarter-cycle quadrature used to hard-code (0.5 is that
+        quadrature, 0 collapses the pair to one chain, 1 counter-sweeps);
+        and ``manual_cv``, a per-sample octave jack on ``center`` so an
+        envelope or a pedal can sweep the notches with ``depth`` at 0 --
+        the classic envelope phaser.
         """
         src = self._input_buffer(patch, buffers, module.id, "in")
         if src is None:
@@ -11668,6 +11792,9 @@ class NumpyBackend(AudioBackend):
         feedback = float(module.params.get("feedback", 0.4))
         mix = float(module.params.get("mix", 0.5))
         cv_depth = float(module.params.get("cv_depth", 1.0))
+        spread = float(module.params.get("spread", 0.5))
+        division = float(module.params.get("division", 4.0))
+        manual_depth = float(module.params.get("manual_depth", 1.0))
         stages = int(round(float(module.params.get("stages", 6))))
         if stages not in self._PHASER_STAGES:
             stages = min(self._PHASER_STAGES, key=lambda v: abs(v - stages))
@@ -11675,18 +11802,14 @@ class NumpyBackend(AudioBackend):
         mix = min(max(mix, 0.0), 1.0)
         feedback = min(max(feedback, -0.95), 0.95)   # bipolar, below runaway
         center = min(max(center, self._PHASER_CENTER_MIN), self._PHASER_CENTER_MAX)
-
-        # rate_cv: 1 V/oct on the LFO rate, block-mean -- a sub-audio LFO,
-        # so one rate per block is the right cost/quality trade-off (the
-        # same cadence the chorus and flanger use for their rate_cv).
-        rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
-        if rate_cv is not None and rate_cv.size > 0:
-            rate = rate * self._pow2_clipped(cv_depth * self._finite_mean(rate_cv))
-        rate = min(max(rate, 0.01), 20.0)
+        spread = min(max(spread, 0.0), 1.0)
+        division = min(max(division, self._MOD_DIV_MIN), self._MOD_DIV_MAX)
 
         state = self._state.setdefault(module.id, {})
         if "s" not in state or state["s"].shape != (2, stages):
+            keep = {k: state[k] for k in self._MOD_CLOCK_KEYS if k in state}
             state.clear()
+            state.update(keep)
             state["s"] = np.zeros((2, stages), dtype=np.float64)   # allpass memory
             state["yprev"] = np.zeros(2, dtype=np.float64)         # feedback memory
             state["phase"] = 0.0
@@ -11699,22 +11822,58 @@ class NumpyBackend(AudioBackend):
             e = np.empty(0, dtype=np.float32)
             return {"out_l": e, "out_r": e.copy()}
 
+        # rate_cv: 1 V/oct on the LFO rate, block-mean -- a sub-audio LFO,
+        # so one rate per block is the right cost/quality trade-off (the
+        # same cadence the chorus and flanger use for their rate_cv).
+        rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
+        if rate_cv is not None and rate_cv.size > 0:
+            rate = rate * self._pow2_clipped(cv_depth * self._finite_mean(rate_cv))
+        rate = min(max(rate, 0.01), 20.0)
+
         x = src.astype(np.float64)                        # (F,)
 
-        # One sine LFO, L and R a quarter-cycle apart, so the two notch
-        # chains sweep out of step (stereo width).
+        # One sine LFO; ``spread`` sets how far apart the L and R phases
+        # run (0 = together, 0.5 = the shipped quarter-cycle quadrature,
+        # 1 = a half cycle apart), so the two notch chains sweep out of
+        # step. ``clock`` patched and locked replaces the free-running
+        # phase line with an absolute-sample one (one sweep per
+        # ``division`` ticks); unpatched, the shipped expression below
+        # runs untouched.
         inc = rate / sr
         n = np.arange(frames, dtype=np.float64)
-        offs = np.array([0.0, 0.25])                      # quadrature L / R
-        ph = (phase0 + offs[:, None] + n[None, :] * inc) % 1.0    # (2, F)
+        offs = np.array([0.0, 0.5 * spread])      # L / R LFO phase offset
+        sync = self._mod_clock_sync(
+            module, frames, buffers, patch, state, division, rate, phase0
+        )
+        if sync is None:
+            ph = (phase0 + offs[:, None] + n[None, :] * inc) % 1.0    # (2, F)
+            new_phase = (phase0 + frames * inc) % 1.0
+        else:
+            pb, new_phase = sync
+            ph = (pb[None, :] + offs[:, None]) % 1.0                  # (2, F)
         lfo = np.sin(2.0 * np.pi * ph)                            # (2, F)
-        new_phase = (phase0 + frames * inc) % 1.0
 
         # Exponential (musical) sweep of the break frequency: +/- depth*2
         # octaves around ``center``, clamped well inside Nyquist so the
         # allpass coefficient stays finite.
         octs = self._PHASER_MAX_OCT * depth
-        fc = center * (2.0 ** (octs * lfo))                       # (2, F)
+        # manual_cv: the notch position as a jack -- 1 V/oct x
+        # ``manual_depth`` on ``center``, read PER SAMPLE so an envelope or
+        # a pedal can sweep the notches with the LFO's ``depth`` at 0 (the
+        # classic envelope phaser). Unpatched leaves ``center`` the scalar
+        # it always was, so the shipped render is untouched. A voice source
+        # is summed to mono, like ``in``.
+        manual_cv = self._input_buffer(patch, buffers, module.id, "manual_cv")
+        if manual_cv is not None and manual_cv.size > 0:
+            base = np.clip(
+                center * self._pow2_clipped(
+                    manual_depth * manual_cv.astype(np.float64)
+                ),
+                self._PHASER_CENTER_MIN, self._PHASER_CENTER_MAX,
+            )[None, :]                                            # (1, F)
+        else:
+            base = center
+        fc = base * (2.0 ** (octs * lfo))                         # (2, F)
         np.clip(fc, 20.0, sr * 0.45, out=fc)
         tanv = np.tan(np.pi * fc / sr)
         a = (tanv - 1.0) / (tanv + 1.0)                          # (2, F) in (-1, 1)
