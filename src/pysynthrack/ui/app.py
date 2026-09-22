@@ -6273,7 +6273,33 @@ class App:
         self._apply_window_geometry()
 
         self._refresh_late_links()
-        self._set_status(f"Loaded: {os.path.basename(path)}")
+        tail = self._report_load_warnings(path)
+        self._set_status(f"Loaded: {os.path.basename(path)}{tail}")
+
+    def _report_load_warnings(self, path: str) -> str:
+        """Print what the loader threw away; return the status-line tail.
+
+        ``Patch.from_dict`` drops a cable whose module or port is gone
+        rather than loading it silently inert (the old failure looked
+        exactly like "nothing happens"). Fail-soft only helps if
+        something SAYS so, and the status bar is one line: it carries
+        the count, the console carries the list.
+
+        Returns ``""`` for a clean patch so the usual "Loaded: foo.json"
+        is untouched. ASCII only -- the UI font paints nothing above
+        U+00FF.
+        """
+        warnings = list(getattr(self.patch, "load_warnings", ()) or ())
+        if not warnings:
+            return ""
+        name = os.path.basename(path)
+        print(
+            f"[pysynthrack] {name}: dropped {len(warnings)} dead cable(s) on load:"
+        )
+        for line in warnings:
+            print(f"    - {line}")
+        plural = "" if len(warnings) == 1 else "s"
+        return f" - {len(warnings)} dead cable{plural} dropped (see console)"
 
     # ----- helpers --------------------------------------------------------
 

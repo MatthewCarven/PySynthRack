@@ -36,6 +36,15 @@ def load_patch(path: PathLike) -> Patch:
     ``Patch.source_path``) so relative media paths inside it can be
     resolved against the patch's own folder instead of the process
     working directory.
+
+    Loading is **fail-soft about cables**: a cable whose module or port
+    is gone (or whose signal kinds don't match) is dropped rather than
+    obeyed or raised on, and a line saying what went and why lands in
+    ``patch.load_warnings``. A patch with one dead cable still opens and
+    still plays. Callers that have a user in front of them should check
+    the list and SAY something -- a subsystem that fails soft needs
+    something else to report it, or the patch just quietly does less
+    than it used to. See ``Patch.from_dict``.
     """
     source = Path(path)
     data = json.loads(source.read_text(encoding="utf-8"))
@@ -50,5 +59,9 @@ def patch_to_json(patch: Patch) -> str:
 
 
 def patch_from_json(text: str) -> Patch:
-    """Parse a JSON string into a Patch."""
+    """Parse a JSON string into a Patch.
+
+    Same fail-soft cable handling as ``load_patch`` -- check
+    ``patch.load_warnings``.
+    """
     return Patch.from_dict(json.loads(text))

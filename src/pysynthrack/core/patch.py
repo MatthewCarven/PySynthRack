@@ -67,6 +67,17 @@ class Patch:
     # from `dist/`, or by double-clicking it. See
     # ``NumpyBackend._resolve_media_path``.
     source_path: str | None = None
+    # What ``from_dict`` had to throw away to build this patch, one plain
+    # ASCII line per dropped cable (see ``cable_problem``). Empty for a
+    # clean patch and for anything built in memory. Like ``source_path``
+    # it is deliberately NOT serialized -- it describes this *load*, not
+    # the instrument -- and it is excluded from ``__eq__`` / ``__repr__``
+    # so a patch that dropped a cable still compares equal to the same
+    # patch loaded from a tidied file. The UI reports the count on the
+    # status line and the detail to the console; see ``App._load_patch_from``.
+    load_warnings: list[str] = field(
+        default_factory=list, compare=False, repr=False
+    )
 
     # ----- modules ---------------------------------------------------------
 
@@ -165,6 +176,67 @@ class Patch:
     def cables_out_of(self, module_id: int) -> list[Cable]:
         return [c for c in self.cables if c.src_module_id == module_id]
 
+    # ----- validation ------------------------------------------------------
+
+    def cable_problem(self, cable: Cable) -> str | None:
+        """Return ``None`` if ``cable`` is legal here, else WHY it is not.
+
+        The checks ``connect`` makes -- both modules present, both ports
+        present *in the right direction*, signal kinds compatible -- but
+        phrased as a report instead of an exception, so ``from_dict`` can
+        drop a bad cable and still say what it dropped.
+
+        One rule of ``connect``'s is deliberately absent: the duplicate-
+        destination check. That is a property of a *pair* of cables rather
+        than of one, and silently deciding which of two claimants on an
+        input jack survives a load would change how an existing patch
+        plays. A hand-edited double is left alone (the backend already
+        picks one) and stays a job for the editor.
+
+        The returned line is plain ASCII, names both endpoints as
+        ``type#id.port``, and is safe to print.
+        """
+        src = self.modules.get(cable.src_module_id)
+        dst = self.modules.get(cable.dst_module_id)
+        src_id = (
+            f"{src.TYPE}#{cable.src_module_id}" if src is not None
+            else f"#{cable.src_module_id}"
+        )
+        dst_id = (
+            f"{dst.TYPE}#{cable.dst_module_id}" if dst is not None
+            else f"#{cable.dst_module_id}"
+        )
+        where = f"{src_id}.{cable.src_port} -> {dst_id}.{cable.dst_port}"
+        if src is None:
+            return f"{where}: no module with id {cable.src_module_id}"
+        if dst is None:
+            return f"{where}: no module with id {cable.dst_module_id}"
+
+        outs = {p.name: p for p in src.output_ports}
+        ins = {p.name: p for p in dst.input_ports}
+        if cable.src_port not in outs:
+            backwards = any(p.name == cable.src_port for p in src.input_ports)
+            hint = (
+                " (that is an IN-port -- the cable is backwards)" if backwards
+                else f" (out-ports: {', '.join(sorted(outs)) or 'none'})"
+            )
+            return f"{where}: {src_id} has no out-port {cable.src_port!r}{hint}"
+        if cable.dst_port not in ins:
+            backwards = any(p.name == cable.dst_port for p in dst.output_ports)
+            hint = (
+                " (that is an OUT-port -- the cable is backwards)" if backwards
+                else f" (in-ports: {', '.join(sorted(ins)) or 'none'})"
+            )
+            return f"{where}: {dst_id} has no in-port {cable.dst_port!r}{hint}"
+
+        src_p, dst_p = outs[cable.src_port], ins[cable.dst_port]
+        if not src_p.is_compatible_with(dst_p):
+            return (
+                f"{where}: incompatible signal kinds "
+                f"({src_p.signal_kind} -> {dst_p.signal_kind})"
+            )
+        return None
+
     # ----- serialization ---------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
@@ -182,11 +254,44 @@ class Patch:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Patch":
+        """Rebuild a patch from its JSON dict.
+
+        **Dead cables are dropped, not obeyed and not raised on.** A
+        hand-edited or version-drifted file can carry a cable to a port
+        that no longer exists (or never did); before 2026-09-22 such a
+        cable loaded clean and was silently inert -- the backend simply
+        never found a buffer for it -- so the patch greeted its owner
+        with "nothing happens" and no clue why. Every cable is now put
+        through ``cable_problem`` (the checks ``connect`` makes) and a
+        failing one is left out of ``patch.cables`` and recorded as a
+        line in ``patch.load_warnings``.
+
+        Loading never raises over a cable: a patch with one dead cable
+        must still open and play the rest. It is the CALLER's job to say
+        something -- fail-soft only works when something else speaks up
+        (the same lesson the relative-media-path fix left behind). The
+        GUI prints the lines and puts the count on the status line; the
+        CLI prints them; tests read the list directly.
+
+        A patch with no dead cables loads exactly as it always did.
+        """
         patch = cls()
         for mod_data in data.get("modules", []):
             module = Module.from_dict(mod_data)
             patch.modules[module.id] = module
-        patch.cables = [Cable.from_dict(c) for c in data.get("cables", [])]
+        for index, cable_data in enumerate(data.get("cables", [])):
+            try:
+                cable = Cable.from_dict(cable_data)
+            except (KeyError, TypeError, ValueError) as exc:
+                patch.load_warnings.append(
+                    f"cable {index}: unreadable entry ({type(exc).__name__}: {exc})"
+                )
+                continue
+            problem = patch.cable_problem(cable)
+            if problem is None:
+                patch.cables.append(cable)
+            else:
+                patch.load_warnings.append(problem)
         # Preserve next_id so subsequent additions don't collide with reloaded ids.
         max_existing = max(patch.modules, default=0)
         patch._next_id = max(int(data.get("next_id", 0)), max_existing + 1)

@@ -51,6 +51,10 @@ def run_cli(
 
     print(f"[pysynthrack] loading patch: {target}")
     patch = load_patch(target)
+    # Dead cables are dropped, not obeyed (see ``Patch.from_dict``) -- say so
+    # here or the patch just quietly plays less than the file describes.
+    for line in patch.load_warnings:
+        print(f"warning: dropped dead cable: {line}", file=sys.stderr)
     print(f"[pysynthrack] modules: {len(patch.modules)}, cables: {len(patch.cables)}")
     for module in patch:
         print(

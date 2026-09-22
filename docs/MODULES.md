@@ -171,6 +171,23 @@ routed.
 > **VCA**'s audio input is named **`audio`** (and its control input `cv`).
 > Always check a module's ports when wiring.
 
+- **A dead cable is dropped on load, and said so.** The editor can only draw
+  legal cables, but a `.json` edited by hand — or written against an older
+  version, before a port was renamed — can carry a cable to a port that no
+  longer exists, or one whose kinds don't match. Since 2026-09-22 the loader
+  runs every cable past the same checks `connect` makes and **leaves the
+  failures out**, rather than loading them and letting them sit there inert
+  (which looked exactly like "nothing happens"). Loading never *fails* over a
+  cable: the rest of the patch opens and plays. What went is reported — the
+  status bar says `Loaded: foo.json - 2 dead cables dropped (see console)`
+  and the console names each one (`lfo#2.cv -> oscillator#1.frequency_cv:
+  oscillator#1 has no in-port 'frequency_cv' (in-ports: amp_cv, freq_cv,
+  pw_cv)`), the CLI prints the same lines, and in code they are on
+  `patch.load_warnings`. Save the patch again and the dead cable is gone for
+  good. One rule of `connect`'s is deliberately *not* applied on load: two
+  cables landing on the same input jack are both kept, since picking a winner
+  would change how an existing patch plays — fix that one in the editor.
+
 - **Feedback loops close, one block late.** The engine renders the graph in
   dependency order, which a loop has none of — so at compile time the cable
   that *closes* each loop (the one you drew last) becomes a **late-read**:
