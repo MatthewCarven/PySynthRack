@@ -3733,8 +3733,10 @@ class App:
             # (pitch-independent); ``damping`` darkens the loop; ``color``
             # brightens the exciter (thumb → plectrum); ``vel_color`` is
             # how far a soft hit darkens it (inert without a ``vel``
-            # source); ``position`` is the pick-position comb; ``level``
-            # trims the output.
+            # source); ``position`` is the pick-position comb and
+            # ``vel_position`` is how far a soft hit slides that pick
+            # towards the middle of the string (both 0..1, both inert
+            # without a ``vel`` source); ``level`` trims the output.
             if param_name == "decay":
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=0.05,
@@ -3742,7 +3744,10 @@ class App:
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
-            if param_name in ("damping", "color", "vel_color", "position", "level"):
+            if param_name in (
+                "damping", "color", "vel_color", "position",
+                "vel_position", "level",
+            ):
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
                     min_value=0.0, max_value=1.0, format="%.2f",

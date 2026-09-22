@@ -25,7 +25,11 @@ The extensions over textbook KS:
   * **``position``** — pick position as a comb on the exciter: the burst
     is delayed-and-subtracted by ``position``·period, notching the
     harmonics a real pluck at that spot along the string cancels. 0
-    disables the comb.
+    disables the comb. Small is near the bridge (the first null
+    sits at ``f0/position``, far up — bright and nasal); 0.5 is
+    the middle of the string, where the first null lands on the
+    second harmonic and the fundamental dominates — the dullest,
+    roundest pluck.
 
 Re-plucking a ringing string **adds** the new burst into the loop instead
 of replacing it — physical (the string was still moving) and click-free.
@@ -63,6 +67,24 @@ identical at ``damping`` 0, measured), so a soft hit rings down the
 same way; at higher damping a duller burst simply has less HF for the
 loop to eat, which is the string being a string.
 
+**Velocity position.** A gentle pluck also lands somewhere *else*:
+a finger falls nearer the middle of the string, a hard plectrum
+bites near the bridge. ``vel_position`` (0..1, default 0) is how
+much of that the string does — the hit's pick position is
+``clamp(position + vel_position · (1 — vel) · (0.5 — position), 0, 1)``,
+an interpolation from ``position`` towards **0.5** by
+``vel_position·(1 — vel)`` of the way, latched at the edge from the
+same velocity the burst rides. 0.5 is the middle of the string: the
+comb's first null lands on the second harmonic, so the fundamental
+dominates and the even partials go — round and woody. Anchored at
+velocity **1.0** like ``vel_color``, so a full hit (or an unpatched
+``vel``) is exactly ``position`` whatever the knob says; a hit above
+1.0 slides the other way, towards the bridge, to the clamp.
+``position`` 0 is the comb's documented OFF and stays off — the knob
+moves a pick, it does not fit one. With ``vel_color`` up too a soft
+note is quieter, duller **and** rounder while an accent stays loud,
+bright and plucky. The loop is untouched, as always: same t60.
+
 Voice-awareness: shape follows the inputs — mono ``(F,)`` in gives mono
 out, ``(V, F)`` gives per-voice strings with no crosstalk. ``vel``
 follows the same rule: a ``(V, F)`` bus latches per voice from its own
@@ -88,6 +110,10 @@ Params:
   * ``vel_color``: how much a soft hit darkens ``color``, 0..1; a hit
     at velocity 1.0 is always exactly ``color``. Default 0 (off).
   * ``position``: pick-position comb, 0 off .. 1. Default 0.2.
+  * ``vel_position``: how far a soft hit's pick slides towards the
+    middle of the string (0.5), 0..1; a hit at velocity 1.0 is
+    always exactly ``position``, and ``position`` 0 stays off.
+    Default 0 (off).
   * ``level``: output level 0..1. Default 0.5.
 """
 from __future__ import annotations
@@ -111,7 +137,14 @@ class Pluck(Module):
             a full-velocity (or unpatched) hit is exactly ``color``.
             Default 0.
         position: Pick-position comb on the exciter (fraction of the
-            period); 0 disables. Default 0.2.
+            period); 0 disables. Small = near the bridge (bright),
+            0.5 = the middle of the string (round). Default 0.2.
+        vel_position: How far a soft hit's pick slides towards the
+            middle of the string -- the hit's position is
+            ``clamp(position + vel_position * (1 - vel) * (0.5 -
+            position), 0, 1)``; a full-velocity (or unpatched) hit
+            is exactly ``position``, and ``position`` 0 stays off.
+            Default 0.
         level: Output level. Default 0.5.
 
     Ports:
@@ -130,6 +163,7 @@ class Pluck(Module):
         "color": 0.7,
         "vel_color": 0.0,
         "position": 0.2,
+        "vel_position": 0.0,
         "level": 0.5,
     }
     INPUT_PORTS = [

@@ -117,7 +117,7 @@ The full map:
 | `kick_drum.pitch_cv` | — (calibrated) | 1 V/oct fixed | `tune + 12·cv[edge]`, read at the trigger edge and latched per hit — the pitch bus, like `oscillator.freq_cv` |
 | `euclidean.fills_cv` | `8.0` (`fills_cv_depth`) | fills (hits per loop) | `fills + round(d·cv[edge])`, read at each clock edge, clamped 0…steps |
 | `burst.count_cv` | `8.0` (`count_cv_depth`) | gates per burst | `count + round(d·cv[edge])`, read at the trigger edge and latched per burst, clamped 1…16 |
-| `sampler.vel` / `kick_drum.vel` / `snare_drum.vel` / `hat_drum.vel` / `adsr.vel` / `pluck.vel` | — (multiplier) | linear | `hit · max(0, cv[edge])`, read at the edge and latched; a `(V, F)` source collapses to the loudest voice at that sample (the `adsr` and the `pluck` latch per voice when their gate/trigger is `(V, F)`; the `adsr` scales the whole envelope of the note — release included; the `pluck` scales the burst only, and ≤ 0 is a silent hit that leaves the ringing string untouched; the same latched value also sets the hit's colour when `pluck.vel_color` > 0) |
+| `sampler.vel` / `kick_drum.vel` / `snare_drum.vel` / `hat_drum.vel` / `adsr.vel` / `pluck.vel` | — (multiplier) | linear | `hit · max(0, cv[edge])`, read at the edge and latched; a `(V, F)` source collapses to the loudest voice at that sample (the `adsr` and the `pluck` latch per voice when their gate/trigger is `(V, F)`; the `adsr` scales the whole envelope of the note — release included; the `pluck` scales the burst only, and ≤ 0 is a silent hit that leaves the ringing string untouched; the same latched value also sets the hit's colour when `pluck.vel_color` > 0 and places its pick when `pluck.vel_position` > 0) |
 | `pitch_shifter.pitch_cv` | `12.0` | semitones | `st + d·mean cv` |
 | `bowed.pressure_cv` / `bowed.velocity_cv` | `1.0` (shared) | level (0…1) | `pressure/velocity + d·cv[n]`, per sample, clamped 0…1; mono, shared by every voice |
 | `wind.breath_cv` | `1.0` | level (0…1) | `breath + d·cv[n]`, per sample, clamped 0…1; mono, shared by every voice |
@@ -1089,7 +1089,10 @@ the note); `damping` darkens the string (0 = bright and wiry, 1 = the
 classic two-point average, nylon-ish); `color` shapes the exciter from
 lowpassed thumb (0) to white-noise plectrum (1); `position` is the
 pick-position comb — the burst minus itself delayed `position`·period,
-notching the harmonics a pluck at that spot cancels (0 = off).
+notching the harmonics a pluck at that spot cancels (0 = off; small is
+near the bridge, where the first null sits at `f0/position` — bright and
+nasal, and 0.5 is the middle of the string, where the first null lands
+on the second harmonic and the fundamental dominates).
 
 Re-plucking a ringing string **adds** the new burst into the loop —
 physical (the string was still moving) and click-free by construction
@@ -1142,13 +1145,46 @@ length whatever the pick sounded like (t60 identical at `damping` 0; at
 higher damping a duller burst *sounds* shorter simply because it has
 less HF for the loop to eat, which is the string being a string).
 
+**Velocity position** (2026-09-22). A gentle pluck also lands somewhere
+*else*: a finger falls nearer the middle of the string, a hard plectrum
+bites by the bridge. `vel_position` (0…1, default 0) is how much of that
+the string does. The effective pick position of a hit is
+`clamp(position + vel_position · (1 − vel) · (0.5 − position), 0, 1)` —
+an interpolation from `position` towards **0.5** by `vel_position`·`(1 − vel)`
+of the way, latched at the trigger edge from the **same velocity** the
+burst is scaled by, so it is per voice and per hit and never moves
+mid-note. 0.5 is the middle of the string: the comb's first null lands
+on the second harmonic, so the fundamental dominates and the even
+partials go — round and woody, the sound of a thumb rather than a pick.
+Anchored at velocity **1.0** like `vel_color`: a full hit — or an
+unpatched `vel` — is exactly `position` whatever the knob says
+(bit-exact, pinned), so the knob cannot change a patch with no velocity
+source; a hit *above* 1.0 slides the other way, towards the bridge, to
+the clamp. `position` 0 is the comb's documented OFF and **stays** off:
+the knob moves a pick, it does not fit one.
+
+Measured at C4, `position` 0.1, `vel_position` 1: the pick comb's first
+null falls from **2597 Hz** at full velocity (a pick at 0.1, 17 samples
+of comb) to **686 Hz** at velocity 0.3 (a pick at 0.38, 64 samples) —
+off the tenth harmonic and onto the third — and the module's own
+low-harmonic balance, (partial 2 + partial 3) over partial 1, falls
+5.76 → 1.39. Note that the *centroid* barely moves (under 1%): a comb
+notches, it does not tilt, so brightness is the wrong observable here
+and the null is the right one. The loop is untouched as always — same
+t60, same decay, same tuning — so a soft pick is rounder, not shorter.
+With `vel_color` up too, a quiet note is quieter, duller **and** rounder
+while an accent stays loud, bright and plucky: that is
+`examples/pluck_touch.json`.
+
 The live use is `midi_input.velocity_cv → pluck.vel` beside
 `pitch_cv → pitch_cv` and `gate → trigger`: a harder key plays louder,
 per voice — and with `vel_color` up, brighter. Sequenced accents:
 `examples/pluck_velocity.json`, a [`shift_random`](#shift_random)
 velocity loop clocked alongside the sequencer, scaled into 0.3…1.0,
 into `vel`; `examples/pluck_velocity_color.json` is the same line with
-`vel_color` 0.8, so the accents ring bright and the soft picks thud.
+`vel_color` 0.8, so the accents ring bright and the soft picks thud;
+`examples/pluck_touch.json` adds `vel_position` 0.9 on a string picked
+by the bridge, so the soft picks go round as well as dull.
 
 **Ports**
 
@@ -1167,7 +1203,8 @@ into `vel`; `examples/pluck_velocity_color.json` is the same line with
 | `damping` | `0.5` | 0 … 1 | Loop lowpass blend; higher = darker, faster HF fade. |
 | `color` | `0.7` | 0 … 1 | Exciter spectrum: soft thumb → hard plectrum. |
 | `vel_color` | `0.0` | 0 … 1 | How much a soft hit darkens `color`: the hit's colour is `clamp(color + vel_color · (vel − 1))`. A full-velocity or unpatched hit is always exactly `color`; 0 = off. |
-| `position` | `0.2` | 0 … 1 | Pick-position comb on the burst; 0 disables. |
+| `position` | `0.2` | 0 … 1 | Pick-position comb on the burst; 0 disables. Small = by the bridge (bright, nasal), 0.5 = the middle of the string (round). |
+| `vel_position` | `0.0` | 0 … 1 | How far a soft hit's pick slides towards the middle of the string: the hit's position is `clamp(position + vel_position · (1 − vel) · (0.5 − position), 0, 1)`. A full-velocity or unpatched hit is always exactly `position`, and `position` 0 stays off; 0 = off. |
 | `level` | `0.5` | 0 … 1 | Output level. |
 
 #### `bowed`
@@ -5918,6 +5955,14 @@ loads in the app. Notable ones referenced above:
 - `adsr_velocity.json` — accents: a [`shift_random`](#shift_random) clocked alongside the sequencer, scaled into 0.3…1.0, into [`adsr`](#adsr)`.vel` — every step's velocity is read at its gate edge and scales the whole note; the same envelope opens a filter, so hard notes are brighter as well as louder.
 - `reverb_freeze_pad.json` — the shimmer-pad trick: a strummed Cmaj7 of four [`pluck`](#pluck) strings every six seconds into a big [`reverb`](#reverb) (`size` 0.9, `decay` 0.9, `mix` 0.75), the strike [`clock`](#clock)'s [`logic`](#logic) `not_a` holding the reverb's `freeze` between strikes so the chord hangs as a pad, and a quieter sequenced pluck line playing over it — heard dry through `mix`, never piling into the tank.
 - `pluck_velocity.json` — picked accents: an eight-step C minor line into a [`pluck`](#pluck) whose `vel` is a [`shift_random`](#shift_random) accent loop clocked alongside the sequencer, scaled into 0.3…1.0 — each pick's velocity is read at its trigger edge and scales the burst, so the line breathes while every note rings down the same way (the live version is `midi_input.velocity_cv → vel`).
+- `pluck_touch.json` — the whole touch: the same accent loop into a
+  [`pluck`](#pluck) picked close to the bridge (`position` 0.12) with **both**
+  `vel_color` 0.8 and `vel_position` 0.9, so a hard pick is loud, bright and
+  nasal while a soft one is quiet, dull **and** round — its pick slides up the
+  string towards the middle (the softest here, velocity 0.41, lands at 0.32),
+  where the comb notches the second harmonic and the fundamental takes over;
+  measured, every hit's low-harmonic balance falls, the soft picks hardest
+  (mean 0.69×, correlation +0.70 with the velocity).
 - `pluck_velocity_color.json` — the same picked line with the [`pluck`](#pluck)'s `vel_color` at 0.8: each pick's velocity now sets the burst's colour as well as its level (`color` 0.8 at full velocity, 0.24 at the softest), so the accents ring bright and the quiet picks thud — measured, every hit's first-50 ms centroid sits below the `vel_color` 0 render's, 0.61× at velocity 0.36. The ring-down is untouched; turn `vel_color` to 0 and it is `pluck_velocity.json` again.
 - `delay_freeze_stutter.json` — the beat-repeat: a sixteenth-note [`pluck`](#pluck) phrase into a 187.5 ms (dotted-sixteenth) [`delay`](#delay), a 15 BPM [`clock`](#clock)'s [`logic`](#logic) `not_a` holding the delay's `freeze` for the second two seconds of every four — the last one-and-a-half notes stutter, tumbling against the grid, while the phrase carries on dry over the top through `mix`.
 - `tape_stop_drop.json` — the tape-stop drop: an eighth-note saw riff ([`clock`](#clock) → [`sequencer`](#sequencer) → [`oscillator`](#oscillator) → [`adsr`](#adsr)/[`vca`](#vca)) on [`tape`](#tape) (`sat` 0.3, `wow` 0.15, `mix` 1), a 7.5 BPM clock's [`logic`](#logic) `not_a` pulling the tape's `stop` for the last 1.6 s of every 8 — the beat dives over `stop_time` 1.25 s, halts, and spins back up over `start_time` 0.6 s.

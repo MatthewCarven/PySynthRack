@@ -29,6 +29,18 @@ untouched (t60 and loop state at damping 0, a re-pluck's tail slope),
 block-size independence with hits mid-stream, per-voice latching, the
 widget, the example.
 
+Velocity position (the 2026-09-22 love pass): ``vel_position`` slides a
+soft hit's PICK towards the middle of the string -- MEASURED as the pick
+comb's first null (averaged over 60 seeded bursts, where the noise
+divides out): at ``position`` 0.1 and ``vel_position`` 1 a 0.3-velocity
+hit combs at 686 Hz against 2597 Hz at full velocity, and the module's
+own low-harmonic balance (partials 2+3 over partial 1) falls 5.76 -> 1.39
+-- the fundamental taking over, which is what "round" is. A full hit is
+bit-exact with the knob off, ``position`` 0 stays off, a hit renders
+bit-exactly as a plain hit at the effective position (the formula, both
+clamps), the loop is untouched, block-size independence, per-voice
+latching, the widget, the example.
+
 Pitch/decay tests run at 44100 Hz (they measure real frequencies);
 plumbing tests run fast at SR 1000.
 """
@@ -837,6 +849,304 @@ def test_vel_color_latches_per_voice():
     assert np.array_equal(on[0], mono)
 
 
+# ----- vel_position ----------------------------------------------------------
+
+
+def _comb_first_null(n, color, position, seeds=60, nfft=1 << 14, lo=200.0,
+                     sr=44100):
+    """The pick comb's first null in Hz, measured off the exciter.
+
+    One burst is noise x |1 - z^-d|, so its nulls are buried; averaging
+    |FFT| over many seeded bursts divides the noise out and leaves the
+    comb. The first local minimum above ``lo`` (and well below the
+    low-frequency level) is the null at ``sr/d``. This measures the
+    NULL, not the centroid -- a comb moves notches, it does not tilt,
+    so the house brightness observable is the wrong claim here (the
+    centroid of a 0.3-velocity hit at ``position`` 0.1 moves less than
+    1%, measured, while the first null drops by a factor of 3.8).
+    """
+    acc = np.zeros(nfft // 2 + 1)
+    for seed in range(seeds):
+        e = _pluck_exciter(n, color, position, np.random.default_rng(seed))
+        acc += np.abs(np.fft.rfft(e, nfft))
+    acc = np.convolve(acc / seeds, np.ones(9) / 9.0, "same")
+    f = np.fft.rfftfreq(nfft, 1.0 / sr)
+    i0 = int(np.searchsorted(f, lo))
+    for i in range(i0 + 2, len(acc) - 2):
+        if acc[i] <= acc[i - 1] and acc[i] < acc[i + 1] and acc[i] < 0.6 * acc[i0]:
+            return float(f[i])
+    raise AssertionError("no comb null found")
+
+
+def _low_balance(sig, f0=261.6255653005986, sr=44100):
+    """(partial 2 + partial 3) / partial 1 -- the pick-position balance.
+
+    A pick at ``p`` of the way along scales partial k by |sin(pi k p)|,
+    so moving the pick towards the middle (0.5) drives partial 2 to a
+    null and leaves the fundamental standing: this ratio falls. It is
+    the audible half of "round", and unlike the centroid it actually
+    moves.
+    """
+    w = np.hanning(len(sig))
+    spec = np.abs(np.fft.rfft(sig * w))
+    res = sr / len(sig)
+
+    def p(k):
+        b = int(round(k * f0 / res))
+        return float(spec[max(1, b - 3) : b + 4].max())
+
+    return (p(2) + p(3)) / max(1e-12, p(1))
+
+
+def _eff_position(position, vel_position, vel):
+    """The shipped formula, in the shipped float order. The bus is
+    float32, so the edge read is ``float(np.float32(vel))``."""
+    scale = float(np.float32(vel))
+    return min(
+        1.0,
+        max(0.0, position + vel_position * (1.0 - scale) * (0.5 - position)),
+    )
+
+
+def test_vel_position_moves_the_pick_comb_towards_the_middle():
+    """The feature, measured where it lives: the pick comb's first null.
+
+    At C4 the loop is 168 samples, so a pick at ``position`` p combs the
+    burst with ``d = round(p * 168)`` and nulls at ``sr/d``. With
+    ``position`` 0.1 and ``vel_position`` 1 a full hit picks at 0.1
+    (d=17, first null 2597 Hz measured against 2594 predicted) and a
+    0.3-velocity hit picks at 0.38 (d=64, 686 Hz against 689) -- the
+    null falls by a factor of 3.8, onto the third harmonic instead of
+    the tenth. A hit at velocity 0 reaches the middle of the string
+    (0.5, d=84, 525 Hz), the formula's limit.
+    """
+    full = _comb_first_null(168, 0.8, _eff_position(0.1, 1.0, 1.0))
+    soft = _comb_first_null(168, 0.8, _eff_position(0.1, 1.0, 0.3))
+    limit = _comb_first_null(168, 0.8, _eff_position(0.1, 1.0, 0.0))
+    assert 2500.0 < full < 2700.0, full
+    assert 650.0 < soft < 730.0, soft
+    assert 500.0 < limit < 560.0, limit
+    assert full / soft > 3.0
+    assert soft > limit  # a 0.3 hit has not reached the middle yet
+    # and the knob off leaves the null exactly where ``position`` puts it
+    assert _comb_first_null(168, 0.8, _eff_position(0.1, 0.0, 0.3)) == full
+
+
+def test_vel_position_soft_hit_favours_the_fundamental():
+    """The same claim on the MODULE, not the exciter: a 0.3-velocity hit
+    at ``position`` 0.1 with ``vel_position`` 1 rebalances the bottom of
+    the spectrum towards the fundamental -- (partial 2 + partial 3) over
+    partial 1 falls from 5.76 (the pick still at 0.1) to 1.39, pinned at
+    a halving. The centroid is deliberately NOT the observable: it moves
+    1%, because a comb notches rather than tilts."""
+    params = {"decay": 3.0, "damping": 0.0, "color": 0.8, "position": 0.1}
+    win = slice(2048, 2048 + 4 * _N50)
+    off = _one_hit(0.3, {**params, "vel_position": 0.0}, n_blocks=30)
+    on = _one_hit(0.3, {**params, "vel_position": 1.0}, n_blocks=30)
+    b_off, b_on = _low_balance(off[win]), _low_balance(on[win])
+    assert b_off > 4.0, b_off
+    assert b_on < 2.0, b_on
+    assert b_on / b_off < 0.5
+    # the full hit is untouched (same burst, same comb)
+    full_off = _one_hit(1.0, {**params, "vel_position": 0.0}, n_blocks=30)
+    full_on = _one_hit(1.0, {**params, "vel_position": 1.0}, n_blocks=30)
+    assert np.array_equal(full_off, full_on)
+
+
+@pytest.mark.parametrize(
+    "position, vel_position, vel",
+    [(0.1, 1.0, 0.3), (0.2, 0.6, 0.55), (0.12, 0.9, 0.409), (0.3, 1.0, 3.0)],
+)
+def test_vel_position_hit_equals_a_plain_hit_at_the_effective_position(
+    position, vel_position, vel
+):
+    """The contract pinned literally (the ``vel_color`` precedent): a hit
+    at (position, vel_position, vel) is bit-exact with a plain hit
+    (``vel_position`` 0) at the same velocity whose ``position`` IS
+    ``clamp(position + vel_position * (1 - vel) * (0.5 - position), 0, 1)``
+    -- the same float expression, so the same exciter. The last case is a
+    hit above full velocity: the pick slides the other way, towards the
+    bridge, and clamps at 0 (0.3 + 1 * -2 * 0.2 = -0.1)."""
+    eff = _eff_position(position, vel_position, vel)
+    if vel == 3.0:
+        assert eff == 0.0
+    else:
+        assert eff > position
+    a = _one_hit(vel, {"position": position, "vel_position": vel_position,
+                       "decay": 2.0})
+    b_ = _one_hit(vel, {"position": eff, "vel_position": 0.0, "decay": 2.0})
+    assert np.array_equal(a, b_)
+    assert np.any(a != 0.0)
+
+
+def test_vel_position_full_hit_is_bit_exact_with_the_knob_off():
+    """The anchor: ``(1 - vel)`` at vel 1.0 is ``0.0``, and
+    ``position + 0.0 * x`` IS ``position`` in IEEE. So a bus holding 1.0
+    renders bit-for-bit the same at ``vel_position`` 1 as at 0, and so
+    does an UNPATCHED ``vel`` -- the knob cannot change a patch with no
+    velocity source. Mono with a re-pluck and a pitch step, then a
+    (2, F) string."""
+    on = {"decay": 3.0, "position": 0.15, "vel_position": 1.0}
+    off = {"decay": 3.0, "position": 0.15, "vel_position": 0.0}
+    assert np.array_equal(_two_hit_render(1.0, params=on),
+                          _two_hit_render(1.0, params=off))
+    assert np.array_equal(_two_hit_render(None, params=on),
+                          _two_hit_render(None, params=off))
+
+    plain = _driver({"decay": 1.0, "vel_position": 0.0}, sr=1000, block=64, vel=True)
+    knob = _driver({"decay": 1.0, "vel_position": 1.0}, sr=1000, block=64, vel=True)
+    for i in range(12):
+        trig = np.zeros((2, 64), dtype=np.float32)
+        pitch = np.zeros((2, 64), dtype=np.float32)
+        pitch[1] = 0.5 if i < 6 else -0.5
+        if i == 0:
+            trig[0, 3] = 1.0
+        if i in (2, 6):
+            trig[1, 40] = 1.0
+        ones = np.ones((2, 64), dtype=np.float32)
+        assert np.array_equal(plain(pitch, trig, ones), knob(pitch, trig, ones))
+
+
+def test_vel_position_zero_is_the_shipped_path():
+    """``vel_position`` 0 (the default) with ANY velocity is what
+    shipped: the key absent and the key at 0.0 render bit-exactly the
+    same for a soft re-pluck."""
+    absent = {"decay": 3.0, "position": 0.2}
+    zero = {"decay": 3.0, "position": 0.2, "vel_position": 0.0}
+    assert np.array_equal(_two_hit_render(0.4, params=absent),
+                          _two_hit_render(0.4, params=zero))
+
+
+def test_vel_position_cannot_switch_the_comb_back_on():
+    """``position`` 0 is the comb's documented OFF and stays off at any
+    velocity -- the knob moves a pick, it does not fit one. Bit-exact,
+    so a patch built with no pick comb never grows one on the quiet
+    notes."""
+    off = {"decay": 3.0, "position": 0.0, "vel_position": 0.0}
+    on = {"decay": 3.0, "position": 0.0, "vel_position": 1.0}
+    for vel in (0.0, 0.3, 0.7):
+        assert np.array_equal(_one_hit(vel, off), _one_hit(vel, on)), vel
+    assert np.array_equal(_two_hit_render(0.25, params=off),
+                          _two_hit_render(0.25, params=on))
+
+
+def test_vel_position_leaves_the_loop_alone():
+    """Only the exciter sees the pick. At ``damping`` 0 the loop gain is
+    frequency-independent, so a 0.3-velocity hit's t60 is the same to
+    the hop with ``vel_position`` 1 as with 0, the tail's log-RMS slope
+    agrees within 1%, and the carried loop state (``g``, ``ap_c``,
+    ``n_int``) is identical -- a soft pick is rounder, not shorter."""
+    sr, hop = 44100, 1024
+
+    def rms_env(sig):
+        return np.array(
+            [np.sqrt(np.mean(sig[i : i + hop] ** 2))
+             for i in range(0, len(sig) - hop, hop)]
+        )
+
+    def t60_of(sig):
+        rms = rms_env(sig)
+        ref = rms[:4].max()
+        below = np.flatnonzero(rms < ref * 10 ** (-60.0 / 20.0))
+        assert len(below), "never decayed 60 dB"
+        return below[0] * hop / sr
+
+    def slope(sig, lo, hi):
+        rms = rms_env(sig)
+        seg = np.log(rms[lo:hi] + 1e-30)
+        return float(np.polyfit(np.arange(len(seg)), seg, 1)[0])
+
+    outs, states = [], []
+    for vp in (0.0, 1.0):
+        params = {"decay": 0.5, "damping": 0.0, "color": 0.8,
+                  "position": 0.1, "vel_position": vp}
+        step = _driver(params, sr=sr, block=512, vel=True)
+        out = []
+        for i in range(int(1.2 * sr / 512)):
+            trig = np.zeros(512, dtype=np.float32)
+            if i == 0:
+                trig[0] = 1.0
+            out.append(step(np.zeros(512, dtype=np.float32), trig,
+                            np.full(512, 0.3, dtype=np.float32)))
+        outs.append(np.concatenate(out))
+        st = step.backend._state[step.module.id]
+        states.append((st["g"].copy(), st["ap_c"].copy(), st["n_int"].copy()))
+    assert not np.array_equal(outs[0], outs[1])  # the burst DID change
+    assert abs(t60_of(outs[0]) - t60_of(outs[1])) <= hop / sr
+    assert abs(t60_of(outs[1]) - 0.5) / 0.5 < 0.10
+    s0, s1 = slope(outs[0], 4, 20), slope(outs[1], 4, 20)
+    assert s0 < 0 and abs(s1 - s0) / abs(s0) < 0.01, (s0, s1)
+    for a, b_ in zip(states[0], states[1]):
+        assert np.array_equal(a, b_)
+
+
+def test_vel_position_block_size_independent_mid_stream():
+    """The mid-stream twin: a ramp bus (the value AT the edge places the
+    pick), a hit at 5, a silent hit at 812 and a soft hit at 912;
+    ``vel_position`` 1. 2x512 == 16x64 to the bit, and the soft hit
+    really is picked elsewhere (its burst differs from the
+    ``vel_position`` 0 render)."""
+    F = 1024
+    trig = np.zeros(F, dtype=np.float32)
+    trig[[5, 300 + 512, 400 + 512]] = 1.0
+    vel = np.linspace(0.2, 1.4, F).astype(np.float32)
+    vel[300 + 512] = -1.0
+    pitch = np.full(F, -3.0, dtype=np.float32)
+    params = {"decay": 4.0, "position": 0.15, "vel_position": 1.0}
+    big = _driver(params, sr=1000, block=512, vel=True)
+    small = _driver(params, sr=1000, block=64, vel=True)
+    off = _driver({**params, "vel_position": 0.0}, sr=1000, block=512, vel=True)
+    out_big = np.concatenate(
+        [big(pitch[i : i + 512], trig[i : i + 512], vel[i : i + 512])
+         for i in range(0, F, 512)]
+    )
+    out_small = np.concatenate(
+        [small(pitch[i : i + 64], trig[i : i + 64], vel[i : i + 64])
+         for i in range(0, F, 64)]
+    )
+    out_off = np.concatenate(
+        [off(pitch[i : i + 512], trig[i : i + 512], vel[i : i + 512])
+         for i in range(0, F, 512)]
+    )
+    assert np.array_equal(out_big, out_small)
+    assert not np.array_equal(out_big, out_off)
+    assert np.abs(out_big[-64:]).max() > 1e-3  # never reached the floor
+
+
+def test_vel_position_latches_per_voice():
+    """Two strings hit together with a (2, F) bus at 0.3 / 1.0 and
+    ``vel_position`` 1: voice 0's pick has moved (its low-harmonic
+    balance falls below voice 1's ``vel_position`` 0 twin), voice 1 is
+    bit-exact with the knob-off render (a full hit is a full hit), and
+    voice 0 is bit-exact with a MONO string at 0.3 -- single voice is
+    mono, pick included."""
+    sr, block = 44100, 512
+    params = {"decay": 3.0, "damping": 0.0, "color": 0.8, "position": 0.1}
+
+    def render(vel_position):
+        step = _driver({**params, "vel_position": vel_position},
+                       sr=sr, block=block, vel=True)
+        out = []
+        for i in range(30):
+            trig = np.zeros((2, block), dtype=np.float32)
+            if i == 0:
+                trig[:, 0] = 1.0
+            pitch = np.zeros((2, block), dtype=np.float32)
+            vel = np.ones((2, block), dtype=np.float32)
+            vel[0] = 0.3
+            out.append(step(pitch, trig, vel))
+        return np.concatenate(out, axis=1)
+
+    on, off = render(1.0), render(0.0)
+    assert on.shape == (2, 30 * block)
+    win = slice(2048, 2048 + 4 * _N50)
+    assert _low_balance(on[0, win]) / _low_balance(off[0, win]) < 0.5
+    assert np.array_equal(on[1], off[1])
+    assert not np.array_equal(on[0], off[0])
+    mono = _one_hit(0.3, {**params, "vel_position": 1.0}, n_blocks=30)
+    assert np.array_equal(on[0], mono)
+
+
 # ----- widgets ---------------------------------------------------------------
 
 
@@ -868,6 +1178,7 @@ def test_every_param_gets_a_bounded_widget(monkeypatch):
         assert w[hits[0]][0] != "add_input_text", (name, w[hits[0]])
     assert w["decay"][1].endswith(" s")
     assert w["vel_color"][0] == "add_slider_float"  # 0..1, beside color
+    assert w["vel_position"][0] == "add_slider_float"  # 0..1, beside position
     assert "vel" not in w  # a jack, not a knob
 
 
@@ -988,3 +1299,81 @@ def test_the_velocity_color_example_dulls_the_soft_picks():
     assert np.any(vels < 0.5) and ratios[vels < 0.5].max() < 0.8
     assert np.corrcoef(ratios, vels)[0, 1] > 0.9
     assert vels.min() >= 0.3 and vels.max() <= 1.0
+
+
+def test_the_touch_example_rounds_the_soft_picks():
+    """examples/pluck_touch.json: the same accent loop into ``vel``, now
+    with ``vel_color`` 0.8 AND ``vel_position`` 0.9 on a string picked
+    close to the bridge (``position`` 0.12).
+
+    Rendered as shipped and again with ``vel_position`` forced to 0 (the
+    only difference, so the pitch and the colour confounds cancel), each
+    hit's low-harmonic balance -- (partial 2 + partial 3) / partial 1 at
+    THAT note's own f0, read off the sequencer's cv at the edge -- falls:
+    mean ratio 0.69 over 19 hits, every soft pick (velocity < 0.5) at or
+    below 0.71, and the ratio tracks the velocity (correlation +0.70) --
+    the softer the pick, the further it slid towards the middle of the
+    string and the more the fundamental took over. Peak 0.49 (pinned
+    0.3..0.8), 8 modules.
+    """
+    from pysynthrack.io_patch import load_patch
+
+    path = Path(__file__).resolve().parent.parent / "examples" / "pluck_touch.json"
+    win = int(0.12 * 44100)
+
+    def render(vel_position):
+        patch = load_patch(path)
+        seq = next(m for m in patch if m.TYPE == "sequencer")
+        off = next(m for m in patch if m.TYPE == "cv_offset")
+        pl = next(m for m in patch if m.TYPE == "pluck")
+        if vel_position is not None:
+            pl.params["vel_position"] = vel_position
+        np.random.seed(0)
+        b = NumpyBackend(sample_rate=44100, block_size=512)
+        b.compile(patch)
+        outs, vels, gates, cvs = [], [], [], []
+        orig = b._render_pluck
+
+        def spy(module, frames, buffers, p):
+            vb = buffers.get((off.id, "out"))
+            vels.append(np.zeros(frames) if vb is None else np.asarray(vb).copy())
+            gates.append(np.asarray(buffers[(seq.id, "gate")]).copy())
+            cvs.append(np.asarray(buffers[(seq.id, "cv")]).copy())
+            r = orig(module, frames, buffers, p)
+            outs.append(np.asarray(r).copy())
+            return r
+
+        b._render_pluck = spy
+        peak = 0.0
+        for _ in range(int(44100 * 6 / 512)):
+            out, _devices = b.render_block_multi(512)
+            assert out is not None and np.all(np.isfinite(out))
+            peak = max(peak, float(np.abs(out).max()))
+        assert 0.3 < peak < 0.8, peak
+        return (np.concatenate(outs), np.concatenate(vels),
+                np.concatenate(gates) > 0.5, np.concatenate(cvs))
+
+    patch = load_patch(path)
+    assert len(patch) <= 12
+    pl = next(m for m in patch if m.TYPE == "pluck")
+    assert pl.params["vel_position"] == 0.9
+    assert pl.params["vel_color"] == 0.8
+    assert 0.0 < pl.params["position"] < 0.2  # picked near the bridge
+
+    shipped, vel, gate, cv = render(None)
+    plain, _, _, _ = render(0.0)
+    assert not np.array_equal(shipped, plain)
+    edges = np.flatnonzero(gate[1:] & ~gate[:-1]) + 1
+    assert len(edges) >= 12
+    vels = np.array([vel[e] for e in edges])
+    f0s = 261.6255653005986 * 2.0 ** np.array([cv[e] for e in edges])
+    ratios = np.array([
+        _low_balance(shipped[e : e + win], f0) / _low_balance(plain[e : e + win], f0)
+        for e, f0 in zip(edges, f0s)
+    ])
+    assert vels.min() < 0.5 and vels.max() > 0.9      # a real dynamic spread
+    assert ratios.mean() < 0.8, ratios.mean()          # measured 0.69
+    soft = vels < 0.5
+    assert soft.sum() >= 3
+    assert ratios[soft].max() < 0.75, ratios[soft]     # measured 0.705
+    assert np.corrcoef(ratios, vels)[0, 1] > 0.5       # measured +0.70

@@ -16052,6 +16052,27 @@ class NumpyBackend(AudioBackend):
         exciter's one-pole sees it; the loop -- decay, damping, tuning --
         stays untouched, so a soft hit is quieter AND duller and still
         rings down exactly the same way.
+
+        ``vel_position`` (2026-09-22, love pass): the pick's PLACE follows
+        the velocity too -- a gentle finger-pluck lands nearer the middle
+        of the string than a hard plectrum stroke near the bridge. The
+        effective pick position of a hit is
+
+            clamp(position + vel_position * (1 - vel) * (0.5 - position), 0, 1)
+
+        -- an interpolation from ``position`` towards 0.5, by
+        ``vel_position * (1 - vel)`` of the way. 0.5 is where the comb is
+        dullest (``d = n/2``: the first null lands on the SECOND harmonic,
+        so the fundamental dominates and the even partials go); ``position``
+        small is near the bridge (the first null is at ``f0/position``, far
+        up -- bright and nasal). Latched at the edge from the SAME velocity
+        the burst rides, like ``vel_color``, so it is per voice and per hit.
+        Anchored at vel 1.0 the same way -- ``(1 - 1.0)`` is ``0.0`` and
+        ``position + 0.0 * x`` IS ``position`` in IEEE -- so a full hit, or
+        an unpatched ``vel``, is exactly ``position`` whatever the knob
+        says. A hit ABOVE velocity 1 slides the other way, towards the
+        bridge, to the clamp. ``position`` 0 is the documented OFF for the
+        comb and stays off: the knob moves a pick, it does not fit one.
         """
         pitch = self._input_buffer(
             patch, buffers, module.id, "pitch_cv", collapse=False
@@ -16095,6 +16116,12 @@ class NumpyBackend(AudioBackend):
         # beside the latched velocity it rides on.
         vel_color = min(
             1.0, max(0.0, float(module.params.get("vel_color", 0.0)))
+        )
+        # vel_position: how far a soft hit's pick slides towards the
+        # middle of the string (0 = off, the shipped sound). Applied per
+        # hit at the edge, from the same latched velocity.
+        vel_position = min(
+            1.0, max(0.0, float(module.params.get("vel_position", 0.0)))
         )
         position = min(1.0, max(0.0, float(module.params.get("position", 0.2))))
         level = float(module.params.get("level", 0.5))
@@ -16215,7 +16242,31 @@ class NumpyBackend(AudioBackend):
                         hit_color = min(
                             1.0, max(0.0, color + vel_color * (scale - 1.0))
                         )
-                    burst = _pluck_exciter(n_int, hit_color, position, rng)
+                    hit_position = position
+                    if (
+                        v_row is not None
+                        and vel_position > 0.0
+                        and position > 0.0
+                    ):
+                        # The pick's PLACE follows the latched velocity: a
+                        # soft hit lands nearer the middle of the string,
+                        # where the comb is dullest and the fundamental
+                        # strongest -- a finger, not a plectrum by the
+                        # bridge. Anchored at 1.0 like ``vel_color``, so a
+                        # full hit is ``position + 0.0 * x`` -- bit-exactly
+                        # ``position`` -- and the knob is inert without a
+                        # velocity source. ``position`` 0 is the comb's
+                        # documented OFF and stays off: this knob moves a
+                        # pick, it does not fit one.
+                        hit_position = min(
+                            1.0,
+                            max(
+                                0.0,
+                                position
+                                + vel_position * (1.0 - scale) * (0.5 - position),
+                            ),
+                        )
+                    burst = _pluck_exciter(n_int, hit_color, hit_position, rng)
                     if v_row is not None:
                         # The burst scales; the loop does not, so a soft
                         # hit rings down the same way.
