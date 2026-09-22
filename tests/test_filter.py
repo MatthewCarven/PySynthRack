@@ -372,8 +372,16 @@ def _reference_filter_voice(backend, module, blocks, cv_blocks=None):
         )
         if per_voice:
             sr = backend.sample_rate
+            # float64 like the renderer (``_finite_mean``, 2026-09-22):
+            # this oracle exists to pin the lfilter path against the
+            # per-sample loop, not to restate how the block mean
+            # accumulates, and a float32 reduction here puts the two
+            # coefficient sets ~1e-7 apart -- which a resonant biquad
+            # amplifies past the tolerance.
             cpv = np.clip(
-                base * np.power(2.0, cv.mean(axis=1)), 20.0, sr * 0.45
+                base * np.power(2.0, cv.mean(axis=1, dtype=np.float64)),
+                20.0,
+                sr * 0.45,
             )
             qc = max(0.1, min(q, 20.0))
             w0 = 2.0 * np.pi * cpv / sr

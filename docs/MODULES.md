@@ -157,6 +157,43 @@ array powers (`oscillator.freq_cv`, `fm_op`, `ring_mod`, `supersaw`,
 `wavetable_morph`, `resampler`) are numpy and never raise; they are not
 routed.
 
+**Every block mean is taken in float64 and scrubbed before anything clamps
+it.** `mean cv` above is one reduction, `NumpyBackend._finite_mean`, and it
+fixes two things the thirty-odd hand-written copies got wrong (2026-09-22):
+
+- **float64.** The buffers are float32 and `np.mean` of a float32 array
+  accumulates in float32, so a *constant* CV of 0.3 read `0.29999998` over 64
+  samples and `0.30000001` over 512 — a held voltage on a jack rendered
+  differently at one buffer size than another, which is the one thing a
+  block-mean is supposed to be immune to. Fifteen modules were affected
+  (`filter` mono and per-voice, `crossover`, `sweep_eq`, `motion_eq`,
+  `tilt_eq`, `loudness`, `compressor`, `reverb`, `flanger`, `phaser`, `lfo`,
+  `slew`, `wavetable_morph`, `bowed`, `wind`); all of them are now bit-exact
+  at 64 against 512 under a constant CV, pinned in `tests/test_cv_scrub.py`.
+- **the `min`/`max` NaN wart — worth knowing before you write another
+  clamp.** Python's `min`/`max` do **not** propagate NaN: they *compare*, and
+  every comparison against NaN is False, so they hand back whichever argument
+  they were given first. `max(0.0, nan)` is `0.0` — a "clamp" that silently
+  reads a NaN as a rail — while `min(max(nan, 0.0), 1.0)` is `nan`: the same
+  idiom, two different wrong answers, decided by argument order. `np.clip`
+  passes NaN straight through, and `int(round(nan))` raises `ValueError`
+  (which is how a NaN on `bitcrusher.bits_cv` killed a render). So a
+  non-finite block mean is read as **0 — "no modulation", the module sits at
+  its knob** — in `_finite_mean`, *before* any clamp, `int()` or shape
+  decision sees it, exactly as `_pow2_clipped` does for the octave paths.
+  Never rely on a clamp to catch a NaN.
+
+The linear paths that go through it: `supersaw.detune_cv`,
+`wavetable_morph.position_cv`, `motion_eq.band{i}_gain_cv`,
+`loudness.level_cv`, `tilt_eq.tilt_cv`, `compressor.threshold_cv`, the three
+`reverb` `*_cv`s, `bitcrusher.bits_cv`, `rotary.fast`,
+`pitch_shifter.pitch_cv`, the `sampler`/`bowed`/`wind`/`modal` `pitch_cv`s,
+`function_generator` and `slew` rise/fall/rate, `lfo.rate_cv`, the `filter`'s
+`resonance_cv` ratio, and the buffered sinks' `ratio_cv` — plus every octave
+path listed above, which now reaches `_pow2_clipped` through the same door.
+The per-sample CV paths and the `(V, F) → (F,)` *voice* collapses in
+`_input_buffer` are a different reduction and are untouched.
+
 ### Cabling rules
 
 - **Kinds must match.** You can't plug `cv` into an `audio` jack; the patch
