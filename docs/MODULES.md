@@ -96,6 +96,7 @@ The full map:
 | `lfo.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `drift.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)`, re-read per block; mono (a `(V, F)` source is averaged) |
 | `clock.bpm_cv` | `1.0` (`bpm_cv_depth`) | tempo doublings | `bpm · 2^(d·mean cv)`, block-rate; exponent clipped ±6 (×64) before the power; mono (a `(V, F)` source is averaged) |
+| `cv_recorder.speed_cv` | `1.0` (`speed_cv_depth`) | head-rate doublings, **quantised** | `floor(base · 2^(d·mean cv) + 0.5)` half-steps per sample, clamped 1…8 — the reachable rates are 0.5x…4x in 0.25x steps and 0 is not one of them; block-rate; exponent clipped ±4 before the power; a non-finite CV reads as 0; mono (a `(V, F)` source is averaged) |
 | `crossover.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
 | `vowel.vowel_cv` | `2.0` | vowels (0 = A … 4 = U) | `vowel + d·mean cv`, clamped 0…4 |
 | `vowel.formant_cv` | `1.0` (`formant_cv_depth`) | octaves | every formant's frequency and bandwidth × `2^(formant/12 + d·mean cv)` (constant Q), block-rate; exponent clipped ±4 before the power; one value for every voice |
@@ -359,7 +360,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`cv_scale`](#cv_scale) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`cv_offset`](#cv_offset) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`cv_math`](#cv_math) | CV & Utilities | `a`,`b` (cv) → `min`,`max`,`avg`,`diff`,`mult`,`rect`,`inv` (cv) |
-| [`cv_recorder`](#cv_recorder) | CV & Utilities | `in` (cv), `clock`,`rec`,`clear`,`play`,`reverse` (gate) → `out`,`pos` (cv) |
+| [`cv_recorder`](#cv_recorder) | CV & Utilities | `in`,`speed_cv` (cv), `clock`,`rec`,`clear`,`play`,`reverse` (gate) → `out`,`pos` (cv) |
 | [`sample_hold`](#sample_hold) | CV & Utilities | `in`, `prob_cv` (cv), `trig` (gate) → `out` (cv) |
 | [`slew`](#slew) | CV & Utilities | `in`, `rise_cv`, `fall_cv` (cv), `clock` (gate) → `out` (cv) |
 | [`quantizer`](#quantizer) | CV & Utilities | `in` (cv), `gate` (gate) → `out` (cv), `changed` (gate) |
@@ -4731,12 +4732,48 @@ hood the head is an integer count of **half**-samples from the last
 snap (the three speeds are 1 / 2 / 4 half-samples per sample), so every
 speed is bit-exact across block sizes where a float phase would not be.
 
+**The one-shot and the rate jack** (love pass, 2026-09-22).
+
+**`speed_cv`** multiplies the `speed` combo continuously — except that it
+cannot be continuous *and* stay bit-exact, so it is **quantised straight
+back onto the half-sample grid**: the rate is `floor(base · 2^(speed_cv_depth
+· mean cv) + 0.5)` half-steps per sample, clamped to **1…8**, and the eight
+reachable rates are `0.5x 1x 1.5x 2x 2.5x 3x 3.5x 4x`. Quantising *is* the
+feature: an integer step is what keeps the head an integer count from its
+last snap, and that is what makes every rate the same number at block 50 as
+at block 250 — a fractional rate would need a float phase, and a float phase
+is not. So the jack is a *stepped* rate, like a tape machine's speed
+selector with more notches, not a varispeed. It is read as a float64 block
+mean (the house [CV depth convention](#cv-depth-conventions)), the exponent
+is clipped ±4 before the power, and a non-finite CV reads as 0. A rate change
+does **not** move the head — it is absolute state, not a phase × rate — so a
+sweeping CV never jumps the loop, it only steps further per sample. The rate
+never reaches 0: the stop is what `play` is for. Recording is untouched
+(*record at 1x, play at any*).
+
+**`play_mode`** (`gate` / `one_shot`) is what the `play` jack *means*. At
+`gate` (the default) it is the level described above. At `one_shot` the level
+is ignored and a **rising edge fires exactly one lap** from position 0 (from
+the last slot when `reverse` is on, so the lap runs top to foot), after which
+the head stops and **holds the last slot it played** — a recorded ramp fires
+once and holds at its *top*, which is what makes a recorded gesture a
+playable one-shot envelope. A new edge mid-lap restarts the lap from 0. A lap
+is one loop length of head *travel*, not a fixed duration, so at `2x` it
+takes half the time. A clocked sync tick snaps the head to 0 mid-lap like any
+other and leaves the lap's remaining travel alone — the transport wins, the
+same rule as a stopped head. And because a stopped head writes nothing,
+`rec` could never reach the tape between shots: so at `one_shot` **recording
+itself runs the head** (at 1x, from where it is, as if `play` were high) and
+it stops again when `rec` falls. With `play` unpatched there is no edge to
+fire and nothing plays — patch a trigger.
+
 Mono (a polyphonic `in` collapses to the house sum). Renders are
 block-size independent whenever `in` is patched — every event is an
 integer sample position; the knob path is block-rate by nature. Cost is
 nil: each block is a few vectorized slices. Numpy backend only; silent
 stub under pyo. See `examples/cv_recorder_layers.json` (the layering
-loop) and `examples/cv_recorder_backwards.json` (the transport).
+loop), `examples/cv_recorder_backwards.json` (the transport) and
+`examples/cv_recorder_oneshot.json` (the one-shot at a wandering rate).
 
 **Ports**
 
@@ -4748,6 +4785,7 @@ loop) and `examples/cv_recorder_backwards.json` (the transport).
 | `clear` | in | gate | A rising edge wipes the loop and rewinds; the position holds until the next `rec`. |
 | `play` | in | gate | Optional: the head runs while high and stops while low (`out` and `pos` hold; nothing is written). Unpatched = playing. |
 | `reverse` | in | gate | Optional: high runs the head backwards (ORed with the `reverse` checkbox). |
+| `speed_cv` | in | cv | Optional: multiplies the head rate by `2^(speed_cv_depth · mean cv)`, quantised to the half-sample grid (0.5x…4x in 0.25x steps). Block-rate. |
 | `out` | out | cv | The loop (while recording, what is being written). |
 | `pos` | out | cv | Loop position, 0..1. |
 
@@ -4761,6 +4799,8 @@ loop) and `examples/cv_recorder_backwards.json` (the transport).
 | `value` | `0.0` | −1 … 1 | The gesture knob — the input while `in` is unpatched. |
 | `reverse` | `false` | bool | Run the head backwards (OR the `reverse` gate). |
 | `speed` | `1x` | 0.5x / 1x / 2x | Playback head rate; recording always runs at 1x. |
+| `speed_cv_depth` | `1.0` | −4 … 4 | Head-rate doublings per unit of `speed_cv`; the product is quantised to the half-sample grid. |
+| `play_mode` | `gate` | gate / one_shot | What `play` means: a level, or a rising edge that fires exactly one lap. |
 
 #### `sample_hold`
 
@@ -5624,6 +5664,7 @@ loads in the app. Notable ones referenced above:
 - `sequencer_reverse_bars.json` — the [`sequencer`](#sequencer)'s `reverse` gate: an eight-step [`pluck`](#pluck) line at eighths, a [`clock_divider`](#clock_divider) `divn` 8 resetting it on every bar line and a bar-pair square ([`lfo`](#lfo) 0.25 Hz, `phase` 17/32 so its edges fall half an eighth *before* the bar lines, through a [`schmitt`](#schmitt)) holding `reverse` high through every second bar — bar 1 climbs `0 3 7 10 12 15 14 19`, bar 2 is its exact mirror (a reset with the gate high lands on the last step), bar 3 climbs again: a palindrome, through a dotted-eighth [`delay`](#delay). Swap the sequencer's `direction` to `pendulum` and the same gate turns it around at the bar lines instead.
 - `freeze_wide_wash.json` — the [`freeze`](#freeze)'s `width` + `decay`: a [`pluck`](#pluck) run (eight eighth-notes, then two seconds of rest) into the freeze at `size` 16384 / `smear` 0.6 / `width` 0.8 / `decay` 6; a 15 BPM [`clock`](#clock) (`pulse_width` 0.95, a short dip then the edge) latches a new hold every four seconds right on the run's last note, so each phrase blooms into a wide wash that falls 10 dB a second and is gone before the next one; `out_l` / `out_r` each through their own little [`reverb`](#reverb) to the two sides. Set `width` 0 to hear the same wash collapse to the centre, `decay` 0 to keep it forever.
 - `cv_recorder_backwards.json` — the [`cv_recorder`](#cv_recorder)'s transport: a bar-long take of a slow triangle [`lfo`](#lfo) (sixteenths on `clock`, `length` 16, `replace` — a fresh take every eight bars) moving a resonant lowpass over a low saw; a [`clock_divider`](#clock_divider) at n=32 holds `reverse` high every other bar, so the wobble runs forwards, then backwards; a second divider at n=16 (`pw` 0.25) fires on the first beat of every bar and, through a [`logic`](#logic) `nand` with NOT-the-take, pulls `play` low there — the wobble freezes on the downbeat for a beat and resumes from the top, never during a take. Both dividers are `reset` by NOT-the-take so their downbeat lands on the loop's own bar (the loop is created on the clock's second tick, when the period is known). `speed` is `1x` — try `2x`.
+- `cv_recorder_oneshot.json` — the [`cv_recorder`](#cv_recorder)'s **one-shot**: a single six-tick take of a unipolar triangle [`lfo`](#lfo) swell (`play_mode` `one_shot`, `replace`, the take window high only once every 64 s — the gesture is recorded *once*), then a [`euclidean`](#euclidean) 2-in-16 firing it as a filter envelope over a low saw: each hit runs one lap and the head holds at the gesture's end until the next. A [`logic`](#logic) `and` with NOT-the-take makes the trigger deaf while the tape is rolling. A 0.07 Hz [`lfo`](#lfo) on `speed_cv` (`speed` `2x`, `speed_cv_depth` 0.5) wanders the rate over the four rungs 1.5x…3x, so every firing is a slightly different sweep and always finishes before the next hit. Try `reverse` (the swell fires backwards) or `play_mode` `gate` (the loop simply runs).
 - `noise_brown_surf.json` — surf: a seeded `brown` [`noise`](#noise) (seed 7, so the same tide every run) swelling under a 0.12 Hz unipolar sine on its knobless `amp_cv` (a [`cv_offset`](#cv_offset) of 0.2 keeps the trough from going silent) into a resonant 900 Hz lowpass [`filter`](#filter) — waves rolling in and drawing back every eight seconds. Five modules.
 - `noise_stereo_pair.json` — one seed, one stream: two `brown` [`noise`](#noise) modules at `corner` 4 Hz (a deep, slow swell) through a resonant 500 Hz lowpass [`filter`](#filter) each, into the left and right speaker sinks. As shipped the seeds differ (3 and 8) and the pair is wide — measured channel correlation 0.09, two independent tides. Set **both seeds the same** and it collapses to dead mono (correlation 1.000, the two sides bit-identical): the seed alone is the key, so a twin is the same stream, not a second one. Six modules. Try `corner` 40 on both for tight surf instead of distant thunder.
 - `stereo_hard_pan.json` — left/right speaker sinks.

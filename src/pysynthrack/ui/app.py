@@ -79,7 +79,8 @@ from ..modules.possibility_selector import (
 from ..modules.wavetable_morph import WT_STACKS
 from ..modules.wind import WIND_MODELS
 from ..modules.drift import DRIFT_MODES
-from ..modules.cv_recorder import CV_RECORDER_MODES, CV_RECORDER_SPEEDS
+from ..modules.cv_recorder import (
+    CV_RECORDER_MODES, CV_RECORDER_PLAY_MODES, CV_RECORDER_SPEEDS)
 from ..modules.vowel import VOWEL_VOICES
 from ..modules.freeze import FREEZE_SIZES
 from ..modules.samplehold import SAMPLE_HOLD_MODES
@@ -3470,6 +3471,23 @@ class App:
             # (the playback head's rate; recording always runs at 1x) --
             # ``speed`` must sit HERE, above the transient shaper's shared
             # ``speed`` combo further down, or it inherits that list.
+            # ``play_mode`` is deliberately NOT called ``mode`` for the
+            # same reason (``mode`` is caught by the shared combo branch).
+            if param_name == "play_mode":
+                dpg.add_combo(
+                    label=f"{param_name} (the play jack)",
+                    items=list(CV_RECORDER_PLAY_MODES),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "speed_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.05,
+                    min_value=-4.0, max_value=4.0, format="%.2f x2/unit",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
             if param_name == "reverse":
                 dpg.add_checkbox(
                     label=f"{param_name} (or gate)", default_value=bool(current),

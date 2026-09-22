@@ -17764,6 +17764,17 @@ class NumpyBackend(AudioBackend):
     #: head is an integer in half-samples so 0.5x is a whole step too;
     #: recording always steps 2 (1x).
     _CVREC_RATE2 = {"0.5x": 1, "1x": 2, "2x": 4}
+    #: ``speed_cv`` multiplies the combo's rate and is QUANTISED back to
+    #: the same half-sample grid -- 1..8 half-steps per sample, i.e.
+    #: 0.5x .. 4x in 0.25x steps. A fractional rate would need a float
+    #: phase, and a float phase is not the same number at block 50 as
+    #: at 250; an integer step is. 0 is not reachable (the stop is what
+    #: ``play`` is for).
+    _CVREC_RATE2_MIN = 1
+    _CVREC_RATE2_MAX = 8
+    #: The rate exponent is clipped to +-this before ``2 ** e`` (the
+    #: house CV-overflow guard: an absurd CV must not overflow a power).
+    _CVREC_SPEED_OCT_LIMIT = 4.0
 
     def _render_cv_recorder(self, module, frames: int, buffers, patch) -> dict:
         """Fixed-length CV looper (see modules/cv_recorder.py).
@@ -17806,8 +17817,33 @@ class NumpyBackend(AudioBackend):
         until the next rec edge. With ``in`` unpatched the ``value`` knob
         is the input, ramped linearly across the block from the previous
         block's value.
+
+        ``speed_cv`` (block mean, float64, non-finite scrubbed to 0)
+        multiplies the combo's rate by ``2 ** (depth * cv)`` -- with the
+        exponent clipped +-4 and the PRODUCT quantised straight back onto
+        the half-sample grid, ``floor(base2 * 2 ** e + 0.5)`` clamped to
+        1..8 half-steps per sample (0.5x..4x in 0.25x steps). Quantising
+        is the whole point: an integer step keeps the head an integer
+        count from its last snap, which is what makes every rate
+        bit-exact across block sizes. A rate change does not move the
+        head (it is absolute state, not a phase x rate), so a sweeping
+        CV never jumps the loop.
+
+        ``play_mode`` ``one_shot`` reinterprets the ``play`` jack: its
+        LEVEL is ignored and a rising edge sets the head to 0 (the last
+        slot under reverse) and ``st["shot"]`` to ``2L`` half-samples of
+        travel -- exactly one lap, whatever the rate. ``run`` shortens a
+        chunk to the travel left and, when the lap ends, steps the head
+        BACK one step so the held slot is the one just played (a ramp
+        holds at its top, not at its foot). A sync tick still snaps the
+        head to 0 and leaves the travel alone: the transport wins. A
+        stopped head writes nothing, so between shots ``rec`` could
+        never write -- hence at ``one_shot`` recording itself makes the
+        head move (``moving = shot is not None or recording``), and a
+        lap that ends while recording just clears the shot.
         """
-        from ..modules.cv_recorder import CV_RECORDER_MODES, CV_RECORDER_SPEEDS
+        from ..modules.cv_recorder import (
+            CV_RECORDER_MODES, CV_RECORDER_PLAY_MODES, CV_RECORDER_SPEEDS)
 
         cv_in = self._input_buffer(patch, buffers, module.id, "in")
         clock = self._input_buffer(patch, buffers, module.id, "clock")
@@ -17815,6 +17851,8 @@ class NumpyBackend(AudioBackend):
         clear = self._input_buffer(patch, buffers, module.id, "clear")
         play = self._input_buffer(patch, buffers, module.id, "play")
         rev_gate = self._input_buffer(patch, buffers, module.id, "reverse")
+        speed_cv = self._input_buffer(patch, buffers, module.id, "speed_cv",
+                                      collapse=False)
 
         def fparam(name, default, lo, hi):
             try:
@@ -17833,6 +17871,22 @@ class NumpyBackend(AudioBackend):
         if speed not in CV_RECORDER_SPEEDS:
             speed = "1x"
         rate2 = self._CVREC_RATE2[speed]
+        if speed_cv is not None:
+            # The rate jack: block mean in float64 (float32 accumulates),
+            # non-finite scrubbed BEFORE the clamp (min/max would pass a
+            # NaN straight through), exponent clipped, then quantised
+            # back onto the half-sample grid.
+            c = float(np.mean(np.asarray(speed_cv, dtype=np.float64)))
+            if not np.isfinite(c):
+                c = 0.0
+            e = self._CVREC_SPEED_OCT_LIMIT
+            e = min(e, max(-e, fparam("speed_cv_depth", 1.0, -4.0, 4.0) * c))
+            rate2 = int(np.floor(rate2 * (2.0 ** e) + 0.5))
+            rate2 = min(self._CVREC_RATE2_MAX, max(self._CVREC_RATE2_MIN, rate2))
+        play_mode = str(module.params.get("play_mode", "gate"))
+        if play_mode not in CV_RECORDER_PLAY_MODES:
+            play_mode = "gate"
+        one_shot = play_mode == "one_shot"
         try:
             rev_param = float(module.params.get("reverse", False)) >= 0.5
         except (TypeError, ValueError):
@@ -17848,7 +17902,7 @@ class NumpyBackend(AudioBackend):
                 "prev_rec": False, "prev_clear": False, "prev_clock": False,
                 "last_edge": -1, "interval": 0, "n": 0, "ticks": 0,
                 "prev_value": value,
-                "reverse": False, "playing": True,
+                "reverse": False, "playing": True, "shot": None,
             }
 
         # --- the input: the cable, or the knob ramped across the block
@@ -17931,6 +17985,11 @@ class NumpyBackend(AudioBackend):
                 y[odd] = 0.5 * (y[odd] + buf[nxt])
             return y
 
+        def hold(a: int, b: int, buf, L: int, h: int):
+            """out/pos over [a:b) from a head that is not moving."""
+            out[a:b] = read(buf, L, np.array([h]))[0]
+            pos[a:b] = (h * 0.5) / L
+
         def run(a: int, b: int):
             """Advance the loop over out[a:b] (relative samples)."""
             if b <= a or not st["exists"]:
@@ -17939,12 +17998,16 @@ class NumpyBackend(AudioBackend):
             L = int(st["L"])
             L2 = 2 * L
             h = int(st["h"])
-            if not st["playing"]:
-                # A stopped head: the slot under it, held; nothing written.
-                out[a:b] = read(buf, L, np.array([h]))[0]
-                pos[a:b] = (h * 0.5) / L
-                return
             recording = bool(st["recording"])
+            shot = st["shot"]
+            # At one_shot the play LEVEL is ignored: the head moves while
+            # a lap is in flight, or while recording (a stopped head
+            # writes nothing, so rec would otherwise never reach the tape).
+            moving = (shot is not None or recording) if one_shot else bool(st["playing"])
+            if not moving:
+                # A stopped head: the slot under it, held; nothing written.
+                hold(a, b, buf, L, h)
+                return
             d = 2 if recording else rate2          # record at 1x, play at any
             if st["reverse"]:
                 d = -d
@@ -17955,6 +18018,11 @@ class NumpyBackend(AudioBackend):
                     n = min(b - i, (L2 - 1 - h) // d + 1)
                 else:
                     n = min(b - i, h // (-d) + 1)
+                ends = False
+                if shot is not None:
+                    left = -(-shot // abs(d))      # samples of lap remaining
+                    if left <= n:
+                        n, ends = int(left), True
                 idx = h + d * np.arange(n)
                 if recording:
                     slot = idx >> 1
@@ -17971,7 +18039,20 @@ class NumpyBackend(AudioBackend):
                 pos[i:i + n] = (idx * 0.5) / L
                 h = (h + d * n) % L2
                 i += n
+                if shot is not None:
+                    shot -= abs(d) * n
+                    if ends:
+                        shot = None
+                        if not recording:
+                            # Step back onto the slot just played, so the
+                            # hold is the lap's END (a ramp holds at its top).
+                            h = (h - d) % L2
+                            st["h"], st["shot"] = h, None
+                            if i < b:
+                                hold(i, b, buf, L, h)
+                            return
             st["h"] = h
+            st["shot"] = shot
 
         seg_start = 0
         for t, _prio, kind in events:
@@ -17985,6 +18066,7 @@ class NumpyBackend(AudioBackend):
                 st["recording"] = False
                 st["pending"] = None
                 st["ticks"] = 0
+                st["shot"] = None
             elif kind in ("rec_on", "rec_off"):
                 on = kind == "rec_on"
                 if clocked:
@@ -17995,6 +18077,15 @@ class NumpyBackend(AudioBackend):
                 st["reverse"] = kind == "rev_on"     # the head turns around where it is
             elif kind in ("play_on", "play_off"):
                 st["playing"] = kind == "play_on"
+                if one_shot and kind == "play_on":
+                    # A one-lap trigger: rewind and arm 2L half-samples
+                    # of travel (a retrigger mid-lap restarts from 0).
+                    if st["exists"]:
+                        L2 = 2 * int(st["L"])
+                        st["h"] = (L2 - 2) % L2 if st["reverse"] else 0
+                        st["shot"] = L2
+                    else:
+                        st["shot"] = None
             else:  # tick
                 abs_t = n0 + t
                 if int(st["last_edge"]) >= 0:

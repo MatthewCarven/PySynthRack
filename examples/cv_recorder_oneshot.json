@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "next_id": 13,
+  "modules": [
+    { "id": 1, "type": "clock", "name": "sixteenths at 120 - the transport (looper clock + the euclidean)", "params": { "bpm": 120.0, "division": 4.0, "pulse_width": 0.2 } },
+    { "id": 2, "type": "clock", "name": "the TAKE window - high over the first 6 ticks of every 64 s: the gesture is recorded ONCE", "params": { "bpm": 120.0, "division": 0.0078125, "pulse_width": 0.0125 } },
+    { "id": 3, "type": "logic", "name": "not_a = NOT take - the trigger is deaf while the tape is rolling", "params": {} },
+    { "id": 4, "type": "euclidean", "name": "the sparse trigger - 2 hits in 16 sixteenths, short gates: one shot per half bar", "params": { "steps": 16, "fills": 2, "rotate": 0, "accent_fills": 0, "gate_len": 0.25, "fills_cv_depth": 8.0 } },
+    { "id": 5, "type": "logic", "name": "and = a hit AND not recording -> FIRE the one-shot", "params": {} },
+    { "id": 6, "type": "lfo", "name": "the GESTURE - one triangle swell per loop (1.3333 Hz = 6 sixteenths), unipolar", "params": { "waveform": "triangle", "rate": 1.3333333333333333, "depth": 1.0, "bipolar": false, "cv_depth": 1.0, "phase": 0.0, "seed": 0 } },
+    { "id": 7, "type": "lfo", "name": "the RATE wobble - very slow, so each firing runs at 1.5x / 2x / 2.5x / 3x", "params": { "waveform": "sine", "rate": 0.07, "depth": 1.0, "bipolar": true, "cv_depth": 1.0, "phase": 0.0, "seed": 0 } },
+    { "id": 8, "type": "cv_recorder", "name": "ONE-SHOT looper - 6 ticks, recorded once, fired by the euclidean; the lap always finishes before the next hit", "params": { "length": 6.0, "mode": "replace", "feedback": 1.0, "value": 0.0, "reverse": false, "speed": "2x", "speed_cv_depth": 0.5, "play_mode": "one_shot" } },
+    { "id": 9, "type": "oscillator", "name": "a low saw drone", "params": { "waveform": "saw_blep", "freq": 55.0, "amp": 0.45 } },
+    { "id": 10, "type": "filter", "name": "the one-shot is the filter's envelope - three octaves of it", "params": { "mode": "lowpass", "cutoff": 180.0, "resonance": 3.0, "cv_depth": 3.0, "res_cv_depth": 1.0 } },
+    { "id": 11, "type": "left_speaker_output", "name": "Left", "params": { "gain": 0.7 } },
+    { "id": 12, "type": "right_speaker_output", "name": "Right", "params": { "gain": 0.7 } }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 8, "dst_port": "clock" },
+    { "src_module_id": 1, "src_port": "out", "dst_module_id": 4, "dst_port": "clock" },
+    { "src_module_id": 2, "src_port": "out", "dst_module_id": 8, "dst_port": "rec" },
+    { "src_module_id": 2, "src_port": "out", "dst_module_id": 3, "dst_port": "a" },
+    { "src_module_id": 4, "src_port": "gate", "dst_module_id": 5, "dst_port": "a" },
+    { "src_module_id": 3, "src_port": "not_a", "dst_module_id": 5, "dst_port": "b" },
+    { "src_module_id": 5, "src_port": "and", "dst_module_id": 8, "dst_port": "play" },
+    { "src_module_id": 6, "src_port": "cv", "dst_module_id": 8, "dst_port": "in" },
+    { "src_module_id": 7, "src_port": "cv", "dst_module_id": 8, "dst_port": "speed_cv" },
+    { "src_module_id": 8, "src_port": "out", "dst_module_id": 10, "dst_port": "cutoff_cv" },
+    { "src_module_id": 9, "src_port": "out", "dst_module_id": 10, "dst_port": "in" },
+    { "src_module_id": 10, "src_port": "out", "dst_module_id": 11, "dst_port": "in" },
+    { "src_module_id": 10, "src_port": "out", "dst_module_id": 12, "dst_port": "in" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 40], "2": [30, 240], "3": [340, 240], "4": [340, 40], "5": [660, 120],
+      "6": [30, 460], "7": [30, 640], "8": [980, 300],
+      "9": [980, 40], "10": [1320, 40], "11": [1620, 20], "12": [1620, 160]
+    }
+  }
+}

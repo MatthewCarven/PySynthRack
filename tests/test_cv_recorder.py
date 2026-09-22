@@ -21,10 +21,22 @@ syncs; ``speed`` 2x plays the loop twice per length, 0.5x once per two
 every feature 50 vs 250 exact; the defaults are the shipped arithmetic
 (an old-engine pin); the ``speed`` combo's CONTENTS; the backwards example.
 
+The one-shot and the rate jack (the 2026-09-22 love pass): ``speed_cv``
+quantises the head rate onto the half-sample grid — the eight reachable
+rates and the ladder's boundaries are pinned, cv 0 is the combo
+bit-exact, a non-finite CV reads as 0, a sweeping CV never jumps the
+head, recording still runs at 1x, and every reachable rate is 50 vs 250
+exact; ``play_mode`` ``one_shot`` fires exactly one lap from a rising
+edge (a ramp appears once then holds at its TOP), ignores the level,
+retriggers from 0 mid-lap, runs the lap backwards under reverse, lets
+``rec`` move the head, still obeys a clocked sync tick, never fires with
+``play`` unpatched, and ``gate`` is the shipped behaviour bit-exact.
+
 Plumbing tests run at SR 1000 with 50-sample blocks; the example at 44100.
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from unittest import mock
 
@@ -34,14 +46,15 @@ import pytest
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.module import all_module_types, get_module_type
 from pysynthrack.core.patch import Patch
-from pysynthrack.modules.cv_recorder import CV_RECORDER_MODES, CV_RECORDER_SPEEDS
+from pysynthrack.modules.cv_recorder import (
+    CV_RECORDER_MODES, CV_RECORDER_PLAY_MODES, CV_RECORDER_SPEEDS)
 
 SR = 1000
 BLOCK = 50
 
 
 def _driver(params=None, sr=SR, block=BLOCK, cable_in=True, clock=False, clear=False,
-            play=False, reverse=False):
+            play=False, reverse=False, speed_cv=False):
     patch = Patch()
     m = patch.add_module("cv_recorder", params=params or {})
     keys = {}
@@ -57,6 +70,10 @@ def _driver(params=None, sr=SR, block=BLOCK, cable_in=True, clock=False, clear=F
             g = patch.add_module("clock")
             patch.connect(g.id, "out", m.id, name)
             keys[name] = (g.id, "out")
+    if speed_cv:
+        g = patch.add_module("constant")
+        patch.connect(g.id, "out", m.id, "speed_cv")
+        keys["speed_cv"] = (g.id, "out")
     b = NumpyBackend(sample_rate=sr, block_size=block)
     b.compile(patch)
 
@@ -72,7 +89,7 @@ def _driver(params=None, sr=SR, block=BLOCK, cable_in=True, clock=False, clear=F
 
 
 def _render(total, params=None, block=BLOCK, sr=SR, x=None, rec=None, clock=None, clear=None,
-            play=None, reverse=None, knobs=None):
+            play=None, reverse=None, speed_cv=None, knobs=None):
     """Render ``total`` samples; ``x``/``rec``/``clock``/``clear``/``play``/
     ``reverse`` are functions of the absolute sample index array (or None =
     unpatched). ``knobs`` is an optional {absolute_sample: {param: value}}
@@ -80,7 +97,8 @@ def _render(total, params=None, block=BLOCK, sr=SR, x=None, rec=None, clock=None
     on the panel; the sample must be a block boundary at every size used)."""
     step = _driver(params, sr=sr, block=block, cable_in=x is not None,
                    clock=clock is not None, clear=clear is not None,
-                   play=play is not None, reverse=reverse is not None)
+                   play=play is not None, reverse=reverse is not None,
+                   speed_cv=speed_cv is not None)
     outs, poss = [], []
     for i in range(total // block):
         t = np.arange(i * block, (i + 1) * block)
@@ -89,7 +107,8 @@ def _render(total, params=None, block=BLOCK, sr=SR, x=None, rec=None, clock=None
                 assert at == t[0], "knob schedule must sit on a block boundary"
                 step.module.params.update(changes)
         bufs = {"rec": rec(t) if rec is not None else np.zeros(block)}
-        for name, fn in (("in", x), ("clock", clock), ("clear", clear), ("play", play), ("reverse", reverse)):
+        for name, fn in (("in", x), ("clock", clock), ("clear", clear), ("play", play),
+                         ("reverse", reverse), ("speed_cv", speed_cv)):
             if fn is not None:
                 bufs[name] = fn(t)
         r = step(block, **bufs)
@@ -112,18 +131,21 @@ def test_registered_with_ports_and_params():
     m = cls(1)
     assert [(p.name, p.signal_kind) for p in m.input_ports] == [
         ("in", "cv"), ("clock", "gate"), ("rec", "gate"), ("clear", "gate"),
-        ("play", "gate"), ("reverse", "gate")]
+        ("play", "gate"), ("reverse", "gate"), ("speed_cv", "cv")]
     assert [(p.name, p.signal_kind) for p in m.output_ports] == [("out", "cv"), ("pos", "cv")]
     assert m.params["mode"] == "overdub" and m.params["length"] == 4.0
     assert m.params["reverse"] is False and m.params["speed"] == "1x"
+    assert m.params["speed_cv_depth"] == 1.0 and m.params["play_mode"] == "gate"
     assert CV_RECORDER_MODES == ("replace", "overdub")
     assert CV_RECORDER_SPEEDS == ("0.5x", "1x", "2x")
+    assert CV_RECORDER_PLAY_MODES == ("gate", "one_shot")
 
 
 def test_serialization_round_trip():
     cls = all_module_types()["cv_recorder"]
     m = cls(2, params={"mode": "replace", "length": 2.0, "feedback": 0.5, "value": -0.3,
-                       "reverse": True, "speed": "2x"})
+                       "reverse": True, "speed": "2x", "speed_cv_depth": -2.0,
+                       "play_mode": "one_shot"})
     assert cls.from_dict(m.to_dict()).params == m.params
 
 
@@ -132,6 +154,7 @@ def test_an_old_patch_without_the_transport_keys_gets_the_defaults():
     m = cls.from_dict({"id": 3, "type": "cv_recorder", "name": "old",
                        "params": {"length": 2.0, "mode": "replace", "feedback": 1.0, "value": 0.0}})
     assert m.params["reverse"] is False and m.params["speed"] == "1x"
+    assert m.params["speed_cv_depth"] == 1.0 and m.params["play_mode"] == "gate"
 
 
 # ----- the loop -----------------------------------------------------------------
@@ -460,6 +483,249 @@ def test_a_speed_change_mid_loop_does_not_jump():
     assert np.array_equal(out[250:275], first[75:100])
 
 
+# ----- the rate jack (speed_cv) ---------------------------------------------------------
+
+CONST = lambda v: (lambda t: np.full(len(t), np.float32(v), np.float32))
+
+
+def _predicted_rate2(speed, depth, cv):
+    """The documented formula, re-derived here from the docs rather than
+    imported from the engine: ``floor(base x 2 ** clip(depth x cv) + 0.5)``
+    half-steps per sample, clamped 1..8."""
+    base2 = {"0.5x": 1, "1x": 2, "2x": 4}[speed]
+    e = min(4.0, max(-4.0, depth * float(np.float32(cv))))
+    return int(min(8, max(1, math.floor(base2 * (2.0 ** e) + 0.5))))
+
+
+def _measured_rate2(pos, L, lo, hi):
+    """The head's step in half-samples, read straight off the pos ramp."""
+    d = np.diff(pos[lo:hi].astype(np.float64)) * (2.0 * L)
+    d = np.round(d[d > 1e-9]).astype(int)
+    assert d.size and len(set(d.tolist())) == 1, sorted(set(d.tolist()))
+    return int(d[0])
+
+
+@pytest.mark.parametrize("speed", CV_RECORDER_SPEEDS)
+def test_a_zero_rate_cv_is_the_combo_bit_exact(speed):
+    # The pin that matters for every patch saved before today: a cable
+    # carrying 0 must not move a single sample.
+    kw = dict(x=RAMP, rec=REC_FIRST_LOOP)
+    a, ap, _ = _render(400, {"length": 0.1, "speed": speed}, **kw)
+    b, bp, _ = _render(400, {"length": 0.1, "speed": speed}, speed_cv=CONST(0.0), **kw)
+    assert np.array_equal(a, b) and np.array_equal(ap, bp)
+
+
+@pytest.mark.parametrize("cv,rate2", [
+    (-3.0, 1), (-2.0, 1), (-1.0, 1), (0.0, 2), (1.0, 4), (2.0, 8), (3.0, 8), (9.0, 8),
+])
+def test_the_rate_ladder_at_1x_is_where_the_docs_say(cv, rate2):
+    # Named rungs, all exact in binary: 0.5x is the floor and 4x the
+    # ceiling (the clamp), and the jack never reaches 0 -- the stop is
+    # what ``play`` is for.
+    out, pos, _ = _render(400, {"length": 0.1}, x=RAMP, rec=REC_FIRST_LOOP,
+                          speed_cv=CONST(cv))
+    assert _measured_rate2(pos, 100, 150, 380) == rate2
+    assert _predicted_rate2("1x", 1.0, cv) == rate2
+
+
+@pytest.mark.parametrize("speed", CV_RECORDER_SPEEDS)
+@pytest.mark.parametrize("depth", [-2.0, -1.0, 0.5, 1.0, 2.0])
+@pytest.mark.parametrize("cv", [-1.7, -0.6, -0.2, 0.0, 0.3, 0.9, 1.4])
+def test_the_engine_quantises_exactly_as_documented(speed, depth, cv):
+    # A sweep across the combo x depth x CV: the engine must agree with
+    # the formula in the docs at every point, including the ones that
+    # land on an ODD number of half-steps (1.5x / 2.5x / 3.5x).
+    params = {"length": 0.1, "speed": speed, "speed_cv_depth": depth}
+    out, pos, _ = _render(400, params, x=RAMP, rec=REC_FIRST_LOOP, speed_cv=CONST(cv))
+    assert _measured_rate2(pos, 100, 150, 380) == _predicted_rate2(speed, depth, cv)
+
+
+def test_every_rung_of_the_ladder_is_reachable():
+    seen = {_predicted_rate2("1x", 1.0, c): c for c in np.linspace(-1.2, 2.2, 400)}
+    assert sorted(seen) == list(range(1, 9))                  # 0.5x .. 4x in 0.25x steps
+    for rate2, cv in sorted(seen.items()):
+        _, pos, _ = _render(400, {"length": 0.1}, x=RAMP, rec=REC_FIRST_LOOP,
+                            speed_cv=CONST(cv))
+        assert _measured_rate2(pos, 100, 150, 380) == rate2
+
+
+def test_the_step_between_1x_and_1_5x_sits_at_2_5_half_steps():
+    # The quantiser rounds half-UP (floor(v + 0.5)), so the boundary
+    # between 2 and 3 half-steps is a rate of exactly 2.5.
+    lo = math.log2(2.49 / 2.0)
+    hi = math.log2(2.51 / 2.0)
+    _, pos_lo, _ = _render(400, {"length": 0.1}, x=RAMP, rec=REC_FIRST_LOOP,
+                           speed_cv=CONST(lo))
+    _, pos_hi, _ = _render(400, {"length": 0.1}, x=RAMP, rec=REC_FIRST_LOOP,
+                           speed_cv=CONST(hi))
+    assert _measured_rate2(pos_lo, 100, 150, 380) == 2
+    assert _measured_rate2(pos_hi, 100, 150, 380) == 3
+
+
+def test_a_sweeping_rate_cv_never_jumps_the_head():
+    # The head is absolute state, not a phase x rate, so a rate change
+    # cannot move it: every step of ``pos`` (mod the wrap) is at most the
+    # fastest rate, 8 half-samples = 4 slots of a 100-slot loop.
+    sweep = lambda t: (2.0 * np.sin(t / 130.0)).astype(np.float32)
+    out, pos, _ = _render(2000, {"length": 0.1}, x=RAMP, rec=REC_FIRST_LOOP,
+                          speed_cv=sweep)
+    step = np.diff(pos.astype(np.float64)) % 1.0
+    assert step.max() <= 8 / 200.0 + 1e-6, float(step.max())
+    assert len(set(np.round(step[step > 1e-9] * 200.0).astype(int).tolist())) > 1
+
+
+def test_a_non_finite_rate_cv_reads_as_zero():
+    # Python's min/max do not propagate NaN, so the scrub has to happen
+    # BEFORE the clamp or a NaN would reach ``int()``.
+    ref, refp, _ = _render(400, {"length": 0.1}, x=RAMP, rec=REC_FIRST_LOOP)
+    for bad in (np.nan, np.inf, -np.inf):
+        out, pos, _ = _render(400, {"length": 0.1}, x=RAMP, rec=REC_FIRST_LOOP,
+                              speed_cv=CONST(bad))
+        assert np.array_equal(out, ref) and np.array_equal(pos, refp)
+
+
+def test_a_polyphonic_rate_cv_is_averaged_not_summed():
+    # The house rule for a block-mean depth: four voices at +1 read as
+    # +1, not +4 (which would slam the rate into the clamp).
+    def go(cv):
+        step = _driver({"length": 0.1}, speed_cv=True)
+        poss = []
+        for i in range(8):
+            t = np.arange(i * BLOCK, (i + 1) * BLOCK)
+            poss.append(step(BLOCK, rec=(t < 100).astype(np.float32),
+                             speed_cv=cv, **{"in": RAMP(t)})["pos"])
+        return np.concatenate(poss)
+
+    one = np.full(BLOCK, 1.0, np.float32)
+    assert np.array_equal(go(one), go(np.vstack([one] * 4)))
+    assert not np.array_equal(go(one), go(np.full(BLOCK, 4.0, np.float32)))
+
+
+def test_the_rate_jack_does_not_touch_the_recording_rate():
+    # "Record at 1x, play at any" still holds with the jack wide open.
+    out, pos, _ = _render(400, {"length": 0.1}, x=RAMP, rec=REC_FIRST_LOOP,
+                          speed_cv=CONST(2.0))
+    assert np.array_equal(out[:100], RAMP(np.arange(100)))        # the take is real time
+    assert _measured_rate2(pos, 100, 150, 380) == 8
+
+
+@pytest.mark.parametrize("rate2", list(range(1, 9)))
+def test_every_reachable_rate_is_block_size_independent(rate2):
+    cv = math.log2(rate2 / 2.0) if rate2 != 1 else -1.0
+    rec = lambda t: (((t >= 37) & (t < 137)) | ((t >= 313) & (t < 371))).astype(np.float32)
+    rev = lambda t: ((t >= 433) & (t < 611)).astype(np.float32)
+    kw = dict(x=RAMP, rec=rec, reverse=rev, speed_cv=CONST(cv))
+    a = _render(1000, {"length": 0.1, "feedback": 0.7}, block=50, **kw)
+    b = _render(1000, {"length": 0.1, "feedback": 0.7}, block=250, **kw)
+    assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+    assert _measured_rate2(a[1], 100, 150, 300) == rate2
+
+
+# ----- the one-shot (play_mode) ----------------------------------------------------------
+
+ONE_SHOT = {"length": 0.1, "mode": "replace", "play_mode": "one_shot"}
+#: Record the first 100 samples, then trigger at 200 (the gate falls at
+#: 210 -- a TRIGGER, not a gate: the lap must outlive it).
+REC_THEN_TRIG = lambda t: ((t >= 200) & (t < 210)).astype(np.float32)
+NO_PLAY = lambda t: np.zeros(len(t), np.float32)
+
+
+def test_one_shot_fires_exactly_one_lap_and_holds_the_lap_s_end():
+    out, pos, _ = _render(500, ONE_SHOT, x=RAMP, rec=REC_FIRST_LOOP, play=REC_THEN_TRIG)
+    take = RAMP(np.arange(100))
+    assert np.array_equal(out[200:300], take)                 # the ramp, once
+    assert np.all(out[300:] == take[-1])                      # then held at its TOP
+    assert np.all(pos[300:] == pos[300])
+    assert np.all(out[137:200] == take[0])                    # and nothing before the shot
+
+
+def test_one_shot_ignores_the_play_level():
+    # A gate that stays HIGH for three loop lengths still fires one lap.
+    play = lambda t: (t >= 200).astype(np.float32)
+    out, _, _ = _render(600, ONE_SHOT, x=RAMP, rec=REC_FIRST_LOOP, play=play)
+    take = RAMP(np.arange(100))
+    assert np.array_equal(out[200:300], take) and np.all(out[300:] == take[-1])
+
+
+def test_a_retrigger_mid_lap_restarts_the_lap_from_zero():
+    play = lambda t: (((t >= 200) & (t < 205)) | ((t >= 250) & (t < 255))).astype(np.float32)
+    out, _, _ = _render(500, ONE_SHOT, x=RAMP, rec=REC_FIRST_LOOP, play=play)
+    take = RAMP(np.arange(100))
+    assert np.array_equal(out[200:250], take[:50])            # the first lap, cut short
+    assert np.array_equal(out[250:350], take)                 # restarted from 0
+    assert np.all(out[350:] == take[-1])
+
+
+def test_a_one_shot_in_reverse_runs_the_lap_backwards_from_the_end():
+    rev = lambda t: np.ones(len(t), np.float32) * (t >= 150)
+    out, _, _ = _render(500, ONE_SHOT, x=RAMP, rec=REC_FIRST_LOOP,
+                        play=REC_THEN_TRIG, reverse=rev)
+    take = RAMP(np.arange(100))
+    assert np.array_equal(out[200:300], take[::-1])           # top to foot
+    assert np.all(out[300:] == take[0])                       # held at the FOOT
+
+
+def test_a_one_shot_lap_is_one_loop_of_travel_whatever_the_rate():
+    # At 2x the lap is half as long in time -- one lap of the BUFFER.
+    out, pos, _ = _render(500, dict(ONE_SHOT, speed="2x"), x=RAMP,
+                          rec=REC_FIRST_LOOP, play=REC_THEN_TRIG)
+    take = RAMP(np.arange(100))
+    assert np.array_equal(out[200:250], take[::2])
+    assert np.all(out[250:] == take[98])                      # the last slot it played
+
+
+def test_recording_runs_the_head_at_one_shot():
+    # A stopped head writes nothing, so between shots ``rec`` could never
+    # reach the tape -- at one_shot recording itself moves the head.
+    out, pos, _ = _render(500, ONE_SHOT, x=RAMP, rec=REC_FIRST_LOOP, play=NO_PLAY)
+    take = RAMP(np.arange(100))
+    assert np.array_equal(out[:100], take)                    # the take ran, at 1x
+    assert np.all(out[100:] == take[0])                       # then the head stopped dead
+    assert np.all(pos[100:] == 0.0)
+
+
+def test_one_shot_with_play_unpatched_never_fires():
+    out, pos, _ = _render(500, ONE_SHOT, x=RAMP, rec=REC_FIRST_LOOP)
+    take = RAMP(np.arange(100))
+    assert np.array_equal(out[:100], take) and np.all(out[100:] == take[0])
+
+
+def test_a_clocked_sync_tick_snaps_a_one_shot_lap_and_the_lap_carries_on():
+    # The transport wins (the same rule as a stopped head), and the lap's
+    # remaining TRAVEL is untouched: it still ends L samples after the
+    # trigger, having played the top of the loop twice.
+    clock = lambda t: ((t % 40) < 5).astype(np.float32)
+    rec = lambda t: ((t >= 37) & (t < 300)).astype(np.float32)
+    play = lambda t: ((t >= 500) & (t < 505)).astype(np.float32)
+    params = {"length": 4.0, "mode": "replace", "play_mode": "one_shot"}
+    out, pos, _ = _render(900, params, x=RAMP, rec=rec, clock=clock, play=play)
+    L = 160                                     # 4 ticks x a 40-sample period
+    assert np.any(np.diff(pos[500:500 + L]) != 0.0)
+    synced = np.flatnonzero(pos[501:500 + L] == 0.0) + 501
+    assert synced.size == 1 and synced[0] % 40 == 0           # a tick snapped it to 0
+    # One lap of TRAVEL on, the head is stopped for good: after that it
+    # only ever moves where a sync tick snaps it (the stopped-head rule).
+    moved = np.flatnonzero(np.diff(pos[500 + L:])) + 501 + L
+    assert all(int(i) % 40 == 0 for i in moved), moved
+
+
+def test_gate_is_the_shipped_transport_and_one_shot_is_block_size_independent():
+    rec = lambda t: (((t >= 37) & (t < 137)) | ((t >= 613) & (t < 671))).astype(np.float32)
+    play = lambda t: (((t >= 203) & (t < 211)) | ((t >= 449) & (t < 457))).astype(np.float32)
+    rev = lambda t: ((t >= 301) & (t < 419)).astype(np.float32)
+    kw = dict(x=RAMP, rec=rec, play=play, reverse=rev)
+    params = {"length": 0.1, "mode": "replace", "play_mode": "one_shot"}
+    a = _render(1000, params, block=50, **kw)
+    b = _render(1000, params, block=250, **kw)
+    assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+    assert a[1].max() > 0.5 and a[0].std() > 0.0
+    # And ``gate`` is exactly the transport as it shipped.
+    g = _render(1000, dict(params, play_mode="gate"), block=50, **kw)
+    old = _render(1000, {"length": 0.1, "mode": "replace"}, block=50, **kw)
+    assert np.array_equal(g[0], old[0]) and np.array_equal(g[1], old[1])
+    assert not np.array_equal(a[0], g[0])                     # the modes really differ
+
+
 # ----- block sizes --------------------------------------------------------------------
 
 
@@ -576,6 +842,18 @@ def test_speed_combo_carries_the_recorders_speeds_not_the_transient_shapers(monk
     assert len(reverse) == 1 and w[reverse[0]][0] == "add_checkbox" and "gate" in reverse[0]
 
 
+def test_play_mode_is_its_own_combo_and_the_rate_depth_is_a_bounded_drag(monkeypatch):
+    # ``play_mode`` is deliberately not called ``mode`` -- that word is
+    # caught by the shared combo branch, which would hand it the
+    # recorder's replace/overdub list. Check the CONTENTS.
+    w = _widgets(monkeypatch)
+    pm = [lb for lb in w if lb == "play_mode" or lb.startswith("play_mode ")]
+    assert len(pm) == 1 and w[pm[0]] == ("add_combo", list(CV_RECORDER_PLAY_MODES))
+    assert w["mode"] == ("add_combo", list(CV_RECORDER_MODES))      # still its own
+    dep = [lb for lb in w if lb == "speed_cv_depth" or lb.startswith("speed_cv_depth ")]
+    assert len(dep) == 1 and w[dep[0]][0] == "add_drag_float"
+
+
 # ----- example ------------------------------------------------------------------------
 
 
@@ -679,3 +957,68 @@ def test_the_backwards_example_freezes_on_the_downbeat_and_alternates_direction(
     # Bar 9 is the next take: forwards, not frozen, the same tick grid.
     take2 = span(129, 145)
     assert np.all(play[take2] > 0.5) and np.all(np.diff(pos[take2]) >= 0)
+
+
+def test_the_oneshot_example_fires_one_lap_per_hit_at_a_wandering_rate():
+    from pysynthrack.io_patch import load_patch
+
+    path = Path(__file__).resolve().parent.parent / "examples" / "cv_recorder_oneshot.json"
+    patch = load_patch(path)
+    recs = [m for m in patch if m.TYPE == "cv_recorder"]
+    assert len(recs) == 1 and recs[0].params["play_mode"] == "one_shot"
+    assert len(patch.modules) <= 12
+    b = NumpyBackend(sample_rate=44100, block_size=512)
+    b.compile(patch)
+    cap = {"out": [], "pos": [], "play": []}
+    orig = b._render_cv_recorder
+
+    def spy(module, frames, buffers, p):
+        r = orig(module, frames, buffers, p)
+        cap["out"].append(np.asarray(r["out"]).copy())
+        cap["pos"].append(np.asarray(r["pos"]).copy())
+        pl = b._input_buffer(p, buffers, module.id, "play")
+        cap["play"].append(np.zeros(frames) if pl is None else np.asarray(pl).copy())
+        return r
+
+    b._render_cv_recorder = spy
+    peak = 0.0
+    for _ in range(int(44100 * 30 / 512)):
+        out, _devices = b.render_block_multi(512)
+        assert out is not None and np.all(np.isfinite(out))
+        peak = max(peak, float(np.abs(out).max()))
+    assert 0.3 < peak < 0.8, peak
+    pos = np.concatenate(cap["pos"])
+    loop = np.concatenate(cap["out"])
+    L = int(b._state[recs[0].id]["L"])
+    assert L > 0 and loop.std() > 0.05
+
+    # The head moves in DISCRETE runs: one take, then one lap per hit.
+    moving = np.flatnonzero(np.diff(pos.astype(np.float64)) != 0.0) + 1
+    runs, start, prev = [], moving[0], moving[0]
+    for i in moving[1:]:
+        if i - prev > 1:
+            runs.append((int(start), int(prev)))
+            start = i
+        prev = i
+    runs.append((int(start), int(prev)))
+    runs = [r for r in runs if r[1] - r[0] > 2]     # drop the sync-tick snaps
+    take, laps = runs[0], runs[1:]
+    assert abs((take[1] - take[0] + 1) - L) < 8 and len(laps) >= 8
+
+    rates = []
+    for a, z in laps:
+        d = np.diff(pos[a:z + 1].astype(np.float64)) * (2.0 * L)
+        d = np.round(d[d > 1e-9]).astype(int)
+        rates.append(sorted(set(d.tolist())))
+        assert all(3 <= r <= 6 for r in rates[-1]), rates[-1]   # 1.5x .. 3x
+        # A lap is one loop of TRAVEL, so it is shorter the faster it runs.
+        assert abs((z - a + 1) - 2 * L / float(np.mean(d))) < 32, (a, z)
+    flat = sorted({r for rr in rates for r in rr})
+    assert len(flat) >= 3, flat                    # the wobble really wandered
+    # Every lap finishes before the next hit: the head HOLDS in between.
+    play = np.concatenate(cap["play"])
+    hits = np.flatnonzero((play[1:] > 0.5) & (play[:-1] <= 0.5)) + 1
+    assert hits.size >= len(laps)
+    for (a, z), h in zip(laps, hits):
+        assert h <= a <= h + 1, (a, h)              # the lap starts on the edge
+        assert z < h + L                            # done before the loop length is up
