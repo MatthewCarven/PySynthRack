@@ -101,6 +101,7 @@ The full map:
 | `vowel.vowel_cv` | `2.0` | vowels (0 = A … 4 = U) | `vowel + d·mean cv`, clamped 0…4 |
 | `vowel.formant_cv` | `1.0` (`formant_cv_depth`) | octaves | every formant's frequency and bandwidth × `2^(formant/12 + d·mean cv)` (constant Q), block-rate; exponent clipped ±4 before the power; one value for every voice |
 | `freeze.pitch_cv` | `1.0` (`pitch_cv_depth`) | octaves | frozen layer at `2^(pitch/12 + d·mean cv)`, block-rate; exponent clipped ±4 before the power; mono (a `(V, F)` source is averaged) |
+| `freeze.width_cv` | `1.0` (`width_cv_depth`) | width (0…1, the knob's unit) | `clip(width + d·mean cv, 0, 1)`, block-rate, the mean taken in **float64** (a float32 mean of a constant CV moves with the block size at the ulp); applied to the scatter of every frame synthesised from then on, so the field opens and closes across one `size` window rather than stepping at the block boundary — which is why a moving CV cannot click. Mono (a `(V, F)` source is averaged) |
 | `sweep_eq.freq_cv` | `1.0` | octaves | `freq · 2^(d·mean cv)` |
 | `motion_eq.band{i}_freq_cv` | `1.0` (shared) | octaves | `freq_i · 2^(d·mean cv)` |
 | `motion_eq.band{i}_gain_cv` | `6.0` (shared, `gain_cv_depth`) | dB | `gain_i + d·mean cv` (clamped ±24) |
@@ -346,7 +347,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`resampler`](#resampler) | Effects | `in` (audio), `pitch_cv` (cv), `brake` (gate) → `out`, `out_l`, `out_r` (audio) |
 | [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`granular`](#granular) | Effects | `in` (audio), `position_cv` (cv), `freeze` (gate) → `out`, `out_l`, `out_r` (audio) |
-| [`freeze`](#freeze) | Effects | `in` (audio), `freeze` (gate), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
+| [`freeze`](#freeze) | Effects | `in` (audio), `freeze` (gate), `pitch_cv`,`width_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv), `freeze` (gate) → `out` (audio) |
 | [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv), `freeze` (gate) → `out_l`,`out_r` (audio) |
 | [`compressor`](#compressor) | Effects | `in`,`sidechain` (audio), `threshold_cv` (cv) → `out` (audio), `gr` (cv) |
@@ -3339,6 +3340,40 @@ lobe and hold as a single tone at their mean (a minor second at C3 at
 windows grab faster. 4096 is the default because it holds a triad
 cleanly and still feels like a *moment*.
 
+**The long windows** (2026-09-22 love pass). **32768** — 743 ms at
+44.1 kHz — is the drone end of the knob, and it is a different
+instrument from the rest of it: at three quarters of a second the
+capture is no longer a *moment* but an **average of a phrase**. Freeze
+a three-note arpeggio on its last note and at 4096 you hold that one
+note (the two before it are 175 dB down — simply absent); at 32768 all
+three come back inside 30 dB of each other and you are holding the
+arpeggio's whole harmony as one chord. The window is a Hann, so the
+middle of those 743 ms carries the most weight and the instant at the
+gate edge — where the window tapers to zero — is the *quietest* part
+of what you hear; aim the edge a beat *after* the phrase, not on it.
+A triad holds exactly as cleanly as at 16384 (partial for partial
+within 0.1 dB, measured).
+
+*What it costs* (measured at 44.1 kHz, one 512-frame block = 11.61 ms
+of budget). The hold itself is cheap: 15% of a block mono, 36% with
+`width` up, and a 10 s render is 0.14 s of wall clock (0.29 s with
+`width`) — the per-frame inverse FFT is only 0.22 ms and it happens
+once per 186 ms hop. The **capture** is the spike: one block at the
+edge does the analysis FFTs *and* fills the synthesis buffer, and at
+32768 that block takes **10.1 ms mono / 20.0 ms with `width`** —
+between 87% and 172% of one block's budget, a single overrun the
+sink's ring absorbs, and one step further along a road the shipped
+16384 already walks (5.3 / 9.7 ms, up to 83%). Part of the bill was
+paid by vectorizing the peak-region map, which was 6 ms of a 7.6 ms
+capture at 32768 and is now 0.33 ms, integer-identical (a real
+spectrum has a peak every three or four bins in its numerical floor —
+3079 regions at 32768 — so the old Python loop over them scaled with
+the window). **65536 was measured and left off the knob**: its capture
+is 54 ms — five whole blocks, an audible hole — and worse, its steady
+state is 11.2 ms *every 371 ms*, 96% of a block, which is not a spike
+you can absorb but a permanent near-overrun with nothing left for the
+rest of the patch.
+
 **`smear`** is the character knob: 0 is the coherent hold, glassy and
 still; 1 gives every synthesis frame random phases (`default_rng([seed,
 frame])`, reproducible) — the identity of the sound stays, its
@@ -3397,6 +3432,47 @@ again. `smear`'s per-frame jitter is the same in both channels, on top
 of the scatter, so a wash is as wide as a chord. A lone sine cannot be
 widened, only turned: width is for chords and washes.
 
+**`width_cv`** (2026-09-22 love pass) breathes that field. The
+per-partial scatter constants are fixed at capture — what the CV moves
+is the *scale*: `clamp(width + width_cv_depth · mean cv, 0, 1)`, read
+per block with the mean taken in float64, multiplied into the stored
+per-region sign when a frame is synthesised. It therefore costs
+nothing — the same one rotation per frame `width` already paid for, at
+a different angle — and a constant CV of +0.5 at depth 1 **is** the
+`width` knob at +0.5, bit for bit on all three jacks (pinned; so is
+depth 2 at +0.25, and depth 0 is the CV disabled). The cosine law
+holds wherever the CV puts it: corr(L, R) measured 0.951 / 0.707 /
+0.000 at effective widths 0.2 / 0.5 / 1.0 across a sweep, with each
+channel still at the mono's RMS. It also **cannot click**. Frames run
+one window ahead of the read, so a change of scale reaches the ears
+through the overlap-add — a crossfade from the old scatter to the new
+across `size` samples (93 ms at 4096, 743 ms at 32768), never a step
+at a block boundary. Measured on a 0.25 Hz LFO sweeping the whole 0…1
+range: the largest sample step is the same as the same hold pinned at
+`width` 1 (0.0351 either way), while the channels really do move from
+correlated 0.99 to 0.06 and back. A slow LFO here is a pad that keeps
+drifting open and shut; the lag is the price and at the default 4096 it
+is 93 ms, under a slow LFO invisible.
+
+**`latch`** (2026-09-22 love pass) changes what the `freeze` **gate**
+means. Off (as shipped) the gate is a momentary: high holds, the fall
+releases — you stand on the pedal. On, every *rising* edge **toggles**
+— the first freezes, the next lets go — which is how a real freeze
+pedal behaves, and it turns a footswitch, a [`key_trigger`](#key_trigger)
+or one tick of a clock into a switch. The toggle is the parity of a
+`cumsum` of the edge mask XORed with the state carried in, so the count
+is exact across any block partition (64 = 512 = 1000 pinned) and a pair
+of edges inside *one* block is still a hold and a release. The `freeze`
+tickbox **forces the hold on regardless** — the switch beats the pedal
+— and the latch keeps its own state running underneath it, so unticking
+hands the hold back to whatever the latch last said. Turning `latch` on
+mid-hold **adopts** the hold that is sounding rather than releasing it
+(the flip is silent: measured, no step beyond a sine's own, and the
+hold then survives the cable's own fall and waits for the next rising
+edge). Turning it back off hands control to the cable, which releases
+through `fade` if the cable is low. `latch` off is the shipped render,
+bit-exact.
+
 **`decay`** (2026-09-20 love pass) lets the hold fade by itself: the
 layer's level follows `10^(−3t/decay)` — −60 dB in `decay` seconds
 (measured to 0.1 dB against the same hold at `decay` 0) — a per-sample
@@ -3416,15 +3492,17 @@ mid-fall, the level holds where it is. 0 = forever, as shipped.
 | Port | Dir | Kind | Notes |
 |------|-----|------|-------|
 | `in` | in | audio | The source (mono; a `(V, F)` source is summed). Unpatched → silence, no state. |
-| `freeze` | in | gate | Rising edge captures, high holds, the fall releases. ORed with the tickbox. |
+| `freeze` | in | gate | Rising edge captures, high holds, the fall releases — or, with `latch` on, each rising edge **toggles** the hold. The tickbox forces the hold on regardless. |
 | `pitch_cv` | in | cv | 1 V/oct × `pitch_cv_depth` on the frozen layer, block mean. |
+| `width_cv` | in | cv | `width_cv_depth` width units per unit on the stereo field, block mean (float64), clamped 0…1. Reaches the ears across one `size` window — a crossfade, never a step. |
 | `out` | out | audio | `in · dry + frozen · level` — the mono, untouched by `width`. |
 | `out_l` / `out_r` | out | audio | The stereo pair: the same hold, every partial rotated `±width · π/4` from the mono (`width · π/2` between the sides). At `width` 0 they are `out` itself, bit-exact. |
 
 | Parameter | Default | Range | Notes |
 |-----------|---------|-------|-------|
-| `size` | 4096 | 1024 · 2048 · 4096 · 8192 · 16384 | FFT window in samples — the resolution knob. |
-| `freeze` | off | tickbox | Hold from the panel (ORed with the gate). |
+| `size` | 4096 | 1024 · 2048 · 4096 · 8192 · 16384 · 32768 | FFT window in samples — the resolution knob. 32768 is 743 ms, the drone end; 65536 was measured and left off (see above). |
+| `freeze` | off | tickbox | Hold from the panel — forces the hold on over the gate *and* the latch. |
+| `latch` | off | tickbox | The gate **toggles** the hold on each rising edge instead of holding it while high. |
 | `smear` | 0.0 | 0…1 | 0 = coherent hold, 1 = random-phase wash. |
 | `pitch` | 0.0 | −24…24 st | Transposition of the frozen layer — exact. |
 | `pitch_cv_depth` | 1.0 | 0…4 oct/unit | Octaves per unit on `pitch_cv`. |
@@ -3433,6 +3511,7 @@ mid-fall, the level holds where it is. 0 = forever, as shipped.
 | `fade` | 60 | 1…2000 ms | Rise / fall / re-freeze crossfade. |
 | `seed` | 1 | int | The smear's die. |
 | `width` | 0.0 | 0…1 | Quadrature stereo scatter on `out_l` / `out_r`; corr(L, R) = cos(width · π/2), the fold −3 dB at 1. 0 = the pair is the mono. |
+| `width_cv_depth` | 1.0 | 0…4 width/unit | Width units per unit on `width_cv`. |
 | `decay` | 0.0 | 0…60 s | The hold's own fade to −60 dB; dropped at −90 dB. 0 = forever. |
 
 *Patching.* A held chord into `in` and a gate from a footswitch, a
@@ -3444,8 +3523,13 @@ instrument. `smear` 1 through a [`reverb`](#reverb) is the wash;
 `pitch` −12 under the dry is a sub-pad of whatever you just played.
 `width` 0.8 with `decay` 6 and a slow clock re-freezing every few
 seconds is a wash that blooms wide out of each phrase and dies on its
-own — `out_l` / `out_r` to the two sides. See
-`examples/freeze_chord_pad.json` and `examples/freeze_wide_wash.json`.
+own — `out_l` / `out_r` to the two sides. Turn `latch` on and one tap of
+a footswitch, a `key_trigger` or a single [`schmitt`](#schmitt) edge is
+the whole performance: the hold stays until you tap again. `size` 32768
+with `decay` 0 and a slow [`lfo`](#lfo) on `width_cv` is a drone that
+keeps opening and shutting under whatever you play over it. See
+`examples/freeze_chord_pad.json`, `examples/freeze_wide_wash.json` and
+`examples/freeze_drone_breathe.json`.
 
 ---
 
@@ -5700,6 +5784,7 @@ loads in the app. Notable ones referenced above:
 - `freeze_chord_pad.json` — module #100, the spectral freeze: a bar clock plays four sus2 chords on the [`organ`](#organ) ([`sequencer`](#sequencer) → [`chord`](#chord)) for a second each; the clock's `not_a` through [`logic`](#logic) is the [`freeze`](#freeze) gate, so it rises the instant the chord's gate falls and the capture is the chord's sustain — held as a glassy pad (`smear` 0.25) for the rest of the bar, easing out under the next chord over a 300 ms `fade`. Try `smear` 1 (the wash), `pitch` −12 (a sub-pad), `size` 16384 (a longer, smoother moment).
 - `sequencer_reverse_bars.json` — the [`sequencer`](#sequencer)'s `reverse` gate: an eight-step [`pluck`](#pluck) line at eighths, a [`clock_divider`](#clock_divider) `divn` 8 resetting it on every bar line and a bar-pair square ([`lfo`](#lfo) 0.25 Hz, `phase` 17/32 so its edges fall half an eighth *before* the bar lines, through a [`schmitt`](#schmitt)) holding `reverse` high through every second bar — bar 1 climbs `0 3 7 10 12 15 14 19`, bar 2 is its exact mirror (a reset with the gate high lands on the last step), bar 3 climbs again: a palindrome, through a dotted-eighth [`delay`](#delay). Swap the sequencer's `direction` to `pendulum` and the same gate turns it around at the bar lines instead.
 - `freeze_wide_wash.json` — the [`freeze`](#freeze)'s `width` + `decay`: a [`pluck`](#pluck) run (eight eighth-notes, then two seconds of rest) into the freeze at `size` 16384 / `smear` 0.6 / `width` 0.8 / `decay` 6; a 15 BPM [`clock`](#clock) (`pulse_width` 0.95, a short dip then the edge) latches a new hold every four seconds right on the run's last note, so each phrase blooms into a wide wash that falls 10 dB a second and is gone before the next one; `out_l` / `out_r` each through their own little [`reverb`](#reverb) to the two sides. Set `width` 0 to hear the same wash collapse to the centre, `decay` 0 to keep it forever.
+- `freeze_drone_breathe.json` — the [`freeze`](#freeze)'s `latch` + `width_cv` + the long window: a maj7 [`organ`](#organ) chord ([`chord`](#chord) on an unpatched root) drones for the first 1.6 s, then **one** [`schmitt`](#schmitt) edge off a 50-second [`lfo`](#lfo) — a single trigger, never a second one — *latches* a 743 ms capture (`size` 32768) that `decay` 0 holds for good, and the same edge's [`logic`](#logic) `not_a` stops the chord, so from 1.6 s on everything you hear is the hold. A sparse [`pluck`](#pluck) line plays over it through `dry` (never captured — the latch has already closed), and a 0.12 Hz `lfo` on `width_cv` (`width` 0.15 + 0.85/unit) breathes the stereo field from nearly mono to fully wide and back, corr(L, R) sweeping 0.97 → 0.03 → 0.97 every 8.3 s. Tap the `freeze` tickbox to force the hold on over the latch; turn `latch` off to make the schmitt gate a momentary again.
 - `cv_recorder_backwards.json` — the [`cv_recorder`](#cv_recorder)'s transport: a bar-long take of a slow triangle [`lfo`](#lfo) (sixteenths on `clock`, `length` 16, `replace` — a fresh take every eight bars) moving a resonant lowpass over a low saw; a [`clock_divider`](#clock_divider) at n=32 holds `reverse` high every other bar, so the wobble runs forwards, then backwards; a second divider at n=16 (`pw` 0.25) fires on the first beat of every bar and, through a [`logic`](#logic) `nand` with NOT-the-take, pulls `play` low there — the wobble freezes on the downbeat for a beat and resumes from the top, never during a take. Both dividers are `reset` by NOT-the-take so their downbeat lands on the loop's own bar (the loop is created on the clock's second tick, when the period is known). `speed` is `1x` — try `2x`.
 - `cv_recorder_oneshot.json` — the [`cv_recorder`](#cv_recorder)'s **one-shot**: a single six-tick take of a unipolar triangle [`lfo`](#lfo) swell (`play_mode` `one_shot`, `replace`, the take window high only once every 64 s — the gesture is recorded *once*), then a [`euclidean`](#euclidean) 2-in-16 firing it as a filter envelope over a low saw: each hit runs one lap and the head holds at the gesture's end until the next. A [`logic`](#logic) `and` with NOT-the-take makes the trigger deaf while the tape is rolling. A 0.07 Hz [`lfo`](#lfo) on `speed_cv` (`speed` `2x`, `speed_cv_depth` 0.5) wanders the rate over the four rungs 1.5x…3x, so every firing is a slightly different sweep and always finishes before the next hit. Try `reverse` (the swell fires backwards) or `play_mode` `gate` (the loop simply runs).
 - `noise_brown_surf.json` — surf: a seeded `brown` [`noise`](#noise) (seed 7, so the same tide every run) swelling under a 0.12 Hz unipolar sine on its knobless `amp_cv` (a [`cv_offset`](#cv_offset) of 0.2 keeps the trough from going silent) into a resonant 900 Hz lowpass [`filter`](#filter) — waves rolling in and drawing back every eight seconds. Five modules.

@@ -18326,21 +18326,46 @@ class NumpyBackend(AudioBackend):
         belongs to. A spectrum with no peak at all maps every bin to
         itself. Both the phase lock and the stereo scatter are one value
         per region, read through this map.
+
+        Vectorized (2026-09-22, the long-windows pass) and INTEGER-identical
+        to the Python loop it replaces -- the loop was the whole cost of a
+        capture at a big window (17 ms of the 23 ms at 65536, 6 ms of 7.6 ms
+        at 32768) because a real spectrum has a peak every three or four
+        bins in its numerical floor: 9526 regions at 65536. The two tricks:
+
+        * The valley between peaks ``a`` and ``b`` is the first argmin over
+          the HALF-OPEN ``[a, b)``, not the closed ``[a, b]`` the loop
+          wrote, because two peaks are never adjacent (a peak needs
+          ``mag[k] > mag[k-1]`` and ``mag[k] >= mag[k+1]``, which forbids
+          one at ``k+1``), so ``mag[b-1] < mag[b]`` with ``b-1`` inside the
+          segment and the minimum is never AT ``b``. Half-open segments are
+          exactly what ``reduceat`` reduces.
+        * First-index-of-minimum per segment in two passes: ``reduceat``
+          for the minimum, then ``reduceat`` again over the bin's own index
+          where it equals that minimum (a sentinel elsewhere) -- which is
+          ``argmin``'s first-wins tie-break by construction.
+
+        Fuzzed against the loop over 4025 spectra (random, all-ties,
+        all-zero, all-below-threshold, sparse, and real triad / sine /
+        noise / silence / DC rffts at every window size): zero mismatches.
         """
         k_n = mag.shape[0]
-        idx = np.arange(k_n)
         up = np.concatenate(([False], mag[1:] > mag[:-1]))
         down = np.concatenate((mag[:-1] >= mag[1:], [False]))
         peaks = np.flatnonzero(up & down & (mag > 1e-12))
         if peaks.size == 0:
-            return idx
-        bounds = [0]
-        for a, b in zip(peaks[:-1].tolist(), peaks[1:].tolist()):
-            bounds.append(a + int(np.argmin(mag[a:b + 1])))
-        bounds.append(k_n)
-        for pk, lo, hi in zip(peaks.tolist(), bounds[:-1], bounds[1:]):
-            idx[lo:hi] = pk
-        return idx
+            return np.arange(k_n)
+        if peaks.size == 1:
+            return np.full(k_n, peaks[0], dtype=peaks.dtype)
+        p0, p1 = int(peaks[0]), int(peaks[-1])
+        seg_min = np.repeat(np.minimum.reduceat(mag, peaks)[:-1], np.diff(peaks))
+        sub = mag[p0:p1]
+        pos = np.where(sub == seg_min, np.arange(p0, p1), k_n)
+        bounds = np.empty(peaks.size + 1, dtype=np.intp)
+        bounds[0] = 0
+        bounds[1:-1] = np.minimum.reduceat(pos, peaks[:-1] - p0)
+        bounds[-1] = k_n
+        return np.repeat(peaks, np.diff(bounds))
 
     @classmethod
     def _freeze_lock(cls, mag: np.ndarray, w_true: np.ndarray) -> np.ndarray:
@@ -18443,6 +18468,34 @@ class NumpyBackend(AudioBackend):
         ``out`` is always the untouched mono. The smear jitter, when
         on, is the same for both channels.
 
+        ``width_cv`` (love pass 2): the scatter CONSTANTS are fixed per
+        layer at capture -- what the CV moves is the scale, ``clamp(width
+        + width_cv_depth * mean cv, 0, 1)`` with the mean taken in
+        float64 (a float32 mean of a constant CV is block-size sensitive
+        at the ulp), read per block and multiplied into the stored
+        per-region ``side`` when a frame is synthesised. That is why it
+        costs nothing: the same one rotation per frame that ``width``
+        already paid for, at a different angle. It is also why it cannot
+        click -- the frames run one window ahead of the read, so a change
+        reaches the ears through the overlap-add, a crossfade from the
+        old scatter to the new across ``size`` samples (93 ms at 4096,
+        743 ms at 32768). Unpatched the mean is 0.0 and the effective
+        width is the knob, added exactly: bit-exact with the pre-CV
+        render.
+
+        ``latch`` (love pass 2): with it off (shipped) the gate row IS
+        the cable, high holds and the fall releases. With it on, the
+        cable's RISING edges toggle a state that becomes the gate row --
+        parity from a ``cumsum`` of the edge mask XORed with the state
+        carried in, so the toggle count is exact across any block
+        partition and a pair of edges inside one block is a hold and a
+        release. The ``freeze`` tickbox still overrides the row to all-high
+        (the switch beats the pedal), and the latch state keeps running
+        underneath it, so unticking hands the hold back to whatever the
+        latch last said. Engaging ``latch`` mid-hold adopts the previous
+        block's gate value as the latch state, so the flip is silent
+        rather than a release.
+
         ``decay`` (love pass): the hold fades by itself -- a per-sample
         factor ``g_base * 10 ** (-3 (m - m_gbase) / (decay sr))`` from
         the INTEGER count ``m`` since birth (-60 dB in ``decay`` seconds;
@@ -18472,6 +18525,7 @@ class NumpyBackend(AudioBackend):
         n = size
         hop = n // 4
         tick = bool(module.params.get("freeze", False))
+        latch = bool(module.params.get("latch", False))
         smear = min(max(float(module.params.get("smear", 0.0)), 0.0), 1.0)
         pitch = float(module.params.get("pitch", 0.0))
         depth = float(module.params.get("pitch_cv_depth", 1.0))
@@ -18482,6 +18536,9 @@ class NumpyBackend(AudioBackend):
         seed = abs(int(module.params.get("seed", 1)))
         width = float(module.params.get("width", 0.0))
         width = min(max(width, 0.0), 1.0) if np.isfinite(width) else 0.0
+        w_depth = float(module.params.get("width_cv_depth", 1.0))
+        if not np.isfinite(w_depth):
+            w_depth = 0.0
         decay_s = float(module.params.get("decay", 0.0))
         if not np.isfinite(decay_s) or decay_s <= 0.0:
             decay_s = 0.0          # forever
@@ -18495,6 +18552,11 @@ class NumpyBackend(AudioBackend):
             st["prev"] = False
             st["t"] = 0
             st["layers"] = []
+            # the latch's own machine: the cable's last sample (for its
+            # rising edges) and the toggle state it has arrived at
+            st["prev_raw"] = False
+            st["latched"] = False
+            st["latch_on"] = latch
 
         x = src.astype(np.float64)
         full = np.concatenate([st["hist"], x])
@@ -18502,12 +18564,26 @@ class NumpyBackend(AudioBackend):
         t_abs = int(st["t"])
         st["t"] = t_abs + frames
 
-        # --- the gate: cable OR tickbox; a (V, F) cable is the house sum
+        # --- the gate: the cable (momentary, or latched by ``latch``),
+        # then the tickbox forced over it; a (V, F) cable is the house sum
         gate = self._input_buffer(patch, buffers, module.id, "freeze")
         if gate is not None and gate.shape[0] == frames:
             gt = gate > self._GATE_HIGH
         else:
             gt = np.zeros(frames, dtype=bool)
+        prev_raw = bool(st.get("prev_raw", False))
+        st["prev_raw"] = bool(gt[-1])
+        if latch:
+            if not st.get("latch_on", False):
+                # engaging the latch adopts the hold that is sounding, so
+                # the flip itself never releases anything
+                st["latched"] = bool(st["prev"])
+            edges = gt & ~np.concatenate(([prev_raw], gt[:-1]))
+            # parity of the toggles so far, carried across blocks
+            gt = np.logical_xor(bool(st.get("latched", False)),
+                                (np.cumsum(edges) & 1).astype(bool))
+            st["latched"] = bool(gt[-1])
+        st["latch_on"] = latch
         if tick:
             gt = np.ones(frames, dtype=bool)
         prev = bool(st["prev"])
@@ -18531,6 +18607,16 @@ class NumpyBackend(AudioBackend):
                 cv_mean = 0.0
         lim = self._FREEZE_PITCH_OCT_LIMIT
         ratio = float(2.0 ** min(max(pitch / 12.0 + depth * cv_mean, -lim), lim))
+
+        # --- the stereo field's scale (block mean in float64 -- a float32
+        # mean of a constant CV moves with the block size at the ulp).
+        # Unpatched the mean is 0.0 and ``width`` is the knob, exactly.
+        wcv = self._input_buffer(patch, buffers, module.id, "width_cv", collapse=False)
+        if wcv is not None and wcv.size:
+            wcv_mean = float(np.mean(wcv, dtype=np.float64))
+            if not np.isfinite(wcv_mean):
+                wcv_mean = 0.0        # scrub before the clamp: min/max pass NaN
+            width = min(max(width + w_depth * wcv_mean, 0.0), 1.0)
 
         # --- new layers at this block's rising edges: each one cuts the
         # gate row of every older layer at its index (forced release).

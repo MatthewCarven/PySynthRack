@@ -21,10 +21,14 @@ transposes the frozen layer (``pitch_cv`` at 1 V/oct); because the
 frozen stream is stationary, the shift is a plain change of playback
 rate — exact frequency, unity level, no formant tricks. ``size`` is the
 resolution knob: bigger windows capture a longer moment (93 ms at 4096,
-372 ms at 16384) and hold close harmony cleanly; partials closer than
-about four bins (``4 * sr / size`` Hz — 43 Hz at 4096) fight for the
-same bins and the hold loses them, which is why the default is 4096
-and a triad at 1024 vanishes. ``fade`` is the layer's rise at the
+372 ms at 16384, 743 ms at 32768) and hold close harmony cleanly;
+partials closer than about four bins (``4 * sr / size`` Hz — 43 Hz at
+4096) fight for the same bins and the hold loses them, which is why
+the default is 4096 and a triad at 1024 vanishes. Past 16384 the
+window stops being a *moment*: 32768 is 743 ms, long enough that what
+you hold is the average of a phrase rather than a chord — the drone
+end of the knob, where an arpeggio freezes as the whole arpeggio's
+harmony at once. ``fade`` is the layer's rise at the
 edge, its fall at release, and the crossfade when you freeze again
 while a hold is still sounding — a chord change under a held pedal
 melts from the old chord into the new, it never cuts.
@@ -48,6 +52,28 @@ changed by ``width`` at all. A lone sine cannot be widened, only
 turned; width is for chords and washes. ``smear``'s per-frame jitter is
 the same for both channels, on top of the scatter.
 
+``width_cv`` (love pass 2) breathes that field. The per-partial
+scatter constants are fixed at capture — what the CV moves is the
+SCALE, ``clamp(width + width_cv_depth * mean cv, 0, 1)``, read per
+block (the mean in float64, so a constant CV is the same number at
+every block size) and applied when a frame is synthesised. Frames run
+one window ahead of the read, so a change reaches the ears over the
+overlap — the field opens and closes across ``size`` samples (93 ms at
+4096), which is why a moving CV never clicks: the hold crossfades
+between the old scatter and the new instead of stepping. A slow
+``lfo`` here is a pad that keeps drifting open and shut.
+
+``latch`` (love pass 2) changes what the ``freeze`` GATE means. Off
+(the shipped behaviour) the gate is a momentary: high holds, the fall
+releases. On, every RISING edge TOGGLES — the first one freezes, the
+next one lets go — so a footswitch, a ``key_trigger`` or one tick of a
+clock behaves like the switch on a real freeze pedal and you are not
+standing on it for the whole piece. The ``freeze`` tickbox still forces
+the hold on regardless, and the latch keeps its own state underneath:
+untick and the hold goes back to whatever the latch last said.
+Engaging ``latch`` mid-hold adopts the hold that is sounding (no
+release), so the flip itself is silent.
+
 ``decay`` (love pass) lets the hold fade by itself — the layer's level
 falls by 60 dB in ``decay`` seconds (``10^(−3t/decay)``, a per-sample
 factor from the integer sample count since the layer was born, so it
@@ -61,19 +87,24 @@ Ports:
   * ``in`` (audio): the source. Mono — a ``(V, F)`` source is the house
     sum. Unpatched → silence, no state.
   * ``freeze`` (gate): rising edge captures, high holds, the fall
-    releases. A ``(V, F)`` gate collapses to any-voice-high. ORed with
-    the ``freeze`` tickbox.
+    releases — or, with ``latch`` on, each rising edge toggles the
+    hold. A ``(V, F)`` gate collapses to any-voice-high. The ``freeze``
+    tickbox forces the hold on regardless.
   * ``pitch_cv`` (cv): 1 V/oct × ``pitch_cv_depth`` on the frozen layer,
     read per block.
+  * ``width_cv`` (cv): ``width_cv_depth`` width units per CV unit on the
+    stereo field, block mean, clamped 0..1.
   * ``out`` (audio): ``in * dry + frozen * level`` — the mono, untouched
     by ``width``.
   * ``out_l`` / ``out_r`` (audio): the stereo pair, ``in * dry + frozen_c
     * level``; at ``width`` 0 they are ``out`` itself, bit-exact.
 
 Params:
-  * ``size``: FFT window in samples, 1024 | 2048 | 4096 | 8192 | 16384.
-    Default 4096.
+  * ``size``: FFT window in samples, 1024 | 2048 | 4096 | 8192 | 16384
+    | 32768. Default 4096.
   * ``freeze``: tickbox — hold from the panel. Default off.
+  * ``latch``: the gate toggles the hold instead of holding it while
+    high. Default off.
   * ``smear``: 0 = coherent hold, 1 = random-phase wash. Default 0.
   * ``pitch``: transposition of the frozen layer in semitones, -24..24.
     Default 0.
@@ -85,6 +116,7 @@ Params:
   * ``seed``: the smear's die. Default 1.
   * ``width``: the stereo scatter on ``out_l`` / ``out_r``, 0..1.
     Default 0 (mono).
+  * ``width_cv_depth``: width units per unit on ``width_cv``. Default 1.
   * ``decay``: the hold's own fade to −60 dB, in seconds; 0 = forever.
     Default 0.
 """
@@ -94,8 +126,14 @@ from ..core.module import Module, register_module_type
 from ..core.port import Port
 
 #: The FFT windows offered, in samples. Bigger = a longer moment captured
-#: and cleaner close harmony; smaller = a snappier grab.
-FREEZE_SIZES = (1024, 2048, 4096, 8192, 16384)
+#: and cleaner close harmony; smaller = a snappier grab. 32768 (743 ms,
+#: the drone end) is the top: MEASURED, one capture costs a whole audio
+#: block at 512 (10 ms mono, 20 ms with ``width`` up) but the hold that
+#: follows costs 15-36% of one, so the spike is a single block the sink's
+#: ring can absorb. 65536 was measured and left off: its capture is 54 ms
+#: (five blocks) AND its steady state is 96% of a block every 371 ms --
+#: a permanent near-overrun, not a spike.
+FREEZE_SIZES = (1024, 2048, 4096, 8192, 16384, 32768)
 
 
 @register_module_type
@@ -105,7 +143,10 @@ class Freeze(Module):
 
     Parameters:
         size: FFT window in samples (one of ``FREEZE_SIZES``). Default 4096.
-        freeze: Tickbox hold, ORed with the gate. Default False.
+        freeze: Tickbox hold — forces the hold on whatever the gate and
+            the latch say. Default False.
+        latch: The gate TOGGLES the hold on each rising edge instead of
+            holding it while high. Default False.
         smear: 0 = coherent phase-vocoder hold, 1 = random-phase wash.
             Default 0.
         pitch: Frozen-layer transposition in semitones, -24..24. Default 0.
@@ -116,13 +157,17 @@ class Freeze(Module):
         seed: The smear's die. Default 1.
         width: Quadrature stereo scatter on ``out_l`` / ``out_r``, 0..1.
             Default 0 (the pair is the mono).
+        width_cv_depth: Width units per unit on ``width_cv``. Default 1.
         decay: The hold's own fade to −60 dB in seconds; 0 = forever.
             Default 0.
 
     Ports:
         in (in, audio): the source (mono; a ``(V, F)`` source is summed).
-        freeze (in, gate): rising edge captures, high holds.
+        freeze (in, gate): rising edge captures, high holds — or toggles,
+            with ``latch`` on.
         pitch_cv (in, cv): 1 V/oct × ``pitch_cv_depth``, block mean.
+        width_cv (in, cv): ``width_cv_depth`` width units per unit on the
+            stereo field, block mean, clamped 0..1.
         out (out, audio): ``in * dry + frozen * level`` (mono).
         out_l / out_r (out, audio): the stereo pair (== ``out`` at
             ``width`` 0).
@@ -133,6 +178,7 @@ class Freeze(Module):
     DEFAULT_PARAMS = {
         "size": 4096,
         "freeze": False,
+        "latch": False,
         "smear": 0.0,
         "pitch": 0.0,
         "pitch_cv_depth": 1.0,
@@ -141,12 +187,14 @@ class Freeze(Module):
         "fade": 60.0,
         "seed": 1,
         "width": 0.0,
+        "width_cv_depth": 1.0,
         "decay": 0.0,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),
         Port("freeze", "in", "gate"),
         Port("pitch_cv", "in", "cv"),
+        Port("width_cv", "in", "cv"),
     ]
     OUTPUT_PORTS = [
         Port("out", "out", "audio"),

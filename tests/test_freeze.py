@@ -39,9 +39,11 @@ class _FakePatch:
         return self._cables
 
 
-def _render(params, sig, gate=None, cv=None, block=512, sr=SR, backend=None, ports=None):
+def _render(params, sig, gate=None, cv=None, wcv=None, block=512, sr=SR, backend=None,
+            ports=None):
     """Render ``sig`` through one freeze module; returns ``out`` (or, with
-    ``ports``, a dict of the named jacks)."""
+    ``ports``, a dict of the named jacks). ``cv`` is ``pitch_cv``, ``wcv``
+    is ``width_cv``."""
     p = Patch()
     fz = p.add_module("freeze")
     for k, v in params.items():
@@ -53,6 +55,8 @@ def _render(params, sig, gate=None, cv=None, block=512, sr=SR, backend=None, por
         cables.append(_Cable("gate", "freeze"))
     if cv is not None:
         cables.append(_Cable("cv", "pitch_cv"))
+    if wcv is not None:
+        cables.append(_Cable("wcv", "width_cv"))
     fp = _FakePatch(cables)
     want = tuple(ports) if ports else ("out",)
     out = {k: [] for k in want}
@@ -64,6 +68,8 @@ def _render(params, sig, gate=None, cv=None, block=512, sr=SR, backend=None, por
             bufs[(99, "gate")] = np.asarray(gate[pos:pos + f], dtype=np.float32)
         if cv is not None:
             bufs[(99, "cv")] = np.asarray(cv[pos:pos + f], dtype=np.float32)
+        if wcv is not None:
+            bufs[(99, "wcv")] = np.asarray(wcv[pos:pos + f], dtype=np.float32)
         r = b._render_freeze(fz, f, bufs, fp)
         for k in want:
             out[k].append(np.asarray(r[k]).copy())
@@ -99,18 +105,18 @@ def _rms(x):
 def test_registered_with_ports_and_params():
     m = get_module_type("freeze")
     assert m.CATEGORY == "Effects"
-    assert [p.name for p in m.INPUT_PORTS] == ["in", "freeze", "pitch_cv"]
+    assert [p.name for p in m.INPUT_PORTS] == ["in", "freeze", "pitch_cv", "width_cv"]
     assert [(p.name, p.signal_kind) for p in m.OUTPUT_PORTS] == [
         ("out", "audio"), ("out_l", "audio"), ("out_r", "audio")]
     kinds = {p.name: p.signal_kind for p in m.INPUT_PORTS}
-    assert kinds == {"in": "audio", "freeze": "gate", "pitch_cv": "cv"}
+    assert kinds == {"in": "audio", "freeze": "gate", "pitch_cv": "cv", "width_cv": "cv"}
     assert m.DEFAULT_PARAMS == {
-        "size": 4096, "freeze": False, "smear": 0.0, "pitch": 0.0,
+        "size": 4096, "freeze": False, "latch": False, "smear": 0.0, "pitch": 0.0,
         "pitch_cv_depth": 1.0, "level": 0.7, "dry": 1.0, "fade": 60.0, "seed": 1,
-        "width": 0.0, "decay": 0.0,
+        "width": 0.0, "width_cv_depth": 1.0, "decay": 0.0,
     }
     assert m.DEFAULT_PARAMS["size"] in FREEZE_SIZES
-    assert FREEZE_SIZES == (1024, 2048, 4096, 8192, 16384)
+    assert FREEZE_SIZES == (1024, 2048, 4096, 8192, 16384, 32768)
 
 
 def test_unpatched_input_is_silence_with_no_state():
@@ -403,8 +409,10 @@ def test_at_most_four_layers_live():
     assert np.all(np.isfinite(y))
 
 
-def _render_blocks(fz, b, sig, gate=None, on_block=None, block=512, port=None):
+def _render_blocks(fz, b, sig, gate=None, on_block=None, block=512, port=None, wcv=None):
     cables = [_Cable("in", "in")] + ([_Cable("gate", "freeze")] if gate is not None else [])
+    if wcv is not None:
+        cables.append(_Cable("wcv", "width_cv"))
     fp = _FakePatch(cables)
     out = []
     for k, pos in enumerate(range(0, len(sig), block)):
@@ -414,6 +422,8 @@ def _render_blocks(fz, b, sig, gate=None, on_block=None, block=512, port=None):
         bufs = {(99, "in"): sig[pos:pos + f]}
         if gate is not None:
             bufs[(99, "gate")] = gate[pos:pos + f]
+        if wcv is not None:
+            bufs[(99, "wcv")] = np.asarray(wcv[pos:pos + f], dtype=np.float32)
         r = b._render_freeze(fz, f, bufs, fp)
         out.append(np.asarray(r["out"] if port is None else r[port]).copy())
     return np.concatenate(out)
@@ -768,6 +778,348 @@ def test_block_size_independence_with_width_and_decay():
     assert _rms(wet[int(2.5 * SR):int(2.9 * SR)]) < 0.1 * _rms(wet[int(1.2 * SR):int(1.6 * SR)])
 
 
+# ----- width_cv (love pass 2) -------------------------------------------------------
+
+
+def _const(v, seconds):
+    return np.full(int(seconds * SR), v, dtype=np.float32)
+
+
+def test_width_cv_at_depth_one_is_the_width_knob_bit_exact():
+    """The recipe pin: a constant CV of +0.5 at depth 1 IS `width` 0.5,
+    on all three jacks, bit for bit — the CV moves the same scale the
+    knob does, it does not take a different path. Depth 2 at cv 0.25 is
+    the same number; depth 0 is the knob alone (the CV disabled)."""
+    sig, g = _triad(3.0), _gate_from(1.0, 3.0)
+    knob, _, _ = _render({"dry": 0.0, "level": 1.0, "width": 0.5}, sig, gate=g, ports=_LR)
+    cv, _, _ = _render({"dry": 0.0, "level": 1.0, "width": 0.0}, sig, gate=g,
+                       wcv=_const(0.5, 3.0), ports=_LR)
+    for k in _LR:
+        assert np.array_equal(knob[k], cv[k]), k
+    half, _, _ = _render({"dry": 0.0, "level": 1.0, "width": 0.0, "width_cv_depth": 2.0},
+                         sig, gate=g, wcv=_const(0.25, 3.0), ports=_LR)
+    off, _, _ = _render({"dry": 0.0, "level": 1.0, "width": 0.5, "width_cv_depth": 0.0},
+                        sig, gate=g, wcv=_const(0.9, 3.0), ports=_LR)
+    for k in _LR:
+        assert np.array_equal(knob[k], half[k]) and np.array_equal(knob[k], off[k]), k
+
+
+def test_width_cv_unpatched_is_the_shipped_render():
+    """An unpatched `width_cv` at the default depth adds exactly 0.0, so
+    every width setting is the pre-CV render, bit-exact."""
+    sig, g = _triad(2.5), _gate_from(0.8, 2.5)
+    for w in (0.0, 0.35, 1.0):
+        a, _, _ = _render({"dry": 0.3, "level": 0.9, "width": w}, sig, gate=g, ports=_LR)
+        b, _, _ = _render({"dry": 0.3, "level": 0.9, "width": w, "width_cv_depth": 1.0},
+                          sig, gate=g, ports=_LR)
+        for k in _LR:
+            assert np.array_equal(a[k], b[k]), (w, k)
+
+
+@pytest.mark.parametrize("cv,eff", [(0.0, 0.2), (0.3, 0.5), (0.8, 1.0)])
+def test_width_cv_follows_the_cosine_law_across_a_sweep(cv, eff):
+    """Three points of a CV sweep on a held triad (`width` 0.2 + the CV):
+    corr(L, R) is still cos(width_eff·π/2) — 0.951 / 0.707 / 0.000
+    measured to three places — and each channel still has the mono's
+    RMS, so the CV opens the field without touching the levels."""
+    y, _, _ = _render({"dry": 0.0, "level": 1.0, "width": 0.2, "width_cv_depth": 1.0},
+                      _triad(4.0), gate=_gate_from(1.0, 4.0), wcv=_const(cv, 4.0), ports=_LR)
+    seg = slice(int(2.5 * SR), 4 * SR)
+    L, R, M = (y["out_l"][seg].astype(np.float64),
+               y["out_r"][seg].astype(np.float64),
+               y["out"][seg].astype(np.float64))
+    assert abs(np.corrcoef(L, R)[0, 1] - np.cos(eff * np.pi / 2)) < 0.01
+    assert abs(_db(_rms(L) / _rms(M))) < 0.1 and abs(_db(_rms(R) / _rms(M))) < 0.1
+
+
+def test_a_moving_width_cv_never_clicks_and_really_moves_the_field():
+    """A 0.25 Hz LFO over the whole 0…1 range on a held triad. The
+    scatter changes only where a frame is synthesised and reaches the
+    ears through the overlap-add, so the largest sample step is no
+    bigger than the same hold pinned at `width` 1 (measured 0.0351 vs
+    0.0351) — a crossfade, never a zipper. And it is not a no-op: the
+    channels are correlated 0.99 where the CV is near 0 and 0.06 where
+    it is near 1."""
+    secs = 6.0
+    t = np.arange(int(secs * SR)) / SR
+    lfo = (0.5 + 0.5 * np.sin(2 * np.pi * 0.25 * t)).astype(np.float32)
+    prm = {"dry": 0.0, "level": 1.0, "width": 0.0, "width_cv_depth": 1.0}
+    y, _, _ = _render(prm, _triad(secs), gate=_gate_from(0.5, secs), wcv=lfo, ports=_LR)
+    pinned, _, _ = _render({"dry": 0.0, "level": 1.0, "width": 1.0},
+                           _triad(secs), gate=_gate_from(0.5, secs), ports=_LR)
+    lim = np.abs(np.diff(pinned["out_l"][SR:].astype(np.float64))).max()
+    for k in ("out_l", "out_r"):
+        assert np.abs(np.diff(y[k][SR:].astype(np.float64))).max() <= lim * 1.05, k
+    wide = slice(SR, int(1.5 * SR))          # the CV is ~0.95 here
+    narrow = slice(int(2.5 * SR), 3 * SR)    # ~0.05 here
+    assert abs(np.corrcoef(y["out_l"][wide].astype(np.float64),
+                           y["out_r"][wide].astype(np.float64))[0, 1]) < 0.25
+    assert np.corrcoef(y["out_l"][narrow].astype(np.float64),
+                       y["out_r"][narrow].astype(np.float64))[0, 1] > 0.95
+
+
+def test_width_cv_is_clamped_and_a_non_finite_cv_reads_as_no_modulation():
+    """An absurd CV clamps to the 0…1 rail (a 50 V CV is `width` 1, a
+    −50 V one is mono), and a NaN CV leaves the knob alone: the render
+    is the un-modulated one, bit-exact, never a NaN in the output."""
+    sig, g = _triad(2.0), _gate_from(0.6, 2.0)
+    hi, _, _ = _render({"dry": 0.0, "level": 1.0, "width": 0.2}, sig, gate=g,
+                       wcv=_const(50.0, 2.0), ports=_LR)
+    one, _, _ = _render({"dry": 0.0, "level": 1.0, "width": 1.0}, sig, gate=g, ports=_LR)
+    lo, _, _ = _render({"dry": 0.0, "level": 1.0, "width": 0.2}, sig, gate=g,
+                       wcv=_const(-50.0, 2.0), ports=_LR)
+    for k in _LR:
+        assert np.array_equal(hi[k], one[k]), k
+    # clamped to 0: the pair is the mono again
+    assert np.array_equal(lo["out_l"], lo["out"]) and np.array_equal(lo["out_r"], lo["out"])
+    nan = np.full(int(2.0 * SR), np.nan, dtype=np.float32)
+    bad, _, _ = _render({"dry": 0.0, "level": 1.0, "width": 0.4}, sig, gate=g,
+                        wcv=nan, ports=_LR)
+    knob, _, _ = _render({"dry": 0.0, "level": 1.0, "width": 0.4}, sig, gate=g, ports=_LR)
+    for k in _LR:
+        assert np.all(np.isfinite(bad[k])) and np.array_equal(bad[k], knob[k]), k
+
+
+# ----- latch (love pass 2) ----------------------------------------------------------
+
+
+def _pulses(edges_s, seconds, high_s=0.02):
+    g = np.zeros(int(seconds * SR), dtype=np.float32)
+    for e in edges_s:
+        g[int(e * SR):int((e + high_s) * SR)] = 1.0
+    return g
+
+
+def test_latch_makes_each_rising_edge_toggle_the_hold():
+    """Four 20 ms pulses a second apart. With `latch` on they are
+    hold / release / hold / release — the hold sounds between pulses one
+    and two and between three and four, and is silent between two and
+    three. With it off the same momentary pulses leave nothing: a 20 ms
+    gate is a 20 ms hold."""
+    sig = _triad(6.0)
+    g = _pulses([1.0, 2.0, 3.0, 4.0], 6.0)
+    prm = {"dry": 0.0, "level": 1.0, "fade": 30.0}
+    on, _, _ = _render(dict(prm, latch=True), sig, gate=g)
+    off, _, _ = _render(prm, sig, gate=g)
+    held = [_rms(on[int(a * SR):int(b * SR)])
+            for a, b in ((1.3, 1.9), (2.3, 2.9), (3.3, 3.9), (4.3, 4.9))]
+    assert held[0] > 0.2 and held[2] > 0.2
+    assert held[1] < 1e-6 and held[3] < 1e-6
+    assert _rms(off[int(1.3 * SR):int(1.9 * SR)]) < 1e-6
+
+
+def test_latch_off_is_the_shipped_gate_bit_exact():
+    """`latch` False takes the shipped path: the gate row IS the cable,
+    for a held gate and for a pulse train alike."""
+    sig = _triad(3.0)
+    for g in (_gate_from(1.0, 3.0), _pulses([0.8, 1.6, 2.2], 3.0, high_s=0.4)):
+        prm = {"dry": 0.4, "level": 0.9, "width": 0.6, "smear": 0.3}
+        a, _, _ = _render(prm, sig, gate=g, ports=_LR)
+        b, _, _ = _render(dict(prm, latch=False), sig, gate=g, ports=_LR)
+        for k in _LR:
+            assert np.array_equal(a[k], b[k]), k
+
+
+def test_the_latch_state_survives_across_blocks_and_block_sizes():
+    """The toggle is a cumsum parity XORed with the state carried in, so
+    a pulse train renders identically at 64, 512 and 1000 frames — and a
+    pair of edges inside ONE block at 1000 is still a hold and a
+    release."""
+    sig = _triad(5.0)
+    g = _pulses([1.0, 2.0, 3.5], 5.0)
+    prm = {"dry": 0.3, "level": 1.0, "latch": True, "fade": 40.0, "width": 0.5}
+    ya, _, _ = _render(prm, sig, gate=g, block=64, ports=_LR)
+    yb, _, _ = _render(prm, sig, gate=g, block=512, ports=_LR)
+    yc, _, _ = _render(prm, sig, gate=g, block=1000, ports=_LR)
+    for k in _LR:
+        assert np.array_equal(ya[k], yb[k]) and np.array_equal(ya[k], yc[k]), k
+    # two edges 5 ms apart, inside one 1000-frame block: on then off
+    tight = np.zeros(int(3.0 * SR), dtype=np.float32)
+    tight[SR:SR + 100] = 1.0
+    tight[SR + 300:SR + 400] = 1.0
+    for blk in (64, 1000):
+        y, b, fz = _render({"dry": 0.0, "level": 1.0, "latch": True, "fade": 20.0},
+                           _triad(3.0), gate=tight, block=blk)
+        assert _rms(y[int(2.0 * SR):int(2.8 * SR)]) < 1e-6, blk
+        assert not b._state[fz.id]["layers"]
+
+
+def test_latch_engaged_mid_hold_adopts_the_hold_and_does_not_glitch():
+    """The gate is held high from 1.0 s and `latch` is switched on at
+    2.0 s. The hold is adopted, not released: the level is unchanged
+    across the flip (no step beyond a sine's own), it survives the
+    cable's own fall at 2.5 s, and the next rising edge at 3.5 s is what
+    finally lets go."""
+    sig = _sine(441.3, 5.0)
+    sig[int(1.5 * SR):] = 0.0
+    g = _gate_from(1.0, 5.0)
+    g[int(2.5 * SR):] = 0.0
+    g[int(3.5 * SR):int(3.52 * SR)] = 1.0
+    p = Patch()
+    fz = p.add_module("freeze")
+    fz.params.update({"dry": 0.0, "level": 1.0, "fade": 40.0})
+    b = NumpyBackend(sample_rate=SR, block_size=512)
+    b.compile(p)
+
+    def flip(k, m):
+        if k == (2 * SR) // 512:
+            m.params["latch"] = True
+
+    y = _render_blocks(fz, b, sig, gate=g, on_block=flip)
+    own = 0.5 * 2 * np.pi * 441.3 / SR
+    assert np.abs(np.diff(y[int(1.8 * SR):int(3.3 * SR)])).max() <= own * 1.05
+    before = _rms(y[int(1.8 * SR):int(2.0 * SR)])
+    assert abs(_db(_rms(y[int(2.1 * SR):int(2.3 * SR)]) / before)) < 0.1
+    assert abs(_db(_rms(y[int(2.8 * SR):int(3.2 * SR)]) / before)) < 0.1
+    assert _rms(y[int(3.8 * SR):int(4.5 * SR)]) < 1e-6
+
+
+def test_the_tickbox_forces_the_hold_over_the_latch():
+    """The tickbox beats the latch: ticked, the hold is on whatever the
+    latch says; unticked, the hold goes back to the latch's own state
+    (which kept running underneath)."""
+    sig = _triad(5.0)
+    g = _pulses([1.0, 2.0], 5.0)
+    p = Patch()
+    fz = p.add_module("freeze")
+    fz.params.update({"dry": 0.0, "level": 1.0, "latch": True, "fade": 30.0})
+    b = NumpyBackend(sample_rate=SR, block_size=512)
+    b.compile(p)
+
+    def tick(k, m):
+        if k == int(2.5 * SR) // 512:
+            m.params["freeze"] = True
+        if k == int(3.5 * SR) // 512:
+            m.params["freeze"] = False
+
+    y = _render_blocks(fz, b, sig, gate=g, on_block=tick)
+    assert _rms(y[int(1.3 * SR):int(1.9 * SR)]) > 0.2      # latched on
+    assert _rms(y[int(2.2 * SR):int(2.4 * SR)]) < 1e-6     # latched off again
+    assert _rms(y[int(2.8 * SR):int(3.4 * SR)]) > 0.2      # the tickbox forces it
+    assert _rms(y[int(3.9 * SR):int(4.8 * SR)]) < 1e-6     # untick: the latch says off
+
+
+# ----- the long windows (love pass 2) -----------------------------------------------
+
+
+def test_the_long_window_is_offered_and_holds_a_triad():
+    """32768 (743 ms at 44.1 kHz) is on the knob and holds the same triad
+    the shipped 16384 does, partial for partial within 0.1 dB — the
+    capture is longer, the hold is not weaker."""
+    assert FREEZE_SIZES[-1] == 32768 and 65536 not in FREEZE_SIZES
+    ref = None
+    for size in (16384, 32768):
+        y, _, _ = _render({"dry": 0.0, "level": 1.0, "size": size},
+                          _triad(6.0), gate=_gate_from(1.5, 6.0))
+        seg = y[4 * SR:6 * SR]
+        assert _rms(seg) > 0.2
+        lv = _levels(seg)
+        assert np.all(lv > 0.05)
+        if ref is None:
+            ref = lv
+        else:
+            assert np.all(np.abs(20 * np.log10(lv / ref)) < 0.1)
+
+
+def test_the_long_window_averages_a_phrase_not_a_moment():
+    """The documented character of 32768: the window is 743 ms, so what
+    it holds is a PHRASE, not a moment. A three-note arpeggio (200 ms a
+    note) frozen on its last note comes back as all three notes at 4096
+    only the last one is there, the first two are 175 dB down, i.e.
+    absent. At 32768 all three are inside 30 dB of each other and the
+    first note is 100 dB louder than 4096 left it. Hann-weighted, so
+    the middle of the window carries the most: the last note, right at
+    the edge where the window tapers to zero, is the quietest of the
+    three."""
+    t = np.arange(int(4.0 * SR))
+    sig = np.zeros(len(t), dtype=np.float64)
+    step = int(0.2 * SR)
+    for i, f in enumerate(_TRIAD):            # three notes, 200 ms each
+        a, bnd = int(0.6 * SR) + i * step, int(0.6 * SR) + (i + 1) * step
+        sig[a:bnd] = 0.35 * np.sin(2 * np.pi * f * t[a:bnd] / SR)
+    sig = sig.astype(np.float32)
+    g = _gate_from(1.2, 4.0)                  # the edge just after the last note
+    lv = {}
+    for size in (4096, 32768):
+        y, _, _ = _render({"dry": 0.0, "level": 1.0, "size": size}, sig, gate=g)
+        lv[size] = 20 * np.log10(np.maximum(_levels(y[int(2.5 * SR):4 * SR]), 1e-12))
+    assert lv[4096][0] < lv[4096][2] - 100.0          # the first note is simply gone
+    assert lv[4096][1] < lv[4096][2] - 100.0
+    assert float(lv[32768].max() - lv[32768].min()) < 30.0
+    assert lv[32768][0] > lv[4096][0] + 100.0
+    assert lv[32768][2] == lv[32768].min()            # the edge is the window's taper
+
+
+def test_the_long_window_is_block_size_exact_with_every_feature_live():
+    """64 vs 512 at 32768 with `latch`, a constant `width_cv`, `decay`,
+    `smear` and `pitch` all live: all three jacks bit-exact."""
+    sig = _triad(4.0)
+    g = _pulses([1.0, 2.6], 4.0)
+    prm = {"dry": 0.3, "level": 1.0, "size": 32768, "latch": True, "smear": 0.4,
+           "pitch": 7.0, "width": 0.3, "width_cv_depth": 1.0, "decay": 5.0, "fade": 90.0}
+    wcv = _const(0.4, 4.0)
+    ya, _, _ = _render(prm, sig, gate=g, wcv=wcv, block=64, ports=_LR)
+    yb, _, _ = _render(prm, sig, gate=g, wcv=wcv, block=512, ports=_LR)
+    for k in _LR:
+        assert np.array_equal(ya[k], yb[k]), k
+    assert not np.array_equal(ya["out_l"], ya["out_r"])
+    assert _rms(ya["out"][int(1.6 * SR):int(2.4 * SR)]) > 0.05
+
+
+def test_the_peak_region_map_matches_the_loop_it_replaced():
+    """The vectorized `_freeze_lock_index` is INTEGER-identical to the
+    Python loop it replaced (which cost 17 ms of a 23 ms capture at
+    65536). Checked against a reference implementation of the loop over
+    the awkward shapes: ties everywhere, all-zero, everything below the
+    1e-12 floor, a single peak, and real triad / sine / noise / DC rffts
+    at every offered window size."""
+    def loop(mag):
+        k_n = mag.shape[0]
+        idx = np.arange(k_n)
+        up = np.concatenate(([False], mag[1:] > mag[:-1]))
+        down = np.concatenate((mag[:-1] >= mag[1:], [False]))
+        peaks = np.flatnonzero(up & down & (mag > 1e-12))
+        if peaks.size == 0:
+            return idx
+        bounds = [0]
+        for a, b in zip(peaks[:-1].tolist(), peaks[1:].tolist()):
+            bounds.append(a + int(np.argmin(mag[a:b + 1])))
+        bounds.append(k_n)
+        for pk, lo, hi in zip(peaks.tolist(), bounds[:-1], bounds[1:]):
+            idx[lo:hi] = pk
+        return idx
+
+    rng = np.random.default_rng(7)
+    for trial in range(600):
+        k = int(rng.integers(1, 400))
+        kind = trial % 6
+        if kind == 0:
+            mag = np.abs(rng.standard_normal(k))
+        elif kind == 1:
+            mag = np.abs(rng.integers(0, 4, k).astype(float))       # ties everywhere
+        elif kind == 2:
+            mag = np.zeros(k)
+        elif kind == 3:
+            mag = np.abs(rng.standard_normal(k)) * 1e-15            # all under the floor
+        elif kind == 4:
+            mag = np.abs(rng.standard_normal(k))
+            mag[rng.random(k) < 0.4] = 0.0
+        else:
+            mag = np.abs(np.sin(np.arange(k) * 0.3)) + rng.random(k) * 1e-13
+        got = NumpyBackend._freeze_lock_index(mag)
+        want = loop(mag)
+        assert got.shape == want.shape and np.array_equal(got, want), (trial, k)
+    for n in FREEZE_SIZES:
+        t = np.arange(n)
+        w = np.hanning(n + 1)[:-1]
+        for sig in (sum(0.25 * np.sin(2 * np.pi * f * t / SR) for f in _TRIAD),
+                    np.random.default_rng(1).standard_normal(n),
+                    np.sin(2 * np.pi * 441.3 * t / SR),
+                    np.zeros(n), np.ones(n)):
+            mag = np.abs(np.fft.rfft(sig * w))
+            assert np.array_equal(NumpyBackend._freeze_lock_index(mag), loop(mag)), n
+
+
 # ----- UI ---------------------------------------------------------------------------
 
 
@@ -809,6 +1161,13 @@ def test_every_param_gets_a_bounded_widget(monkeypatch):
     dc = w["decay (0 = forever)"]
     assert dc[0] == "add_drag_float" and (dc[2]["min_value"], dc[2]["max_value"]) == (0.0, 60.0)
     assert dc[1] == "%.1f s"
+    # love pass 2: latch a checkbox, width_cv_depth a bounded depth drag,
+    # and the long window on the combo
+    assert w["latch (gate toggles)"][0] == "add_checkbox"
+    wc = w["width_cv_depth"]
+    assert wc[0] == "add_drag_float" and (wc[2]["min_value"], wc[2]["max_value"]) == (0.0, 4.0)
+    assert wc[1] == "%.2f width/unit"
+    assert "32768" in w["size (fft)"][2]["items"]
 
 
 def test_size_combo_stores_an_int(monkeypatch):
@@ -818,6 +1177,10 @@ def test_size_combo_stores_an_int(monkeypatch):
     assert module.params["size"] == 8192 and isinstance(module.params["size"], int)
     cb(None, "3000", (module.id, "size"))
     assert module.params["size"] == 2048          # snapped onto the set
+    cb(None, "32768", (module.id, "size"))
+    assert module.params["size"] == 32768
+    cb(None, "65536", (module.id, "size"))
+    assert module.params["size"] == 32768         # past the top: snapped back on
 
 
 # ----- example --------------------------------------------------------------------------
@@ -903,3 +1266,59 @@ def test_the_wide_wash_example_blooms_wide_and_dies_on_its_own():
     assert abs(np.corrcoef(L[a:c], R[a:c])[0, 1]) < 0.6
     assert -18.0 < _db(_rms(L[c:c + 4096]) / _rms(L[a:a + 4096])) < -12.0
     assert len(b._state[fz.id]["layers"]) == 1
+
+
+def test_the_drone_breathe_example_holds_forever_and_breathes():
+    """The long-window drone: ONE schmitt edge latches a 743 ms capture of
+    the maj7 chord and `decay` 0 holds it for the rest of the render while
+    a sparse pluck line plays over it. Measured on the freeze's own jacks:
+    exactly one layer alive at the end with the latch still set, the held
+    level flat to +/-8% across seconds 3..13 (the chord itself stopped at
+    1.6 s -- the input is a tenth of the output from then on), and the
+    0.12 Hz LFO on `width_cv` sweeps corr(L, R) from over 0.95 near the
+    breath's narrow point to under 0.1 at its wide one."""
+    from pysynthrack.io_patch import load_patch
+
+    path = Path(__file__).resolve().parent.parent / "examples" / "freeze_drone_breathe.json"
+    patch = load_patch(path)
+    fz = next(m for m in patch if m.TYPE == "freeze")
+    assert fz.params["size"] == 32768 and fz.params["latch"] is True
+    assert fz.params["decay"] == 0.0 and fz.params["width_cv_depth"] == 0.85
+    b = NumpyBackend(sample_rate=SR, block_size=512)
+    b.compile(patch)
+    cap = {"out": [], "out_l": [], "out_r": [], "in": []}
+    orig = b._render_freeze
+
+    def spy(module, frames, buffers, p):
+        src = b._input_buffer(p, buffers, module.id, "in")
+        cap["in"].append(np.zeros(frames, np.float32) if src is None else np.asarray(src).copy())
+        r = orig(module, frames, buffers, p)
+        for k in ("out", "out_l", "out_r"):
+            cap[k].append(np.asarray(r[k]).copy())
+        return r
+
+    b._render_freeze = spy
+    np.random.seed(5)
+    peak = 0.0
+    for _ in range(int(SR * 13 / 512)):
+        out, _devices = b.render_block_multi(512)
+        assert out is not None and np.all(np.isfinite(out))
+        peak = max(peak, float(np.abs(out).max()))
+    assert 0.3 < peak < 0.8
+    L = np.concatenate(cap["out_l"]).astype(np.float64)
+    R = np.concatenate(cap["out_r"]).astype(np.float64)
+    M = np.concatenate(cap["out"]).astype(np.float64)
+    src = np.concatenate(cap["in"]).astype(np.float64)
+    # one edge, one layer, still latched at the end
+    assert len(b._state[fz.id]["layers"]) == 1
+    assert b._state[fz.id]["latched"] is True
+    # the hold never dies and never grows: flat across seconds 3..13
+    held = np.array([_rms(M[i * SR:(i + 1) * SR]) for i in range(3, 13)])
+    assert held.min() > 0.05
+    assert held.max() / held.min() < 1.16
+    # and it is a HOLD, not the input: the source is a tenth of the output
+    assert _rms(src[4 * SR:12 * SR]) < 0.35 * _rms(M[4 * SR:12 * SR])
+    # the breath: one 8.33 s cycle of corr(L, R) between wide and narrow
+    corr = np.array([np.corrcoef(L[i * SR:(i + 1) * SR], R[i * SR:(i + 1) * SR])[0, 1]
+                     for i in range(2, 13)])
+    assert corr.min() < 0.1 and corr.max() > 0.95

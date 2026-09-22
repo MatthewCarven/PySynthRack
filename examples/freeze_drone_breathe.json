@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "next_id": 13,
+  "modules": [
+    { "id": 1, "type": "lfo", "name": "ONE SHOT - a 50 s sine, so it crosses the schmitt once and never comes back", "params": { "waveform": "sine", "rate": 0.02, "depth": 1.0, "bipolar": false, "cv_depth": 1.0, "phase": 0.0, "seed": 0 } },
+    { "id": 2, "type": "schmitt", "name": "the single trigger - one rising edge at 1.60 s", "params": { "high": 0.6, "low": 0.4 } },
+    { "id": 3, "type": "logic", "name": "not_a: the chord plays until the freeze takes it, then stops", "params": {} },
+    { "id": 4, "type": "chord", "name": "maj7 voicing on the root", "params": { "preset": "maj7", "interval_1": 0.0, "interval_2": 4.0, "interval_3": 7.0, "interval_4": 11.0, "enable_1": true, "enable_2": true, "enable_3": true, "enable_4": true, "strum": 0.0, "spread": false, "inversion": 0, "retrig": false } },
+    { "id": 5, "type": "organ", "name": "ORGAN - the drone chord, sounding only for the first 1.6 s",
+      "params": { "bar1": 8, "bar2": 8, "bar3": 6, "bar4": 0, "bar5": 3, "bar6": 0, "bar7": 0, "bar8": 0, "bar9": 0,
+                  "click": 0.1, "perc": "off", "perc_decay": "fast", "perc_level": 0.7, "level": 0.12, "vibrato": "off" } },
+    { "id": 6, "type": "clock", "name": "the melody's pulse - 90 BPM quarters", "params": { "bpm": 90.0, "division": 1.0, "pulse_width": 0.5 } },
+    { "id": 7, "type": "sequencer", "name": "SPARSE MELODY - silent for the first three steps, then a line over the drone",
+      "params": { "steps": 16, "direction": "forward", "seed": 1,
+                  "step1_pitch": 0.0, "step1_on": false, "step2_pitch": 0.0, "step2_on": false,
+                  "step3_pitch": 0.0, "step3_on": false, "step4_pitch": 12.0, "step4_on": true,
+                  "step5_pitch": 0.0, "step5_on": false, "step6_pitch": 16.0, "step6_on": true,
+                  "step7_pitch": 0.0, "step7_on": false, "step8_pitch": 19.0, "step8_on": true,
+                  "step9_pitch": 0.0, "step9_on": false, "step10_pitch": 0.0, "step10_on": false,
+                  "step11_pitch": 23.0, "step11_on": true, "step12_pitch": 0.0, "step12_on": false,
+                  "step13_pitch": 19.0, "step13_on": true, "step14_pitch": 0.0, "step14_on": false,
+                  "step15_pitch": 14.0, "step15_on": true, "step16_pitch": 0.0, "step16_on": false } },
+    { "id": 8, "type": "pluck", "name": "the melody voice", "params": { "decay": 1.6, "damping": 0.45, "color": 0.6, "vel_color": 0.0, "position": 0.25, "level": 0.36 } },
+    { "id": 9, "type": "mixer", "name": "chord + melody into the freeze", "params": { "gain1": 1.0, "gain2": 1.0, "gain3": 1.0, "gain4": 1.0, "master": 1.0 } },
+    { "id": 10, "type": "lfo", "name": "BREATH - 0.12 Hz on width_cv, the stereo field opening and shutting", "params": { "waveform": "sine", "rate": 0.12, "depth": 1.0, "bipolar": false, "cv_depth": 1.0, "phase": 0.0, "seed": 0 } },
+    { "id": 11, "type": "freeze", "name": "FREEZE - 743 ms (32768) latched by ONE edge and held forever (decay 0); width 0.15 + 0.85 x the LFO breathes it",
+      "params": { "size": 32768, "freeze": false, "latch": true, "smear": 0.15, "pitch": 0.0, "pitch_cv_depth": 1.0,
+                  "level": 0.8, "dry": 1.0, "fade": 400.0, "seed": 1, "width": 0.15, "width_cv_depth": 0.85, "decay": 0.0 } },
+    { "id": 12, "type": "stereo_speaker_output", "name": "out", "params": {} }
+  ],
+  "cables": [
+    { "src_module_id": 1,  "src_port": "cv",       "dst_module_id": 2,  "dst_port": "in" },
+    { "src_module_id": 2,  "src_port": "gate",     "dst_module_id": 3,  "dst_port": "a" },
+    { "src_module_id": 2,  "src_port": "gate",     "dst_module_id": 11, "dst_port": "freeze" },
+    { "src_module_id": 3,  "src_port": "not_a",    "dst_module_id": 4,  "dst_port": "gate" },
+    { "src_module_id": 4,  "src_port": "pitch_cv", "dst_module_id": 5,  "dst_port": "pitch_cv" },
+    { "src_module_id": 4,  "src_port": "gate",     "dst_module_id": 5,  "dst_port": "gate" },
+    { "src_module_id": 5,  "src_port": "out",      "dst_module_id": 9,  "dst_port": "in1" },
+    { "src_module_id": 6,  "src_port": "out",      "dst_module_id": 7,  "dst_port": "clock" },
+    { "src_module_id": 7,  "src_port": "cv",       "dst_module_id": 8,  "dst_port": "pitch_cv" },
+    { "src_module_id": 7,  "src_port": "gate",     "dst_module_id": 8,  "dst_port": "trigger" },
+    { "src_module_id": 8,  "src_port": "out",      "dst_module_id": 9,  "dst_port": "in2" },
+    { "src_module_id": 9,  "src_port": "out",      "dst_module_id": 11, "dst_port": "in" },
+    { "src_module_id": 10, "src_port": "cv",       "dst_module_id": 11, "dst_port": "width_cv" },
+    { "src_module_id": 11, "src_port": "out_l",    "dst_module_id": 12, "dst_port": "in_l" },
+    { "src_module_id": 11, "src_port": "out_r",    "dst_module_id": 12, "dst_port": "in_r" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [30, 60], "2": [300, 60], "3": [560, 60], "4": [820, 60], "5": [1080, 60],
+      "6": [30, 420], "7": [300, 420], "8": [620, 420], "9": [1080, 300],
+      "10": [1080, 620], "11": [1400, 300], "12": [1720, 300]
+    }
+  }
+}

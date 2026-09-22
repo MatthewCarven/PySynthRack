@@ -3340,7 +3340,10 @@ class App:
             # quadrature stereo scatter on out_l/out_r (0 = the pair is
             # the mono); ``decay`` the hold's own fade to -60 dB in
             # seconds (0 = forever) -- a drag, not a slider, because
-            # the useful range is 0.5 s to a minute.
+            # the useful range is 0.5 s to a minute. Love pass 2:
+            # ``latch`` makes the freeze gate TOGGLE the hold instead of
+            # holding it while high (a footswitch becomes a switch) and
+            # ``width_cv_depth`` is width units per unit on width_cv.
             if param_name == "size":
                 dpg.add_combo(
                     label=f"{param_name} (fft)", items=[str(n) for n in FREEZE_SIZES],
@@ -3351,6 +3354,12 @@ class App:
             if param_name == "freeze":
                 dpg.add_checkbox(
                     label=f"{param_name} (or gate)", default_value=bool(current),
+                    callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "latch":
+                dpg.add_checkbox(
+                    label=f"{param_name} (gate toggles)", default_value=bool(current),
                     callback=self._on_param_changed, user_data=user_data,
                 )
                 return
@@ -3393,6 +3402,13 @@ class App:
                 dpg.add_slider_float(
                     label=f"{param_name} (stereo, out_l/r)", default_value=float(current),
                     min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "width_cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f width/unit",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
