@@ -1150,8 +1150,23 @@ class App:
             # ``swing`` delays every second pulse by that fraction of the
             # period -- the divider's convention; the slider stops at 0.5
             # (the hard shuffle; 0.33 = triplet) though the backend takes
-            # the divider's 0.75. ``reset`` / ``run`` / ``bpm_cv`` are
-            # jacks, no widget.
+            # the divider's 0.75. ``swing_cv_depth`` is swing units per
+            # CV unit on the ``swing_cv`` jack, the bpm_cv_depth drag's
+            # sibling. ``reset`` / ``run`` / ``bpm_cv`` / ``swing_cv``
+            # are jacks, no widget.
+            # NOTE the order: ``swing_cv_depth`` must be tested BEFORE
+            # ``swing`` would be -- the equality below is exact, so the
+            # two never collide, but keep the specific one first if
+            # either ever becomes a prefix match (the mode-combo
+            # shadowing lesson).
+            if param_name == "swing_cv_depth":
+                dpg.add_drag_float(
+                    label="swing_cv_depth (swing/unit)",
+                    default_value=float(current), speed=0.01,
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
             if param_name == "swing":
                 dpg.add_slider_float(
                     label="swing (0.33 = triplet)", default_value=float(current),

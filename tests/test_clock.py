@@ -52,7 +52,7 @@ class TestClockModel:
         assert c.TYPE == "clock"
         assert c.params == {
             "bpm": 120.0, "division": 4.0, "pulse_width": 0.5, "bpm_cv_depth": 1.0,
-            "swing": 0.0,
+            "swing": 0.0, "swing_cv_depth": 0.5,
         }
 
     def test_ports(self):
@@ -60,6 +60,7 @@ class TestClockModel:
         c = patch.add_module("clock")
         assert [(p.name, p.signal_kind) for p in c.input_ports] == [
             ("reset", "gate"), ("run", "gate"), ("bpm_cv", "cv"),
+            ("swing_cv", "cv"),
         ]
         assert [(p.name, p.signal_kind) for p in c.output_ports] == [("out", "gate")]
 
@@ -81,6 +82,16 @@ class TestClockModel:
             m["params"].pop("swing", None)
         loaded = Patch.from_dict(d)
         assert loaded.modules[c.id].params["swing"] == 0.0
+
+    def test_pre_swing_cv_patch_loads_with_the_default_depth(self):
+        # A patch saved before swing_cv_depth existed gets the default.
+        patch = Patch()
+        c = patch.add_module("clock")
+        d = patch.to_dict()
+        for m in d["modules"]:
+            m["params"].pop("swing_cv_depth", None)
+        loaded = Patch.from_dict(d)
+        assert loaded.modules[c.id].params["swing_cv_depth"] == 0.5
 
 
 class TestClockSignal:
@@ -167,7 +178,7 @@ def _transport(rows, params=None, block=512, total=N, dispatch=False):
     clk = p.add_module("clock", params=params or {})
     keys = {}
     for port in rows:
-        if port == "bpm_cv":
+        if port in ("bpm_cv", "swing_cv"):
             src = p.add_module("lfo")
             keys[port] = (src.id, "cv")
         else:
@@ -534,6 +545,146 @@ class TestSwing:
         assert 30011 in e512 and 30011 in e64
 
 
+# ----- swing_cv (love pass, 2026-09-22) --------------------------------------------
+
+TEN = 861 * 512  # ~10 s, a whole number of 512- AND 64-sample blocks
+
+
+class TestSwingCv:
+    def test_a_constant_cv_is_the_knob_at_the_same_value(self):
+        # swing 0.1 + cv 1.0 x depth 0.2 == the knob at 0.3, bit-exact:
+        # the CV path is the same scalar, arrived at by addition.
+        via = _transport({"swing_cv": np.ones(N, np.float32)},
+                         params={"swing": 0.1, "swing_cv_depth": 0.2})[0]
+        knob = _transport({}, params={"swing": 0.3})[0]
+        assert np.array_equal(via, knob)
+
+    def test_default_depth_is_a_half(self):
+        explicit = _transport({"swing_cv": np.full(N, 0.6, np.float32)},
+                              params={"swing_cv_depth": 0.5})[0]
+        default = _transport({"swing_cv": np.full(N, 0.6, np.float32)})[0]
+        assert np.array_equal(explicit, default)
+        assert np.array_equal(default, _transport({}, params={"swing": 0.3})[0])
+
+    def test_depth_zero_and_an_unpatched_jack_are_the_knob_only_clock(self):
+        knob = _transport({}, params={"swing": 0.3})[0]
+        off = _transport({"swing_cv": np.ones(N, np.float32)},
+                         params={"swing": 0.3, "swing_cv_depth": 0.0})[0]
+        assert np.array_equal(off, knob)
+
+    def test_a_non_finite_mean_reads_as_no_modulation(self):
+        straight = _transport({})[0]
+        y = _transport({"swing_cv": np.full(N, np.nan, np.float32)})[0]
+        assert np.array_equal(y, straight)
+
+    def test_the_sum_is_clamped_to_the_dividers_ceiling_and_to_zero(self):
+        top = _transport({"swing_cv": np.full(N, 10.0, np.float32)},
+                         params={"swing": 0.5})[0]
+        assert np.array_equal(top, _transport({}, params={"swing": 0.75})[0])
+        floor = _transport({"swing_cv": np.full(N, -10.0, np.float32)},
+                           params={"swing": 0.3})[0]
+        assert np.array_equal(floor, _transport({})[0])
+
+    def test_voice_cv_is_averaged(self):
+        # (V, F) on swing_cv: voices at +1 and -1 average to 0, so the
+        # knob stands alone -- the house mono rule.
+        p = Patch()
+        clk = p.add_module("clock", params={"swing": 0.3})
+        midi = p.add_module("midi_input")
+        p.connect(midi.id, "pitch_cv", clk.id, "swing_cv")
+        b = NumpyBackend(sample_rate=SR, block_size=4096)
+        b.compile(p)
+        cv = np.zeros((2, 4096), np.float32)
+        cv[0], cv[1] = 1.0, -1.0
+        out = np.concatenate([
+            b._render_clock(clk, 4096, {(midi.id, "pitch_cv"): cv}, p)
+            for _ in range(4)
+        ])
+        knob = _transport({}, params={"swing": 0.3}, total=4 * 4096,
+                          block=4096)[0]
+        assert np.array_equal(out, knob)
+
+    def test_a_moving_cv_emits_exactly_the_straight_clocks_edges(self):
+        # The pin: a 0.5 Hz LFO on swing_cv over ~10 s must never double
+        # an edge or lose a pulse, at any depth. 80 edges at 8 Hz.
+        t = np.arange(TEN) / SR
+        lfo = np.sin(2 * np.pi * 0.5 * t).astype(np.float32)
+        straight = _transport({}, total=TEN)[0]
+        n_straight = len(_rising(straight))
+        assert n_straight == 80
+        for depth in (0.25, 0.5, 1.0):
+            y = _transport({"swing_cv": lfo},
+                           params={"swing": 0.35, "swing_cv_depth": depth},
+                           total=TEN)[0]
+            assert len(_rising(y)) == n_straight, depth
+        # ... and a unipolar breath from straight to triplet does too.
+        uni = ((1 - np.cos(2 * np.pi * 0.05 * t)) / 2).astype(np.float32)
+        y = _transport({"swing_cv": uni}, params={"swing_cv_depth": 0.33},
+                       total=TEN)[0]
+        assert len(_rising(y)) == n_straight
+
+    def test_the_latch_holds_the_value_for_the_period_in_flight(self):
+        # The rule, measured. The CV steps 0 -> 0.4 at sample 7000, well
+        # inside the FIRST odd period (5512..11025) and after its pulse
+        # has already risen. That pulse must not move, split or vanish:
+        # it keeps the straight clock's 5512/8268 exactly. The change
+        # lands at the next even period start (11025), so the NEXT odd
+        # pulse (period 3, from 16537) is late by round(0.4 x 5512.5) =
+        # 2205 samples -> 18742. The even edges never move at all.
+        cv = np.zeros(N, np.float32)
+        cv[7000:] = 0.4
+        y = _transport({"swing_cv": cv}, params={"swing_cv_depth": 1.0})[0]
+        straight = _transport({})[0]
+        assert _rising(y)[:8].tolist() == [
+            0, 5512, 11024, 18742, 22049, 29767, 33074, 40792,
+        ]
+        assert _falling(y)[:3].tolist() == _falling(straight)[:3].tolist()
+        assert _rising(y)[:8][0::2].tolist() == _rising(straight)[:8][0::2].tolist()
+        assert 18742 - 16537 == round(0.4 * PERIOD)
+
+    def test_even_edges_are_block_exact_and_the_odd_ones_are_a_mean_apart(self):
+        # The honest block-size story for a MOVING block-rate CV: the
+        # even pulses do not depend on the swing at all, so they land on
+        # the straight clock's own samples at 64 and 512 alike; the odd
+        # ones ride a block MEAN, so they sit up to a millisecond apart
+        # between block sizes -- with the same count, always.
+        t = np.arange(TEN) / SR
+        lfo = np.sin(2 * np.pi * 0.5 * t).astype(np.float32)
+        rows = {"swing_cv": lfo}
+        params = {"swing": 0.35}
+        e512 = _rising(_transport(rows, params=params, block=512, total=TEN)[0])
+        e64 = _rising(_transport(rows, params=params, block=64, total=TEN)[0])
+        straight = _rising(_transport({}, total=TEN)[0])
+        assert len(e512) == len(e64) == len(straight)
+        assert np.array_equal(e512[0::2], straight[0::2])
+        assert np.array_equal(e64[0::2], straight[0::2])
+        odd = np.abs(e512[1::2] - e64[1::2])
+        assert odd.max() <= 44 and odd.max() > 0      # ~1 ms, measured
+
+    def test_a_reset_latches_the_current_value(self):
+        # A restart edge is an even period start, so the value in force
+        # from that sample is the block's -- the reset pulse is even and
+        # straight, and the odd pulse after it uses the new swing.
+        cv = np.zeros(N, np.float32)
+        cv[7000:] = 0.4
+        reset = np.zeros(N, np.float32)
+        reset[9000:9050] = 1.0
+        y = _transport({"swing_cv": cv, "reset": reset},
+                       params={"swing_cv_depth": 1.0})[0]
+        e = _rising(y)
+        assert 9000 in e                       # the reset pulse: even, on time
+        # the odd period after the reset starts at 9000 + 5512 and its
+        # pulse is round(0.4 x 5512.5) = 2205 late.
+        assert 9000 + 5512 + 2205 in e
+
+    def test_depth_map_row_is_documented(self):
+        md = (Path(__file__).resolve().parent.parent / "docs" / "MODULES.md").read_text(
+            encoding="utf-8"
+        )
+        assert re.search(r"^\| `clock\.swing_cv` \| `0\.5` \(`swing_cv_depth`\)",
+                         md, re.M)
+
+
 # ----- widget sweep ----------------------------------------------------------------
 
 
@@ -569,9 +720,15 @@ def test_every_param_gets_a_bounded_widget(monkeypatch):
     assert "dbl/unit" in w["bpm_cv_depth"][1]
     assert w["bpm_cv_depth"][1].isascii()
     # swing: a bounded slider to the hard shuffle (0.5), ASCII label.
-    swing = [lb for lb in labels if lb.startswith("swing")]
+    swing = [lb for lb in labels
+             if lb.startswith("swing") and not lb.startswith("swing_cv")]
     assert swing and swing[0].isascii()
     assert w[swing[0]] == ("add_slider_float", "%.2f", 0.5)
+    # swing_cv_depth: its own bounded drag, not the generic fallback.
+    depth = [lb for lb in labels if lb.startswith("swing_cv_depth")]
+    assert depth and depth[0].isascii()
+    assert w[depth[0]] == ("add_drag_float", "%.2f", 1.0)
+    assert "swing/unit" in depth[0]
 
 
 # ----- examples ----------------------------------------------------------------------

@@ -30,6 +30,15 @@ block-mean like every block-rate CV in the rack, exponent clipped to ±6.
 Gates are mono: a `(V, F)` source on `reset` or `run` collapses to
 any-voice-high; a `(V, F)` source on `bpm_cv` is averaged.
 
+`swing_cv` (cv) moves the shuffle: the effective swing is `clamp(swing +
+swing_cv_depth * mean cv, 0, 0.75)`, block-mean in float64 like every
+block-rate CV here, a non-finite mean read as 0. It is LATCHED at the
+start of every EVEN period and held through the odd one that follows —
+the beat and its offbeat share one swing value — so a CV that moves
+while an odd pulse is in flight can never move that pulse's edge, split
+it in two, or make it vanish: a moving CV emits exactly as many pulses
+as the straight clock.
+
 `swing` (2026-09-20) is the shuffle: every SECOND pulse is late by `swing`
 of a period — the [`clock_divider`](#clock_divider)'s convention, the same
 units (a fraction of the period, 0.33 the triplet feel, 0.5 the hard
@@ -71,6 +80,9 @@ class Clock(Module):
             period (0.33 = triplet swing, 0.5 = the hard shuffle; the
             panel stops at 0.5, the backend takes the divider's 0.75).
             The even pulses never move; 0 = straight.
+        swing_cv_depth: Swing units per CV unit on ``swing_cv`` (0.5 =
+            a CV of +1 adds half a period of shuffle). 0 disables the
+            input without unpatching it.
     """
 
     TYPE = "clock"
@@ -81,10 +93,12 @@ class Clock(Module):
         "pulse_width": 0.5,
         "bpm_cv_depth": 1.0,
         "swing": 0.0,
+        "swing_cv_depth": 0.5,
     }
     INPUT_PORTS = [
         Port("reset", "in", "gate"),
         Port("run", "in", "gate"),
         Port("bpm_cv", "in", "cv"),
+        Port("swing_cv", "in", "cv"),
     ]
     OUTPUT_PORTS = [Port("out", "out", "gate")]

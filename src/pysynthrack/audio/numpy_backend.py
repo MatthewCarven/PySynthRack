@@ -4184,16 +4184,37 @@ class NumpyBackend(AudioBackend):
         Held samples (``run`` low) repeat the previous ``frac``, so they
         never read as a wrap and the parity freezes with the phase.
 
+        ``swing_cv`` + ``swing_cv_depth`` (love pass, 2026-09-22): the
+        effective swing is ``clamp(swing + depth * mean cv, 0,
+        _CLOCK_MAX_SWING)``, the mean taken in float64 (a float32 mean
+        of a CONSTANT cv is block-size sensitive at the ulp -- the
+        resonance_cv finding) and a non-finite mean read as 0. The
+        swing is the phase offset the ODD periods are read at, so a
+        value that changed mid-period would move a pulse's rising edge
+        -- forward into a second edge, or past the period's end into no
+        edge at all. So it is LATCHED: the block's value takes effect at
+        the first EVEN period start in the block and is held from there,
+        and the value in force before that start carries in state
+        (``swing_held``). An even period and the odd period after it
+        therefore always share one swing value -- the beat and its
+        offbeat -- and the odd pulse in flight keeps the value its
+        period began with. One rising edge per period, whatever the CV
+        does (pinned: a 0.5 Hz LFO on ``swing_cv`` over 10 s emits
+        exactly the straight clock's edge count). A restart edge is an
+        even period start, so a reset latches the current value too.
+
         Bit-exactness at default is by construction: with no edges the
         block is one segment, ``np.mod(phase0 + inc * arange(1, F + 1),
         1)`` and ``np.mod(phase0 + inc * F, 1)`` -- the pre-love-pass
         code, operation for operation. A ``run`` cable that is high from
         sample 0 is one edge there, and phase 0 from sample 0 IS the fresh
         clock, so that too is bit-exact (both pinned in tests/test_clock.py).
-        At ``swing`` 0 the odd-period branch is never built and the gate
-        is the same ``frac < pw`` -- the parity bookkeeping is one floor
-        per segment on the way to state -- so the recipe's renders are
-        unchanged (pinned).
+        At ``swing`` 0 with ``swing_cv`` unpatched the odd-period branch
+        is never built and the gate is the same ``frac < pw`` -- the
+        parity bookkeeping is one floor per segment on the way to state
+        -- so the recipe's renders are unchanged (pinned); with a
+        non-zero ``swing`` and no cable the latched value is that same
+        constant on every sample, so the comparison is the old scalar's.
         """
         bpm = max(1e-6, float(module.params.get("bpm", 120.0)))
         division = max(1e-6, float(module.params.get("division", 4.0)))
@@ -4206,7 +4227,7 @@ class NumpyBackend(AudioBackend):
         if not np.isfinite(swing):
             swing = 0.0
 
-        reset = run = bpm_cv = None
+        reset = run = bpm_cv = swing_cv = None
         if buffers is not None and patch is not None:
             reset = self._input_buffer(patch, buffers, module.id, "reset")
             run = self._input_buffer(patch, buffers, module.id, "run")
@@ -4214,6 +4235,23 @@ class NumpyBackend(AudioBackend):
             bpm_cv = self._input_buffer(
                 patch, buffers, module.id, "bpm_cv", collapse=False
             )
+            swing_cv = self._input_buffer(
+                patch, buffers, module.id, "swing_cv", collapse=False
+            )
+
+        if swing_cv is not None and swing_cv.size > 0:
+            try:
+                s_depth = float(module.params.get("swing_cv_depth", 0.5))
+            except (TypeError, ValueError):
+                s_depth = 0.5
+            if not np.isfinite(s_depth):
+                s_depth = 0.0
+            # float64 again: a float32 mean of a constant CV moves at the
+            # ulp with the block size, and this one sets an EDGE.
+            shift = s_depth * float(np.mean(np.asarray(swing_cv, dtype=np.float64)))
+            if not np.isfinite(shift):
+                shift = 0.0
+            swing = min(self._CLOCK_MAX_SWING, max(0.0, swing + shift))
 
         if bpm_cv is not None and bpm_cv.size > 0:
             depth = float(module.params.get("bpm_cv_depth", 1.0))
@@ -4232,6 +4270,11 @@ class NumpyBackend(AudioBackend):
         st = self._state.setdefault(module.id, {"phase": 0.0})
         phase0 = float(st.get("phase", 0.0))
         parity0 = int(st.get("parity", 0)) & 1
+        # The swing in force at the block's first sample. A fresh clock
+        # has no history, so it starts already holding this block's
+        # value (nothing to interpolate from, and the very first period
+        # is an even one anyway).
+        held0 = float(st.get("swing_held", swing))
 
         # Restart edges this block: every reset edge, plus every run rise.
         # ``_lfo_reset_edges`` is the generic carried-across-blocks
@@ -4259,16 +4302,19 @@ class NumpyBackend(AudioBackend):
         # that never falls yields the very same ramp as no cable.
         ramp = np.arange(1, frames + 1, dtype=np.float64)
         frac = np.empty(frames, dtype=np.float64)
-        swung = swing > 0.0
+        swung = swing > 0.0 or held0 > 0.0
         if swung:
             odd = np.zeros(frames, dtype=bool)   # sample sits in an odd period
             last = np.zeros(frames, dtype=bool)  # sample is the last of its period
+            # Where an EVEN period begins: the latch points for the
+            # block's swing value.
+            even_start = np.zeros(frames, dtype=bool)
         bounds = [0, *(int(e) for e in edges), frames]
         seg_start = phase0
         parity = parity0
         end_phase = phase0
         end_parity = parity0
-        for a, b in zip(bounds[:-1], bounds[1:]):
+        for seg_i, (a, b) in enumerate(zip(bounds[:-1], bounds[1:])):
             n = b - a
             if running is None:
                 cnt = ramp[:n]
@@ -4296,21 +4342,45 @@ class NumpyBackend(AudioBackend):
                 nxt = np.mod(end_phase + inc, 1.0)
                 last[a:b - 1] = frac[a + 1:b] < frac[a:b - 1]
                 last[b - 1] = nxt < frac[b - 1]
+                # Period starts: a lap the previous sample had not yet
+                # completed. The segment's own first sample starts one
+                # when the lap is already past 0 (the phase wrapped
+                # right at the seam) -- or, in a restart segment, by
+                # decree: a reset IS a fresh even period.
+                starts = np.empty(n, dtype=bool)
+                starts[0] = True if seg_i else bool(lap[0] > 0)
+                if n > 1:
+                    starts[1:] = lap[1:] != lap[:-1]
+                even_start[a:b] = starts & ~odd[a:b]
             # Every segment after the first begins at a restart edge: a
             # fresh clock, phase 0, and the pulse there is an even one.
             seg_start = 0.0
             parity = 0
 
         gate = frac < pw
+        held_end = swing
         if swung:
+            # The latch: this block's swing takes effect at the first
+            # EVEN period start; before it, the value carried in state.
+            # Constant when nothing moves (no cable, or a steady CV), so
+            # the comparison below is the old scalar's, value for value.
+            hit = np.flatnonzero(even_start)
+            lat = np.empty(frames, dtype=np.float64)
+            if hit.size:
+                lat[:hit[0]] = held0
+                lat[hit[0]:] = swing
+            else:
+                lat[:] = held0
+                held_end = held0
             # Odd periods: the same pulse, ``swing`` of a period later,
             # cut one sample before the next even edge (the ceiling).
-            late = (frac >= swing) & (frac < swing + pw) & ~last
+            late = (frac >= lat) & (frac < lat + pw) & ~last
             gate = np.where(odd, late, gate)
         if running is not None:
             gate &= running
         st["phase"] = float(end_phase)
         st["parity"] = int(end_parity)
+        st["swing_held"] = float(held_end)
         return gate.astype(np.float32)
 
     def _render_sequencer(self, module, frames: int, buffers, patch) -> dict:
