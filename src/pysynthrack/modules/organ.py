@@ -83,7 +83,12 @@ no ring, no state, bit-exact with the pre-scanner organ. Every switch
 (off → V, V1 → V3, V → C, anything → off) crossfades gains and sweep
 depth over a ~40 ms integer-counted ramp, so flipping the knob under a
 held chord is click-free; the line is dropped once the fade back to
-dry has finished.
+dry has finished. The **scanner phase does not restart** with it
+(2026-09-22): it is the organ's own free-running module clock, which
+keeps counting at ``off``, so the motor never stops — switching the
+scanner in mid-note joins the sweep in progress instead of jumping
+back to tap 0, and two organs given the same notes render identically
+however differently they were switched on.
 
 Voice-awareness follows the inputs (the ``pluck`` contract): mono
 ``(F,)`` pitch/gate give mono out; ``(V, F)`` give per-voice organs.

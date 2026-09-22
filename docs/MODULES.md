@@ -1560,7 +1560,13 @@ anything → off) crossfades gains and sweep depth over a ~40 ms
 integer-counted ramp, so flipping the knob under a held chord is
 click-free (pinned on a shared block boundary: the largest step around
 a switch is no bigger than the steady signal's own); the line is
-dropped once the fade back to dry completes.
+dropped once the fade back to dry completes. The **sweep phase is not**
+dropped with it (2026-09-22) — it is the organ's own free-running
+module clock, which keeps counting at `off`, so the motor never stops:
+switching the scanner in mid-note joins the sweep in progress rather
+than restarting it at tap 0. Pinned: two organs given the same notes
+and switched to V3 half a scanner period apart render bit-identically
+once their fades finish.
 
 **Ports**: `pitch_cv` (cv, 1 V/oct, C4 = 0 V; unpatched → C4), `gate`
 (gate; unpatched → silence) → `out` (audio). **Params**: `bar1`..`bar9`

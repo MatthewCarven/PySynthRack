@@ -19788,6 +19788,10 @@ class NumpyBackend(AudioBackend):
                     "phases": np.zeros((V, ORGAN_BARS), dtype=np.float64),
                     "phase_n": np.zeros(V, dtype=np.int64),
                     "phase_inc": np.zeros((V, ORGAN_BARS), dtype=np.float64),
+                    # The module clock: samples rendered, free-running
+                    # whatever the vibrato knob says. It is the scanner's
+                    # phase and its ring write index (see below).
+                    "n": 0,
                     "count": np.zeros(V, dtype=np.int64),  # ramp position 0..R
                     "prev_gate": np.zeros(V, dtype=bool),
                     "hits": np.zeros(V, dtype=np.int64),
@@ -19949,13 +19953,19 @@ class NumpyBackend(AudioBackend):
         vib = str(p.get("vibrato", "off"))
         if vib not in ORGAN_VIBRATO:
             vib = "off"
+        # The module clock runs whatever the knob says, so the motor
+        # never stops: it is the scanner's phase AND its ring write
+        # index, and a scanner switched in mid-note picks the sweep up
+        # where it would have been instead of restarting at tap 0.
+        n0 = int(st["n"])
+        st["n"] = n0 + frames
         if vib != "off" or "scan_buf" in st:
-            out = self._organ_scanner(st, out, vib, frames, sr)
+            out = self._organ_scanner(st, out, vib, frames, sr, n0)
 
         out32 = out.astype(np.float32)
         return out32 if voiced else out32[0]
 
-    def _organ_scanner(self, st, out, vib, frames, sr):
+    def _organ_scanner(self, st, out, vib, frames, sr, n0):
         """The Hammond scanner over the finished voice sum ``out`` (V, F).
 
         A modulated fractional delay, the chorus/tape idiom: write the
@@ -19963,11 +19973,19 @@ class NumpyBackend(AudioBackend):
         taps at ``absidx - delay(t)``. There is no feedback, so every
         read lands on a sample already written, the whole read
         vectorises over (V, F), and the render is block-size exact. The
-        scanner phase is an integer sample counter (``scan_n``, also the
-        write index) -- ``phase = (n * f / sr) % 1`` depends only on
-        ``n``, so it is bit-exact across any block split where a float
-        phase accumulator would not be. One counter for all voices: one
-        scanner per console.
+        scanner phase is an integer sample counter (``n0``, the caller's
+        module clock, which is also the write index) -- ``phase = (n * f
+        / sr) % 1`` depends only on ``n``, so it is bit-exact across any
+        block split where a float phase accumulator would not be. One
+        counter for all voices: one scanner per console.
+
+        That counter belongs to the CALLER and free-runs at ``off`` as
+        well, so the sweep survives off -> on: the motor does not stop
+        turning when the knob is down, and switching the scanner in
+        under a held chord joins the sweep in progress rather than
+        starting it from tap 0 (2026-09-22). Two organs given the same
+        notes and switched on at different moments therefore render
+        identically once the fade is done.
 
         ``delay = A * (1 + s) + margin`` -- the line starts at (almost)
         zero delay for every depth, the way the real pickup starts at
@@ -20022,7 +20040,6 @@ class NumpyBackend(AudioBackend):
                 [1.0, 0.0, target[2] if target is not None else 0.0]
             )
             st["scan_buf"] = buf
-            st["scan_n"] = 0
             st["scan_cur"] = rest.copy()
             st["scan_from"] = rest.copy()
             st["scan_to"] = rest.copy()
@@ -20050,8 +20067,7 @@ class NumpyBackend(AudioBackend):
         dry_g, wet_g, a_t = vals
 
         L = buf.shape[1]
-        n0 = int(st["scan_n"])
-        absidx = n0 + np.arange(frames, dtype=np.int64)
+        absidx = int(n0) + np.arange(frames, dtype=np.int64)
         ph = (absidx * (self._ORGAN_SCAN_HZ / sr)) % 1.0
         sweep = np.arcsin(rnd * np.sin(2.0 * np.pi * ph)) / np.arcsin(rnd)
         delay = a_t * (1.0 + sweep) + margin
@@ -20062,11 +20078,10 @@ class NumpyBackend(AudioBackend):
         i0 = np.floor(rp).astype(np.int64)
         frac = rp - i0
         wet = buf[:, i0 % L] * (1.0 - frac) + buf[:, (i0 + 1) % L] * frac
-        st["scan_n"] = n0 + frames
 
         res = dry_g * out + wet_g * wet
         if vib == "off" and st["scan_count"] >= fade:
-            for key in ("scan_buf", "scan_n", "scan_cur", "scan_from",
+            for key in ("scan_buf", "scan_cur", "scan_from",
                         "scan_to", "scan_count"):
                 st.pop(key, None)
         return res

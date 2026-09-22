@@ -25,9 +25,18 @@ V3's pitch deviation is MEASURED via the Hilbert instantaneous frequency
 at ~6.87 Hz and ~±41 cents, V1 < V2 < V3; C is exactly the average of
 the V render and the dry (to float32 output rounding); a (2, F) row
 equals its mono render (one shared scanner phase); the scanner alone is
-bit-exact 64 vs 512 with switches mid-stream, and so is the whole organ
-over the span its own phase accumulator stays exact; every switch on a
-shared boundary is click-free; the fade back to dry drops the state.
+bit-exact 64 vs 512 with switches mid-stream, and so is the whole organ;
+every switch on a shared boundary is click-free; the fade back to dry
+drops the state.
+
+The sweep (2026-09-22 love pass): the pickup traces a rounded triangle,
+so the pitch deviation is flat-topped — crest factor 1.12 and a third
+harmonic at 0.287 where the sine it replaced gave 1.44 and 0.000, A/B'd
+against the same renderer with the shape turned back down to a sine,
+and the cents held at ±41. The scanner phase is the organ's own
+free-running module clock and does NOT restart at off → on: two organs
+switched to V3 half a scanner period apart render bit-identically once
+their fades finish.
 """
 from __future__ import annotations
 
@@ -691,8 +700,11 @@ def test_scanner_alone_is_block_size_independent_bit_exact():
             vib = "v1" if s < 8192 else ("c3" if s < 24576 else "off")
             n = min(block, F - s)
             if vib != "off" or "scan_buf" in st:
+                # ``s`` IS the caller's free-running module clock.
                 outs.append(
-                    b._organ_scanner(st, x[:, s : s + n].copy(), vib, n, float(SR))
+                    b._organ_scanner(
+                        st, x[:, s : s + n].copy(), vib, n, float(SR), s
+                    )
                 )
             else:
                 outs.append(x[:, s : s + n])
@@ -755,6 +767,38 @@ def test_switches_on_a_shared_boundary_are_click_free(start, then):
     steady = np.abs(np.diff(_chunked(ref, gate, B).astype(np.float64)[sr:])).max()
     around = np.abs(np.diff(y))[S - 10 : S + int(0.06 * sr)].max()
     assert around <= 1.03 * steady, (around, steady)
+
+
+def test_scanner_phase_survives_off_to_on():
+    """(2026-09-22) The motor does not stop when the knob is down. The
+    scanner's phase is the organ's own free-running module clock, so an
+    organ switched to V3 at 1.00 s and one switched at 1.37 s — moments
+    HALF a scanner period apart, which is the worst case for a sweep
+    that restarts — render BIT-IDENTICALLY once both fades have
+    finished and both rings have filled. The always-on organ is the
+    third witness: the sweep really is the same one, not two matching
+    restarts."""
+    sr = 44100
+    B = 512
+    F = 5 * sr
+    gate = np.ones(F, dtype=np.float32)
+    s1, s2 = 86 * B, 118 * B  # 0.998 s and 1.370 s, both block starts
+    period = sr / SCAN_HZ  # ~6422 samples
+    assert 0.3 < ((s2 - s1) % period) / period < 0.7  # genuinely antiphase
+
+    def run(schedule, start="off"):
+        step = _driver(_lone8({"vibrato": start}), block=B, sr=sr)
+        return _chunked(step, gate, B, schedule=schedule)
+
+    late = run(((s1, {"vibrato": "v3"}),))
+    later = run(((s2, {"vibrato": "v3"}),))
+    always = run((), start="v3")
+
+    at = 3 * sr  # well past both fades and the ring span
+    assert np.array_equal(late[at:], later[at:])
+    assert np.array_equal(late[at:], always[at:])
+    # ...and it is a real sweep being matched, not silence.
+    assert np.abs(late[at:]).max() > 0.1
 
 
 def test_fade_back_to_dry_drops_the_line_and_leaves_the_dry_render():
