@@ -610,6 +610,143 @@ def test_divider_is_block_size_independent():
         assert np.array_equal(big[k], small[k]), k
 
 
+# -- the 2026-09-22 love pass: steady gate lengths on a swung clock ------------------
+
+
+def _swung_pulses(n_edges, long_gap, short_gap, width=4):
+    """A clock train whose intervals alternate long/short — what a
+    swung ``clock`` hands the divider (even pulse, late odd pulse)."""
+    starts, t = [], 0
+    for k in range(n_edges):
+        starts.append(t)
+        t += long_gap if k % 2 == 0 else short_gap
+    out = np.zeros(t, dtype=np.float32)
+    for s in starts:
+        out[s:s + width] = 1.0
+    return out, starts
+
+
+def _run_row(clock, params, block=64):
+    step = _driver_cv("clock_divider", params, jacks=("clock",), block=block)
+    outs = {k: [] for k in ("div2", "div4", "div8", "divn", "mult")}
+    for i in range(0, len(clock), block):
+        res = step(clock=clock[i:i + block])
+        for k in outs:
+            outs[k].append(res[k])
+    return {k: np.concatenate(v) for k, v in outs.items()}
+
+
+def _lengths(y):
+    g = np.asarray(y) > 0.5
+    prev = np.concatenate([[False], g[:-1]])
+    nxt = np.concatenate([g[1:], [False]])
+    r = np.flatnonzero(g & ~prev)
+    f = np.flatnonzero(g & ~nxt)
+    return r.tolist(), [int(b - a + 1) for a, b in zip(r, f)]
+
+
+def test_gate_lengths_come_off_the_average_period_on_a_swung_clock():
+    """The finding the clock's swing pass documented, now fixed.
+
+    Intervals alternate 26/14 (a 0.3-swung 20-sample period). Before,
+    ``div2``/``div4``/``div8`` always measured the SHORT one (they land
+    on the even pulses) and sat ~30% under their true period, and
+    ``divn`` at an odd ``n`` flapped between the two. Now every length
+    is ``pw x k x mean(last two intervals)`` = ``pw x k x 20``, flat.
+    """
+    clock, starts = _swung_pulses(44, 26, 14)
+    outs = _run_row(clock, {"n": 3, "pw": 0.5})
+    for name, k in (("div2", 2), ("div4", 4), ("div8", 8), ("divn", 3)):
+        rises, lens = _lengths(outs[name])
+        steady = lens[2:22] if len(lens) > 22 else lens[2:]
+        assert steady, name
+        assert max(steady) - min(steady) <= 1, (name, steady)
+        assert steady[0] == round(0.5 * k * 20), (name, steady[0])
+
+
+def test_the_swung_fix_moves_no_rising_edge():
+    """Only the falling edges move: every division still fires on its
+    own input edge, and ``divn``'s swing offset is still measured off
+    the LAST real interval (a position, not a length)."""
+    clock, starts = _swung_pulses(44, 26, 14)
+    outs = _run_row(clock, {"n": 3, "pw": 0.5})
+    for name, k in (("div2", 2), ("div4", 4), ("div8", 8), ("divn", 3)):
+        rises, _ = _lengths(outs[name])
+        assert rises == [starts[i] for i in range(0, 44, k)][:len(rises)], name
+    # and with the divider's OWN swing on, the offset is swing x n x the
+    # LAST real interval -- the pre-love-pass position, unchanged, even
+    # though the length beside it now comes off the average.
+    outs = _run_row(clock, {"n": 2, "swing": 0.5, "pw": 0.2})
+    rises, lens = _lengths(outs["divn"])
+    assert rises[0] == starts[0]                          # mirrors: no interval
+    assert rises[1] == starts[2] + round(0.5 * 2 * 14)    # interval into edge 2
+    assert rises[2] == starts[4]                          # the even one, on time
+    assert lens[1] == round(0.2 * 2 * 20)                 # length off the average
+
+
+def test_a_steady_clock_is_untouched_by_the_average():
+    """mean(I, I) == I exactly, so a steady clock's lengths are the
+    pre-love-pass ones, sample for sample."""
+    outs, gap = _div_run({"n": 3, "pw": 0.25}, 24)
+    for name, k in (("div2", 2), ("div4", 4), ("div8", 8), ("divn", 3)):
+        _r, lens = _lengths(outs[name])
+        assert set(lens[1:]) == {round(0.25 * k * gap)}, (name, lens)
+
+
+def test_a_new_gate_truncates_a_stale_one_so_the_gates_behind_it_survive():
+    """The guard: a gate scheduled while an older one of the same output
+    is still running cuts that one short. The sample where they MEET is
+    already emitted, so the new gate still merges there — but everything
+    the stale gate would have covered after that is freed, and the gates
+    behind it get their own rising edges again.
+
+    Intervals 26/14, ``m`` 2, ``pw`` 0.9: edge 1's second sub-gate (39,
+    12 long) used to run to 50 and swallow BOTH of edge 2's (40 and 47).
+    """
+    clock, starts = _swung_pulses(12, 26, 14)
+    outs = _run_row(clock, {"m": 2, "pw": 0.9})
+    rises, _ = _lengths(outs["mult"])
+    assert 39 in rises                       # the late sub-gate of edge 1
+    assert 40 not in rises                   # meets it: still merged, honestly
+    assert 47 in rises                       # freed by the truncation
+
+
+def test_the_real_clocks_swung_lengths_at_the_default_tempo():
+    """The numbers the docs quote, measured through the real modules:
+    8 Hz (5512.5-sample period) at ``swing`` 0.3, divider ``n`` 3,
+    ``pw`` 0.5 — ``div2`` 5512 (was 3858, the short interval), ``divn``
+    8269 flat (was 10750/5787)."""
+    p = Patch()
+    clk = p.add_module("clock", params={"pulse_width": 0.3, "swing": 0.3})
+    div = p.add_module("clock_divider", params={"n": 3, "pw": 0.5})
+    p.connect(clk.id, "out", div.id, "clock")
+    b = NumpyBackend(sample_rate=44100, block_size=512)
+    b.compile(p)
+    rows = {k: [] for k in ("div2", "div4", "div8", "divn")}
+    for _ in range(int(44100 * 12 / 512)):
+        c = b._render_clock(clk, 512, {}, p)
+        r = b._render_clock_divider(div, 512, {(clk.id, "out"): c}, p)
+        for k in rows:
+            rows[k].append(np.asarray(r[k]).copy())
+    got = {}
+    for k in rows:
+        _r, lens = _lengths(np.concatenate(rows[k]))
+        got[k] = lens[1:21] if len(lens) > 21 else lens[1:]
+    assert set(got["div2"]) == {5512}
+    assert set(got["div4"]) == {11025}
+    assert set(got["div8"]) == {22050}
+    assert set(got["divn"]) == {8269}
+
+
+def test_mult_keeps_the_real_interval():
+    """``mult``'s job is to subdivide the period that ACTUALLY happened,
+    so its sub-gates stay on the real interval -- positions and lengths
+    both (the average would fight its own grid)."""
+    outs, gap = _div_run({"m": 2, "pw": 0.4}, 12)
+    _r, lens = _lengths(outs["mult"])
+    assert set(lens[1:]) == {round(0.4 * gap / 2)}
+
+
 def test_divider_unpatched_is_silent():
     patch = Patch()
     m = patch.add_module("clock_divider")

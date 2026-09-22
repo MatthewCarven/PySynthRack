@@ -47,6 +47,19 @@ and ``pw`` sets each gate's width as a fraction of *that output's*
 period. Until an interval has been measured, gates simply mirror the
 clock's own high time.
 
+**Steady gates on a swung clock (2026-09-22).** A [`clock`](#clock) with
+``swing`` on it hands the divider intervals that alternate long/short,
+and the gate lengths used to follow the *last* one: ``divn`` on an odd
+``n`` flapped 2:1 and ``div2``/``div4``/``div8``, which always land on
+the even pulses and so always measure the SHORT interval, sat ~30% under
+their true period. The lengths now come from the mean of the last TWO
+intervals — the straight period of a swung clock exactly, and the last
+interval of a steady one exactly, so nothing moves on a steady clock.
+Only falling edges move: every rising edge, including ``divn``'s swing
+offset, still comes off the real clock edges and the last real interval.
+``mult`` keeps the real interval — subdividing the period that actually
+happened is its job.
+
 **CV on the counts (2026-09-11):** ``euclidean.fills_cv`` and
 ``burst.count_cv`` move ``fills`` / ``count`` by ``*_cv_depth`` per unit
 (default 8 — 0..1 V sweeps eight), read at the clock / trigger edge and
@@ -225,7 +238,10 @@ class ClockDivider(Module):
             the ``divn`` period, 0..0.75. Default 0 (straight); 0.33 is
             the triplet feel.
         pw: Gate width as a fraction of each output's own period,
-            0.05..0.95. Default 0.5.
+            0.05..0.95. Default 0.5. The period is the MEAN of the last
+            two measured input intervals, so a swung clock's alternating
+            intervals do not flutter the gate lengths (``mult`` keeps
+            the real interval).
 
     Ports:
         clock (in, gate): the clock to divide.

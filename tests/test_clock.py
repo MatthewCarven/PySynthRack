@@ -852,3 +852,98 @@ def test_the_transport_example_plays_two_bars_and_holds_one():
     for k in (0, 1, 3):
         n = np.sum((sixteenths >= k * 2 * SR - 2) & (sixteenths < (k + 1) * 2 * SR - 2))
         assert n == 16, (k, n)
+
+
+def test_the_breathe_example_sweeps_the_swing_and_keeps_the_divided_gates_steady():
+    """``clock_swing_breathe.json``: swing_cv sweeping straight -> triplet
+    -> straight over 20 s, with the divider's gates measured steady.
+
+    Both halves of the 2026-09-22 love pass in one patch: the sweep is
+    (a), the flat gate lengths under it are (b). The old last-interval
+    rule is recomputed from the very same clock edges, so the before/
+    after numbers come from one render.
+    """
+    from pysynthrack.io_patch import load_patch
+
+    path = (Path(__file__).resolve().parent.parent / "examples"
+            / "clock_swing_breathe.json")
+    patch = load_patch(path)
+    assert len(patch.modules) <= 12
+    clk = next(m for m in patch if m.TYPE == "clock")
+    div = next(m for m in patch if m.TYPE == "clock_divider")
+    assert clk.params["swing"] == 0.0            # the jack does all of it
+    assert clk.params["swing_cv_depth"] == 0.33  # 0..1 CV -> straight..triplet
+    b = NumpyBackend(sample_rate=SR, block_size=512)
+    b.compile(patch)
+    clock_out = []
+    rows = {k: [] for k in ("div4", "divn")}
+    orig, orig_div = b._render_clock, b._render_clock_divider
+
+    def spy(module, frames, buffers=None, p=None):
+        r = orig(module, frames, buffers, p)
+        if module.id == clk.id:
+            clock_out.append(np.asarray(r).copy())
+        return r
+
+    def spy_div(module, frames, buffers, p):
+        r = orig_div(module, frames, buffers, p)
+        for k in rows:
+            rows[k].append(np.asarray(r[k]).copy())
+        return r
+
+    b._render_clock, b._render_clock_divider = spy, spy_div
+    np.random.seed(11)  # the drums draw their noise per hit
+    out = []
+    for _ in range(int(SR * 21.0 / 512)):
+        y, _devices = b.render_block_multi(512)
+        assert y is not None and np.all(np.isfinite(y))
+        out.append(np.asarray(y).copy())
+    y = np.concatenate(out, axis=0)
+    assert 0.3 < float(np.abs(y).max()) < 0.8
+
+    # (a) The breath: 100 BPM x 4 = 6.667 Hz, a 6615-sample period.
+    # Straight at 0 s and 20 s (both gaps equal), fully shuffled at 10 s
+    # (0.33 -> gaps of 1.33 and 0.67 periods), and never a lost or
+    # doubled pulse: exactly the straight clock's edge count.
+    clock_row = np.concatenate(clock_out)
+    edges = _rising(clock_row)
+    gaps = np.diff(edges)
+
+    def gaps_at(t):
+        i = min(int(np.searchsorted(edges, t * SR)), len(gaps) - 2)
+        return int(gaps[i]), int(gaps[i + 1])
+
+    for t in (0, 20):
+        lo, hi = sorted(gaps_at(t))
+        assert hi - lo <= 8, (t, lo, hi)            # straight
+    lo, hi = sorted(gaps_at(10))
+    assert abs(lo - round(0.67 * 6615)) < 60 and abs(hi - round(1.33 * 6615)) < 60
+    straight = _transport({}, params={"bpm": 100.0, "division": 4.0,
+                                      "pulse_width": 0.3},
+                          total=len(clock_row), block=512)[0]
+    assert len(edges) == len(_rising(straight))
+
+    # (b) The divided gates. div4 lands on even pulses only, so the kick
+    # is dead straight: constant spacing AND constant gate length. divn
+    # at n=3 rides the shuffle but its length is now steady to a few
+    # milliseconds -- against 148 ms under the old last-interval rule,
+    # recomputed here from these same edges.
+    def rise_len(row):
+        g = np.asarray(row) > 0.5
+        prev = np.concatenate([[False], g[:-1]])
+        nxt = np.concatenate([g[1:], [False]])
+        r = np.flatnonzero(g & ~prev)
+        f = np.flatnonzero(g & ~nxt)
+        return r, [int(q - p + 1) for p, q in zip(r, f)]
+
+    r4, l4 = rise_len(np.concatenate(rows["div4"]))
+    assert np.array_equal(r4, edges[::4][:len(r4)])       # edges, not lengths
+    assert len(set(l4[2:])) == 1                           # dead steady
+    assert len(set(np.diff(r4)[2:].tolist())) == 1
+    rn, ln = rise_len(np.concatenate(rows["divn"]))
+    assert np.array_equal(rn, edges[::3][:len(rn)])
+    spread = max(ln[2:]) - min(ln[2:])
+    assert spread < 0.005 * SR                             # < 5 ms, measured 155
+    iv, pw, n_div = np.diff(edges), float(div.params["pw"]), int(div.params["n"])
+    old = [round(pw * n_div * iv[i - 1]) for i in range(1, len(iv)) if i % n_div == 0]
+    assert max(old) - min(old) > 20 * spread               # 6530 vs 155

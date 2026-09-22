@@ -4456,6 +4456,33 @@ patch: sixteenths in, `div4` to a kick, `divn` at `n` 1 with `swing`
 hats, and `mult` clocking a [`burst`](#burst) for triplet ratchets. See
 `examples/clock_divider_swing.json`.
 
+**Gate lengths come off the average period (2026-09-22).** The lengths
+used to be `pw` × the divisor × the *last* measured interval, and a
+[`clock`](#clock) with `swing` on it hands the divider intervals that
+alternate long/short — so `divn` on an odd `n` flapped between two gate
+lengths (10750 / 5787 samples at 8 Hz with `swing` 0.3, a 2:1 flutter),
+and `div2` / `div4` / `div8`, which always land on the *even* pulses and
+so always measure the **short** interval, sat systematically ~30% under
+their true period (3858 where 5512 was right). The lengths now come from
+the mean of the last **two** measured intervals — exactly the straight
+period of a swung clock, and exactly the last interval of a steady one,
+so a steady clock's render is untouched. Measured on the same 0.3-swung
+8 Hz clock at `pw` 0.5: `div2` 3858 → 5512 (dead steady), `divn` at
+`n` 3 10750/5787 → 8269 with **zero** spread over twenty divisions; on a
+*straight* clock `divn`'s old 2-sample wobble (8270 / 8268, the
+5512.5-sample period rounding alternately) flattens to a constant 8269.
+Only **falling** edges move: every rising edge — the divisions' own, and
+`divn`'s swing offset, which is a *position* and still comes off the
+last real interval — is unchanged bit-exact (pinned across twenty shipped
+examples). `mult` keeps the real interval for both, because its job is to
+subdivide the period that actually happened. Two honest residues: a
+`divn` gate longer than the **short** side of a swung period still merges
+into the next one (17 of 32 gates at `pw` 0.9 with `swing` 0.3, before
+and after — keep `pw` under the swing's short side or use `divn` for
+triggers), and a divided gate on a clock whose swing is *moving* is
+steady only to the pace of the movement (3.5 ms of residual spread in
+`examples/clock_swing_breathe.json`, against 148 ms under the old rule).
+
 **Ports**
 
 | Port | Dir | Kind | Description |
@@ -4473,7 +4500,7 @@ hats, and `mult` clocking a [`burst`](#burst) for triplet ratchets. See
 | `n` | `3` | 1 … 32 | `divn`'s division. |
 | `m` | `2` | 2 … 4 | `mult`'s gates per period. |
 | `swing` | `0.0` | 0 … 0.75 | Delay on every second `divn` gate, as a fraction of its period. |
-| `pw` | `0.5` | 0.05 … 0.95 | Gate width as a fraction of each output's period. |
+| `pw` | `0.5` | 0.05 … 0.95 | Gate width as a fraction of each output's period — the **average** of the last two measured input intervals, so a swung clock's alternating intervals do not flutter the gate lengths. (`mult` keeps the real interval.) |
 
 #### `arpeggiator`
 

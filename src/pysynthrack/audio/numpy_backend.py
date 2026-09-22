@@ -17335,6 +17335,38 @@ class NumpyBackend(AudioBackend):
         ``interval × k / m``; the pending ones are dropped when the next
         real edge arrives early (a tempo change), so multiplication is
         approximate for exactly one period.
+
+        **Gate lengths off the AVERAGE period (2026-09-22).** The
+        divisions' gate lengths used to come from the *last* measured
+        interval, and a swung clock's intervals alternate long/short —
+        so ``divn`` on an odd ``n`` flapped between two lengths (a 2:1
+        flutter at ``swing`` 0.3) and ``div2``/``div4``/``div8``, which
+        always land on the even pulses and so always measure the SHORT
+        interval, sat systematically ~30% under their true period. The
+        lengths now come from ``avg`` — the mean of the last TWO
+        measured intervals, which is exactly the straight period of a
+        swung clock and exactly the last interval of a steady one, so a
+        steady clock's render is untouched. Only the FALLING edges
+        move: every start (the divisions' own edges, and ``divn``'s
+        swing offset, which is a *position*) still comes from the real
+        clock edges and the last real interval. ``mult`` keeps the real
+        interval for both, because its job is to subdivide the period
+        that actually happened.
+
+        One guard falls out of the same pass: scheduling a gate now
+        truncates any earlier gate of the same output to end a sample
+        before it (the clock's own ceiling rule). The sample where the
+        two actually meet cannot be un-written — the loop has already
+        emitted it high — so the new gate itself still merges into the
+        stale one; what the truncation frees is everything the stale
+        gate would have covered AFTER that point, and the gates behind
+        it come back. Measured on a 0.3-swung 8 Hz clock at ``pw`` 0.9,
+        ``mult`` goes from 96 emitted gates to 143 (192 scheduled); at
+        ``pw`` 0.5 it was already 143 and is unchanged. The residue is
+        honest and untouched by this pass: a ``divn`` gate longer than
+        the SHORT side of a swung period still merges into the next one
+        (17 of 32 at ``pw`` 0.9, both before and after) — keep ``pw``
+        under the swing's short side, or use ``divn`` for triggers.
         """
         clock = self._input_buffer(patch, buffers, module.id, "clock")
         reset = self._input_buffer(patch, buffers, module.id, "reset")
@@ -17364,6 +17396,7 @@ class NumpyBackend(AudioBackend):
             {
                 "samples": 0, "prev_clock": False, "prev_reset": False,
                 "count": 0, "last_edge": -1, "interval": 0, "divn_emitted": 0,
+                "interval_prev": 0,
                 "events": {k: [] for k in names},
                 "mirror": {k: False for k in names},
             },
@@ -17374,6 +17407,7 @@ class NumpyBackend(AudioBackend):
         count = int(st["count"])
         last_edge = int(st["last_edge"])
         interval = int(st["interval"])
+        interval_prev = int(st.get("interval_prev", 0))
         divn_emitted = int(st["divn_emitted"])
         events = st["events"]
         mirror = st["mirror"]
@@ -17384,8 +17418,24 @@ class NumpyBackend(AudioBackend):
         outs = {k: [0.0] * frames for k in names}
 
         def pulse(name, start, period):
-            """Schedule a gate of pw x period at `start` (absolute)."""
-            events[name].append([start, max(1, int(round(pw * period)))])
+            """Schedule a gate of pw x period at `start` (absolute).
+
+            Any earlier gate of the same output is truncated to end one
+            sample before this one (and dropped if that leaves nothing),
+            so the new gate always gets its own rising edge instead of
+            merging into a still-running one -- the clock's own "cut a
+            sample before the next edge" ceiling, applied here.
+            """
+            row = events[name]
+            kept = []
+            for ev in row:
+                if ev[0] >= start:
+                    continue           # scheduled at or after us: superseded
+                ev[1] = min(ev[1], start - ev[0] - 1)
+                if ev[1] > 0:
+                    kept.append(ev)
+            kept.append([start, max(1, int(round(pw * period)))])
+            events[name] = kept
 
         for n in range(frames):
             c = c_row[n]
@@ -17399,22 +17449,33 @@ class NumpyBackend(AudioBackend):
             prev_r = r
             if c and not prev_c:
                 if last_edge >= 0:
+                    interval_prev = interval
                     interval = now - last_edge
                 last_edge = now
                 known = interval > 0
+                # The divider's own measured average period: the mean of
+                # the last TWO intervals. On a swung clock the intervals
+                # alternate long/short and this is the straight period
+                # exactly; on a steady one both are the same number and
+                # it IS the last interval, so nothing moves.
+                avg = ((interval + interval_prev) / 2.0 if interval_prev > 0
+                       else float(interval))
                 for name in ("div2", "div4", "div8"):
                     if count % divisors[name] == 0:
                         if known:
-                            pulse(name, now, divisors[name] * interval)
+                            pulse(name, now, divisors[name] * avg)
                         else:
                             mirror[name] = True
                 if count % n_div == 0:
+                    # The swing offset is a POSITION: it stays on the
+                    # last real interval, so no edge moves. The length
+                    # comes from the average.
                     period = n_div * interval
                     late = (divn_emitted % 2 == 1) and swing > 0.0 and known
                     if late:
-                        pulse("divn", now + int(round(swing * period)), period)
+                        pulse("divn", now + int(round(swing * period)), n_div * avg)
                     elif known:
-                        pulse("divn", now, period)
+                        pulse("divn", now, n_div * avg)
                     else:
                         mirror["divn"] = True
                     divn_emitted += 1
@@ -17446,8 +17507,8 @@ class NumpyBackend(AudioBackend):
             events[name] = [ev for ev in events[name] if ev[0] + ev[1] > end]
         st.update(
             samples=end, prev_clock=prev_c, prev_reset=prev_r, count=count,
-            last_edge=last_edge, interval=interval, divn_emitted=divn_emitted,
-            events=events, mirror=mirror,
+            last_edge=last_edge, interval=interval, interval_prev=interval_prev,
+            divn_emitted=divn_emitted, events=events, mirror=mirror,
         )
         return {k: np.array(v, dtype=np.float32) for k, v in outs.items()}
 
