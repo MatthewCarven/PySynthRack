@@ -308,30 +308,45 @@ class _Oversampler4:
 
     ``up`` zero-stuffs (x4 gain restored) and low-passes; ``down``
     low-passes and takes every 4th sample. Filter state is carried per
-    voice across blocks. Because the block length is decimated as
-    ``[..., ::4]`` and 4*F is always divisible by 4, the decimation
-    phase is identical for every block size.
+    voice across blocks as the raw TAIL SAMPLES, prepended to the next
+    block, not as an ``lfilter`` ``zi``: scipy short-circuits ``len(a)
+    == 1`` to ``np.convolve`` plus a separate ``+= zi``, which splits
+    each output's 65-term sum at the block boundary and so associates
+    the additions differently for every block size (~1e-15, measured;
+    enough to flip a float32 tie a couple of times in 4 s once the head
+    bump's IIR carries it along). Prepending the tail gives every output
+    one whole, unsplit window -- identical at any block size, and the
+    same cost. Because the block length is decimated as ``[..., ::4]``
+    and 4*F is always divisible by 4, the decimation phase is identical
+    for every block size too.
     """
 
     def __init__(self, voices: int):
-        self._zi_up = np.zeros((voices, _OS_TAPS - 1))
-        self._zi_dn = np.zeros((voices, _OS_TAPS - 1))
+        self._hist_up = np.zeros((voices, _OS_TAPS - 1))
+        self._hist_dn = np.zeros((voices, _OS_TAPS - 1))
 
     @property
     def voices(self) -> int:
-        return self._zi_up.shape[0]
+        return self._hist_up.shape[0]
+
+    @staticmethod
+    def _fir(x, hist):
+        """One streaming FIR pass: (V, N) in, (V, N) out + the new tail."""
+        t = _OS_TAPS - 1
+        ext = np.concatenate([hist, x], axis=-1)
+        return lfilter(_OS_FIR, [1.0], ext, axis=-1)[:, t:], ext[:, -t:].copy()
 
     def up(self, x):
         """(V, F) base-rate -> (V, 4F) oversampled."""
         v, f = x.shape
         stuffed = np.zeros((v, f * _OS_FACTOR))
         stuffed[:, ::_OS_FACTOR] = x * _OS_FACTOR
-        y, self._zi_up = lfilter(_OS_FIR, [1.0], stuffed, axis=-1, zi=self._zi_up)
+        y, self._hist_up = self._fir(stuffed, self._hist_up)
         return y
 
     def down(self, y):
         """(V, 4F) oversampled -> (V, F) base-rate."""
-        z, self._zi_dn = lfilter(_OS_FIR, [1.0], y, axis=-1, zi=self._zi_dn)
+        z, self._hist_dn = self._fir(y, self._hist_dn)
         return z[:, ::_OS_FACTOR]
 
 
@@ -14418,14 +14433,22 @@ class NumpyBackend(AudioBackend):
         Signal flow ``in -> wow/flutter/drift-modulated fractional delay ->
         saturation -> + hiss -> head-bump low shelf -> mix with the
         latency-matched dry``. The delay line reuses the chorus core (write
-        the whole block, then read fractional taps at ``absidx - delay``);
+        the whole block, then read fractional taps behind the write head);
         with no feedback every read references an already-written sample, so
-        the whole render vectorises and is exactly block-size independent.
-        The wow/flutter sines carry their phase in state; the drift, flutter
-        noise and hiss are each a *single* seeded generator drawn one sample
-        per output sample and streamed through one-pole/biquad filters with
-        carried ``zi`` -- so every stochastic path is block-size independent
-        too. One tape path is modelled: the modulation and hiss are shared
+        the whole render vectorises and is exactly block-size independent:
+        bit for bit at 64, 128, 512 or 1000 over four seconds with every
+        flavour on. That exactness is three deliberate choices, each
+        guarding a place where a partition would otherwise change a
+        rounding -- the read splits the delay into whole samples and a
+        fraction instead of forming ``absidx - delay`` (**a ring index
+        rounds at its own magnitude**), the wow/flutter sines read an
+        absolute sample INDEX rather than a carried float phase, and the
+        oversampler's FIR carries raw tail samples rather than an
+        ``lfilter`` ``zi``. The drift, flutter noise and hiss are each a
+        *single* seeded generator drawn one sample per output sample and
+        streamed through one-pole/biquad filters with carried ``zi`` -- so
+        every stochastic path is block-size independent too, at any
+        partition. One tape path is modelled: the modulation and hiss are shared
         across a polyphonic input's voices (each voice keeps its own delay
         line, oversampler and shelf state, so they never cross-talk), and a
         single voice row is bit-identical to the mono render.
@@ -14521,9 +14544,13 @@ class NumpyBackend(AudioBackend):
             state.clear()
             state["buf"] = np.zeros((v, L), dtype=np.float64)
             state["write_idx"] = 0
-            state["arith_idx"] = 0          # the read's index space (mod L_mod)
-            state["wow_ph"] = 0.0
-            state["flut_ph"] = 0.0
+            # The wow/flutter sines are keyed to an absolute sample count,
+            # not a carried float phase: ``ph + frames * inc`` accumulates
+            # a different rounding for every partition of the same stream,
+            # so a carried phase is block-size dependent by construction.
+            # An integer count is not (and both rates are constants here,
+            # so there is no rate change to keep continuous).
+            state["mod_idx"] = 0
             state["flut_zi"] = np.zeros(1)
             state["drift_zi"] = np.zeros(1)
             state["shelf"] = {}
@@ -14566,15 +14593,25 @@ class NumpyBackend(AudioBackend):
                 stop_env, stop_lag = env_row, lag_row
 
         # --- modulation (shared across voices: one tape path) -------------
+        # Both sines read an absolute sample index, never a carried phase:
+        # ``ph + frames * inc`` rounds once per block, so the same stream
+        # cut into 64s and into 512s accumulates a different phase and the
+        # two renders drift apart by a float64 ulp within a second. The
+        # index is an exact integer, so ``idx * inc`` rounds once, the same
+        # way, at any block size. (Both rates are module constants -- there
+        # is no rate change here that a phase carry would have to keep
+        # continuous, which is why the plain index is enough.)
+        mi = int(state["mod_idx"])
+        nn = mi + n                                        # (F,) exact ints
+        state["mod_idx"] = mi + frames
+
         # wow: slow sine.
         wow_inc = self._TAPE_WOW_HZ / sr
-        wow_lfo = np.sin(2.0 * np.pi * (state["wow_ph"] + n * wow_inc))
-        state["wow_ph"] = float((state["wow_ph"] + frames * wow_inc) % 1.0)
+        wow_lfo = np.sin(2.0 * np.pi * ((nn * wow_inc) % 1.0))
 
         # flutter: fast sine + a little low-passed (band-limited) noise.
         flut_inc = self._TAPE_FLUT_HZ / sr
-        flut_lfo = np.sin(2.0 * np.pi * (state["flut_ph"] + n * flut_inc))
-        state["flut_ph"] = float((state["flut_ph"] + frames * flut_inc) % 1.0)
+        flut_lfo = np.sin(2.0 * np.pi * ((nn * flut_inc) % 1.0))
         fn = state["rng_flut"].standard_normal(frames)
         kf = 1.0 - math.exp(-2.0 * math.pi * self._TAPE_FLUT_LP_HZ / sr)
         fn, state["flut_zi"] = lfilter([kf], [1.0, kf - 1.0], fn, zi=state["flut_zi"])
@@ -14600,15 +14637,6 @@ class NumpyBackend(AudioBackend):
         absidx = wp + np.arange(frames)
         buf[:, absidx % L] = x
         state["write_idx"] = int((wp + frames) % L)
-        # The read's arithmetic runs in the pre-stop ring's index space
-        # (``aidx``, mod ``L_mod``): ``aidx - delay`` rounds at the index's
-        # magnitude, so a longer ring alone would move a blend by an ulp
-        # and flip a float32 rounding at the odd sample. Unpatched the two
-        # spaces coincide and this is the shipped arithmetic verbatim; the
-        # longer ring only changes where ``ri`` lands.
-        wa = int(state["arith_idx"])
-        aidx = wa + np.arange(frames)
-        state["arith_idx"] = int((wa + frames) % L_mod)
         if neutral:
             # Only a patched ``stop`` gets here. Until it has stopped once
             # the head reads the sample it just wrote: the ring records and
@@ -14619,19 +14647,31 @@ class NumpyBackend(AudioBackend):
         else:
             delay = D + m
             np.clip(delay, self._TAPE_MIN_SAMP, float(L_mod - 2), out=delay)
-        rp = aidx - delay                                  # (F,)
-        i0 = np.floor(rp).astype(np.int64)
-        frac = rp - i0
-        back = aidx - i0                                   # whole samples back
+        # THE TRAP: a ring index rounds at its own magnitude. ``absidx -
+        # delay`` looks exact and is not -- the ring is ``max_ms + frames``
+        # long, so it wraps at a different absolute sample for every block
+        # size, the index reaching the subtraction carries a different
+        # magnitude, and the fraction that falls out is a float64 ulp
+        # apart. One ulp there flips a float32 tie at the odd sample.
+        # So never form ``index - delay``: split the delay into WHOLE
+        # SAMPLES and a FRACTION, both functions of the (small) delay
+        # alone. ``back = ceil(delay)`` and ``frac = back - delay`` are
+        # identical at any block size -- and the subtraction is exact
+        # (Sterbenz) for every delay the clip above allows. This is the
+        # pattern the stop's read already used; it is the ordinary read's
+        # now too.
+        back = np.ceil(delay)
+        frac = back - delay                # forward weight, in [0, 1)
+        back = back.astype(np.int64)       # whole samples behind the write
         if stop_lag is not None:
             # The head trails live by the transport's lag; a lag that grows
             # by ``env`` per sample is a read advancing at ``1 - env``, and
             # that is the pitch dive / climb. Never ahead of the write, and
             # the ring was sized for the cap. Applied as whole samples and
-            # a fraction SEPARATELY, for the same reason as ``aidx``: a lag
-            # subtracted from an index would round at the index's magnitude
-            # (the ring index differs per block size), and at a half-sample
-            # lag that flips float32 ties. Measured.
+            # a fraction SEPARATELY, for the same reason as the read above:
+            # a lag subtracted from an index would round at the index's
+            # magnitude, and at a half-sample lag that flips float32 ties.
+            # Measured.
             lag_i = np.floor(stop_lag)
             frac = frac - (stop_lag - lag_i)
             back = back + lag_i.astype(np.int64)

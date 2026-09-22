@@ -2972,17 +2972,20 @@ fractional delay → saturation → + hiss → head-bump low shelf → mix with
 the latency-matched dry`. The delay line reuses the chorus core (write
 the whole block, then read fractional taps behind the write head); with
 no feedback every read references an already-written sample, so the
-render vectorises and is block-size independent — **to a float32 ulp at
-the odd sample** with wow/flutter/drift or `sat` + `bump` engaged (the
-fractional read `absidx − delay` rounds at the ring index's magnitude,
-which differs per block size, and the oversampled saturator into the
-shelf lands a rounding differently: measured, 4 samples in 4 s of noise
-at 64 vs 512; a follow-on), bit for bit otherwise. The
-wow/flutter LFOs carry their phase in state; the drift, flutter noise and
-hiss are each a *single* seeded generator drawn one sample per output
-sample and streamed through one-pole / biquad filters with carried state
-— so every stochastic path is block-size independent too, and a patch
-renders identically every time. One tape path is modelled: the modulation
+render vectorises and is **exactly block-size independent** — bit for
+bit at 64, 128, 512 or 1000, over four seconds with every flavour
+engaged. Getting there meant never subtracting a delay from a ring
+index (**a ring index rounds at its own magnitude**, and the ring is
+`max_ms + frames` long, so it wraps at a different absolute sample for
+every block size: the read splits the delay into whole samples and a
+fraction instead, both functions of the delay alone). The wow/flutter
+LFOs read an absolute sample **index** rather than a phase carried block
+by block (`ph + frames · inc` rounds once per block, so partitions drift
+apart within a second); the drift, flutter noise and hiss are each a
+*single* seeded generator drawn one sample per output sample and
+streamed through one-pole / biquad filters with carried state — so every
+stochastic path is block-size independent too, and a patch renders
+identically every time. One tape path is modelled: the modulation
 and hiss are **shared** across a polyphonic input's voices (each voice
 keeps its own delay line, oversampler and shelf state, so they never
 cross-talk), and a single voice row is bit-identical to the mono render.

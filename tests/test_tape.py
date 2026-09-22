@@ -304,19 +304,95 @@ class TestCharacter:
 
 
 class TestBlockIndependence:
+    _ALL = {"wow": 0.6, "flutter": 0.4, "drift": 0.3, "sat": 0.5,
+            "hiss": -42.0, "bump": 3.0, "mix": 0.6}
+
+    def _render(self, params, x, block):
+        p, s, t, b = _rig(params, block=block)
+        return _run(b, p, s, t, x, block=block)
+
     def test_output_independent_of_block_size(self):
         x = (np.sin(2 * np.pi * 220 * np.arange(20000) / SR) * 0.4).astype(np.float32)
-        params = {"wow": 0.6, "flutter": 0.4, "drift": 0.3, "sat": 0.5,
-                  "hiss": -42.0, "bump": 3.0, "mix": 0.6}
-        pa, sa, ta, ba = _rig(params, block=512)
-        a = _run(ba, pa, sa, ta, x, block=512)
-        pb, sb, tb, bb = _rig(params, block=4096)
-        bb_out = _run(bb, pb, sb, tb, x, block=4096)
-        pc, sc, tc, bc = _rig(params, block=333)
-        c = _run(bc, pc, sc, tc, x, block=333)
-        m = min(len(a), len(bb_out), len(c))
-        assert np.array_equal(a[:m], bb_out[:m])
-        assert np.array_equal(a[:m], c[:m])
+        a = self._render(self._ALL, x, 512)
+        for block in (4096, 333):
+            y = self._render(self._ALL, x, block)
+            m = min(len(a), len(y))
+            assert np.array_equal(a[:m], y[:m]), f"block {block}"
+
+    def test_four_seconds_with_everything_on_is_bit_exact(self):
+        # FOUR SECONDS of noise -- long enough for the ring to wrap
+        # hundreds of times and for a carried float phase to drift --
+        # with every flavour on, at block sizes sharing no alignment.
+        # Bit for bit. Three separate mechanisms had to be fixed to get
+        # here (measured 2026-09-22, against the 512 render):
+        #   * the modulated read formed ``absidx - delay``, and a ring
+        #     index rounds at its OWN magnitude -- the ring is ``max_ms +
+        #     frames`` long, so it wraps at a different absolute sample
+        #     per block size. It now splits the delay into whole samples
+        #     + a fraction, both functions of the delay alone. (This was
+        #     the whole of the drift path's 95 / 90 / 78 differences.)
+        #   * the wow/flutter sines carried a float phase: ``ph + frames
+        #     * inc`` rounds once per block, so partitions drift apart
+        #     within a second. They now read an absolute sample INDEX.
+        #     (54 / 94 / 25 differences on wow alone.)
+        #   * the 4x oversampler's FIR carried an ``lfilter`` ``zi``, and
+        #     scipy short-circuits ``len(a) == 1`` to ``np.convolve`` +
+        #     ``+= zi``, splitting each 65-term sum at the boundary. It
+        #     now carries raw tail samples. (2 / 5 / 4 differences on
+        #     ``sat`` feeding ``bump``.)
+        # The whole chain was 53 / 99 / 26 differing samples at 64 / 128
+        # / 1000, max 6e-8. Now zero.
+        x = (np.random.default_rng(7).standard_normal(4 * SR) * 0.3).astype(np.float32)
+        a = self._render(self._ALL, x, 512)
+        for block in (64, 128, 1000, 4096, 333):
+            y = self._render(self._ALL, x, block)
+            m = min(len(a), len(y))
+            assert np.array_equal(a[:m], y[:m]), f"block {block}"
+
+    @pytest.mark.parametrize("params", [
+        {"wow": 0.6, "mix": 1.0},               # the wow sine's phase
+        {"flutter": 0.4, "mix": 1.0},           # the flutter sine + its noise
+        {"drift": 0.3, "mix": 1.0},             # the ring index alone
+        {"sat": 0.5, "bump": 3.0, "mix": 1.0},  # the oversampler's FIR
+    ])
+    def test_each_flavour_alone_is_bit_exact_over_four_seconds(self, params):
+        # One flavour at a time: each of the three mechanisms above shows
+        # up in a different one, so a regression in any of them fails
+        # here with the cause already named.
+        x = (np.random.default_rng(7).standard_normal(4 * SR) * 0.3).astype(np.float32)
+        a = self._render(params, x, 512)
+        for block in (64, 128, 1000):
+            y = self._render(params, x, block)
+            m = min(len(a), len(y))
+            assert np.array_equal(a[:m], y[:m]), f"block {block}"
+
+    def test_oversampler_fir_is_block_size_exact(self):
+        # The primitive, direct: ``_Oversampler4`` is shared with
+        # distortion and waveshaper, so this pins the FIR's streaming
+        # carry for all three. scipy's ``lfilter`` with ``len(a) == 1``
+        # takes an ``np.convolve`` + ``+= zi`` shortcut that associates
+        # the additions differently per partition (~1e-15); the class
+        # prepends the raw tail instead, which gives every output one
+        # whole, unsplit window.
+        from pysynthrack.audio.numpy_backend import _Oversampler4
+
+        x = np.random.default_rng(11).standard_normal((2, 4 * SR))
+
+        def chain(block):
+            os4 = _Oversampler4(2)
+            out, p = [], 0
+            while p + block <= x.shape[-1]:
+                u = os4.up(x[:, p:p + block] * 0.3)
+                out.append(os4.down(np.tanh(3.0 * u)))
+                p += block
+            return np.concatenate(out, axis=-1)
+
+        ref = chain(512)
+        for block in (64, 128, 1000):
+            y = chain(block)
+            m = min(ref.shape[-1], y.shape[-1])
+            # float64, below the float32 cast: no slack at all.
+            assert np.array_equal(ref[:, :m], y[:, :m]), f"block {block}"
 
 
 # ----- Voice -----------------------------------------------------------------
@@ -603,48 +679,51 @@ class TestStop:
         {"stop_time": 1.0, "start_time": 0.5, "mix": 1.0},
         {"stop_time": 0.7, "start_time": 0.3, "sat": 0.4, "hiss": -45.0, "mix": 0.7},
         {"stop_time": 0.7, "start_time": 0.3, "hiss": -45.0, "bump": 3.0, "mix": 0.7},
+        # These three USED to be exact only to a float32 ulp at the odd
+        # sample, because of the two paths the stop's own read had always
+        # got right and the ordinary read had not -- see
+        # ``test_four_seconds_with_everything_on_is_bit_exact``. They are
+        # exact now, so they belong here.
+        {"stop_time": 1.0, "start_time": 0.5, "wow": 0.4, "mix": 1.0},
+        {"stop_time": 1.0, "start_time": 0.5, "sat": 0.4, "bump": 3.0, "mix": 1.0},
+        {"stop_time": 1.0, "start_time": 0.5, "wow": 0.5, "flutter": 0.35,
+         "drift": 0.3, "sat": 0.45, "hiss": -48.0, "bump": 3.5, "mix": 0.7},
     ])
     def test_block_size_independent_with_edges_mid_stream(self, params):
-        # 64 vs 512 over a shared length, both edges mid-block for both:
-        # the ramps are integer counts from the edges, the lag a running
-        # sum carried by prepending it to each block's cumsum, and the
-        # read applies the lag as whole samples + a fraction separately
-        # (the ring index differs per block size, and ``rp - lag`` would
-        # round at its magnitude). Bit for bit. (sat AND bump together is
-        # the shipped chain's own ulp -- see the next test.)
+        # 64 / 128 / 512 / 1000 over a shared length, both edges mid-block
+        # for all of them: the ramps are integer counts from the edges,
+        # the lag a running sum carried by prepending it to each block's
+        # cumsum, and the read applies the lag as whole samples + a
+        # fraction separately (a ring index rounds at its own magnitude,
+        # and ``rp - lag`` would round at that magnitude). Bit for bit --
+        # the ordinary read now does the same, so the whole chain is.
         n = 4 * SR
         x = _noise(n)
         g = _gate(n, T_ON, T_OFF)
         assert T_ON % 64 and T_ON % 512 and T_OFF % 64 and T_OFF % 512
-        y64 = _stop_run(_stop_rig(params, block=64), x, g, block=64)
-        y512 = _stop_run(_stop_rig(params, block=512), x, g, block=512)
-        m = min(len(y64), len(y512))
-        assert np.array_equal(y64[:m], y512[:m])
+        ref = _stop_run(_stop_rig(params, block=512), x, g, block=512)
+        for block in (64, 128, 1000):
+            y = _stop_run(_stop_rig(params, block=block), x, g, block=block)
+            m = min(len(y), len(ref))
+            assert np.array_equal(ref[:m], y[:m]), f"block {block}"
 
-    @pytest.mark.parametrize("params", [
-        {"wow": 0.4, "mix": 1.0},
-        {"sat": 0.4, "bump": 3.0, "mix": 1.0},
-        {"wow": 0.5, "flutter": 0.35, "drift": 0.3, "sat": 0.45,
-         "hiss": -48.0, "bump": 3.5, "mix": 0.7},
-    ])
-    def test_block_size_with_the_shipped_chain_is_its_own_ulp(self, params):
-        # Two shipped paths (untouched here) are only block-exact to a
-        # float32 ulp at the odd sample: the wow/flutter/drift read
-        # ``absidx - delay`` rounds at the ring index's magnitude, and the
-        # 4x-oversampled sat feeding the bump shelf lands a rounding
-        # differently -- measured with the gate UNPATCHED too (4 samples
-        # in 4 s of noise). The stop adds nothing to that: its rows are
-        # exact, and a full cycle agrees to an ulp at under 0.1% of samples.
-        params = dict(params, stop_time=1.0, start_time=0.5)
-        n = 4 * SR
+    def test_three_stop_cycles_stay_bit_exact_across_block_sizes(self):
+        # The lag only resets at a halt, so repeated cycles are where a
+        # per-block rounding would compound. Six seconds, three cycles,
+        # every flavour on.
+        n = 6 * SR
         x = _noise(n)
-        g = _gate(n, T_ON, T_OFF)
-        y64 = _stop_run(_stop_rig(params, block=64), x, g, block=64)
-        y512 = _stop_run(_stop_rig(params, block=512), x, g, block=512)
-        m = min(len(y64), len(y512))
-        d = np.abs(y64[:m].astype(np.float64) - y512[:m])
-        assert float(d.max()) <= 2.0 ** -22
-        assert int(np.count_nonzero(d)) < m // 1000
+        g = np.zeros(n, np.float32)
+        for k in range(3):
+            g[int((0.6 + 1.8 * k) * SR) + 17:int((1.4 + 1.8 * k) * SR) + 53] = 1.0
+        params = {"wow": 0.5, "flutter": 0.4, "drift": 0.3, "sat": 0.45,
+                  "hiss": -48.0, "bump": 3.5, "mix": 0.7,
+                  "stop_time": 1.0, "start_time": 0.5}
+        ref = _stop_run(_stop_rig(params, block=512), x, g, block=512)
+        for block in (64, 128, 1000):
+            y = _stop_run(_stop_rig(params, block=block), x, g, block=block)
+            m = min(len(y), len(ref))
+            assert np.array_equal(ref[:m], y[:m]), f"block {block}"
 
     def test_voice_gate_collapses_to_any_voice_high_and_rings_are_per_voice(self):
         # A (V, F) gate goes through the house sum: one voice high is the
