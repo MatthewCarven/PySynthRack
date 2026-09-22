@@ -10684,7 +10684,16 @@ class NumpyBackend(AudioBackend):
         are panned across the stereo field so the two channels decorrelate
         (width). There is no feedback -- a fed-back chorus is a flanger --
         so no read this block depends on a sample written this block, the
-        whole render vectorizes, and it is exactly block-size independent.
+        whole render vectorizes, and it is exactly block-size independent:
+        bit for bit at 64, 128, 512 or 1000 over four seconds. That needs
+        two deliberate choices, each guarding a place where a partition
+        would otherwise change a rounding -- the read splits the delay
+        into whole samples and a fraction instead of forming ``absidx -
+        delay`` (**a ring index rounds at its own magnitude**), and the
+        sweep counts samples since the last rate change rather than
+        carrying a float phase (re-anchoring on a change, so a rate move
+        stays continuous). ``rate_cv`` is a per-BLOCK mean by design, so
+        it is the one input that does depend on the block size.
         A polyphonic input is summed to mono first.
         """
         src = self._input_buffer(patch, buffers, module.id, "in")
@@ -10718,11 +10727,16 @@ class NumpyBackend(AudioBackend):
             state.clear()
             state["buf"] = np.zeros(L, dtype=np.float64)
             state["write_idx"] = 0
+            # The LFO's phase is an ANCHOR plus an integer sample count
+            # since the last rate change, not a float carried block by
+            # block (see below). ``inc`` starts impossible so the first
+            # block anchors.
             state["phase"] = 0.0
+            state["ph_n"] = 0
+            state["inc"] = -1.0
 
         buf = state["buf"]
         wp = int(state["write_idx"])
-        phase0 = float(state["phase"])
 
         if frames == 0:
             e = np.empty(0, dtype=np.float32)
@@ -10745,9 +10759,28 @@ class NumpyBackend(AudioBackend):
         inc = rate / sr
         n = np.arange(frames, dtype=np.float64)
         offs = np.arange(voices, dtype=np.float64) / voices           # (V,)
-        ph = (phase0 + offs[:, None] + n[None, :] * inc) % 1.0         # (V, F)
+        # The sweep is keyed to an integer sample COUNT since the last rate
+        # change, never to a phase carried block by block: ``ph + frames *
+        # inc`` rounds once per block, so the same stream cut into 64s and
+        # into 512s accumulates a different phase and the two renders drift
+        # apart within a second -- and one ulp on the delay flips a float32
+        # tie at the odd sample. ``k * inc`` from an exact integer rounds
+        # once, the same way, at every block size. A rate change (the
+        # ``rate`` knob, or ``rate_cv``) re-anchors instead: the phase
+        # reached so far is frozen into the anchor and the count restarts,
+        # so the sweep stays continuous -- a jump would click -- and each
+        # constant-rate run is exact. (With ``rate_cv`` patched the rate is
+        # a per-BLOCK mean by design, so it re-anchors every block and the
+        # block-size independence below goes with it.)
+        if inc != state["inc"]:
+            state["phase"] = float(
+                (state["phase"] + state["ph_n"] * state["inc"]) % 1.0)
+            state["ph_n"] = 0
+            state["inc"] = inc
+        phase0 = float(state["phase"])
+        k = state["ph_n"] + n                                          # (F,)
+        ph = (phase0 + offs[:, None] + k[None, :] * inc) % 1.0         # (V, F)
         lfo = np.sin(2.0 * np.pi * ph)                                # (V, F)
-        new_phase = (phase0 + frames * inc) % 1.0
 
         delay = base_samp[:, None] + sweep_samp * lfo                 # (V, F)
         np.clip(delay, 2.0, float(L - 2), out=delay)
@@ -10757,9 +10790,16 @@ class NumpyBackend(AudioBackend):
         # written -- correct, and identical at any block size.
         absidx = wp + np.arange(frames)
         buf[absidx % L] = x
-        rp = absidx[None, :] - delay                                 # (V, F)
-        i0 = np.floor(rp).astype(np.int64)
-        frac = rp - i0
+        # THE TRAP: a ring index rounds at its own magnitude. ``absidx -
+        # delay`` looks exact and is not -- the ring is ``max_ms + frames``
+        # long, so it wraps at a different absolute sample for every block
+        # size, and the fraction that falls out of the subtraction is a
+        # float64 ulp apart. So never form ``index - delay``: split the
+        # delay into WHOLE SAMPLES and a FRACTION, both functions of the
+        # (small) delay alone and so identical at any block size.
+        back = np.ceil(delay)                                        # (V, F)
+        frac = back - delay                # forward weight, in [0, 1)
+        i0 = absidx[None, :] - back.astype(np.int64)                 # (V, F)
         tap = buf[i0 % L] * (1.0 - frac) + buf[(i0 + 1) % L] * frac  # (V, F)
 
         # Equal-power pan spread; per-channel normalisation keeps the wet
@@ -10774,7 +10814,7 @@ class NumpyBackend(AudioBackend):
         wet_r = (gr @ tap) * nr
 
         state["write_idx"] = int((wp + frames) % L)
-        state["phase"] = new_phase
+        state["ph_n"] += frames
 
         dry = (1.0 - mix) * x
         out_l = (dry + mix * wet_l).astype(np.float32)

@@ -241,19 +241,73 @@ class TestDSP:
 
 
 class TestBlockIndependence:
+    def _render(self, params, x, block):
+        p, s, c, b = _rig(params, block=block)
+        return _run(b, p, s, c, x, block=block)
+
     def test_output_independent_of_block_size(self):
         x = (np.sin(2 * np.pi * 220 * np.arange(12000) / SR) * 0.4).astype(np.float32)
         params = {"rate": 2.0, "depth": 0.7, "voices": 3, "mix": 0.5}
-        pa, sa, ca, ba = _rig(params, block=512)
-        la, ra = _run(ba, pa, sa, ca, x, block=512)
-        pb, sb, cb, bb = _rig(params, block=4096)
-        lb, rb = _run(bb, pb, sb, cb, x, block=4096)
-        pc, sc, cc, bc = _rig(params, block=333)
-        lc, rc = _run(bc, pc, sc, cc, x, block=333)
-        m = min(len(la), len(lb), len(lc))
-        assert np.array_equal(la[:m], lb[:m])
-        assert np.array_equal(la[:m], lc[:m])
-        assert np.array_equal(ra[:m], rb[:m])
+        la, ra = self._render(params, x, 512)
+        for block in (4096, 333):
+            lb, rb = self._render(params, x, block)
+            m = min(len(la), len(lb))
+            assert np.array_equal(la[:m], lb[:m]), f"block {block}"
+            assert np.array_equal(ra[:m], rb[:m]), f"block {block}"
+
+    @pytest.mark.parametrize("params", [
+        {"rate": 0.5, "depth": 0.6, "voices": 4, "mix": 0.5},
+        {"rate": 0.8, "depth": 1.0, "voices": 6, "mix": 1.0},
+        {"rate": 0.05, "depth": 0.3, "voices": 1, "mix": 1.0},
+    ])
+    def test_four_seconds_is_bit_exact(self, params):
+        # FOUR SECONDS at four block sizes sharing no alignment -- long
+        # enough for the ring to wrap hundreds of times and for a carried
+        # float phase to drift. Two mechanisms had to be fixed to get here
+        # (measured 2026-09-22, against the 512 render; the lush setting
+        # was 487 / 103 / 55 differing samples at 64 / 128 / 1000, max
+        # 6e-8):
+        #   * the read formed ``absidx - delay``, and a ring index rounds
+        #     at its OWN magnitude -- the ring is ``max_ms + frames``
+        #     long, so it wraps at a different absolute sample per block
+        #     size. It now splits the delay into whole samples + a
+        #     fraction, both functions of the delay alone;
+        #   * the sweep carried a float phase, and ``ph + frames * inc``
+        #     rounds once per block. It now counts samples since the last
+        #     rate change (which re-anchors, so a rate move stays
+        #     continuous).
+        x = (np.random.default_rng(7).standard_normal(4 * SR) * 0.3).astype(np.float32)
+        la, ra = self._render(params, x, 512)
+        for block in (64, 128, 1000, 4096, 333):
+            lb, rb = self._render(params, x, block)
+            m = min(len(la), len(lb))
+            assert np.array_equal(la[:m], lb[:m]), f"block {block}"
+            assert np.array_equal(ra[:m], rb[:m]), f"block {block}"
+
+    def test_a_rate_change_re_anchors_the_sweep_without_a_jump(self):
+        # The sample count is keyed to the CURRENT rate, so a rate move
+        # has to freeze the phase reached so far rather than restart it:
+        # otherwise the sweep jumps and clicks. Change the rate mid-run
+        # and the delay's step across the seam stays in family with the
+        # steps either side of it.
+        x = (np.random.default_rng(3).standard_normal(SR) * 0.3).astype(np.float32)
+        p, s, c, b = _rig({"rate": 4.0, "depth": 1.0, "voices": 1,
+                           "mix": 1.0}, block=F)
+        outs = []
+        for k in range(SR // F):
+            if k == SR // F // 2:
+                c.params["rate"] = 0.25          # a big rate move, mid-run
+            bufs = {(s.id, "out"): x[k * F:(k + 1) * F]}
+            o = b._render_chorus(c, F, bufs, p)
+            outs.append(o["out_l"])
+        y = np.concatenate(outs)
+        seam = (SR // F // 2) * F
+        step = np.abs(np.diff(y.astype(np.float64)))
+        assert step[seam - 1] <= 6.0 * float(np.median(step))
+        # and the phase carried across, rather than restarting at 0; the
+        # count runs from the change, not from the start of the stream
+        assert b._state[c.id]["phase"] != 0.0
+        assert b._state[c.id]["ph_n"] == (SR // F - SR // F // 2) * F
 
 
 # ----- Stereo ----------------------------------------------------------------

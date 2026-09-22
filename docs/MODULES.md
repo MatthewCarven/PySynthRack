@@ -3185,8 +3185,16 @@ feedback — a fed-back chorus is a flanger, which is its own module.
 
 Patch the outputs into [`left_speaker_output`](#left_speaker_output) and
 [`right_speaker_output`](#right_speaker_output) for a wide ensemble. The
-chorus is **block-size independent** (no feedback, so the whole render
-vectorizes and never depends on the audio block size). See
+chorus is **block-size independent** — bit for bit at 64, 128, 512 or
+1000 over four seconds. No feedback, so the whole render vectorizes; the
+read splits the delay into whole samples and a fraction rather than
+forming `absidx − delay` (**a ring index rounds at its own magnitude**,
+and the ring is `max_ms + frames` long, so it wraps at a different
+absolute sample per block size); and the sweep counts samples since the
+last rate change rather than carrying a float phase, re-anchoring on a
+change so the sweep stays continuous. With `rate_cv` patched the rate is
+a per-**block** mean by design, so that patched input is the one thing
+that does depend on the block size. See
 `examples/chorus_lush.json` (a self-playing saw pad widened into a four-
 voice ensemble, with a slow LFO drifting the chorus rate through
 `rate_cv`).
