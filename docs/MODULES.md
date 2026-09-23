@@ -1656,7 +1656,12 @@ module clock, which keeps counting at `off`, so the motor never stops:
 switching the scanner in mid-note joins the sweep in progress rather
 than restarting it at tap 0. Pinned: two organs given the same notes
 and switched to V3 half a scanner period apart render bit-identically
-once their fades finish.
+once their fades finish. The ring is read as whole samples back plus a
+fraction, both functions of the delay alone (2026-09-24), so the read is
+as fine after a day's running as in the first second (it used to round
+at the module clock's magnitude); every setting V1–C3, with clicks,
+percussion and three voices, is pinned bit-exact at 64 / 128 / 512 /
+1000 over four seconds at 48 kHz.
 
 **Ports**: `pitch_cv` (cv, 1 V/oct, C4 = 0 V; unpatched → C4), `gate`
 (gate; unpatched → silence) → `out` (audio). **Params**: `bar1`..`bar9`
@@ -3760,7 +3765,7 @@ rotors coast to a halt wherever they are and the image freezes there.
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | The signal. A `(V, F)` voice source is summed — a cabinet is one physical thing. Unpatched → silence. |
-| `fast` | in | gate | While patched it *is* the speed switch: high = fast, low = slow (the block's majority level), and `speed` is ignored. |
+| `fast` | in | gate | While patched it *is* the speed switch: high = fast, low = slow (the block's majority level, so the switch lands on a block boundary — the one block-quantised thing in the cabinet), and `speed` is ignored. |
 | `out_l` / `out_r` | out | audio | The two mics, `spread` × 90° either side of the front. |
 | `out` | out | audio | `(L + R) / 2`, bit-exact. |
 
@@ -3789,7 +3794,20 @@ axis, so its delay swings ~0.55 ms and at 6.7 Hz that is ±2.3% of pitch,
 ~40 cents; the drum's 14 cm baffle less) and scaled by
 `1 − am·depth·(1 − cos θ)/2` (the horn beams at 0.8, the drum at 0.45).
 No feedback anywhere, so the render vectorizes and is block-size
-independent. Cost ~2.3% of a block.
+independent **bit for bit** (2026-09-24): 64 / 128 / 512 / 1000 — or
+blocks of any length in any order — render the identical sample over
+four seconds with both mics, both bands, the dry blend and the speed
+switching. That takes three things: the ring is read as whole samples
+back (`ceil(delay)`) plus a fraction (`ceil(delay) − delay`), both
+functions of the small delay alone, never `index − delay` (which rounds
+at the index's magnitude, and the index used to wrap at a different
+sample for every block size); each rotor's angle is one running sum of
+its rate, carried sample by sample across blocks and shedding whole
+turns only on a fixed absolute grid, not re-wrapped at every block end;
+and the ring is indexed by an absolute sample clock and only ever grows
+(it used to be cleared, rotors and all, when a block of a new length
+arrived). Before, it was off by a float32 ulp at a handful of samples
+every few seconds. Cost ~2.3% of a block.
 
 **Patching.** `organ → rotary`, `out_l`/`out_r` into the
 [`left`](#left_speaker_output)/[`right`](#right_speaker_output)

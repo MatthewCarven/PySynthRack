@@ -37,6 +37,12 @@ and the cents held at ±41. The scanner phase is the organ's own
 free-running module clock and does NOT restart at off → on: two organs
 switched to V3 half a scanner period apart render bit-identically once
 their fades finish.
+
+The ring read (2026-09-24): whole samples back plus a fraction, both
+functions of the delay alone, so the read is identical at clock 0 and at
+clock 2**36 (the old ``absidx - delay`` was quantised to 2**-16 of a
+sample there); every setting V1..C3 with clicks, percussion and three
+voices is bit-exact at 64 / 128 / 512 / 1000 over 4 s at 48 kHz.
 """
 from __future__ import annotations
 
@@ -743,6 +749,72 @@ def test_organ_with_scanner_block_size_independent_bit_exact():
     ref = run(512)
     for block in (64, 128, 1000):
         assert np.array_equal(run(block), ref), block
+
+
+@pytest.mark.parametrize(
+    "settings", [("v1", "c2", "v3"), ("c1", "v2", "c3")], ids=["v1-c2-v3", "c1-v2-c3"]
+)
+def test_every_scanner_setting_bit_exact_at_48k_over_four_seconds(settings):
+    """Every scanner setting, with key clicks, the percussion register and
+    three voices keyed on and off at arbitrary samples, at a real sample
+    rate: 64 / 128 / 512 / 1000 render the identical sample for four
+    seconds at 48 kHz. Each render walks three settings, switched on the
+    two boundaries every block size shares (64000, 128000), so the six
+    settings and their crossfades are all covered in two renders."""
+    sr = 48000
+    F = 4 * sr
+    gate = np.zeros((3, F), dtype=np.float32)
+    gate[0, 100:F // 3] = 1.0
+    gate[0, F // 3 + 777:] = 1.0
+    gate[1, 20011:] = 1.0
+    gate[2, 5003:F // 2 + 31] = 1.0
+    pitch = np.empty((3, F), dtype=np.float32)
+    pitch[0] = 0.25 + 7.0 / 12.0
+    pitch[1] = 4.0 / 12.0
+    pitch[2] = -5.0 / 12.0
+    first, second, third = settings
+
+    def run(block):
+        step = _driver({"click": 0.5, "perc": "2nd", "perc_level": 0.8,
+                        "vibrato": first}, block=block, sr=sr)
+        return _chunked(step, gate, block, pitch,
+                        schedule=((64000, {"vibrato": second}),
+                                  (128000, {"vibrato": third})))
+
+    ref = run(512)
+    for block in (64, 128, 1000):
+        assert np.array_equal(run(block), ref), (settings, block)
+
+
+def test_scanner_read_is_a_function_of_the_delay_alone():
+    """The ring is read as ``ceil(delay)`` whole samples back plus the
+    fraction ``ceil(delay) - delay`` -- both functions of the small delay
+    alone (2026-09-24). The old read formed ``absidx - delay`` at the
+    MODULE CLOCK's magnitude: the same at any block size, but coarser the
+    longer the organ had run. Hold the sweep still (scanner rate 0, so the
+    delay is a constant non-integer) and the same input through a fresh
+    scanner reads identically at clock 0 and at clock 2**36 (~16 days at
+    48 kHz), where the old fraction was quantised to 2**-16 of a sample."""
+    sr = 48000
+    b = NumpyBackend(sample_rate=sr, block_size=256)
+    rng = np.random.default_rng(9)
+    F = 8192
+    x = (0.4 * np.sin(2.0 * np.pi * 440.0 * np.arange(F) / sr)
+         + 0.1 * rng.standard_normal(F))[None, :]
+
+    def run(n0):
+        st = {}
+        outs = []
+        for s in range(0, F, 256):
+            outs.append(b._organ_scanner(
+                st, x[:, s : s + 256].copy(), "v3", 256, float(sr), n0 + s))
+        return np.concatenate(outs, axis=1)
+
+    with mock.patch.object(NumpyBackend, "_ORGAN_SCAN_HZ", 0.0):
+        early = run(0)
+        late = run(2 ** 36)
+    assert np.array_equal(early, late)
+    assert not np.allclose(early[:, 4096:], x[:, 4096:])  # the wet is in
 
 
 @pytest.mark.parametrize(

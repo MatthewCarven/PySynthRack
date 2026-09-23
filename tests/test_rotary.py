@@ -22,7 +22,12 @@ Coverage:
   - Balance +1 / -1 leaves only the horn / drum band; mix 0 is the
     delay-matched dry (== input shifted by the centre delay).
   - Stereo: L != R at spread 0.7; out == (L + R) / 2 bit-exact.
-  - Block-size independence (64 vs 512, allclose) and voice inputs sum.
+  - Block-size exactness (2026-09-24): 64 / 128 / 512 / 1000 render the
+    identical sample over four seconds at 48 kHz -- slow, fast, the fast
+    jack toggling, fast -> stop -> slow -- and so does an irregular
+    partition (1..4500-sample blocks, the ring growing mid-run). The old
+    pin was 2 s of 64 vs 512 under allclose; the drift it missed was a
+    float32 ulp at a handful of samples. Voice inputs sum.
   - Example organ_leslie.json loads, compiles, renders stereo, and
     switches speed off its clock.
 """
@@ -353,18 +358,107 @@ class TestBands:
 # ----- Shape and blocks ------------------------------------------------------
 
 
+LCM = 64000  # lcm(64, 128, 512, 1000): the switch points every block size shares
+EVERYTHING = {"depth": 1.0, "spread": 0.7, "balance": 0.2, "mix": 0.6, "ramp": 0.5}
+
+
+def _busy(secs=4.0):
+    """Two tones (one per band) plus noise: every tap interpolates."""
+    rng = np.random.default_rng(11)
+    x = _tone(1000.0, secs, 0.3) + _tone(150.0, secs, 0.3)
+    return (x + 0.1 * rng.standard_normal(x.shape[0])).astype(np.float32)
+
+
+def _partition(n, block):
+    """Block start samples: a fixed size, or ``"irregular"`` -- sizes from
+    1 to 4500 (past the ring's 4096 headroom, so it grows mid-run) that
+    still start a block on every multiple of LCM."""
+    if block != "irregular":
+        return list(range(0, n, block))
+    rng = np.random.default_rng(3)
+    starts, s = [], 0
+    while s < n:
+        starts.append(s)
+        step = int(rng.choice([1, 17, 64, 333, 512, 1000, 2048, 4500]))
+        s = min(s + step, (s // LCM + 1) * LCM)
+    return starts
+
+
+def _run_exact(params, x, block, gate=None, schedule=()):
+    """Render through a fresh rotary in any partition; ``schedule`` =
+    ((sample, {param: value}), ...) applied at a block START. Returns the
+    (3, n) stack of out_l, out_r, out and the rotary's state."""
+    patch, osc, rot, clk, b = _rig(params, block if isinstance(block, int) else F)
+    n = x.shape[-1]
+    starts = _partition(n, block)
+    sched = dict(schedule)
+    outs = []
+    for i, s in enumerate(starts):
+        e = starts[i + 1] if i + 1 < len(starts) else n
+        for k, v in sched.get(s, {}).items():
+            rot.params[k] = v
+        bufs = {(osc.id, "out"): x[..., s:e]}
+        if gate is not None:
+            bufs[(clk.id, "out")] = gate[s:e]
+        r = b._render_rotary(rot, e - s, bufs, patch)
+        outs.append(np.stack([r["out_l"], r["out_r"], r["out"]]))
+    return np.concatenate(outs, axis=1), b._state[rot.id]
+
+
+def _exact_case(case):
+    """(params, gate, schedule) for each flavour of the 4 s exactness pin."""
+    n = 4 * SR
+    if case == "gate":
+        # The fast jack toggling -- on shared boundaries, because the gate
+        # is read as the block's MAJORITY level (by design), so its switch
+        # time is block-quantised; the physics is what is compared.
+        gate = ((np.arange(n) >= LCM) & (np.arange(n) < 2 * LCM)).astype(np.float32)
+        return {**EVERYTHING, "speed": "slow"}, gate, ()
+    if case == "switches":
+        return ({**EVERYTHING, "speed": "fast"}, None,
+                ((LCM, {"speed": "stop"}), (2 * LCM, {"speed": "slow"})))
+    return {**EVERYTHING, "speed": case}, None, ()
+
+
 class TestShape:
-    def test_block_size_independent(self):
-        x = _tone(1000.0, 2.0) + _tone(150.0, 2.0)
-        # The switch is a per-block level read, so put it on a boundary
-        # both block sizes share (512 x 94): the physics is what is
-        # being compared, not the block-quantised switch time.
-        gate = (np.arange(x.shape[0]) >= 512 * 94).astype(np.float32)
-        a = _run({"speed": "slow"}, x, gate=gate, block=512)
-        b = _run({"speed": "slow"}, x, gate=gate, block=64)
-        n = min(a[0].shape[0], b[0].shape[0])
-        for i in range(3):
-            assert np.allclose(a[i][:n], b[i][:n], atol=1e-5)
+    @pytest.mark.parametrize("case", ["slow", "fast", "gate", "switches"])
+    def test_bit_exact_at_every_block_size_over_four_seconds(self, case):
+        """Both mics, both bands, the dry blend, the rotors spinning up,
+        braking and switching: 64 / 128 / 512 / 1000 render the identical
+        sample for four seconds at 48 kHz (2026-09-24).
+
+        Before, the read formed ``absidx - delay`` over a ring index that
+        wrapped at a different sample for every block size, and each
+        rotor's angle was ``th0 + cumsum(f)`` re-wrapped mod 2*pi at every
+        block end: measured against 512, slow differed at 1 / 2 / 2
+        samples (64 / 128 / 1000), fast at 1 / 1 / 1, the gate at 0 / 0 /
+        1, the switches at 0 / 1 / 2 -- a float32 ulp or less, a handful
+        of samples in four seconds, which is why the old 2 s ``allclose``
+        pin never saw it. Four seconds is part of the assertion."""
+        x = _busy()
+        params, gate, sched = _exact_case(case)
+        ref, _ = _run_exact(params, x, 512, gate, sched)
+        for block in (64, 128, 1000):
+            got, _ = _run_exact(params, x, block, gate, sched)
+            assert np.array_equal(got, ref), (case, block)
+
+    def test_irregular_blocks_and_a_growing_ring_are_bit_exact(self):
+        """Blocks of 1 to 4500 samples in no pattern render what 512s do.
+        The ring used to be ``hist + frames`` long and was CLEARED --
+        history, rotor rates and angles -- whenever a block of a new length
+        arrived; it is now sized for 4096 up front, indexed by an absolute
+        clock, and grows keeping its history. The rotor sums stay small:
+        whole turns come off on an absolute 2**16-sample grid."""
+        x = _busy()
+        params, gate, _ = _exact_case("gate")
+        ref, _ = _run_exact(params, x, 512, gate)
+        got, st = _run_exact(params, x, "irregular", gate)
+        assert np.array_equal(got, ref)
+        assert st["L"] > st["hist"] + 4096           # it grew, mid-run
+        assert st["n"] == x.shape[0]
+        wrap_max = SR + NumpyBackend._ROT_WRAP * 12.0  # a turn + a grid of the top rate
+        for rotor in ("horn", "drum"):
+            assert 0.0 <= st[rotor + "_acc"] < wrap_max
 
     def test_voice_input_is_summed(self):
         x = _tone(1000.0, 0.5)

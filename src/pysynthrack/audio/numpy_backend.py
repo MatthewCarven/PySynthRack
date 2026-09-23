@@ -10971,6 +10971,8 @@ class NumpyBackend(AudioBackend):
     _ROT_HORN_UP, _ROT_HORN_DOWN = 1.0, 1.5
     _ROT_DRUM_UP, _ROT_DRUM_DOWN = 4.5, 6.0
     _ROT_BASE_MS = 2.0              # centre delay above the Doppler swing
+    _ROT_MIN_BLOCK = 4096           # ring headroom: a short block never resizes it
+    _ROT_WRAP = 1 << 16             # rotor sums lose whole turns every 2**16 samples
 
     def _render_rotary(self, module, frames: int, buffers, patch) -> dict:
         """Leslie rotary cabinet: mono in -> out_l / out_r (+ mono out).
@@ -10995,11 +10997,33 @@ class NumpyBackend(AudioBackend):
         ~40 cents, which is what a 122 does.
 
         No feedback anywhere, so every read this block lands on a sample
-        already written and the render is exactly block-size independent
-        (up to the angle wrap's rounding). The dry side of ``mix`` is the
-        raw input delayed by the rotors' centre delay so a blend
-        thickens instead of combing. A ``(V, F)`` input is summed -- a
-        cabinet is one physical thing.
+        already written, and the render is block-size independent BIT
+        FOR BIT: 64 / 128 / 512 / 1000, or any irregular partition, over
+        four seconds with both mics, every band and the speed switching
+        (2026-09-24; it used to be exact only "up to the angle wrap's
+        rounding", which was a float32 ulp at a handful of samples per
+        four seconds). Three choices hold that:
+
+        * the ring is read as whole samples back plus a fraction
+          (``back = ceil(delay)``, ``frac = back - delay``), functions of
+          the small delay alone -- never ``absidx - delay``, which rounds
+          at the index's magnitude, and the index wrapped at a different
+          sample for every block size (the tape's 2026-09-22 fix);
+        * each rotor's angle is ONE sequential running sum of its rate
+          carried across blocks, with whole turns taken off only at
+          absolute multiples of ``_ROT_WRAP`` -- not a per-block
+          ``th0 + cumsum(f)`` re-wrapped at every block end;
+        * the ring is indexed by an absolute sample clock and only ever
+          grows (``_rotary_grow`` keeps its history), where it used to
+          be ``hist + frames`` long and was CLEARED -- rotors and all --
+          whenever a block of a new length arrived.
+
+        The one block-quantised thing left is by design: the ``fast``
+        gate is read as the block's majority level, so its switch lands
+        on a block boundary. The dry side of ``mix`` is the raw input
+        delayed by the rotors' centre delay so a blend thickens instead
+        of combing. A ``(V, F)`` input is summed -- a cabinet is one
+        physical thing.
         """
         from ..modules.rotary import ROTARY_SPEEDS
 
@@ -11039,24 +11063,40 @@ class NumpyBackend(AudioBackend):
         # Centre delay: an INTEGER number of samples (>= 2 ms + the horn's
         # full swing), so the delay-matched dry tap is an exact read.
         base = float(int(np.ceil(self._ROT_BASE_MS * 1e-3 * sr + horn_swing)))
-        L = int(base + horn_swing) + frames + 8
+        # How far back a read can reach: the centre delay, the full swing
+        # and the interpolator's second tap, with a margin.
+        hist = int(base + horn_swing) + 8
 
         state = self._state.setdefault(module.id, {})
-        if "L" not in state or state["L"] != L:
+        if state.get("hist") != hist:
             state.clear()
+            state["hist"] = hist
+            # Sized for a generous block up front, so a short block never
+            # reallocates -- the ring used to be ``hist + frames`` long and
+            # CLEARED (rotors, history and all) whenever a block of a new
+            # length arrived. It only ever grows, and keeps its history
+            # when it does (``_rotary_grow``).
+            L = hist + max(frames, self._ROT_MIN_BLOCK)
             state["L"] = L
             state["horn_buf"] = np.zeros(L, dtype=np.float64)
             state["drum_buf"] = np.zeros(L, dtype=np.float64)
             state["dry_buf"] = np.zeros(L, dtype=np.float64)
-            state["wp"] = 0
-            state["horn_th"] = 0.0
-            state["drum_th"] = 0.0
+            # Absolute samples written: the ring's clock. Slots are
+            # ``n % L``; reads are integer offsets back from it.
+            state["n"] = 0
+            # Each rotor's angle is a running sum of its rate in Hz x
+            # samples: ``th = 2*pi*acc/sr`` (see ``_spin``).
+            state["horn_acc"] = 0.0
+            state["drum_acc"] = 0.0
             state["horn_f"] = 0.0
             state["drum_f"] = 0.0
             state["xo_zi"] = None
         if frames == 0:
             e = np.empty(0, dtype=np.float32)
             return {"out_l": e, "out_r": e, "out": e}
+        if state["L"] < hist + frames:
+            self._rotary_grow(state, hist + frames)
+        L = int(state["L"])
 
         x = src.astype(np.float64)
 
@@ -11082,35 +11122,59 @@ class NumpyBackend(AudioBackend):
         else:
             horn_t = drum_t = 0.0
 
-        def _spin(f0, th0, target, t_up, t_down, sign):
+        n0 = int(state["n"])
+        wrap = self._ROT_WRAP
+
+        def _spin(rotor, target, t_up, t_down, sign):
+            f0 = float(state[rotor + "_f"])
+            # Re-read at every block start, and that is still exact: the
+            # one-pole's step ``k * (target - y)`` rounds away once it is
+            # under half an ulp of ``y``, so the rate stalls ~ulp/(2k)
+            # SHORT of its target and never reaches or crosses it
+            # (measured: 300 random rates / targets / ramps / sample
+            # rates, 40 time constants each, none did) -- the comparison
+            # gives the same answer at every sample of a glide.
             tau = (t_up if target > f0 else t_down) * ramp
             k = 1.0 - float(np.exp(-1.0 / (tau * sr)))
             # y[n] = y[n-1] + k*(target - y[n-1])  ==  one-pole toward target
             f, _zf = lfilter([k], [1.0, -(1.0 - k)], np.full(frames, target), zi=[(1.0 - k) * f0])
-            th = th0 + sign * 2.0 * np.pi * np.cumsum(f) / sr
-            return f, th
+            # The angle is a sequential running sum of the rate carried
+            # across blocks -- ``cumsum([carry, f])`` adds sample by
+            # sample, the same additions at any partition -- never a
+            # per-block ``th0 + cumsum(f)`` re-wrapped at the block end,
+            # which rounds differently for every block size. Whole turns
+            # (``sr`` Hz x samples) come off only at absolute multiples
+            # of ``_ROT_WRAP``, where the subtraction is exact
+            # (Sterbenz), so the sum stays small at the same samples
+            # whatever the blocking.
+            acc = float(state[rotor + "_acc"])
+            tot = np.empty(frames, dtype=np.float64)
+            s0 = 0
+            w = (-n0) % wrap
+            while True:
+                e = min(w, frames)
+                if e > s0:
+                    run = np.cumsum(np.concatenate(([acc], f[s0:e])))
+                    tot[s0:e] = run[1:]
+                    acc = float(run[-1])
+                if w >= frames:
+                    break
+                acc -= float(np.floor(acc / sr)) * sr
+                s0, w = w, w + wrap
+            state[rotor + "_acc"] = acc
+            state[rotor + "_f"] = float(f[-1])
+            return sign * 2.0 * np.pi * tot / sr
 
-        horn_f, horn_th = _spin(
-            float(state["horn_f"]), float(state["horn_th"]), horn_t,
-            self._ROT_HORN_UP, self._ROT_HORN_DOWN, +1.0,
-        )
-        drum_f, drum_th = _spin(
-            float(state["drum_f"]), float(state["drum_th"]), drum_t,
-            self._ROT_DRUM_UP, self._ROT_DRUM_DOWN, -1.0,
-        )
-        state["horn_f"] = float(horn_f[-1])
-        state["drum_f"] = float(drum_f[-1])
-        state["horn_th"] = float(horn_th[-1] % (2.0 * np.pi))
-        state["drum_th"] = float(drum_th[-1] % (2.0 * np.pi))
+        horn_th = _spin("horn", horn_t, self._ROT_HORN_UP, self._ROT_HORN_DOWN, +1.0)
+        drum_th = _spin("drum", drum_t, self._ROT_DRUM_UP, self._ROT_DRUM_DOWN, -1.0)
 
         # --- write the bands, then read each rotor once per mic --------
-        wp = int(state["wp"])
-        absidx = wp + np.arange(frames)
+        absidx = n0 + np.arange(frames, dtype=np.int64)
         slots = absidx % L
         state["horn_buf"][slots] = high
         state["drum_buf"][slots] = low
         state["dry_buf"][slots] = x
-        state["wp"] = int((wp + frames) % L)
+        state["n"] = n0 + frames
 
         mu = spread * 0.5 * np.pi           # mic half-angle
         mics = (+mu, -mu)                   # (left, right)
@@ -11121,9 +11185,16 @@ class NumpyBackend(AudioBackend):
                 cosang = np.cos(th - m)
                 gain = 1.0 - am * depth * (1.0 - cosang) * 0.5
                 delay = base - swing * depth * cosang
-                rp = absidx - delay
-                i0 = np.floor(rp).astype(np.int64)
-                frac = rp - i0
+                # Whole samples back and a fraction, both functions of the
+                # small delay alone -- never ``absidx - delay``, which
+                # rounds at the INDEX's magnitude (a ring index rounds at
+                # its own magnitude) and so lands a float64 ulp apart for
+                # the same sample under a different block partition.
+                # ``back - delay`` is exact by Sterbenz: delay >= base -
+                # swing >= 2 ms of samples, so back <= 2 * delay.
+                back = np.ceil(delay)
+                frac = back - delay
+                i0 = absidx - back.astype(np.int64)
                 tap = buf[i0 % L] * (1.0 - frac) + buf[(i0 + 1) % L] * frac
                 outs.append(gain * tap)
             return outs
@@ -11145,6 +11216,25 @@ class NumpyBackend(AudioBackend):
         out_l = wet_l.astype(np.float32)
         out_r = wet_r.astype(np.float32)
         return {"out_l": out_l, "out_r": out_r, "out": 0.5 * (out_l + out_r)}
+
+    @staticmethod
+    def _rotary_grow(state, L_new: int) -> None:
+        """Lengthen the rotary's rings to ``L_new``, keeping their history.
+
+        Slots are absolute sample index mod ``L``, so a new length moves
+        every sample's slot: the last ``hist`` samples written (all a
+        read can reach) are re-homed at their new slots. Only a block
+        longer than any before gets here -- the app never changes block
+        size mid-run -- and the render carries on as if nothing happened.
+        """
+        L_old = int(state["L"])
+        n = int(state["n"])
+        idx = np.arange(max(0, n - int(state["hist"])), n, dtype=np.int64)
+        for key in ("horn_buf", "drum_buf", "dry_buf"):
+            new = np.zeros(L_new, dtype=np.float64)
+            new[idx % L_new] = state[key][idx % L_old]
+            state[key] = new
+        state["L"] = L_new
 
     # ----- Granular rendering ---------------------------------------------
 
@@ -20554,9 +20644,14 @@ class NumpyBackend(AudioBackend):
 
         A modulated fractional delay, the chorus/tape idiom: write the
         whole block into a per-voice ring, then read linear-interpolated
-        taps at ``absidx - delay(t)``. There is no feedback, so every
-        read lands on a sample already written, the whole read
-        vectorises over (V, F), and the render is block-size exact. The
+        taps ``delay(t)`` behind the write head -- as whole samples back
+        (``ceil(delay)``) plus a fraction (``back - delay``), functions of
+        the small delay alone, so the read's precision does not decay
+        with the module clock's magnitude the way ``absidx - delay`` did
+        (2026-09-24). There is no feedback, so every read lands on a
+        sample already written, the whole read vectorises over (V, F),
+        and the render is block-size exact (every setting pinned at 64 /
+        128 / 512 / 1000 over 4 s at 48 kHz). The
         scanner phase is an integer sample counter (``n0``, the caller's
         module clock, which is also the write index) -- ``phase = (n * f
         / sr) % 1`` depends only on ``n``, so it is bit-exact across any
@@ -20658,9 +20753,16 @@ class NumpyBackend(AudioBackend):
         np.clip(delay, 2.0, float(L - 2), out=delay)
 
         buf[:, absidx % L] = out
-        rp = absidx - delay
-        i0 = np.floor(rp).astype(np.int64)
-        frac = rp - i0
+        # Whole samples back and a fraction, both functions of the small
+        # delay alone (``back - delay`` is exact by Sterbenz: the clip
+        # keeps delay >= 2, so back <= 2 * delay). ``absidx - delay``
+        # rounded at the module CLOCK's magnitude instead: the same at
+        # any block size (the clock is absolute), but coarser the longer
+        # the organ has been running -- a fraction quantised to 3e-8 of a
+        # sample after an hour at 48 kHz, 5e-7 after a day.
+        back = np.ceil(delay)
+        frac = back - delay
+        i0 = absidx - back.astype(np.int64)
         wet = buf[:, i0 % L] * (1.0 - frac) + buf[:, (i0 + 1) % L] * frac
 
         res = dry_g * out + wet_g * wet
