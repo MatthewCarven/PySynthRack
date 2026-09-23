@@ -20371,7 +20371,7 @@ class NumpyBackend(AudioBackend):
             c = pan_cv.astype(np.float64)
             c = np.where(np.isfinite(c), c, 0.0)
             if c.ndim == 2:
-                c = c.mean(axis=0)
+                c = self._voice_mean(c)
             centre = pan + c
 
         pos_l = np.clip(centre + depth * lfo(ph), -1.0, 1.0)
