@@ -16288,9 +16288,11 @@ class NumpyBackend(AudioBackend):
 
         Triggers segment the block: at each rising edge the pluck pitch
         is locked from that sample, coefficients rebuilt, the allpass
-        state cleared, and a seeded exciter burst is **added** into the
-        ring (a re-pluck superposes on the ringing string — linear loop,
-        so click-free by construction). Between triggers an active voice
+        state carried (``carry``, the default; cleared with it off),
+        and a seeded exciter burst is **added** into the ring (a
+        re-pluck superposes on the ringing string — linear loop, so
+        click-free by construction; exactly, with ``carry`` on).
+        Between triggers an active voice
         re-reads the block-mean pitch each block (glides track at block
         rate). Determinism: each burst's rng is seeded from (module id,
         voice, hit number). Exact block-size independence holds under
@@ -16307,10 +16309,11 @@ class NumpyBackend(AudioBackend):
         the edge. Unpatched the code path is the old one verbatim (no
         multiply), and a bus holding 1.0 is bit-for-bit the same since
         ``x * 1.0 == x``. A non-positive velocity is a SILENT hit: not
-        just a zero burst -- every shipped hit also relocks the pitch and
-        clears the allpass state, and that clear alone steps the output
-        by ~7-18% of the ring's amplitude (measured), an audible tick on
-        a hit that is supposed to make no sound. So a silent hit leaves
+        just a zero burst -- every hit also relocks the pitch and (with
+        ``carry`` off) clears the allpass state; that clear alone steps
+        the output by ~7-18% of the ring's amplitude (measured), an
+        audible tick on a hit that is supposed to make no sound. So a
+        silent hit leaves
         the string exactly as it was and only advances the hit counter.
 
         ``vel_color`` (2026-09-20, love pass): the pick's SPECTRUM follows
@@ -16348,7 +16351,8 @@ class NumpyBackend(AudioBackend):
         bridge, to the clamp. ``position`` 0 is the documented OFF for the
         comb and stays off: the knob moves a pick, it does not fit one.
 
-        ``carry`` (2026-09-22, love pass, default OFF): whether a hit
+        ``carry`` (2026-09-22, love pass; default ON since 2026-09-24):
+        whether a hit
         CARRIES the loop's allpass (fractional-delay) state instead of
         clearing it. Measured, at C4, ``decay`` 3, ``damping`` 0, a
         re-pluck 0.5 s in:
@@ -16372,11 +16376,11 @@ class NumpyBackend(AudioBackend):
             identical to the milli-hertz), and so is the peak; 200 rapid
             re-plucks over four octaves stay finite and bounded both ways.
 
-        So the clear buys nothing and costs half the ring. It is still the
-        DEFAULT only because turning it off changes the sound of every
-        pluck patch that re-plucks a ringing string -- that is Matthew's
-        call to make with his ears, not a measurement's. ``carry`` True is
-        the recommendation.
+        So the clear buys nothing and costs half the ring. It shipped as
+        the default for two days (turning it off changes the sound of
+        every patch that re-plucks a ringing string, so it waited for
+        Matthew's go-ahead); since 2026-09-24 ``carry`` defaults True
+        and False is the old behaviour, kept bit-exact.
         """
         pitch = self._input_buffer(
             patch, buffers, module.id, "pitch_cv", collapse=False
@@ -16427,10 +16431,10 @@ class NumpyBackend(AudioBackend):
         vel_position = min(
             1.0, max(0.0, float(module.params.get("vel_position", 0.0)))
         )
-        # carry: keep the loop's allpass state through a hit instead of
-        # clearing it. Default False = the shipped sound; see the
-        # docstring for the numbers that say True is better.
-        carry = bool(module.params.get("carry", False))
+        # carry: keep the loop's allpass state through a hit (default
+        # True, since 2026-09-24). False is the old behaviour: every
+        # hit clears it, a 51%-of-the-ring step (docstring).
+        carry = bool(module.params.get("carry", True))
         position = min(1.0, max(0.0, float(module.params.get("position", 0.2))))
         level = float(module.params.get("level", 0.5))
 
@@ -16603,7 +16607,7 @@ class NumpyBackend(AudioBackend):
                     out[v, :] = 0.0
                     # Zero the allpass state with the ring, so a fresh
                     # pluck on a dead string is a fresh pluck under
-                    # ``carry`` too. Render-neutral for the shipped path:
+                    # ``carry`` too. Render-neutral with ``carry`` off:
                     # nothing reads ``ap_z`` while a voice is inactive,
                     # and the next hit clears it anyway.
                     st["ap_z"][v] = 0.0

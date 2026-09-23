@@ -41,18 +41,20 @@ bit-exactly as a plain hit at the effective position (the formula, both
 clamps), the loop is untouched, block-size independence, per-voice
 latching, the widget, the example.
 
-``carry`` (the same pass, default OFF): whether a hit carries the loop's
-allpass state instead of clearing it. Carried, a re-pluck is EXACT
-superposition (two hits minus one hit == the second hit alone, to one
-float32 ulp); cleared -- the shipped default -- it misses by 51% of the
-ring. Tuning is untouched either way. The default is pinned as the old
-path.
+``carry`` (the same pass; default ON since 2026-09-24): whether a hit
+carries the loop's allpass state instead of clearing it. Carried, a
+re-pluck is EXACT superposition (two hits minus one hit == the second
+hit alone, to one float32 ulp); cleared -- the old default -- it misses
+by 51% of the ring. Tuning is untouched either way. The default is
+pinned as carry-on, and ``carry`` False is pinned by hash to the renders
+the pre-flip code made with the key absent.
 
 Pitch/decay tests run at 44100 Hz (they measure real frequencies);
 plumbing tests run fast at SR 1000.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from unittest import mock
 
@@ -470,7 +472,8 @@ def test_re_pluck_adds_a_burst_scaled_by_its_own_vel():
     """Superposition: hit 1 lands on a string still ringing from hit 0 (at
     velocity 1). Its contribution is linear in ITS velocity: with hit-1
     velocities 1.0 / 0.5 / 0.25 (same seed, same ring before the hit, so
-    the relock/allpass-clear transient cancels in the differences),
+    any relock transient -- the allpass clear, with ``carry`` off --
+    cancels in the differences),
     (B - A) == 2 (A - D). And it stays click-free, as before."""
     b_ = _two_hit_render(1.0)
     a = _two_hit_render(0.5)
@@ -1196,19 +1199,57 @@ def test_carry_makes_a_repluck_exact_superposition():
     assert off / on > 1e5
 
 
-def test_carry_is_off_by_default_and_is_the_shipped_path():
-    """Default OFF, and the key absent renders bit-exactly as the key at
-    False -- the shipped sound is untouched until someone ticks the box.
-    (The love pass also captured reference renders of every pluck example
-    and of mono/voiced drivers at blocks 512 and 64: all bit-exact.)"""
-    assert get_module_type("pluck").DEFAULT_PARAMS["carry"] is False
+def test_carry_is_on_by_default():
+    """Default ON since 2026-09-24 (Matthew: shipped renders may move).
+    The key absent renders bit-exactly as the key at True, and not as the
+    key at False -- so every patch that stores no ``carry`` (every example
+    bar ``pluck_touch.json``, which ticks it anyway) now carries."""
+    assert get_module_type("pluck").DEFAULT_PARAMS["carry"] is True
     absent = {"decay": 3.0, "color": 0.5}
-    false = {"decay": 3.0, "color": 0.5, "carry": False}
-    assert np.array_equal(_two_hit_render(0.6, params=absent),
-                          _two_hit_render(0.6, params=false))
-    assert not np.array_equal(_two_hit_render(0.6, params=absent),
-                              _two_hit_render(0.6, params={**absent,
-                                                           "carry": True}))
+    for vel in (None, 0.6):
+        a = _two_hit_render(vel, params=absent)
+        assert np.array_equal(a, _two_hit_render(
+            vel, params={**absent, "carry": True}))
+        assert not np.array_equal(a, _two_hit_render(
+            vel, params={**absent, "carry": False}))
+
+
+# sha256 of the float32 bytes of ``_two_hit_render`` at {"decay": 3.0,
+# "color": 0.5} with the ``carry`` key ABSENT, rendered by the pre-flip
+# code (9ec4462, where absent meant False) -- captured before the flip,
+# never guessed. The key at False on that code hashed identically.
+_CARRY_OFF_SHA = {
+    None: "344dd5000b653eb9a167652c3b8d405d8a39ed83363181560a3f9a34bf00f9f3",
+    0.6: "c8b4e513c6f9e87175158ecdabf46ead24d2b2949d78afb5a1e889ce0f416201",
+}
+
+
+@pytest.mark.parametrize("vel", [None, 0.6])
+def test_carry_false_is_the_old_default_bit_exact(vel):
+    """Untick ``carry`` and it is the old sound to the bit: a re-plucked
+    string (no ``vel`` cable, and a soft 0.6 re-pluck through one) hashes
+    exactly as the pre-flip default did."""
+    sig = _two_hit_render(vel, params={"decay": 3.0, "color": 0.5,
+                                       "carry": False})
+    assert sig.dtype == np.float32 and sig.shape == (40 * 512,)
+    assert hashlib.sha256(sig.tobytes()).hexdigest() == _CARRY_OFF_SHA[vel]
+
+
+def test_a_saved_carry_false_survives_the_flip():
+    """Saved patches: the app saves EVERY param, so a patch saved while
+    the old default stood stores ``"carry": false`` and keeps the old
+    sound through a load and a re-save; a patch saved before ``carry``
+    existed (or hand-written without it) has no key and gets the new
+    default. That is the intended change."""
+    old = Patch()
+    old.add_module("pluck", params={"carry": False})
+    data = old.to_dict()
+    assert data["modules"][0]["params"]["carry"] is False  # stored
+    again = Patch.from_dict(data)
+    assert next(iter(again)).params["carry"] is False
+    assert Patch.from_dict(again.to_dict()).to_dict() == data
+    del data["modules"][0]["params"]["carry"]            # pre-carry file
+    assert next(iter(Patch.from_dict(data))).params["carry"] is True
 
 
 @pytest.mark.parametrize("cv", [-2.0, 0.0, 2.0])

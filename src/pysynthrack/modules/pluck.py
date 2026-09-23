@@ -32,7 +32,8 @@ The extensions over textbook KS:
     roundest pluck.
 
 Re-plucking a ringing string **adds** the new burst into the loop instead
-of replacing it — physical (the string was still moving) and click-free.
+of replacing it — physical (the string was still moving) and click-free;
+with ``carry`` on (the default) it is exact superposition, see below.
 Every burst is seeded from (module, voice, hit number), so renders are
 deterministic and testable sample-for-sample.
 
@@ -46,9 +47,10 @@ the same time — how a real string behaves when picked gently.
 ``midi_input.velocity_cv → vel`` is the point: a harder key plays
 louder, per voice. A non-positive velocity is a **silent hit** — the
 string keeps ringing exactly as it was (no burst, and none of the pitch
-relock / allpass clear a hit performs either, which alone would tick
-audibly); the hit counter still advances. Unpatched, the render is
-bit-for-bit what it was before the input existed.
+relock a hit performs, nor the allpass clear it performs with ``carry``
+off, which alone would tick audibly); the hit counter still advances.
+Unpatched, the render is bit-for-bit what it was before the input
+existed.
 
 **Velocity colour.** A real pick's *spectrum* follows the velocity too
 — a gentle stroke is duller as well as quieter — and ``vel_color``
@@ -85,21 +87,26 @@ moves a pick, it does not fit one. With ``vel_color`` up too a soft
 note is quieter, duller **and** rounder while an accent stays loud,
 bright and plucky. The loop is untouched, as always: same t60.
 
-**Does a hit need to clear the string's allpass state?** No, and
-``carry`` (default off) is the switch. Every hit relocks the pitch
-and clears the loop's fractional-delay state; measured with a zero
-burst, that clear *alone* steps the output by **51%** of the ring at
-the same pitch (51.4% into G4, 51.5% into C5 at the same instant;
+**``carry`` (default on): a hit keeps the string's allpass state.**
+Every hit relocks the pitch; with ``carry`` on it keeps the loop's
+fractional-delay (allpass) state through the hit, so the relock is
+bit-identical to the block-mean pitch follow the string does between
+hits anyway, the step at the hit is **exactly 0**, and a re-pluck is
+**exact superposition** — two hits minus one hit is the second hit
+alone to one float32 ulp, the property this module has always
+claimed. Untick it for the old behaviour (the default until
+2026-09-24): every hit **clears** that state, and measured with a
+zero burst the clear *alone* steps the output by **51%** of the ring
+at the same pitch (51.4% into G4, 51.5% into C5 at the same instant;
 28% at another re-pluck, 7-18% on the velocity pass's hits -- it
 throws away one sample of loop state, and how big that sample is
-depends on where in the waveform the hit lands), while carrying the
-state makes the step **exactly 0** and a re-pluck **exact
-superposition** — two hits minus one hit is the second hit alone to
-one float32 ulp, which is the property this module has always
-claimed and the clear alone broke. Tuning, peak and stability are
-identical either way. ``carry`` is default-off only because turning
-it on changes the sound of every patch that re-plucks a ringing
-string; on is the recommendation.
+depends on where in the waveform the hit lands): a slightly harder,
+less even re-attack. Tuning, peak and stability are identical either
+way (the loop's allpass always has |c| < 1, so a carried state
+decays rather than accumulating). A patch that stores
+``"carry": false`` -- including one saved from the app while the
+old default stood, since the app saves every param -- keeps the old
+sound.
 
 Voice-awareness: shape follows the inputs — mono ``(F,)`` in gives mono
 out, ``(V, F)`` gives per-voice strings with no crosstalk. ``vel``
@@ -130,10 +137,9 @@ Params:
     middle of the string (0.5), 0..1; a hit at velocity 1.0 is
     always exactly ``position``, and ``position`` 0 stays off.
     Default 0 (off).
-  * ``carry``: keep the loop's allpass state through a hit instead
-    of clearing it — a re-pluck becomes exact superposition
-    instead of a 51%-of-the-ring step. Default False (the shipped
-    sound); True is the recommendation.
+  * ``carry``: keep the loop's allpass state through a hit, so a
+    re-pluck is exact superposition. Default True; False is the
+    old behaviour -- every hit clears it, a 51%-of-the-ring step.
   * ``level``: output level 0..1. Default 0.5.
 """
 from __future__ import annotations
@@ -165,11 +171,11 @@ class Pluck(Module):
             position), 0, 1)``; a full-velocity (or unpatched) hit
             is exactly ``position``, and ``position`` 0 stays off.
             Default 0.
-        carry: Carry the loop's allpass (fractional-delay) state
-            through a hit instead of clearing it -- the clear is a
-            51%-of-the-ring step, and carrying makes a re-pluck
-            exact superposition (measured). Default False = the
-            shipped sound; True is the recommendation.
+        carry: Keep the loop's allpass (fractional-delay) state
+            through a hit, so a re-pluck is exact superposition on
+            the ringing string (measured). Default True; False is
+            the old behaviour -- every hit clears the state, a
+            51%-of-the-ring step and a slightly harder re-attack.
         level: Output level. Default 0.5.
 
     Ports:
@@ -189,7 +195,7 @@ class Pluck(Module):
         "vel_color": 0.0,
         "position": 0.2,
         "vel_position": 0.0,
-        "carry": False,
+        "carry": True,
         "level": 0.5,
     }
     INPUT_PORTS = [

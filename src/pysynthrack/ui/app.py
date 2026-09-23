@@ -3786,7 +3786,8 @@ class App:
             # source); ``position`` is the pick-position comb and
             # ``vel_position`` is how far a soft hit slides that pick
             # towards the middle of the string (both 0..1, both inert
-            # without a ``vel`` source); ``carry`` is a tickbox and
+            # without a ``vel`` source); ``carry`` is a tickbox
+            # (default on -- untick for the old clear-on-hit) and
             # falls through to the shared bool branch; ``level`` trims
             # the output.
             if param_name == "decay":
