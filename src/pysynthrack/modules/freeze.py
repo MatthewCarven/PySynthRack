@@ -28,7 +28,12 @@ the default is 4096 and a triad at 1024 vanishes. Past 16384 the
 window stops being a *moment*: 32768 is 743 ms, long enough that what
 you hold is the average of a phrase rather than a chord — the drone
 end of the knob, where an arpeggio freezes as the whole arpeggio's
-harmony at once. ``fade`` is the layer's rise at the
+harmony at once, and 65536 (1.49 s) goes further still. 65536 has a
+*staged birth*: its capture is taken at the edge, but the hold is born
+4096 samples (93 ms) later, the capture's work spread over the blocks
+in between so no single block pays for it; the whole hold — rise,
+release, crossfades — runs those 93 ms late, still in phase with the
+live input. ``fade`` is the layer's rise at the
 edge, its fall at release, and the crossfade when you freeze again
 while a hold is still sounding — a chord change under a held pedal
 melts from the old chord into the new, it never cuts.
@@ -101,7 +106,7 @@ Ports:
 
 Params:
   * ``size``: FFT window in samples, 1024 | 2048 | 4096 | 8192 | 16384
-    | 32768. Default 4096.
+    | 32768 | 65536 (the staged birth: 93 ms late). Default 4096.
   * ``freeze``: tickbox — hold from the panel. Default off.
   * ``latch``: the gate toggles the hold instead of holding it while
     high. Default off.
@@ -126,14 +131,16 @@ from ..core.module import Module, register_module_type
 from ..core.port import Port
 
 #: The FFT windows offered, in samples. Bigger = a longer moment captured
-#: and cleaner close harmony; smaller = a snappier grab. 32768 (743 ms,
-#: the drone end) is the top: MEASURED, one capture costs a whole audio
-#: block at 512 (10 ms mono, 20 ms with ``width`` up) but the hold that
-#: follows costs 15-36% of one, so the spike is a single block the sink's
-#: ring can absorb. 65536 was measured and left off: its capture is 54 ms
-#: (five blocks) AND its steady state is 96% of a block every 371 ms --
-#: a permanent near-overrun, not a spike.
-FREEZE_SIZES = (1024, 2048, 4096, 8192, 16384, 32768)
+#: and cleaner close harmony; smaller = a snappier grab. MEASURED at 512
+#: frames (11.61 ms of budget), worst single block, mono / with ``width``
+#: (2026-09-24, after the rotor synthesis and the relative peak floor):
+#: 32768 (743 ms) 2.7-3.4 / 4.4-5.3 ms at the capture edge, was 10.4 /
+#: 20.5; 65536 (1.49 s) 1.0-3.0 / 3.0-3.6 ms, because its birth is STAGED
+#: (``NumpyBackend._FREEZE_BIRTH_DELAY``: the hold starts 4096 samples
+#: after the edge and the capture is spread over the blocks between),
+#: steady state 0.8 / 2.4 ms. It was measured and left off on 2026-09-22
+#: at a 54 ms capture and 96% of a block every 371 ms.
+FREEZE_SIZES = (1024, 2048, 4096, 8192, 16384, 32768, 65536)
 
 
 @register_module_type

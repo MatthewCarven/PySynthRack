@@ -116,7 +116,7 @@ def test_registered_with_ports_and_params():
         "width": 0.0, "width_cv_depth": 1.0, "decay": 0.0,
     }
     assert m.DEFAULT_PARAMS["size"] in FREEZE_SIZES
-    assert FREEZE_SIZES == (1024, 2048, 4096, 8192, 16384, 32768)
+    assert FREEZE_SIZES == (1024, 2048, 4096, 8192, 16384, 32768, 65536)
 
 
 def test_unpatched_input_is_silence_with_no_state():
@@ -202,10 +202,15 @@ def test_hold_starts_at_the_edge_and_the_dry_keeps_passing():
 
 @pytest.mark.parametrize("size", FREEZE_SIZES)
 def test_every_window_size_holds_a_sine(size):
-    sig = _sine(441.3, 3.0)
-    sig[int(1.5 * SR):] = 0.0
-    y, _, _ = _render({"dry": 0.0, "level": 1.0, "size": size}, sig, gate=_gate_from(1.0, 3.0))
-    f, amp = _inst_freq(y[2 * SR:3 * SR])
+    # the capture reads the ``size + size/4`` samples before the edge: a
+    # 1 s run-in covers every window up to 32768; 65536 (1.86 s of it)
+    # gets a 2 s run-in so it captures the sine, not the silence before it
+    run_in = 1 if size + size // 4 < SR else 2
+    sig = _sine(441.3, 3.0 + run_in - 1)
+    sig[int((run_in + 0.5) * SR):] = 0.0
+    y, _, _ = _render({"dry": 0.0, "level": 1.0, "size": size}, sig,
+                      gate=_gate_from(run_in, 3.0 + run_in - 1))
+    f, amp = _inst_freq(y[(run_in + 1) * SR:(run_in + 2) * SR])
     assert abs(np.median(f) - 441.3) < 1.0
     assert abs(np.median(amp) - 0.5) < 0.03
     assert np.all(np.isfinite(y))
@@ -1006,7 +1011,7 @@ def test_the_long_window_is_offered_and_holds_a_triad():
     """32768 (743 ms at 44.1 kHz) is on the knob and holds the same triad
     the shipped 16384 does, partial for partial within 0.1 dB — the
     capture is longer, the hold is not weaker."""
-    assert FREEZE_SIZES[-1] == 32768 and 65536 not in FREEZE_SIZES
+    assert 32768 in FREEZE_SIZES
     ref = None
     for size in (16384, 32768):
         y, _, _ = _render({"dry": 0.0, "level": 1.0, "size": size},
@@ -1120,6 +1125,232 @@ def test_the_peak_region_map_matches_the_loop_it_replaced():
             assert np.array_equal(NumpyBackend._freeze_lock_index(mag), loop(mag)), n
 
 
+# ----- the relative peak floor + the staged birth (2026-09-24) -----------------------
+
+_D65 = NumpyBackend._FREEZE_BIRTH_DELAY.get(65536, 0)
+
+
+def _late_mag(sig, n):
+    """|rfft| of the capture's later frame from the first n + n/4 samples."""
+    hop = n // 4
+    w = np.hanning(n + 1)[:-1]
+    return np.abs(np.fft.rfft(np.asarray(sig[hop:hop + n], dtype=np.float64) * w))
+
+
+def _rel_floor(mag):
+    return float(mag.max()) * 10.0 ** (NumpyBackend._FREEZE_PEAK_FLOOR_DB / 20.0)
+
+
+def test_the_relative_floor_finds_the_triads_three_partials():
+    """A pure triad used to anchor thousands of regions in its own numerical
+    floor (4518 at 32768 under the absolute 1e-12); the capture's floor is
+    now -120 dB under the frame's loudest bin, and the region map is the
+    three partials at every window that resolves them. Checked through the
+    capture itself: the stereo scatter's sign flips exactly twice."""
+    assert NumpyBackend._FREEZE_PEAK_FLOOR_DB == -120.0
+    sig = _triad(2.0)
+    for n in FREEZE_SIZES:
+        if n < 4096:
+            continue                      # too coarse for C-E-G (the resolution rule)
+        mag = _late_mag(sig, n)
+        assert np.unique(NumpyBackend._freeze_lock_index(mag)).size > 100, n
+        assert np.unique(NumpyBackend._freeze_lock_index(mag, _rel_floor(mag))).size == 3, n
+        spec = NumpyBackend._freeze_capture(np.asarray(sig[:n + n // 4], dtype=np.float64),
+                                            n, n // 4)
+        assert int(np.count_nonzero(np.diff(spec["jside"].imag))) == 2, n
+
+
+def test_the_relative_floor_keeps_every_peak_of_a_dense_spectrum():
+    """The risk of a relative floor is throwing real content away. It does
+    not: white noise and a detuned saw chord keep EVERY region the absolute
+    floor gave them, at the default window and the two longest."""
+    t = np.arange(2 * SR)
+    saws = sum(2.0 * ((f * t / SR) % 1.0) - 1.0
+               for f in (130.4, 131.2, 164.81, 196.0, 246.94))
+    noise = np.random.default_rng(3).standard_normal(2 * SR)
+    for sig in (noise, saws):
+        for n in (4096, 32768, 65536):
+            mag = _late_mag(sig, n)
+            assert np.array_equal(NumpyBackend._freeze_lock_index(mag),
+                                  NumpyBackend._freeze_lock_index(mag, _rel_floor(mag))), n
+
+
+def test_one_ulp_of_input_no_longer_reshuffles_the_stereo_field(monkeypatch):
+    """The knife-edge the relative floor removes (found by the 2026-09-24
+    float64 voice-collapse pass: a one-ulp input change moved the drone
+    example's stereo hold by 4.8%). The scatter's sign alternates by
+    region ORDINAL, so under the absolute 1e-12 floor an ulp that flips
+    one numerical-floor "peak" in or out swaps half the partials between L
+    and R. Measured on an organ maj7 at 32768, width 0.8: -13 dB of change
+    on out_l from one ulp under the old floor; under -120 dB the change is
+    the ulp's own size. The old floor is re-run here to prove the test can
+    see the difference."""
+    t = np.arange(5 * SR)
+    org = sum(0.05 / h * np.sin(2 * np.pi * f * h * t / SR)
+              for f in (130.81, 164.81, 196.0, 246.94) for h in range(1, 7)).astype(np.float32)
+    rng = np.random.default_rng(0)
+    nudged = org.copy()
+    pick = rng.random(org.size) < 0.5
+    nudged[pick] = np.nextafter(nudged[pick], np.float32(np.inf))
+    g = _gate_from(2.0, 5.0)
+    prm = {"dry": 0.0, "level": 1.0, "size": 32768, "width": 0.8}
+
+    def change():
+        a, _, _ = _render(prm, org, gate=g, ports=("out_l",))
+        b, _, _ = _render(prm, nudged, gate=g, ports=("out_l",))
+        d = b["out_l"][3 * SR:].astype(np.float64) - a["out_l"][3 * SR:]
+        return _db(_rms(d) / _rms(a["out_l"][3 * SR:]))
+
+    assert change() < -100.0
+    monkeypatch.setattr(NumpyBackend, "_FREEZE_PEAK_FLOOR_DB", -1000.0)   # the old floor
+    assert change() > -40.0
+
+
+def test_the_region_map_with_a_floor_matches_the_loop():
+    """The ``floor`` argument is the loop's threshold, nothing more:
+    integer-identical to the reference loop at arbitrary floors."""
+    def loop(mag, floor):
+        k_n = mag.shape[0]
+        idx = np.arange(k_n)
+        up = np.concatenate(([False], mag[1:] > mag[:-1]))
+        down = np.concatenate((mag[:-1] >= mag[1:], [False]))
+        peaks = np.flatnonzero(up & down & (mag > floor))
+        if peaks.size == 0:
+            return idx
+        bounds = [0]
+        for a, b in zip(peaks[:-1].tolist(), peaks[1:].tolist()):
+            bounds.append(a + int(np.argmin(mag[a:b + 1])))
+        bounds.append(k_n)
+        for pk, lo, hi in zip(peaks.tolist(), bounds[:-1], bounds[1:]):
+            idx[lo:hi] = pk
+        return idx
+
+    rng = np.random.default_rng(11)
+    for trial in range(300):
+        k = int(rng.integers(1, 400))
+        mag = np.abs(rng.standard_normal(k)) * 10.0 ** rng.uniform(-8, 0, k)
+        floor = float(mag.max()) * 10.0 ** rng.uniform(-9, 0) if k else 1e-12
+        assert np.array_equal(NumpyBackend._freeze_lock_index(mag, floor), loop(mag, floor)), trial
+
+
+def test_the_rotor_stream_does_not_drift():
+    """Frame j + 1 is frame j times the capture's rotor -- one complex
+    multiply, not an exp and a mod over every bin. After 200000 frames
+    (14 minutes of hold at 1024) the stream is still the exact
+    ``X0 * exp(i * j * angle(rot))`` to 1e-9 on every bin that matters."""
+    n, hop, J = 1024, 256, 200000
+    spec = NumpyBackend._freeze_capture(np.asarray(_triad(0.1)[:n + hop], dtype=np.float64),
+                                        n, hop)
+    x0, rot = spec["X"], spec["rot"]
+    x = x0.copy()
+    for _ in range(J):
+        x = x * rot
+    theta = np.mod(J * np.angle(rot), 2.0 * np.pi)
+    exact = x0 * np.exp(1j * theta)
+    big = np.abs(x0) > 1e-6 * np.abs(x0).max()
+    assert np.max(np.abs(x - exact)[big] / np.abs(x0)[big]) < 1e-9
+
+
+def test_the_65536_window_is_born_a_staged_delay_after_the_edge():
+    """65536 (1.49 s) is on the knob with a STAGED birth: the capture is
+    taken at the edge, but the layer is born `_FREEZE_BIRTH_DELAY` (4096
+    samples, 93 ms) later -- dry 0 is silent until then and the fade
+    starts there. What it holds is the same triad 32768 holds, partial for
+    partial within 0.1 dB."""
+    assert 65536 in FREEZE_SIZES and _D65 == 4096
+    sig = _triad(6.0)
+    e = 2 * SR
+    g = np.zeros_like(sig)
+    g[e:] = 1.0
+    y, _, _ = _render({"dry": 0.0, "level": 1.0, "size": 65536}, sig, gate=g)
+    assert not y[:e + _D65].any()
+    assert y[e + _D65:e + _D65 + 64].any()
+    ref, _, _ = _render({"dry": 0.0, "level": 1.0, "size": 32768}, sig, gate=g)
+    lv, lr = _levels(y[4 * SR:6 * SR]), _levels(ref[4 * SR:6 * SR])
+    assert np.all(lv > 0.05)
+    assert np.all(np.abs(20 * np.log10(lv / lr)) < 0.1)
+
+
+def test_the_staged_birth_still_continues_the_input_in_phase():
+    """The read starts at frozen time ``n + delay``, so where the hold is
+    first heard it is the live input's own continuation: a sine frozen at
+    65536 with dry 1 and level 1 DOUBLES. 446.8 Hz is picked so the delay
+    is 41.5 of its cycles -- a read that ignored the delay would land half
+    a cycle out and cancel instead."""
+    assert abs(_D65 * 446.8 / SR - 41.5) < 0.01
+    sig = _sine(446.8, 5.0)
+    y, _, _ = _render({"dry": 1.0, "level": 1.0, "size": 65536}, sig, gate=_gate_from(2.0, 5.0))
+    assert 1.95 < _rms(y[3 * SR:5 * SR]) / _rms(sig[:SR]) < 2.05
+
+
+def test_the_staged_birth_spreads_its_work_one_stage_per_512_block():
+    """Deterministic, not a stopwatch: the birth's seven stages (two FFTs,
+    the analysis, the four frames under the first read) are spread over the
+    delay -- at 512 no block runs more than one, the edge's own block runs
+    just the first, and all seven are done by the birth."""
+    sig = _triad(3.0)
+    g = _gate_from(2.0, 3.0)
+    p = Patch()
+    fz = p.add_module("freeze")
+    fz.params.update({"dry": 0.0, "level": 1.0, "size": 65536, "width": 0.5})
+    b = NumpyBackend(sample_rate=SR, block_size=512)
+    b.compile(p)
+    per_block = []
+    orig = b._freeze_birth_step
+
+    def counting(*a, **k):
+        per_block[-1] += 1
+        return orig(*a, **k)
+
+    b._freeze_birth_step = counting
+
+    def tick(k, m):
+        per_block.append(0)
+
+    _render_blocks(fz, b, sig, gate=g, on_block=tick)
+    eb = (2 * SR) // 512
+    assert sum(per_block) == 7 and max(per_block) == 1
+    assert per_block[eb] == 1
+    assert sum(per_block[:(2 * SR + _D65) // 512 + 1]) == 7
+    assert not b._state[fz.id]["pending"] and len(b._state[fz.id]["layers"]) == 1
+
+
+def test_a_tap_shorter_than_the_birth_delay_still_freezes():
+    """Every layer hears the gate `delay` samples late, so the whole wet
+    path is the shipped one shifted: a 30 ms tap (1323 samples, under the
+    4096 delay) holds for its 30 ms and releases, 93 ms late."""
+    sig = _triad(4.0)
+    y, b, fz = _render({"dry": 0.0, "level": 1.0, "size": 65536, "fade": 5.0}, sig,
+                       gate=_pulses([2.0], 4.0, high_s=0.03))
+    e = 2 * SR + _D65
+    assert _rms(y[e + 300:e + 1300]) > 0.1
+    assert not y[e + 1323 + 500:].any()
+    assert b._state[fz.id]["layers"] == []
+
+
+def test_the_staged_birth_is_block_size_exact_with_every_feature_live():
+    """64 = 512 = 1000 at 65536 with `latch`, a constant `width_cv`,
+    `decay`, `smear` and `pitch` live, and a second edge landing INSIDE the
+    first one's birth delay (two captures pending at once): all three
+    jacks bit-exact."""
+    sig = _triad(5.0)
+    g = _pulses([2.0, 2.05, 3.6], 5.0)
+    prm = {"dry": 0.3, "level": 1.0, "size": 65536, "latch": True, "smear": 0.4,
+           "pitch": 7.0, "width": 0.3, "width_cv_depth": 1.0, "decay": 5.0, "fade": 90.0}
+    wcv = _const(0.4, 5.0)
+    ya, _, _ = _render(prm, sig, gate=g, wcv=wcv, block=64, ports=_LR)
+    for blk in (512, 1000):
+        yb, _, _ = _render(prm, sig, gate=g, wcv=wcv, block=blk, ports=_LR)
+        for k in _LR:
+            assert np.array_equal(ya[k], yb[k]), (blk, k)
+    assert not np.array_equal(ya["out_l"], ya["out_r"])
+    dry = 0.3 * _rms(sig)
+    # latched off between the second pulse and the third: the dry alone;
+    # latched on after the third: the hold on top of it
+    assert _rms(ya["out"][int(2.4 * SR):int(3.5 * SR)]) < 1.02 * dry
+    assert _rms(ya["out"][int(4.0 * SR):]) > 1.5 * dry
+
+
 # ----- UI ---------------------------------------------------------------------------
 
 
@@ -1180,7 +1411,9 @@ def test_size_combo_stores_an_int(monkeypatch):
     cb(None, "32768", (module.id, "size"))
     assert module.params["size"] == 32768
     cb(None, "65536", (module.id, "size"))
-    assert module.params["size"] == 32768         # past the top: snapped back on
+    assert module.params["size"] == 65536         # the staged-birth top (2026-09-24)
+    cb(None, "131072", (module.id, "size"))
+    assert module.params["size"] == 65536         # past the top: snapped back on
 
 
 # ----- example --------------------------------------------------------------------------

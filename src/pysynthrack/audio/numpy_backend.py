@@ -19240,12 +19240,14 @@ class NumpyBackend(AudioBackend):
         return w
 
     @staticmethod
-    def _freeze_lock_index(mag: np.ndarray) -> np.ndarray:
+    def _freeze_lock_index(mag: np.ndarray, floor: float = 1e-12) -> np.ndarray:
         """The region map: for every bin, the index of the spectral peak
         whose region of influence (out to the valley on either side) it
         belongs to. A spectrum with no peak at all maps every bin to
         itself. Both the phase lock and the stereo scatter are one value
-        per region, read through this map.
+        per region, read through this map. A peak must stand above
+        ``floor`` (absolute); the capture passes a RELATIVE one,
+        ``_FREEZE_PEAK_FLOOR_DB`` under the frame's loudest bin.
 
         Vectorized (2026-09-22, the long-windows pass) and INTEGER-identical
         to the Python loop it replaces -- the loop was the whole cost of a
@@ -19272,7 +19274,7 @@ class NumpyBackend(AudioBackend):
         k_n = mag.shape[0]
         up = np.concatenate(([False], mag[1:] > mag[:-1]))
         down = np.concatenate((mag[:-1] >= mag[1:], [False]))
-        peaks = np.flatnonzero(up & down & (mag > 1e-12))
+        peaks = np.flatnonzero(up & down & (mag > floor))
         if peaks.size == 0:
             return np.arange(k_n)
         if peaks.size == 1:
@@ -19302,35 +19304,195 @@ class NumpyBackend(AudioBackend):
         """
         return w_true[cls._freeze_lock_index(mag)]
 
+    #: A spectral peak must stand within this many dB of the frame's
+    #: loudest bin to anchor a region (2026-09-24). Below it is the
+    #: window's own numerical floor: a pure triad at 32768 found 4518
+    #: "peaks" under the old absolute 1e-12 and finds its 3 partials at
+    #: -120 dB, at every window size; white / pink noise, a detuned saw
+    #: chord and a vowel keep EVERY peak they had (a dense spectrum's
+    #: peaks are all within ~60 dB of its top). -100 dB started to thin
+    #: the vowel's top octave, so the floor sits a clean 20 dB lower.
+    _FREEZE_PEAK_FLOOR_DB = -120.0
+
+    #: The staged birth (2026-09-24): at these window sizes a capture is
+    #: taken AT the edge but the layer is born this many samples LATER,
+    #: and the capture's work -- two FFTs, the analysis, the four frames
+    #: that overlap the first read -- is spread over the blocks in
+    #: between instead of landing in one (at 65536 it is ~11 ms mono,
+    #: ~13 ms wide in one block, against an 11.61 ms budget at 512).
+    #: Every layer then hears the gate this many samples late, so the
+    #: whole wet path is the undelayed one shifted by the delay; the read
+    #: starts at frozen time ``n + delay`` so the hold is still the live
+    #: input's continuation, in phase. 0 (every other size) = shipped.
+    _FREEZE_BIRTH_DELAY = {65536: 4096}
+    #: The capture's stages before the first frame: rfft, rfft, analysis.
+    _FREEZE_CAPTURE_STAGES = 3
+    _FREEZE_WINDOWS15: dict = {}
+
+    @classmethod
+    def _freeze_window15(cls, n: int) -> np.ndarray:
+        """The synthesis window with the Hann^2 overlap sum (1.5) divided out."""
+        w = cls._FREEZE_WINDOWS15.get(n)
+        if w is None:
+            w = cls._freeze_window(n) / 1.5
+            cls._FREEZE_WINDOWS15[n] = w
+        return w
+
+    @classmethod
+    def _freeze_analyse(cls, spec_a: np.ndarray, spec_b: np.ndarray, n: int,
+                        hop: int) -> dict:
+        """The capture's analysis, from the two frames' spectra.
+
+        Magnitudes AND phases are ``spec_b`` itself (the later frame, the
+        one ending at the edge). Each REGION's true frequency comes from
+        its peak's phase difference across the hop (the phase-vocoder
+        estimate ``w_bin + princarg(dphi - w_bin*hop)/hop``), so a
+        partial between two bins holds at its real pitch instead of
+        beating between them, and every bin of the region advances at it
+        (``_freeze_lock``). What is stored is the per-frame ROTOR
+        ``exp(i * w_true * hop)``: frame ``j + 1`` is frame ``j`` times
+        the rotor, one complex multiply instead of an ``exp`` and a
+        ``mod`` over every bin (the cost of a frame at 65536 was 2.1 ms
+        of transcendentals around a 0.46 ms irfft). The phase work runs on
+        the peaks only, since only a peak's frequency is ever used.
+        ``jside``: ``1j * (+1 / -1)`` per bin, alternating by peak REGION
+        -- the quadrature the stereo scatter adds (``width``).
+        """
+        mag = np.abs(spec_b)
+        top = float(mag.max()) if mag.size else 0.0
+        floor = 1e-12
+        if np.isfinite(top):
+            floor = max(floor, top * 10.0 ** (cls._FREEZE_PEAK_FLOOR_DB / 20.0))
+        idx = cls._freeze_lock_index(mag, floor)
+        # idx is non-decreasing (a repeat of the sorted peaks), so a
+        # region's ordinal is a running count of where it changes
+        new = np.empty(idx.shape[0], dtype=bool)
+        new[:1] = True
+        new[1:] = idx[1:] != idx[:-1]
+        ordinal = np.cumsum(new) - 1
+        pk = idx[new]
+        w_pk = 2.0 * np.pi * pk / n
+        dphi = np.angle(spec_b[pk]) - np.angle(spec_a[pk]) - w_pk * hop
+        dphi = np.mod(dphi + np.pi, 2.0 * np.pi) - np.pi
+        rot = np.exp(1j * ((w_pk + dphi / hop) * hop))[ordinal]
+        jside = (1j * (1.0 - 2.0 * (np.arange(pk.shape[0]) % 2)))[ordinal]
+        return {"X": spec_b, "rot": rot, "jside": jside}
+
     @classmethod
     def _freeze_capture(cls, seg: np.ndarray, n: int, hop: int) -> dict:
-        """Analyse the ``n + hop`` samples before a freeze edge.
-
-        Two Hann frames one hop apart: magnitudes from the later one, and
-        each bin's TRUE frequency from the pair's phase difference (the
-        phase-vocoder estimate ``w_bin + princarg(dphi - w_bin*hop)/hop``)
-        so a partial between two bins holds at its real pitch instead of
-        beating between them, then phase-locked to the peaks
-        (``_freeze_lock``). Returns the layer's spectral state, plus
-        ``side``: +1 / -1 per bin, alternating by peak REGION, the sign
-        the stereo scatter gives each partial (``width`` below).
-        """
+        """Analyse the ``n + hop`` samples before a freeze edge: two Hann
+        frames one hop apart through ``_freeze_analyse`` (in one go; the
+        staged birth runs the same three stages across blocks)."""
         w = cls._freeze_window(n)
-        spec_a = np.fft.rfft(seg[:n] * w)
-        spec_b = np.fft.rfft(seg[hop:hop + n] * w)
-        k = np.arange(spec_b.shape[0], dtype=np.float64)
-        w_bin = 2.0 * np.pi * k / n
-        dphi = np.angle(spec_b) - np.angle(spec_a) - w_bin * hop
-        dphi = np.mod(dphi + np.pi, 2.0 * np.pi) - np.pi
-        mag = np.abs(spec_b)
-        idx = cls._freeze_lock_index(mag)
-        ordinal = np.unique(idx, return_inverse=True)[1].reshape(-1)
+        return cls._freeze_analyse(np.fft.rfft(seg[:n] * w),
+                                   np.fft.rfft(seg[hop:hop + n] * w), n, hop)
+
+    @staticmethod
+    def _freeze_new_layer(spec: dict, n: int, hop: int, delay: int) -> dict:
+        """The spectral half of a layer: the rotor stream advanced to the
+        first frame the read ever touches. The read starts at frozen time
+        ``n + delay`` and frame ``j`` fills ``[j*hop, j*hop + n)``, so the
+        frames before ``delay // hop + 1`` are never heard -- frame 0,
+        which the shipped birth made and never read, is skipped."""
+        j0 = delay // hop + 1
+        X, rot = spec["X"], spec["rot"]
+        for _ in range(j0):
+            X = X * rot
         return {
-            "mag": mag,
-            "phi": np.angle(spec_b),
-            "w_true": (w_bin + dphi / hop)[idx],
-            "side": 1.0 - 2.0 * (ordinal % 2),
+            "X": X, "rot": rot, "jside": spec["jside"],
+            "syn": np.zeros(4 * n, dtype=np.float64), "origin": 0,
+            "j0": j0, "j_next": j0,
+            # the stereo channels are made only once width is up
+            "syn_l": None, "syn_r": None,
         }
+
+    @classmethod
+    def _freeze_frames(cls, layer: dict, j_stop: int, n: int, hop: int, width: float,
+                       ratio: float, smear: float, seed: int) -> None:
+        """Synthesise frames ``j_next .. j_stop - 1`` into the layer's
+        overlap-add buffers (frozen time, offset by ``origin``).
+
+        Frame ``j`` is ``irfft(X_j) * hann / 1.5`` with ``X_{j+1} = X_j *
+        rot``; bins above Nyquist / r are zeroed when r > 1; ``smear``
+        multiplies in ``exp(i * smear * jitter_j)`` from
+        ``default_rng([seed, j])``. ``width``: L / R are the frame rotated
+        by ``+/- side * width * pi/4`` per region, which by linearity is
+        ``cos(t) * M +/- sin(t) * Q`` with ``Q = irfft(1j * side * X_j)``
+        -- two inverse FFTs for the pair instead of two more of their own
+        (and none at all while the scale is 0: the channels are the mono
+        frame). When width first comes up on a live layer its channels
+        start as copies of the mono stream and diverge from here on,
+        across the overlap -- no step."""
+        j = int(layer["j_next"])
+        if j >= j_stop:
+            return
+        syn = layer["syn"]
+        syn_l, syn_r = layer["syn_l"], layer["syn_r"]
+        wide = width > 0.0 or syn_l is not None
+        if wide and syn_l is None:
+            if j == int(layer["j0"]):          # nothing written yet
+                syn_l, syn_r = np.zeros_like(syn), np.zeros_like(syn)
+            else:
+                syn_l, syn_r = syn.copy(), syn.copy()
+        origin = int(layer["origin"])
+        w15 = cls._freeze_window15(n)
+        X, rot = layer["X"], layer["rot"]
+        k_n = X.shape[0]
+        keep = None
+        if ratio > 1.0:
+            keep = np.arange(k_n) < int(k_n / ratio)
+        theta = width * np.pi / 4.0
+        c, s = np.cos(theta), np.sin(theta)
+        while j < j_stop:
+            lo = j * hop - origin
+            end = lo + n
+            if end > syn.shape[0]:
+                grow = end - syn.shape[0] + 4 * n
+                syn = np.concatenate([syn, np.zeros(grow, dtype=np.float64)])
+                if wide:
+                    syn_l = np.concatenate([syn_l, np.zeros(grow, dtype=np.float64)])
+                    syn_r = np.concatenate([syn_r, np.zeros(grow, dtype=np.float64)])
+            xs = X if keep is None else np.where(keep, X, 0.0)
+            if smear > 0.0:
+                jit = np.random.default_rng([seed, j]).uniform(-np.pi, np.pi, k_n)
+                xs = xs * np.exp(1j * (smear * jit))
+            frame = np.fft.irfft(xs, n) * w15
+            syn[lo:end] += frame
+            if wide:
+                if s == 0.0:
+                    syn_l[lo:end] += frame
+                    syn_r[lo:end] += frame
+                else:
+                    # the same jitter, rotated apart: L leads, R lags
+                    cm = c * frame
+                    sq = s * (np.fft.irfft(layer["jside"] * xs, n) * w15)
+                    syn_l[lo:end] += cm + sq
+                    syn_r[lo:end] += cm - sq
+            X = X * rot
+            j += 1
+        layer["X"], layer["j_next"] = X, j
+        layer["syn"], layer["syn_l"], layer["syn_r"] = syn, syn_l, syn_r
+
+    @classmethod
+    def _freeze_birth_step(cls, pc: dict, n: int, hop: int, delay: int, width: float,
+                           ratio: float, smear: float, seed: int) -> None:
+        """One stage of a staged birth: rfft, rfft, analysis, then one
+        prefill frame per stage until the frames under the first read
+        exist."""
+        s = int(pc["stage"])
+        if s == 0:
+            pc["spec_a"] = np.fft.rfft(pc["seg"][:n] * cls._freeze_window(n))
+        elif s == 1:
+            pc["spec_b"] = np.fft.rfft(pc["seg"][hop:hop + n] * cls._freeze_window(n))
+            pc["seg"] = None
+        elif s == 2:
+            spec = cls._freeze_analyse(pc.pop("spec_a"), pc.pop("spec_b"), n, hop)
+            pc["layer"] = cls._freeze_new_layer(spec, n, hop, delay)
+        else:
+            layer = pc["layer"]
+            cls._freeze_frames(layer, int(layer["j_next"]) + 1, n, hop, width,
+                               ratio, smear, seed)
+        pc["stage"] = s + 1
 
     def _render_freeze(self, module, frames: int, buffers, patch) -> dict:
         """Spectral freeze (see modules/freeze.py for the contract).
@@ -19348,6 +19510,22 @@ class NumpyBackend(AudioBackend):
         jitter is ``default_rng([seed, j])`` keyed by the frame index and
         frames are generated in order on demand, so the stream is the
         same whatever the block partition.
+
+        2026-09-24: the phase advance is a stored ROTOR (``X_{j+1} = X_j *
+        exp(i w_true hop)``, ``_freeze_analyse``) instead of an ``exp``
+        and a ``mod`` over every bin per frame, ``width`` is two inverse
+        FFTs by quadrature instead of three (``_freeze_frames``), frame 0
+        (never read) is skipped and the buffer shift copies only the live
+        span -- renders move at the float32 LSB (-140 dB and below). Peaks
+        must stand within ``_FREEZE_PEAK_FLOOR_DB`` of the frame's top, so
+        a triad's region map is its three partials, not thousands of
+        numerical-floor "peaks" -- which also means one ulp of input can
+        no longer flip a floor peak and swap half the partials between L
+        and R (it did: -13 dB of change on a 32768 organ hold's out_l).
+        At the sizes in ``_FREEZE_BIRTH_DELAY`` (65536) the birth is
+        STAGED: the capture is taken at the real edge, finished over the
+        next ``delay`` samples (``_freeze_birth_step``, one stage per 512
+        block), and every layer hears the gate ``delay`` samples late.
 
         Pitch is a change of READ rate on that stationary stream (linear
         interpolation), never a resampled spectrum -- exact frequency,
@@ -19444,6 +19622,7 @@ class NumpyBackend(AudioBackend):
             size = 4096
         n = size
         hop = n // 4
+        delay = int(self._FREEZE_BIRTH_DELAY.get(n, 0))
         tick = bool(module.params.get("freeze", False))
         latch = bool(module.params.get("latch", False))
         smear = min(max(float(module.params.get("smear", 0.0)), 0.0), 1.0)
@@ -19477,6 +19656,12 @@ class NumpyBackend(AudioBackend):
             st["prev_raw"] = False
             st["latched"] = False
             st["latch_on"] = latch
+            # the staged birth (``_FREEZE_BIRTH_DELAY``): captures taken at
+            # the edge and finished over the next ``delay`` samples, and
+            # the gate row the layers hear, ``delay`` samples late
+            st["pending"] = []
+            st["gdelay"] = np.zeros(delay, dtype=bool)
+            st["prev_d"] = False
 
         x = src.astype(np.float64)
         full = np.concatenate([st["hist"], x])
@@ -19510,8 +19695,24 @@ class NumpyBackend(AudioBackend):
         st["prev"] = bool(gt[-1])
         rising = np.flatnonzero(gt & ~np.concatenate(([prev], gt[:-1])))
 
+        # --- the staged birth: the capture is taken at the edge (the
+        # history is the edge's), the layer is born ``delay`` samples
+        # later, and every layer hears the gate that late -- the wet path
+        # is the undelayed one, shifted. delay 0: the row itself.
+        pending = st["pending"]
+        if delay:
+            for i in rising.tolist():
+                pending.append({"seg": full[i:i + n + hop].copy(), "a": t_abs + i,
+                                "stage": 0})
+            gcat = np.concatenate([st["gdelay"], gt])
+            gt = gcat[:frames]
+            st["gdelay"] = gcat[frames:]
+            prev_d = bool(st["prev_d"])
+            st["prev_d"] = bool(gt[-1])
+            rising = np.flatnonzero(gt & ~np.concatenate(([prev_d], gt[:-1])))
+
         layers = st["layers"]
-        if not layers and rising.size == 0:
+        if not layers and not pending and rising.size == 0:
             # Nothing frozen, nothing starting: the neutral.
             if dry == 1.0:
                 return {"out": src, "out_l": src, "out_r": src}
@@ -19536,6 +19737,15 @@ class NumpyBackend(AudioBackend):
                 wcv_mean = 0.0        # scrub before the clamp: min/max pass NaN
             width = min(max(width + w_depth * wcv_mean, 0.0), 1.0)
 
+        # --- staged captures: each is finished (its first frames made)
+        # by its birth, the work spread evenly over the ``delay`` samples
+        n_stages = self._FREEZE_CAPTURE_STAGES + (n + delay) // hop - delay // hop
+        t_end = t_abs + frames
+        for pc in pending:
+            need = min(n_stages, -(-n_stages * (t_end - int(pc["a"])) // max(delay, 1)))
+            while pc["stage"] < need:
+                self._freeze_birth_step(pc, n, hop, delay, width, ratio, smear, seed)
+
         # --- new layers at this block's rising edges: each one cuts the
         # gate row of every older layer at its index (forced release).
         for i in rising.tolist():
@@ -19545,27 +19755,29 @@ class NumpyBackend(AudioBackend):
                     old["cut"] = i
             if len(layers) >= self._FREEZE_MAX_LAYERS:
                 layers.pop(0)
-            seg = full[i:i + n + hop]  # the n + hop samples before edge i
-            spec = self._freeze_capture(seg, n, hop)
-            layers.append({
-                "mag": spec["mag"], "phi": spec["phi"], "w_true": spec["w_true"],
-                "side": spec["side"],
-                "syn": np.zeros(4 * n, dtype=np.float64), "origin": 0, "j_next": 0,
-                # the stereo channels are made only once width is up
-                "syn_l": None, "syn_r": None,
-                # the read starts at frozen time ``n`` = the edge itself,
-                # so a stationary input's hold is its own continuation,
-                # in phase (frames 1..4 cover it from the first sample)
-                "m0": t_abs + i, "p_base": float(n), "m_base": 0, "ratio": ratio,
+            if delay:
+                pc = pending.pop(0)
+                while pc["stage"] < n_stages:
+                    self._freeze_birth_step(pc, n, hop, delay, width, ratio, smear, seed)
+                layer = pc["layer"]
+            else:
+                seg = full[i:i + n + hop]  # the n + hop samples before edge i
+                layer = self._freeze_new_layer(self._freeze_capture(seg, n, hop), n, hop, 0)
+            layer.update({
+                # the read starts at frozen time ``n + delay`` = the edge
+                # plus the birth delay, so a stationary input's hold is its
+                # own continuation, in phase (frames 1..4 cover it from the
+                # first sample)
+                "m0": t_abs + i, "p_base": float(n + delay), "m_base": 0, "ratio": ratio,
                 # the self-decay's rebase point (a knob turn folds the
                 # fall so far into g_base and restarts the count)
                 "decay": decay_s, "g_base": 1.0, "m_gbase": 0,
                 "prev": False, "on": 0, "off": 0, "env_off": 0.0,
                 "active": True, "born": i, "cut": None,
             })
+            layers.append(layer)
 
         # --- render every layer, drop the ones that have faded out
-        w = self._freeze_window(n)
         idx = np.arange(frames)
         wet = np.zeros(frames, dtype=np.float64)
         # the stereo accumulators exist only once a layer with channels
@@ -19601,54 +19813,32 @@ class NumpyBackend(AudioBackend):
             p = layer["p_base"] + (m - layer["m_base"]) * ratio
             p_lo = int(np.floor(p[0]))
             p_hi = int(np.floor(p[-1])) + 1
+            # keep the buffers' origin near the read -- never past the next
+            # frame's start, so every frame still to come fits. Only the
+            # LIVE span (up to the last frame's end) is copied, into fresh
+            # zeros whose pages the coming frames fault in as they write:
+            # the whole-buffer shift was a 3 x 2 MB spike at 65536, wide.
+            origin = int(layer["origin"])
+            if p_lo - origin >= layer["syn"].shape[0] // 2:
+                shift = min(p_lo, int(layer["j_next"]) * hop) - origin
+                if shift > 0:
+                    j_w = int(layer["j_next"])
+                    hi = (j_w - 1) * hop + n - origin if j_w > int(layer["j0"]) else 0
+                    live = max(0, hi - shift)
+                    for key in ("syn", "syn_l", "syn_r"):
+                        buf = layer[key]
+                        if buf is None:
+                            continue
+                        fresh = np.zeros(buf.shape[0], dtype=np.float64)
+                        fresh[:live] = buf[shift:shift + live]
+                        layer[key] = fresh
+                    origin += shift
+                    layer["origin"] = origin
             # generate frames until the buffer covers p_hi (frame j fills
             # frozen time [j*hop, j*hop + n); full overlap up to j_next*hop)
-            syn = layer["syn"]
-            syn_l, syn_r = layer["syn_l"], layer["syn_r"]
-            wide = width > 0.0 or syn_l is not None
-            if wide and syn_l is None:
-                # width has just come up on a live layer: the channels
-                # start as the mono stream and diverge from the next
-                # frame on, across the overlap -- no step
-                syn_l, syn_r = syn.copy(), syn.copy()
-            origin = int(layer["origin"])
-            if p_lo - origin >= syn.shape[0] // 2:
-                shift = p_lo - origin
-                syn = np.concatenate([syn[shift:], np.zeros(shift, dtype=np.float64)])
-                if wide:
-                    syn_l = np.concatenate([syn_l[shift:], np.zeros(shift, dtype=np.float64)])
-                    syn_r = np.concatenate([syn_r[shift:], np.zeros(shift, dtype=np.float64)])
-                origin += shift
-            mag = layer["mag"]
-            if ratio > 1.0:
-                kmax = int(mag.shape[0] / ratio)
-                mag = np.where(np.arange(mag.shape[0]) < kmax, mag, 0.0)
-            j = int(layer["j_next"])
-            phi = layer["phi"]
-            # the quadrature scatter: +/- width * pi/4 per region
-            scat = (width * np.pi / 4.0) * layer["side"] if wide else None
-            while j * hop <= p_hi:
-                end = j * hop + n - origin
-                if end > syn.shape[0]:
-                    grow = end - syn.shape[0] + 4 * n
-                    syn = np.concatenate([syn, np.zeros(grow, dtype=np.float64)])
-                    if wide:
-                        syn_l = np.concatenate([syn_l, np.zeros(grow, dtype=np.float64)])
-                        syn_r = np.concatenate([syn_r, np.zeros(grow, dtype=np.float64)])
-                ph = phi
-                if smear > 0.0:
-                    jit = np.random.default_rng([seed, j]).uniform(-np.pi, np.pi, mag.shape[0])
-                    ph = phi + smear * jit
-                frame = np.fft.irfft(mag * np.exp(1j * ph), n) * w / 1.5
-                syn[j * hop - origin:end] += frame
-                if wide:
-                    # the same jitter, rotated apart: L leads, R lags
-                    syn_l[j * hop - origin:end] += np.fft.irfft(mag * np.exp(1j * (ph + scat)), n) * w / 1.5
-                    syn_r[j * hop - origin:end] += np.fft.irfft(mag * np.exp(1j * (ph - scat)), n) * w / 1.5
-                phi = np.mod(phi + layer["w_true"] * hop, 2.0 * np.pi)
-                j += 1
-            layer["syn"], layer["origin"], layer["j_next"], layer["phi"] = syn, origin, j, phi
-            layer["syn_l"], layer["syn_r"] = syn_l, syn_r
+            self._freeze_frames(layer, p_hi // hop + 1, n, hop, width, ratio, smear, seed)
+            syn, syn_l, syn_r = layer["syn"], layer["syn_l"], layer["syn_r"]
+            wide = syn_l is not None
 
             # the self-decay: a per-sample factor from the integer count
             # since birth (rebased when the knob moves, so no jump)

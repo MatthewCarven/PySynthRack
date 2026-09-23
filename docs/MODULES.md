@@ -3536,6 +3536,26 @@ Hann, overlap-added (Hann² at 75% overlap sums to exactly 1.5, divided
 out). The frames are generated in order on demand, so the stream is
 bit-exact whatever the block size.
 
+**The peak floor** (2026-09-24). A peak has to stand within **120 dB**
+of the frame's loudest bin to anchor a region. Under the old absolute
+floor (1e-12) a pure triad found thousands of "peaks" in its own
+numerical floor (4518 at 32768); at −120 dB it finds its three
+partials at every window that resolves them, while white noise, pink
+noise, a detuned saw chord and a vowel keep *every* region they had
+(−100 dB began to thin the vowel's top octave, so the floor sits 20 dB
+lower). The mono hold is unchanged by it — renders moved at the
+float32 LSB — but the stereo scatter below alternates its sign *by
+region*, and under the old floor one ulp of input could flip a floor
+"peak" in or out and swap half the partials between L and R (measured
+on an organ maj7 at 32768, width 0.8: −13 dB of change on `out_l` from
+one ulp; +1.4 dB at 65536; the shipped drone example's own input moved
+its stereo hold 8.7%). Under −120 dB the same ulp changes the hold by
+its own size (−143 dB), and the test re-runs the old floor to prove it
+can tell. Synthesis also got cheaper the same day: the phase advance is
+a stored per-bin rotor (one complex multiply a frame, not an `exp` and
+a `mod` over every bin), `width` costs two inverse FFTs instead of
+three, and frame 0 — never read — is no longer made.
+
 **`size` is the resolution knob.** Bigger windows capture a longer
 moment (93 ms at 4096, 372 ms at 16384 — an average of a third of a
 second) and separate close harmony; partials closer than about three
@@ -3559,25 +3579,44 @@ of what you hear; aim the edge a beat *after* the phrase, not on it.
 A triad holds exactly as cleanly as at 16384 (partial for partial
 within 0.1 dB, measured).
 
+**65536** (2026-09-24) — 1.49 s — goes one step further down the same
+road, and it has a **staged birth**: the capture is taken *at* the
+edge (the history is the edge's), but the layer is born **4096 samples
+(93 ms) later**, and the capture's work — two FFTs, the analysis, the
+four frames under the first read — is spread over the blocks in
+between, one stage per 512 block, instead of landing in one. Every
+layer hears the gate those 93 ms late, so the whole wet path — rise,
+release, re-freeze crossfades, the latch, a 30 ms tap — is the
+undelayed one shifted; the read starts 93 ms into frozen time, so the
+hold is still the live input's own continuation, *in phase* (a sine
+frozen with `dry` 1 doubles, pinned at a pitch where a read that
+ignored the delay would cancel instead). The dry is never delayed. The
+other sizes are born at the edge, as shipped. It holds a triad
+partial for partial within 0.1 dB of 32768 and is bit-exact at
+64 = 512 = 1000 with every feature live and a second edge landing
+inside the first one's delay.
+
 *What it costs* (measured at 44.1 kHz, one 512-frame block = 11.61 ms
-of budget). The hold itself is cheap: 15% of a block mono, 36% with
-`width` up, and a 10 s render is 0.14 s of wall clock (0.29 s with
-`width`) — the per-frame inverse FFT is only 0.22 ms and it happens
-once per 186 ms hop. The **capture** is the spike: one block at the
-edge does the analysis FFTs *and* fills the synthesis buffer, and at
-32768 that block takes **10.1 ms mono / 20.0 ms with `width`** —
-between 87% and 172% of one block's budget, a single overrun the
-sink's ring absorbs, and one step further along a road the shipped
-16384 already walks (5.3 / 9.7 ms, up to 83%). Part of the bill was
-paid by vectorizing the peak-region map, which was 6 ms of a 7.6 ms
-capture at 32768 and is now 0.33 ms, integer-identical (a real
-spectrum has a peak every three or four bins in its numerical floor —
-3079 regions at 32768 — so the old Python loop over them scaled with
-the window). **65536 was measured and left off the knob**: its capture
-is 54 ms — five whole blocks, an audible hole — and worse, its steady
-state is 11.2 ms *every 371 ms*, 96% of a block, which is not a spike
-you can absorb but a permanent near-overrun with nothing left for the
-rest of the patch.
+of budget; worst single block, mono / with `width`, each block the
+minimum of seven runs so other processes don't inflate it; 2026-09-24).
+
+| `size` | capture block, was | now | steady state, was | now |
+|--------|--------------------|-----|-------------------|-----|
+| 16384 | 5.3 / 10.4 ms | 1.6 / 2.6 ms | 0.8 / 1.8 ms | 0.2 / 0.4 ms |
+| 32768 | 10.4 / 20.5 ms (177%) | 3.4 / 5.3 ms (46%) | 1.5 / 3.6 ms | 0.4 / 0.9 ms |
+| 65536 | 21.6 / 42.2 ms (364%) | **3.0 / 3.6 ms (31%)**, staged | 3.0 / 8.1 ms | 0.8 / 2.4 ms |
+
+The old bill was transcendentals, not FFTs: a frame at 65536 was an
+`exp` over 32769 bins (1.3 ms) and a `mod` (0.8 ms) around a 0.5 ms
+inverse FFT, three times over with `width`, and the capture block made
+five of them. The rotor, the two-FFT quadrature and skipping the unread
+frame 0 cut that to a quarter; the staged birth spreads what is left of
+65536's capture. (On 2026-09-22 65536 was measured and **left off**:
+a 54 ms capture and 11.2 ms every 371 ms. The peak-region map was
+vectorized then too — 6 ms of a 7.6 ms capture at 32768, now 0.33 ms,
+integer-identical.) At a 64-sample block the budget is 1.45 ms and a
+single wide frame at 65536 (~2 ms) overruns it, as a 32768 capture
+always did — the long windows want a block of 512 or more.
 
 **`smear`** is the character knob: 0 is the coherent hold, glassy and
 still; 1 gives every synthesis frame random phases (`default_rng([seed,
@@ -3705,7 +3744,7 @@ mid-fall, the level holds where it is. 0 = forever, as shipped.
 
 | Parameter | Default | Range | Notes |
 |-----------|---------|-------|-------|
-| `size` | 4096 | 1024 · 2048 · 4096 · 8192 · 16384 · 32768 | FFT window in samples — the resolution knob. 32768 is 743 ms, the drone end; 65536 was measured and left off (see above). |
+| `size` | 4096 | 1024 · 2048 · 4096 · 8192 · 16384 · 32768 · 65536 | FFT window in samples — the resolution knob. 32768 is 743 ms, the drone end; 65536 (1.49 s) has the staged birth — the hold starts 93 ms after the edge (see above). |
 | `freeze` | off | tickbox | Hold from the panel — forces the hold on over the gate *and* the latch. |
 | `latch` | off | tickbox | The gate **toggles** the hold on each rising edge instead of holding it while high. |
 | `smear` | 0.0 | 0…1 | 0 = coherent hold, 1 = random-phase wash. |
