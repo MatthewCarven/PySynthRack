@@ -17862,18 +17862,42 @@ class NumpyBackend(AudioBackend):
 
         One guard falls out of the same pass: scheduling a gate now
         truncates any earlier gate of the same output to end a sample
-        before it (the clock's own ceiling rule). The sample where the
-        two actually meet cannot be un-written — the loop has already
-        emitted it high — so the new gate itself still merges into the
-        stale one; what the truncation frees is everything the stale
-        gate would have covered AFTER that point, and the gates behind
-        it come back. Measured on a 0.3-swung 8 Hz clock at ``pw`` 0.9,
-        ``mult`` goes from 96 emitted gates to 143 (192 scheduled); at
-        ``pw`` 0.5 it was already 143 and is unchanged. The residue is
-        honest and untouched by this pass: a ``divn`` gate longer than
-        the SHORT side of a swung period still merges into the next one
-        (17 of 32 at ``pw`` 0.9, both before and after) — keep ``pw``
-        under the swing's short side, or use ``divn`` for triggers.
+        before it (the clock's own ceiling rule). What it frees is
+        everything the stale gate would have covered after the new one
+        starts, so the gates behind it come back.
+
+        **A gate never merges into the next one (2026-09-24).** The
+        truncation alone could not stop a merge on an ON-TIME gate: the
+        sample before it has already been emitted high. So a merge is
+        now prevented when a gate STARTS -- the ``ahead`` predictor
+        places this output's next rising edge (the next ``k`` input
+        intervals, alternating ``interval_prev`` / ``interval`` -- exact
+        for any period-2 clock, straight or swung -- plus, for ``divn``,
+        the next gate's own swing offset off the interval it will see;
+        for ``mult``, the next real edge) and the length is capped to end
+        at least ONE sample before it. One sample, because every edge
+        detector in the backend compares against the previous sample:
+        one low sample is a falling edge, and a bigger floor would move
+        gates that never collided. The cap only binds where the shipped
+        render merged (the prediction is exact on a steady clock), so
+        ``swing`` 0 or a ``pw`` under the short side renders bit-exact.
+        When the prediction is WRONG (a tempo change, a reset, the first
+        interval of a swung clock) the early-edge fallback catches it: a
+        gate due now whose output was emitted high on the previous
+        sample (carried across blocks in ``last_high``) starts one
+        sample late, so the stale gate ends a sample before the new
+        rising edge. Measured over pw 0.5..0.95 x clock swing 0/0.3/0.5
+        x divider swing 0/0.3/0.5 x ``n`` 1/3/4/5 on the real 8 Hz
+        clock: 2519 merged ``divn`` gates and 2256 merged ``mult``
+        gates -> 0 and 0 (``div2``/``div4``/``div8`` never merged -- an
+        even division spans ``k`` x the mean exactly). The 0.3-swung
+        ``n`` 3 ``pw`` 0.9 case: 15 of 32 ``divn`` gates merged -> none.
+        One residue that is not a merge: with clock swing AND divider
+        swing both at 0.5 on ``n`` 1, a late gate's offset (half the LONG
+        interval) lands after the next (short) edge, and the on-time gate
+        there supersedes it -- 47 of 96 dropped at every ``pw``, before
+        and after (the other 235 of the sweep's 2754 missing ``divn``
+        rises).
         """
         clock = self._input_buffer(patch, buffers, module.id, "clock")
         reset = self._input_buffer(patch, buffers, module.id, "reset")
@@ -17906,6 +17930,7 @@ class NumpyBackend(AudioBackend):
                 "interval_prev": 0,
                 "events": {k: [] for k in names},
                 "mirror": {k: False for k in names},
+                "last_high": {k: False for k in names},
             },
         )
         base = int(st["samples"])
@@ -17918,21 +17943,54 @@ class NumpyBackend(AudioBackend):
         divn_emitted = int(st["divn_emitted"])
         events = st["events"]
         mirror = st["mirror"]
+        last_high = st.setdefault("last_high", {k: False for k in names})
 
         thresh = self._GATE_HIGH
         c_row = (clock > thresh).tolist() if clock is not None else [False] * frames
         r_row = (reset > thresh).tolist() if reset is not None else [False] * frames
         outs = {k: [0.0] * frames for k in names}
 
-        def pulse(name, start, period):
+        def ahead(j):
+            """(sum, last) of the next ``j`` input intervals, predicted.
+
+            A swung clock's intervals alternate long/short, so the one
+            after ``interval`` is predicted to be ``interval_prev`` and
+            the one after that ``interval`` again; a steady clock has
+            both equal and this is just ``j x interval``. Exact for any
+            period-2 clock; a tempo change can make it wrong, and the
+            early-edge fallback in ``pulse`` catches that."""
+            nxt = interval_prev if interval_prev > 0 else interval
+            return ((j + 1) // 2 * nxt + j // 2 * interval,
+                    nxt if j % 2 else interval)
+
+        def pulse(name, start, period, n, next_start=None):
             """Schedule a gate of pw x period at `start` (absolute).
 
-            Any earlier gate of the same output is truncated to end one
-            sample before this one (and dropped if that leaves nothing),
-            so the new gate always gets its own rising edge instead of
-            merging into a still-running one -- the clock's own "cut a
-            sample before the next edge" ceiling, applied here.
+            Three rules keep every gate its own rising edge:
+
+            * **Prospective cap.** ``next_start`` is where this output's
+              NEXT gate is predicted to rise; the length is capped to end
+              at least one sample before it (only when the cap is at
+              least one sample -- a gate that cannot fit before the next
+              one is left to the fallback). The scheduler cannot un-write
+              a sample it has emitted, so a merge has to be prevented
+              when the gate STARTS.
+            * **Early-edge fallback.** A gate due now whose output was
+              emitted high on the previous sample (the prediction was
+              wrong: a tempo change, a reset) starts one sample late
+              instead, so that sample reads low and the stale gate ends
+              a sample before the new rising edge.
+            * Any earlier gate of the same output is truncated to end one
+              sample before this one (and dropped if that leaves
+              nothing) -- the clock's own "cut a sample before the next
+              edge" ceiling, applied here.
             """
+            now_ = base + n
+            if start <= now_ and (outs[name][n - 1] > 0.0 if n else last_high[name]):
+                start = now_ + 1
+            length = int(round(pw * period))
+            if next_start is not None and next_start - start - 1 >= 1:
+                length = min(length, next_start - start - 1)
             row = events[name]
             kept = []
             for ev in row:
@@ -17941,7 +17999,7 @@ class NumpyBackend(AudioBackend):
                 ev[1] = min(ev[1], start - ev[0] - 1)
                 if ev[1] > 0:
                     kept.append(ev)
-            kept.append([start, max(1, int(round(pw * period)))])
+            kept.append([start, max(1, length)])
             events[name] = kept
 
         for n in range(frames):
@@ -17970,19 +18028,27 @@ class NumpyBackend(AudioBackend):
                 for name in ("div2", "div4", "div8"):
                     if count % divisors[name] == 0:
                         if known:
-                            pulse(name, now, divisors[name] * avg)
+                            k_div = divisors[name]
+                            pulse(name, now, k_div * avg, n,
+                                  now + ahead(k_div)[0])
                         else:
                             mirror[name] = True
                 if count % n_div == 0:
                     # The swing offset is a POSITION: it stays on the
                     # last real interval, so no edge moves. The length
-                    # comes from the average.
+                    # comes from the average, capped to end a sample
+                    # before the NEXT divn gate: n predicted intervals
+                    # on, plus that gate's own swing offset if it is a
+                    # late one (measured off the interval it will see).
                     period = n_div * interval
                     late = (divn_emitted % 2 == 1) and swing > 0.0 and known
-                    if late:
-                        pulse("divn", now + int(round(swing * period)), n_div * avg)
-                    elif known:
-                        pulse("divn", now, n_div * avg)
+                    if known:
+                        span, last_iv = ahead(n_div)
+                        next_start = now + span
+                        if divn_emitted % 2 == 0 and swing > 0.0:
+                            next_start += int(round(swing * n_div * last_iv))
+                        start = now + int(round(swing * period)) if late else now
+                        pulse("divn", start, n_div * avg, n, next_start)
                     else:
                         mirror["divn"] = True
                     divn_emitted += 1
@@ -17992,8 +18058,9 @@ class NumpyBackend(AudioBackend):
                 events["mult"] = [ev for ev in events["mult"] if ev[0] <= now]
                 if known:
                     sub = interval / m_mult
+                    nxt_edge = now + ahead(1)[0]
                     for k in range(m_mult):
-                        pulse("mult", now + int(round(k * sub)), sub)
+                        pulse("mult", now + int(round(k * sub)), sub, n, nxt_edge)
                 else:
                     mirror["mult"] = True
                 count += 1
@@ -18012,6 +18079,8 @@ class NumpyBackend(AudioBackend):
         end = base + frames
         for name in names:
             events[name] = [ev for ev in events[name] if ev[0] + ev[1] > end]
+            if frames:
+                last_high[name] = outs[name][-1] > 0.0
         st.update(
             samples=end, prev_clock=prev_c, prev_reset=prev_r, count=count,
             last_edge=last_edge, interval=interval, interval_prev=interval_prev,

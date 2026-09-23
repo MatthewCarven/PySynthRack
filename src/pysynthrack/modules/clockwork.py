@@ -60,6 +60,17 @@ offset, still comes off the real clock edges and the last real interval.
 ``mult`` keeps the real interval — subdividing the period that actually
 happened is its job.
 
+**A gate never merges into the next one (2026-09-24).** At high ``pw``
+on a swung clock (or with ``divn``'s own swing) a gate could still be
+high when the next one of the same output was due, and the two merged
+into one note — 15 of 32 ``divn`` gates at ``pw`` 0.9 on a 0.3-swung
+8 Hz clock. Every gate's length is now capped, when it starts, to end
+at least one sample before the output's predicted next gate (the swing
+pattern is long/short, so the prediction is exact for a straight or
+swung clock); when a tempo change or a reset makes the prediction wrong,
+the late gate starts one sample late instead of merging. Where nothing
+collided, nothing moves.
+
 **CV on the counts (2026-09-11):** ``euclidean.fills_cv`` and
 ``burst.count_cv`` move ``fills`` / ``count`` by ``*_cv_depth`` per unit
 (default 8 — 0..1 V sweeps eight), read at the clock / trigger edge and
@@ -241,7 +252,9 @@ class ClockDivider(Module):
             0.05..0.95. Default 0.5. The period is the MEAN of the last
             two measured input intervals, so a swung clock's alternating
             intervals do not flutter the gate lengths (``mult`` keeps
-            the real interval).
+            the real interval). A gate is capped to end at least one
+            sample before the next gate of the same output, so a high
+            ``pw`` on a swung clock never merges two notes into one.
 
     Ports:
         clock (in, gate): the clock to divide.

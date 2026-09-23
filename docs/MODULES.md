@@ -4716,13 +4716,36 @@ Only **falling** edges move: every rising edge — the divisions' own, and
 `divn`'s swing offset, which is a *position* and still comes off the
 last real interval — is unchanged bit-exact (pinned across twenty shipped
 examples). `mult` keeps the real interval for both, because its job is to
-subdivide the period that actually happened. Two honest residues: a
-`divn` gate longer than the **short** side of a swung period still merges
-into the next one (17 of 32 gates at `pw` 0.9 with `swing` 0.3, before
-and after — keep `pw` under the swing's short side or use `divn` for
-triggers), and a divided gate on a clock whose swing is *moving* is
-steady only to the pace of the movement (3.5 ms of residual spread in
+subdivide the period that actually happened. One honest residue: a
+divided gate on a clock whose swing is *moving* is steady only to the
+pace of the movement (3.5 ms of residual spread in
 `examples/clock_swing_breathe.json`, against 148 ms under the old rule).
+
+**A gate never merges into the next one (2026-09-24).** The residue that
+pass left documented is closed: a `divn` gate longer than the **short**
+side of a swung period used to run into the next one, so a downstream
+envelope heard one note where there should be two (15 of 32 `divn` gates
+at `pw` 0.9 on a 0.3-swung 8 Hz clock at `n` 3; `mult` had the same
+merge at the next real edge). The scheduler cannot un-write a sample it
+has already emitted, so the cure is **prospective**: when a gate starts,
+its length is capped to end at least **one sample** before that
+output's *predicted* next gate — the next `k` input intervals taken as
+alternating long/short (exact for any straight or swung clock), plus
+`divn`'s own swing offset if the next `divn` gate is a late one; for
+`mult`, the next real edge. One sample is the smallest gap every edge
+detector sees as a falling edge, and it moves nothing that did not
+collide. When the prediction is wrong — a tempo change, a `reset`, the
+first interval of a swung clock — a **fallback** catches it: a gate due
+while its output is still high starts one sample late, so the stale gate
+ends a sample before the new rising edge. Over `pw` 0.5–0.95 × clock
+swing 0/0.3/0.5 × divider swing 0/0.3/0.5 × `n` 1/3/4/5: 2519 merged
+`divn` gates and 2256 merged `mult` gates → **0 and 0**; `div2` /
+`div4` / `div8` never merged (an even division spans exactly `k` × the
+mean period). Where nothing collided the render is bit-exact — every
+shipped example's audio is unchanged. One case that is not a merge
+stays: clock swing *and* divider swing both at 0.5 on `n` 1 pushes a
+late gate past the next (short) edge, and the on-time gate there
+supersedes it.
 
 **Ports**
 

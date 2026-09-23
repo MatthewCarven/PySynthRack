@@ -695,19 +695,22 @@ def test_a_steady_clock_is_untouched_by_the_average():
 
 def test_a_new_gate_truncates_a_stale_one_so_the_gates_behind_it_survive():
     """The guard: a gate scheduled while an older one of the same output
-    is still running cuts that one short. The sample where they MEET is
-    already emitted, so the new gate still merges there — but everything
-    the stale gate would have covered after that is freed, and the gates
-    behind it get their own rising edges again.
+    is still running cuts that one short, and the gates behind it get
+    their own rising edges again.
 
     Intervals 26/14, ``m`` 2, ``pw`` 0.9: edge 1's second sub-gate (39,
     12 long) used to run to 50 and swallow BOTH of edge 2's (40 and 47).
+    The 2026-09-22 pass freed 47 but left 40 merged (the sample where
+    they meet was already emitted high). Since 2026-09-24 the early-edge
+    fallback starts edge 2's gate one sample late instead, so 40 reads
+    LOW and the gate rises at 41 -- a merge is never allowed.
     """
     clock, starts = _swung_pulses(12, 26, 14)
     outs = _run_row(clock, {"m": 2, "pw": 0.9})
     rises, _ = _lengths(outs["mult"])
     assert 39 in rises                       # the late sub-gate of edge 1
-    assert 40 not in rises                   # meets it: still merged, honestly
+    assert outs["mult"][40] == 0.0           # the sample where they meet: low
+    assert 41 in rises                       # edge 2's gate, one sample late
     assert 47 in rises                       # freed by the truncation
 
 
@@ -754,3 +757,163 @@ def test_divider_unpatched_is_silent():
     b.compile(patch)
     res = b._render_clock_divider(patch.get(m.id), 64, {}, patch)
     assert all(np.all(v == 0.0) for v in res.values())
+
+
+# -- the 2026-09-24 pass: a gate never merges into the next one ----------------------
+
+
+def _real_clock_row(swing, secs=12.0, tail=1.0):
+    """The real ``clock`` at its default 8 Hz, then ``tail`` seconds of
+    silence so every scheduled gate lands inside the row."""
+    p = Patch()
+    clk = p.add_module("clock", params={"pulse_width": 0.3, "swing": swing})
+    b = NumpyBackend(sample_rate=44100, block_size=512)
+    b.compile(p)
+    rows = [np.asarray(b._render_clock(clk, 512, {}, p)).copy()
+            for _ in range(int(44100 * secs / 512))]
+    return np.concatenate(rows + [np.zeros(int(44100 * tail), np.float32)])
+
+
+def _mult_expected(starts, m):
+    """mult's gate count: edge 0 alone (no interval yet), then each
+    edge's ``m`` sub-gates that start before the next real edge (the rest
+    are dropped by design when that edge arrives)."""
+    exp = 1
+    for i in range(1, len(starts)):
+        iv = starts[i] - starts[i - 1]
+        nxt = starts[i + 1] if i + 1 < len(starts) else 10 ** 12
+        exp += sum(1 for k in range(m) if starts[i] + int(round(k * iv / m)) < nxt)
+    return exp
+
+
+def _divn_expected(starts, n, swing):
+    out = []
+    for j, i in enumerate(range(0, len(starts), n)):
+        late = j % 2 == 1 and swing > 0.0
+        off = int(round(swing * n * (starts[i] - starts[i - 1]))) if late else 0
+        out.append(starts[i] + off)
+    return out
+
+
+def test_a_long_swung_divn_gate_no_longer_merges_into_the_next():
+    """The residue the 2026-09-22 pass left documented: a 0.3-swung 8 Hz
+    clock, ``n`` 3, ``pw`` 0.9 -- 15 of 32 ``divn`` gates ran into the
+    next one (their length is off the AVERAGE period, and an odd ``n`` on
+    a swung clock alternates long/short division spans). Now every output
+    rises on every expected sample. The swing is period-2, so the
+    prediction is exact and it is the CAP that does it: no rising edge is
+    moved by the fallback, every one is on its own clock edge."""
+    clock = _real_clock_row(0.3)
+    starts = _edges(clock)
+    assert len(starts) == 96
+    outs = _run_row(clock, {"n": 3, "m": 3, "pw": 0.9}, block=512)
+    for name, k in (("div2", 2), ("div4", 4), ("div8", 8), ("divn", 3)):
+        assert _edges(outs[name]) == starts[0::k], name
+    assert len(_edges(outs["mult"])) == _mult_expected(starts, 3)   # was 47 short
+    # the capped divn gates: every one ends at least one sample before
+    # the next rises (a short-side span, S+L+S, is 0.9 x the mean span)
+    rises, lens = _lengths(outs["divn"])
+    for r, ln, r_next in zip(rises, lens, rises[1:]):
+        assert r + ln <= r_next - 1
+
+
+@pytest.mark.parametrize("long_short", [(200, 200), (260, 140)])
+def test_rising_edge_counts_are_exact_across_a_pw_by_swing_sweep(long_short):
+    """Every output, every gate, at ``pw`` 0.5..0.95 x the divider's own
+    swing 0..0.5 x ``n`` 1/3/4, on a straight and a 0.3-swung input.
+    Before this pass the census over the real-clock version of this sweep
+    was 2519 merged ``divn`` gates and 2256 merged ``mult`` gates."""
+    long_gap, short_gap = long_short
+    clock, starts = _swung_pulses(48, long_gap, short_gap)
+    clock = np.concatenate([clock, np.zeros(4 * long_gap, np.float32)])
+    for pw in (0.5, 0.7, 0.9, 0.95):
+        for swing in (0.0, 0.3, 0.5):
+            for n in (1, 3, 4):
+                p = {"n": n, "m": 3, "swing": swing, "pw": pw}
+                outs = _run_row(clock, p)
+                for name, k in (("div2", 2), ("div4", 4), ("div8", 8)):
+                    assert _edges(outs[name]) == starts[0::k], (name, p)
+                rises, want = _edges(outs["divn"]), _divn_expected(starts, n, swing)
+                assert len(rises) == len(want), p
+                late = [r - w for r, w in zip(rises, want)]
+                # Start-up: with ONE interval measured the prediction
+                # assumes a steady clock, so on a swung one an early gate
+                # may take the fallback's one-sample step. Once two
+                # intervals are known the prediction is exact: on time.
+                assert set(late[:3]) <= {0, 1}, (p, late)
+                assert set(late[3:]) == {0}, (p, late)
+                assert len(_edges(outs["mult"])) == _mult_expected(starts, 3), p
+
+
+def test_an_early_edge_after_a_tempo_change_is_caught_by_the_fallback():
+    """The prediction can be wrong: the interval halves (40 -> 20) and the
+    gates scheduled off the old tempo are still high when the new edge
+    arrives. That sample cannot be un-written, so the new gate starts ONE
+    sample late and the stale one ends a sample before it -- every gate
+    still gets its own rising edge. Exposure: the fallback must actually
+    fire here, then settle back onto the edges."""
+    slow = _clock_pulses(5, 40, 4)
+    fast = _clock_pulses(16, 20, 4)
+    clock = np.concatenate([slow, fast, np.zeros(80, np.float32)])
+    starts = _edges(clock)
+    outs = _run_row(clock, {"n": 1, "m": 2, "pw": 0.95})
+    for name, k in (("div2", 2), ("divn", 1)):
+        rises = _edges(outs[name])
+        want = starts[0::k]
+        assert len(rises) == len(want), name
+        late = [r - w for r, w in zip(rises, want)]
+        assert set(late) <= {0, 1}, (name, late)
+        assert 1 in late, name                        # the fallback fired
+        assert late[-3:] == [0, 0, 0], (name, late)   # and it settled
+        g = outs[name] > 0.5
+        for r in rises:
+            assert not g[r - 1], (name, r)
+
+
+def test_a_reset_on_an_edge_under_a_running_gate_still_gets_a_downbeat():
+    """A reset makes a division fire earlier than predicted. If a long
+    gate is still running there, the downbeat starts a sample late rather
+    than vanishing into it."""
+    outs, gap = _div_run({"n": 3, "pw": 0.95}, 12, jacks=("clock", "reset"),
+                         reset_at=5 * 20)
+    # edge 5 is the downbeat after the reset; div4's gate from edge 4
+    # (76 long at pw 0.95) is still high there
+    rises = _edges(outs["div4"])
+    assert rises[:2] == [0, 4 * gap]
+    assert rises[2] == 5 * gap + 1
+    assert outs["div4"][5 * gap] == 0.0
+
+
+def test_no_collision_means_no_change():
+    """The cap only binds where the shipped render merged: a steady clock
+    at ``pw`` 0.95 keeps its ``round(pw x period)`` lengths exactly, and
+    so does ``divn`` at ``swing`` 0.3 while ``pw`` stays under the short
+    side (0.5 < 0.7)."""
+    outs, gap = _div_run({"n": 3, "pw": 0.95}, 48)
+    for name, k in (("div2", 2), ("div4", 4), ("div8", 8), ("divn", 3)):
+        _r, lens = _lengths(outs[name])
+        assert set(lens[1:]) == {round(0.95 * k * gap)}, (name, lens)
+    outs, gap = _div_run({"n": 3, "swing": 0.3, "pw": 0.5}, 48)
+    _r, lens = _lengths(outs["divn"])
+    assert set(lens[1:]) == {round(0.5 * 3 * gap)}, lens
+
+
+def test_the_merge_guards_are_block_size_independent():
+    """64 = 128 = 512 = 1000 over 5 s of the real swung clock with both
+    guards busy, and block 1 on the tempo change (the fallback then reads
+    the carried last sample on every edge)."""
+    clock = _real_clock_row(0.3, secs=5.0)
+    p = {"n": 3, "m": 3, "swing": 0.3, "pw": 0.9}
+    ref = _run_row(clock, p, block=512)
+    for blk in (64, 128, 1000):
+        got = _run_row(clock, p, block=blk)
+        for k in ref:
+            assert np.array_equal(got[k], ref[k]), (blk, k)
+    slow = _clock_pulses(5, 40, 4)
+    fast = _clock_pulses(16, 20, 4)
+    clock = np.concatenate([slow, fast, np.zeros(80, np.float32)])
+    p = {"n": 1, "m": 2, "pw": 0.95}
+    ref = _run_row(clock, p, block=64)
+    got = _run_row(clock, p, block=1)
+    for k in ref:
+        assert np.array_equal(got[k], ref[k]), k
