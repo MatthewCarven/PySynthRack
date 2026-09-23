@@ -196,10 +196,25 @@ The linear paths that go through it: `supersaw.detune_cv`,
 `reverb` `*_cv`s, `bitcrusher.bits_cv`, `rotary.fast`,
 `pitch_shifter.pitch_cv`, the `sampler`/`bowed`/`wind`/`modal` `pitch_cv`s,
 `function_generator` and `slew` rise/fall/rate, `lfo.rate_cv`, the `filter`'s
-`resonance_cv` ratio, and the buffered sinks' `ratio_cv` — plus every octave
-path listed above, which now reaches `_pow2_clipped` through the same door.
-The per-sample CV paths and the `(V, F) → (F,)` *voice* collapses in
-`_input_buffer` are a different reduction and are untouched.
+`resonance_cv` ratio, the buffered sinks' `ratio_cv` and (2026-09-24)
+`freeze.pitch_cv` — plus every octave path listed above, which now reaches
+`_pow2_clipped` through the same door. The per-sample CV paths are untouched.
+
+**Voice collapses are summed in float64 too** (2026-09-24). The `(V, F) →
+(F,)` collapse — `_input_buffer`'s house sum, the speakers, the compressor /
+noise-gate keys, and the shared-CV averages (`delay.time_cv`,
+`resampler`/`pitch_shifter` `pitch_cv`, `granular.position_cv`,
+`sample_hold`, the stereo speaker's `pan_cv`/`width_cv`) — goes through
+`_voice_sum` / `_voice_mean`, which accumulate in float64 and cast back to
+the buffer's own dtype. This is not a block-size fix (a collapse is per
+sample); it makes the mix **independent of voice order**: float32 addition is
+not associative, so reversing eight sounding voices used to move 62% of the
+summed samples by an ulp, i.e. the mix depended on which slot the allocator
+gave each note. Two voices were already exact; three or more move by float32
+rounding only (measured on full-scale random voices: ≤ 2.4e-7 at three,
+≤ 1.4e-6 at sixteen). A collapse is a *mix*, so it is not scrubbed — a NaN voice
+poisons it exactly as a NaN on a mono cable would; the doors that must not see
+one scrub where they consume it.
 
 ### Cabling rules
 

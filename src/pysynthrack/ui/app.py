@@ -6688,6 +6688,17 @@ class App:
             if value is None:
                 continue
             value = float(value)
+            if not math.isfinite(value):
+                # A NaN / inf cable reads as what it is: the number says
+                # "nan" (ASCII -- the font paints nothing above U+00FF)
+                # and the bar holds its last reading. A readout is a
+                # diagnostic, not a clamp; painting 0.00 would pass a
+                # broken module off as an idle one.
+                try:
+                    dpg.configure_item(bar, overlay=f"{value:.2f}")
+                except Exception:
+                    stale.append(key)
+                continue
             fill = self._auto_range_fill(key, value)
             # Defensive, like _draw_meter_channel: a bar whose node was
             # deleted this frame is a freed dpg item and set_value would raise
@@ -7153,7 +7164,13 @@ class App:
         window, updating that window in place (instant attack, slow
         release). A near-constant source (range ~ 0) parks the bar at
         mid-scale rather than dividing by zero.
+
+        A non-finite ``value`` never enters the window: one NaN used to
+        turn ``lo``/``hi`` into NaN for good, and the bar sat at 0 long
+        after the cable healed. It reads mid-scale and changes nothing.
         """
+        if not math.isfinite(value):
+            return 0.5
         bounds = self._meter_bounds.get(key)
         if bounds is None:
             # First sight: seed the window on this value, show mid-scale.

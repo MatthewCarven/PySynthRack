@@ -2224,7 +2224,7 @@ class NumpyBackend(AudioBackend):
             for key in cv_ports:
                 buf = buffers.get(key)
                 if buf is not None and buf.size:
-                    levels[key] = float(np.mean(buf))
+                    levels[key] = float(np.mean(buf, dtype=np.float64))
             self._meter_levels = levels
 
         out = np.zeros((frames, 2), dtype=np.float32)
@@ -2272,7 +2272,7 @@ class NumpyBackend(AudioBackend):
             # sinks" rule from the voice-routing design -- the speaker
             # is the canonical end-of-graph mono boundary.
             if src_buf.ndim == 2:
-                src_buf = src_buf.sum(axis=0)
+                src_buf = self._voice_sum(src_buf)
             gain = float(module.params.get("gain", 1.0))
             mixed = (src_buf * gain).astype(np.float32)
             left, right = channels
@@ -2387,9 +2387,9 @@ class NumpyBackend(AudioBackend):
         if left is None and right is None:
             return
         if left is not None and left.ndim == 2:
-            left = left.sum(axis=0)
+            left = self._voice_sum(left)
         if right is not None and right.ndim == 2:
-            right = right.sum(axis=0)
+            right = self._voice_sum(right)
 
         pan = float(module.params.get("pan", 0.0))
         width = float(module.params.get("width", 1.0))
@@ -2400,7 +2400,7 @@ class NumpyBackend(AudioBackend):
         cv = self._input_buffer(patch, buffers, module.id, "pan_cv", collapse=False)
         if cv is not None and cv.size and cv_depth != 0.0:
             if cv.ndim == 2:
-                cv = cv.mean(axis=0)
+                cv = self._voice_mean(cv)
             p = np.clip(pan + cv_depth * cv, -1.0, 1.0)
         else:
             p = min(max(pan, -1.0), 1.0)
@@ -2410,7 +2410,7 @@ class NumpyBackend(AudioBackend):
         )
         if wcv is not None and wcv.size and cv_depth != 0.0:
             if wcv.ndim == 2:
-                wcv = wcv.mean(axis=0)
+                wcv = self._voice_mean(wcv)
             w = np.clip(width + cv_depth * wcv, 0.0, 2.0)
             width_active = True  # vector width: mid/side always runs
         else:
@@ -2867,7 +2867,7 @@ class NumpyBackend(AudioBackend):
         Voice-aware sources publish ``(MAX_VOICES, frames)`` buffers
         (slice 2 onwards: MIDIInput's ``out``, ``gate`` and ``pitch_cv``
         already do). By default this helper collapses such buffers to
-        1D via ``sum(axis=0)`` so existing mono modules continue to
+        1D via :meth:`_voice_sum` so existing mono modules continue to
         work unchanged -- a polyphonic source feeding an un-migrated
         Filter or ADSR just sees the summed mix, exactly as if the
         source were the old self-summing MIDIInput.
@@ -2882,7 +2882,7 @@ class NumpyBackend(AudioBackend):
             if cable.dst_port == dst_port:
                 buf = buffers.get((cable.src_module_id, cable.src_port))
                 if buf is not None and collapse and buf.ndim == 2:
-                    return buf.sum(axis=0)
+                    return NumpyBackend._voice_sum(buf)
                 return buf
         return None
 
@@ -6620,7 +6620,7 @@ class NumpyBackend(AudioBackend):
             if cv is None or cv.size == 0:
                 return 0.0
             if cv.ndim == 2:
-                cv = cv.sum(axis=0)
+                cv = self._voice_sum(cv)
             return self._finite_mean(cv)
 
         def _per_slot(cv):
@@ -7055,7 +7055,7 @@ class NumpyBackend(AudioBackend):
         edges = np.zeros(0, dtype=np.intp)
         if reset is not None and frames > 0:
             if reset.ndim == 2:
-                reset = reset.sum(axis=0)
+                reset = self._voice_sum(reset)
             edges, state["reset_prev"] = self._lfo_reset_edges(
                 reset, state["reset_prev"], frames
             )
@@ -7225,7 +7225,7 @@ class NumpyBackend(AudioBackend):
         edges_per_voice = [np.zeros(0, dtype=np.intp)] * V
         if reset is not None and frames > 0:
             if reset.ndim == 2 and reset.shape[0] != V:
-                reset = reset.sum(axis=0)
+                reset = self._voice_sum(reset)
             reset2d = (
                 reset[:, :frames] if reset.ndim == 2
                 else np.broadcast_to(reset[:frames], (V, frames))
@@ -8200,7 +8200,7 @@ class NumpyBackend(AudioBackend):
                 )
             else:
                 o = np.full(
-                    V, self._finite_mean(cv.sum(axis=0) if cv.ndim == 2 else cv)
+                    V, self._finite_mean(self._voice_sum(cv) if cv.ndim == 2 else cv)
                 )
             return np.clip(o, -self._SLEW_MAX_OCT, self._SLEW_MAX_OCT)
 
@@ -8984,7 +8984,7 @@ class NumpyBackend(AudioBackend):
         g_prev = np.concatenate([prev_col, g[:, :-1]], axis=1)
         rising = g & ~g_prev                           # (V, F)
         if cv_buf is not None and cv_buf.ndim == 2 and cv_buf.shape[0] != V:
-            cv = cv_buf.mean(axis=0)                   # the wrong V: averaged
+            cv = self._voice_mean(cv_buf)              # the wrong V: averaged
         else:
             cv = cv_buf                                # None, (F,) or (V, F)
         keep = self._sample_hold_edge_keep(rising, prob, rng, cv, depth)
@@ -9955,7 +9955,7 @@ class NumpyBackend(AudioBackend):
         if key is None:
             key = src
         elif key.ndim == 2:
-            key = key.sum(axis=0)
+            key = self._voice_sum(key)
         res = self._render_compressor_core(
             module, frames, src[np.newaxis, :], key[np.newaxis, :], threshold
         )
@@ -9972,7 +9972,7 @@ class NumpyBackend(AudioBackend):
             return key
         if key.shape[0] == 1:
             return np.broadcast_to(key, (V, key.shape[1]))
-        return np.broadcast_to(key.mean(axis=0), (V, key.shape[1]))
+        return np.broadcast_to(NumpyBackend._voice_mean(key), (V, key.shape[1]))
 
     def _render_compressor_core(self, module, frames, src, key, threshold):
         """Shared ``(V, F)`` feed-forward compressor engine.
@@ -10240,7 +10240,7 @@ class NumpyBackend(AudioBackend):
         if key is None:
             key = src
         elif key.ndim == 2:
-            key = key.sum(axis=0)
+            key = self._voice_sum(key)
         res = self._render_noise_gate_core(
             module, frames, src[np.newaxis, :], key[np.newaxis, :]
         )
@@ -10263,7 +10263,7 @@ class NumpyBackend(AudioBackend):
             return key
         if key.shape[0] == 1:
             return np.broadcast_to(key, (V, key.shape[1]))
-        return np.broadcast_to(key.mean(axis=0), (V, key.shape[1]))
+        return np.broadcast_to(NumpyBackend._voice_mean(key), (V, key.shape[1]))
 
     def _render_noise_gate_core(self, module, frames, src, key):
         """Shared ``(V, F)`` gate engine: detector -> Schmitt+hold -> gain.
@@ -11262,7 +11262,7 @@ class NumpyBackend(AudioBackend):
             return {"out": z, "out_l": z, "out_r": z}
         pos_cv = self._input_buffer(patch, buffers, module.id, "position_cv", collapse=False)
         if pos_cv is not None and pos_cv.ndim == 2:
-            pos_cv = pos_cv.mean(axis=0)
+            pos_cv = self._voice_mean(pos_cv)
         fz_gate = self._input_buffer(patch, buffers, module.id, "freeze")
 
         sr = float(self.sample_rate)
@@ -12257,14 +12257,14 @@ class NumpyBackend(AudioBackend):
                 cv = np.broadcast_to(time_cv, (V, time_cv.shape[1]))
             else:
                 cv = np.broadcast_to(
-                    time_cv.mean(axis=0), (V, time_cv.shape[1])
+                    self._voice_mean(time_cv), (V, time_cv.shape[1])
                 )
             return self._render_delay_core(module, frames, src, cv, fz_gate)
 
         # Mono audio. A 2D time_cv collapses to one shared modulation
         # (mean over voices) -- summing time voltages would be nonsense.
         if time_cv is not None and time_cv.ndim == 2:
-            time_cv = time_cv.mean(axis=0)
+            time_cv = self._voice_mean(time_cv)
         out = self._render_delay_core(
             module,
             frames,
@@ -12592,7 +12592,7 @@ class NumpyBackend(AudioBackend):
             else:
                 # Voice-count mismatch -> one shared transpose for all.
                 cv = np.broadcast_to(
-                    pitch_cv.mean(axis=0), (V, pitch_cv.shape[1])
+                    self._voice_mean(pitch_cv), (V, pitch_cv.shape[1])
                 )
             result = self._render_resampler_core(
                 module, frames, src, cv, brake_gate
@@ -12602,7 +12602,7 @@ class NumpyBackend(AudioBackend):
             # transpose (mean over voices) -- summing pitch voltages would
             # be nonsense.
             if pitch_cv is not None and pitch_cv.ndim == 2:
-                pitch_cv = pitch_cv.mean(axis=0)
+                pitch_cv = self._voice_mean(pitch_cv)
             d = self._render_resampler_core(
                 module,
                 frames,
@@ -13189,11 +13189,11 @@ class NumpyBackend(AudioBackend):
             elif pitch_cv.shape[0] == 1:
                 cv = np.broadcast_to(pitch_cv, (V, pitch_cv.shape[1]))
             else:
-                cv = np.broadcast_to(pitch_cv.mean(axis=0), (V, pitch_cv.shape[1]))
+                cv = np.broadcast_to(self._voice_mean(pitch_cv), (V, pitch_cv.shape[1]))
             return self._pitch_shifter_core(module, frames, src, cv)
 
         if pitch_cv is not None and pitch_cv.ndim == 2:
-            pitch_cv = pitch_cv.mean(axis=0)
+            pitch_cv = self._voice_mean(pitch_cv)
         outs = self._pitch_shifter_core(
             module,
             frames,
@@ -17012,6 +17012,47 @@ class NumpyBackend(AudioBackend):
             return m if math.isfinite(m) else float(default)
         return np.where(np.isfinite(m), m, np.float64(default))
 
+    @staticmethod
+    def _voice_sum(buf):
+        """Collapse a ``(V, F)`` buffer to ``(F,)`` by summing the voices.
+
+        The house poly->mono rule (``_input_buffer``'s collapse, the
+        mono sinks, the sidechain keys), accumulated in float64 and
+        cast back to the buffer's own dtype, so nothing downstream sees
+        a new dtype. ``buf.sum(axis=0)`` on a float32 buffer adds the
+        rows one at a time IN float32, which makes the mix depend on
+        the voice ORDER: reversing eight sounding voices moved 62% of
+        the samples by an ulp. The float64 sum of <= 16 float32 values
+        is exact (short of a ~2^25 spread in magnitude between voices),
+        so the cast rounds once and the collapse is order-
+        independent -- the same mix whichever slot the allocator
+        handed a note. Two voices were already exact (a float32 add
+        of two float32s IS the rounded exact sum); three or more
+        sounding voices differ by rounding only (<= 1.4e-6 at 16).
+
+        NOT scrubbed: a collapse is a mix, and a NaN voice poisons
+        the mix exactly as a NaN on a mono cable would. The doors
+        that must not see a NaN scrub where they consume it
+        (``_finite_mean``, ``_pow2_clipped``, the late-cable scrub).
+        """
+        if buf.dtype.kind != "f":
+            return buf.sum(axis=0)
+        return buf.sum(axis=0, dtype=np.float64).astype(buf.dtype, copy=False)
+
+    @staticmethod
+    def _voice_mean(buf):
+        """Collapse a ``(V, F)`` CV to ``(F,)`` by averaging the voices.
+
+        The shared-modulation collapse (a time / pitch / position CV
+        whose voice count does not match -- summing voltages would be
+        nonsense). Float64 accumulate, cast back, not scrubbed: see
+        :meth:`_voice_sum`. Division by a non-power-of-two V is also
+        rounded once rather than twice.
+        """
+        if buf.dtype.kind != "f":
+            return buf.mean(axis=0)
+        return buf.mean(axis=0, dtype=np.float64).astype(buf.dtype, copy=False)
+
     def _freeze_gate_row(self, gate, frames: int, tick: bool, state, ramp_n: int):
         """The reverb's / delay's freeze row: the ``freeze`` gate cable
         ORed with the ``freeze`` tickbox, or None when the pre-freeze
@@ -19320,9 +19361,7 @@ class NumpyBackend(AudioBackend):
         cv = self._input_buffer(patch, buffers, module.id, "pitch_cv", collapse=False)
         cv_mean = 0.0
         if cv is not None and cv.size:
-            cv_mean = float(np.mean(cv))
-            if not np.isfinite(cv_mean):
-                cv_mean = 0.0
+            cv_mean = self._finite_mean(cv)
         lim = self._FREEZE_PITCH_OCT_LIMIT
         ratio = float(2.0 ** min(max(pitch / 12.0 + depth * cv_mean, -lim), lim))
 
@@ -20723,10 +20762,10 @@ class NumpyBackend(AudioBackend):
         # Main trace: `in` wins; `cv` is the fallback (collapse sums a
         # voice-aware source either way — what a mono consumer hears).
         if src is not None:
-            t1 = src.sum(axis=0) if src.ndim == 2 else src
+            t1 = self._voice_sum(src) if src.ndim == 2 else src
         else:
             t1 = self._input_buffer(patch, buffers, module.id, "cv")
-        t2 = (src_r.sum(axis=0) if src_r.ndim == 2 else src_r) if src_r is not None else None
+        t2 = (self._voice_sum(src_r) if src_r.ndim == 2 else src_r) if src_r is not None else None
 
         st = self._state.setdefault(module.id, {})
         ringlen = int(self.sample_rate * self._SCOPE_RING_SECONDS)
