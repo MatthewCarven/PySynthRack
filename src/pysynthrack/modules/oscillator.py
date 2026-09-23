@@ -62,6 +62,13 @@ class Oscillator(Module):
     rides on the falling edge's own phase and its own per-sample
     increment (``dt - dpw``), so a width that moves against the phase
     still gets exactly one correction pair per edge.
+
+    Renders are block-size exact on every waveform, mono and per voice
+    (2026-09-24): with ``freq_cv`` unpatched the phase is an origin plus
+    an integer sample count (the organ's scheme), with it patched a
+    running sum carried unwrapped across blocks and wrapped only at
+    absolute 65 536-sample epochs, and the ``_wt`` mipmap band is picked
+    per sample. See the renderer's docstrings in ``numpy_backend``.
     """
 
     TYPE = "oscillator"

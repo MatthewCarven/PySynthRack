@@ -489,6 +489,25 @@ wavetable flavour is for band-limited vintage tone, not width modulation);
 it ignores `pulse_width` and `pw_cv`, and that is a documented limit, not
 a bug.
 
+**Block-size exact (2026-09-24).** Every waveform renders the identical
+sample at any buffer size — a held note, a sequence, vibrato, PWM, mono
+and per voice (pinned 6 s at 64/128/512/1000 in
+`tests/test_oscillator_block_exact.py`). The phase used to be a per-block
+float accumulator (`phase += frames·inc` with no CV, `start + cumsum(inc)`
+wrapped at every block end with one), which rounded differently under a
+different partition and drifted a float32 ulp within 0.1–2.4 s. Now, with
+`freq_cv` unpatched, the phase is an origin plus the **integer** sample
+count since it, `(origin + inc·k) mod 1`, re-anchored only when `freq`
+moves — the organ's scheme, and the same numbers, so the organ's lone 8′ is
+bit-exact against this oscillator over any length. With `freq_cv` patched
+the phase is a sample-by-sample running sum carried unwrapped across blocks
+and wrapped only every 65 536 samples of absolute time. The `_wt` shapes
+also pick their mipmap band **per sample** now (still the highest voice's,
+the conservative pick): the old per-block pick played the tail of a lower
+note on a higher note's table whenever a block straddled the change.
+Patching or unpatching `freq_cv` hands the phase straight across, no skipped
+sample.
+
 **Patching.** The canonical voice is `oscillator → filter → vca → speaker`,
 with an `adsr` driving the VCA's `cv`. See `examples/hello_sine.json` and
 `examples/fat_saw.json`. For PWM, `lfo.cv → oscillator.pw_cv` on a

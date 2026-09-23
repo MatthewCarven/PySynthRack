@@ -2923,6 +2923,13 @@ class NumpyBackend(AudioBackend):
             path is shared by every voice. Only ``square`` and
             ``square_blep`` listen (``square_wt`` is a fixed 50% table);
             the other shapes are handed the width and ignore it.
+
+        Every path is block-size exact (2026-09-24): no phase is ever a
+        per-block float accumulator -- see :meth:`_render_oscillator_mono`
+        (origin + integer count / carried running sum) and
+        :meth:`_osc_carried_phase`; the ``_wt`` band is picked per sample
+        (:meth:`_waveshape_wt`). No block-mean is taken anywhere in the
+        oscillator, so there is no float32 ``np.mean`` to audit.
         """
         freq = float(module.params.get("freq", 440.0))
         amp = float(module.params.get("amp", 0.5))
@@ -2970,6 +2977,61 @@ class NumpyBackend(AudioBackend):
         return self._render_oscillator_mono(
             module, frames, freq, amp, waveform, freq_cv, amp_cv, pw
         )
+
+    # Samples per phase-wrap epoch of :meth:`_osc_carried_phase`. The
+    # running sum is wrapped back into [0, 1) only at ABSOLUTE multiples
+    # of this count, so the wrap lands on the same sample at any block
+    # size; between wraps the sum reaches at most ``inc * 65536`` cycles
+    # (~33k at Nyquist), far inside float64's exact-enough range.
+    _OSC_EPOCH = 1 << 16
+
+    @staticmethod
+    def _osc_carried_phase(carry, n0, inc, epoch):
+        """Integrate per-sample phase increments, exact across blocks.
+
+        ``inc`` is ``(..., F)`` float64 (per-sample cycles per sample),
+        ``carry`` the ``(...)`` running phase before this block's first
+        sample, ``n0`` the absolute index of that sample. Returns
+        ``(phases, carry)``: the wrapped ``(..., F)`` phase of every
+        sample and the carry for the next block.
+
+        ``np.cumsum`` is a strictly sequential accumulation, so
+        ``cumsum([carry, inc...])`` performs exactly the additions a
+        sample-at-a-time loop would -- the value at sample n does not
+        depend on where the block boundaries fell, PROVIDED the carry
+        is never rounded or wrapped at a block boundary. So the sum
+        runs unwrapped and is wrapped (``x - floor(x)``, exact in
+        binary) only at absolute multiples of ``epoch`` samples; a block
+        that straddles one is summed in two segments. The old
+        ``(start + cumsum(inc)) % 1`` -- a fresh sum per block, added to
+        a start wrapped at every block end -- took a different rounding
+        path per partition and drifted a float32 ulp within ~0.1 s under
+        a held CV.
+        """
+        F = inc.shape[-1]
+        carry = np.asarray(carry, dtype=np.float64)
+        to_edge = epoch - n0 % epoch
+        if F < to_edge:
+            # The common case: no epoch wrap inside this block.
+            seg = np.cumsum(
+                np.concatenate((carry[..., None], inc), axis=-1), axis=-1
+            )
+            return seg[..., 1:] % 1.0, seg[..., -1]
+        cum = np.empty_like(inc)
+        pos = 0
+        while pos < F:
+            to_edge = epoch - (n0 + pos) % epoch
+            end = min(F, pos + to_edge)
+            seg = np.cumsum(
+                np.concatenate((carry[..., None], inc[..., pos:end]), axis=-1),
+                axis=-1,
+            )
+            cum[..., pos:end] = seg[..., 1:]
+            carry = seg[..., -1]
+            if end - pos == to_edge:
+                carry = carry - np.floor(carry)  # the epoch wrap
+            pos = end
+        return cum % 1.0, carry
 
     @staticmethod
     def _osc_pw_increment(state, pw):
@@ -3206,22 +3268,24 @@ class NumpyBackend(AudioBackend):
     def _waveshape_wt(self, base, phases, dt):
         """Band-limited wavetable lookup with linear interpolation.
 
-        ``dt`` selects the mipmap band from the block's top frequency
-        (largest dt -> highest fundamental -> fewest-harmonics table, the
-        conservative pick that never aliases within the block).
+        ``dt`` selects the mipmap band from the top frequency AT EACH
+        SAMPLE (largest dt across the leading axes -- every voice of a
+        voice block -> highest fundamental -> fewest-harmonics table, the
+        conservative pick that never aliases). A scalar ``dt`` is one
+        band for the block.
+
+        Per sample, not per block (2026-09-24): the block's max dt made
+        the band a function of where the block boundaries fell -- a
+        block straddling a note change played the lower note's tail on
+        the higher note's table, so a sequence rendered differently (by
+        up to ~0.18) at every block size. Under a steady pitch the
+        per-sample pick is the old per-block pick, bit for bit (the old
+        ``floor(log2(.))`` and the exact exponent differ only for a
+        frequency within an ulp below a band edge's power of two).
         """
         if base == "sine":
             return np.sin(2.0 * np.pi * np.asarray(phases, np.float64))
         tables = self._get_wavetable(base)
-        # Representative frequency for band selection.
-        dt_max = float(np.max(np.asarray(dt, dtype=np.float64)))
-        freq = max(dt_max * self.sample_rate, self.WT_BASE_FREQ)
-        j = int(np.clip(
-            np.floor(np.log2(freq / self.WT_BASE_FREQ)),
-            0,
-            self.NUM_WT_TABLES - 1,
-        ))
-        tbl = tables[j]
         L = self.WT_LEN
         phases = np.asarray(phases, dtype=np.float64)
         pos = phases * L
@@ -3229,6 +3293,34 @@ class NumpyBackend(AudioBackend):
         i0 = floor_pos.astype(np.int64) % L
         i1 = (i0 + 1) % L
         frac = pos - floor_pos
+        dt = np.asarray(dt, dtype=np.float64)
+
+        # Band = floor(log2(freq / WT_BASE_FREQ)), clipped -- taken from
+        # frexp's exponent, which is exact (x = m * 2**e with m in
+        # [0.5, 1) -> floor(log2 x) = e - 1), so the scalar and the
+        # per-sample pick can never disagree by a libm ulp on a band edge
+        # the way two log2 implementations might.
+        sr, base_f, top = self.sample_rate, self.WT_BASE_FREQ, self.NUM_WT_TABLES - 1
+
+        def band(dt_scalar):
+            e = math.frexp(max(dt_scalar * sr, base_f) / base_f)[1]
+            return min(max(e - 1, 0), top)
+
+        if dt.ndim == 0:
+            j = band(float(dt))
+        else:
+            # Per-sample band: the max over every leading axis (voices).
+            dt_top = dt if dt.ndim == 1 else dt.reshape(-1, dt.shape[-1]).max(axis=0)
+            j = band(float(dt_top.max()))
+            if band(float(dt_top.min())) != j:
+                # The band changes inside this block: pick it per sample
+                # (the band is monotonic in dt, so equal ends mean one
+                # band throughout and the cheap gather below).
+                _m, e = np.frexp(np.maximum(dt_top * sr, base_f) / base_f)
+                jj = np.clip(e - 1, 0, top).astype(np.intp)
+                jb = np.broadcast_to(jj, phases.shape)
+                return tables[jb, i0] * (1.0 - frac) + tables[jb, i1] * frac
+        tbl = tables[j]
         return tbl[i0] * (1.0 - frac) + tbl[i1] * frac
 
     # ----- Supersaw rendering ----------------------------------------------
@@ -3623,13 +3715,42 @@ class NumpyBackend(AudioBackend):
     ):
         """Mono fast path -- scalar phase, vectorized phase ramp.
 
-        Logic is unchanged from the pre-slice-3 implementation: scalar
-        phase state, vectorized phase ramp via arange (no freq_cv) or
-        cumsum (with mono freq_cv). The amp_cv multiplication at the
-        end can broadcast a (F,) mono wave against a (V, F) voice
-        amp_cv, producing (V, F) output -- the broadcast-by-amp case.
-        A (V, F) ``pw`` broadcasts the same way (one phase ramp, a
-        width per voice) -- the broadcast-by-width case.
+        Two phase engines, both exact across block sizes (2026-09-24;
+        the organ's 2026-09-22 fix was the model):
+
+          * no ``freq_cv`` -- constant frequency. The ramp is a phase
+            ORIGIN plus the INTEGER count of samples since it,
+            ``ph(k) = (origin + inc * k) % 1``, re-anchored only when
+            the increment changes (a knob move). A held note never
+            accumulates at all, so sample k is the same number whichever
+            block it lands in -- and the same number the organ's lone 8'
+            computes.
+          * mono ``freq_cv`` -- per-sample frequency, integrated by
+            :meth:`_osc_carried_phase` (a sequential running sum that
+            carries across blocks unwrapped and wraps only at absolute
+            epoch boundaries), so a held CV, a stepped sequence and
+            vibrato all render identically at any block size.
+
+        A per-block ``phase += frames * inc`` (the old fast path) or a
+        per-block ``start + cumsum(inc)`` wrapped at every block end (the
+        old CV path) rounds differently under a different partition and
+        drifted a float32 ulp within ~0.1-2 s.
+
+        ``state["phase"]`` is always the phase of the last sample
+        rendered (what a switch between the two engines, or a reader,
+        picks up); the engines' own state is ``origin`` / ``count`` /
+        ``inc`` (fast) and ``carry`` + the absolute sample count ``n``
+        (CV). Patching or unpatching ``freq_cv`` switches engine, and the
+        incoming one carries on one step from that last sample, so the
+        switch is seamless (the old pair disagreed on whether the stored
+        phase was the last sample's or the next's, and skipped or
+        repeated a sample at every switch).
+
+        The amp_cv multiplication at the end can broadcast a (F,) mono
+        wave against a (V, F) voice amp_cv, producing (V, F) output --
+        the broadcast-by-amp case. A (V, F) ``pw`` broadcasts the same
+        way (one phase ramp, a width per voice) -- the broadcast-by-width
+        case.
         """
         state = self._state.setdefault(module.id, {"phase": 0.0})
         # If state belongs to the voice branch (different keys),
@@ -3639,22 +3760,54 @@ class NumpyBackend(AudioBackend):
             state["phase"] = 0.0
 
         sr = self.sample_rate
-        start_phase = state["phase"]
+        n_abs = int(state.get("n", 0))
         if freq_cv is None:
-            # Fast path: constant frequency, vectorized phase ramp.
+            # Fast path: constant frequency, origin + integer count.
             phase_inc = freq / sr
-            phases = (start_phase + np.arange(frames, dtype=np.float64) * phase_inc) % 1.0
-            state["phase"] = (start_phase + frames * phase_inc) % 1.0
+            prev_inc = state.get("inc")
+            if prev_inc != phase_inc:
+                # Re-anchor so the origin is the NEXT sample's phase.
+                if "carry" in state:
+                    # Arriving from the CV engine: one step on from the
+                    # last sample it rendered.
+                    origin = (float(state["phase"]) + phase_inc) % 1.0
+                elif prev_inc is None:
+                    origin = 0.0  # fresh state
+                else:
+                    # A new frequency: where the old ramp was heading
+                    # (the organ's re-anchor, expression for expression).
+                    origin = (
+                        state["origin"] + prev_inc * float(state["count"])
+                    ) % 1.0
+                state["origin"] = origin
+                state["count"] = 0
+                state["inc"] = phase_inc
+            state.pop("carry", None)
+            origin = state["origin"]
+            k = float(state["count"]) + np.arange(frames, dtype=np.float64)
+            phases = (origin + phase_inc * k) % 1.0
+            state["count"] += frames
+            if frames:
+                state["phase"] = float(phases[-1])  # the last sample's phase
             dt = phase_inc
         else:
-            # Per-sample frequency from CV. Integrate phase one sample
-            # at a time -- cheap in numpy via cumsum of per-sample
-            # increments.
+            # Per-sample frequency from CV, integrated sample by sample
+            # (a carried sequential sum -- see _osc_carried_phase).
             inst_freq = freq * np.power(2.0, freq_cv.astype(np.float64))
             inst_inc = inst_freq / sr
-            phases = (start_phase + np.cumsum(inst_inc)) % 1.0
+            carry = state.get("carry")
+            if carry is None:
+                # Fresh (0.0) or arriving from the fast engine: carry on
+                # from the last sample it rendered, click-free.
+                carry = float(state["phase"])
+            phases, carry = self._osc_carried_phase(
+                carry, n_abs, inst_inc, self._OSC_EPOCH
+            )
+            state["carry"] = float(carry)
             state["phase"] = float(phases[-1])
+            state["inc"] = None  # the fast engine re-anchors on return
             dt = inst_inc
+        state["n"] = n_abs + frames
 
         dpw = None
         if isinstance(pw, np.ndarray):
@@ -3699,6 +3852,13 @@ class NumpyBackend(AudioBackend):
         zero-pads unused slots, so silent slots advance at the param's
         base frequency -- harmless because the per-voice ADSR/VCA
         downstream silences those slots.
+
+        Each voice integrates through :meth:`_osc_carried_phase` (a
+        sequential running sum carried unwrapped across blocks, wrapped
+        only at absolute epoch boundaries), so every voice renders the
+        identical sample at any block size -- held chord, sequence or
+        vibrato (2026-09-24; the per-block ``start + cumsum`` wrapped at
+        every block end drifted a float32 ulp within ~0.1 s).
         """
         V = freq_cv.shape[0]
         state = self._state.setdefault(module.id, {})
@@ -3712,17 +3872,19 @@ class NumpyBackend(AudioBackend):
         if needs_reinit:
             state.clear()
             state["phase_arr"] = np.zeros(V, dtype=np.float64)
+            state["carry_arr"] = np.zeros(V, dtype=np.float64)
+            state["n"] = 0
 
         sr = self.sample_rate
-        start_phase = state["phase_arr"]  # (V,)
 
         # Per-sample per-voice instantaneous frequency from CV.
         inst_freq = freq * np.power(2.0, freq_cv.astype(np.float64))  # (V, F)
         inst_inc = inst_freq / sr  # (V, F)
-        # cumsum along the time axis, add the start phase per voice.
-        # start_phase[:, None] broadcasts the (V,) starts to (V, 1).
-        phases = (start_phase[:, None] + np.cumsum(inst_inc, axis=1)) % 1.0  # (V, F)
+        phases, state["carry_arr"] = self._osc_carried_phase(
+            state["carry_arr"], state["n"], inst_inc, self._OSC_EPOCH
+        )  # (V, F)
         state["phase_arr"] = phases[:, -1].copy()
+        state["n"] += frames
 
         dpw = None
         if isinstance(pw, np.ndarray):

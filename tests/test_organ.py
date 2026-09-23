@@ -137,15 +137,13 @@ def test_lone_8ft_drawbar_bit_exact_against_sine_oscillator():
     """The source's neutral: one full 8' bar, click 0 → after the 1 ms
     onset ramp the output IS the mono sine oscillator, bit for bit.
 
-    Still exact over a block, which is where the relationship is
-    defined: from a zero origin the organ's ``inc * k`` over the
-    absolute index and the oscillator's ``arange * inc`` are the same
-    numbers. They part company only across MANY blocks, and in the
-    organ's favour — the oscillator still carries a per-block float
-    accumulator (``phase += frames * inc``), which is exactly the thing
-    the organ stopped doing on 2026-09-22; see the 10 s pin below. The
-    second half of this test measures that gap instead of pretending it
-    is not there."""
+    And exact across MANY blocks: both now compute ``(origin + inc * k)
+    % 1`` over the absolute integer sample index ``k`` from a zero
+    origin — the organ since 2026-09-22, the oscillator's constant-
+    frequency path since 2026-09-24. Until the oscillator dropped its
+    per-block ``phase += frames * inc`` the second half of this test
+    could only MEASURE the gap (a float32 ulp or two over 10 s); it is
+    now an equality."""
     bars = {f"bar{i + 1}": 0 for i in range(ORGAN_BARS)}
     bars["bar3"] = 8  # 8' — ratio 1.0
     step = _driver({**bars, "click": 0.0, "level": 0.5})
@@ -162,8 +160,7 @@ def test_lone_8ft_drawbar_bit_exact_against_sine_oscillator():
     osc_out = b._render_oscillator(patch.get(osc.id), F)
     assert np.array_equal(organ_out[RAMP:], osc_out[RAMP:])
 
-    # 10 s in 256-frame blocks: the two agree to a float32 ulp or two,
-    # the oscillator's accumulator being the one that moved.
+    # 10 s in 256-frame blocks: still the same sample, bit for bit.
     step2 = _driver({**bars, "click": 0.0, "level": 0.5})
     patch2 = Patch()
     osc2 = patch2.add_module(
@@ -176,8 +173,7 @@ def test_lone_8ft_drawbar_bit_exact_against_sine_oscillator():
     osc_long = np.concatenate(
         [b2._render_oscillator(patch2.get(osc2.id), 256) for _ in range(N)]
     )
-    eps = np.finfo(np.float32).eps
-    assert np.abs(org_long[RAMP:] - osc_long[RAMP:]).max() <= 4.0 * eps
+    assert np.array_equal(org_long[RAMP:], osc_long[RAMP:])
 
 
 # ----- the drawbar law -------------------------------------------------------

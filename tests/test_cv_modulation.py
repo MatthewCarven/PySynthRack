@@ -462,14 +462,12 @@ class TestOscillatorPulseWidth:
             )
             assert np.array_equal(classic, pwm_arr), w
         # And through the renderer, against the closed forms on the
-        # renderer's own phase ramp (rebuilt block by block the way the
-        # mono path carries it -- one arange per block from the carried
-        # start, so the wrap samples round the same way).
-        ramp, start = [], 0.0
-        for _ in range(8):
-            ramp.append((start + np.arange(512, dtype=np.float64) * dt) % 1.0)
-            start = (start + 512 * dt) % 1.0
-        ramp = np.concatenate(ramp)
+        # renderer's own phase ramp. Since 2026-09-24 the mono fast path
+        # is ``(origin + inc * k) % 1`` over the ABSOLUTE sample index
+        # from a zero origin, so its ramp across all eight blocks is the
+        # one-shot ``phases`` above, sample for sample (it used to be
+        # rebuilt block by block from a carried float start).
+        ramp = phases
         naive = _render_pw("square", freq=220.0, blocks=8)
         expect = np.where(ramp < 0.5, 1.0, -1.0).astype(np.float32)
         assert np.array_equal(naive, expect)
