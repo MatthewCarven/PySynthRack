@@ -28,7 +28,10 @@ Controls:
 
 A ``rate_cv`` input modulates the LFO rate (1 V/oct, scaled by
 ``cv_depth`` in octaves per unit), so a second LFO or an envelope can
-speed the shimmer up and slow it down — evolving, breathing chorus.
+speed the shimmer up and slow it down — evolving, breathing chorus. It
+is read per sample and integrated into the sweep, so the rate glides
+rather than stepping once per block, and the render is the same at any
+block size.
 
 Use cases:
   * Widen a mono pad or pluck: ``… → chorus → L/R speakers``.

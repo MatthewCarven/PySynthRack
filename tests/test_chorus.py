@@ -13,7 +13,12 @@ Coverage:
     identical output at any block size (512 vs 4096 vs an odd size).
   - Stereo: the two channels are decorrelated with >= 2 voices, and
     collapse together with a single voice.
-  - CV: ``rate_cv`` alters the sweep; an all-zero ``rate_cv`` is a noop.
+  - CV: ``rate_cv`` alters the sweep; an all-zero ``rate_cv`` is a noop
+    (bit-exact); ``rate_cv`` is read PER SAMPLE -- a modulated rate is
+    bit-exact at 64 / 128 / 512 / 1000 over six seconds and tracks an
+    ideal float64 integral of the instantaneous rate; the integer phase
+    grid wraps exactly, both ways; a non-finite CV sample is no
+    modulation.
   - Integration: osc -> chorus -> L/R speakers renders audible audio.
 """
 from __future__ import annotations
@@ -353,6 +358,144 @@ class TestCV:
         pn, sn, cn, bn = _rig(params)
         l_no, _ = _run(bn, pn, sn, cn, x)
         assert np.array_equal(l_cv, l_no)
+
+
+# ----- rate_cv, per sample ---------------------------------------------------
+
+_PS_PARAMS = {"rate": 0.6, "depth": 0.8, "voices": 4, "mix": 1.0, "cv_depth": 1.0}
+
+
+def _ps_signals(n):
+    x = (np.random.default_rng(1).standard_normal(n) * 0.3).astype(np.float32)
+    cv = np.sin(2 * np.pi * 0.3 * np.arange(n) / SR).astype(np.float32)
+    return x, cv
+
+
+def _ps_render(x, cv, block, params=_PS_PARAMS):
+    p, s, lfo, ch, b = _rig_cv(dict(params), block=block)
+    lo, ro = _run_cv(b, p, s, lfo, ch, x, cv, block=block)
+    return np.stack([lo, ro])
+
+
+def _ideal_chorus(x, cv, params=_PS_PARAMS):
+    """The chorus's own read with an IDEAL sweep: the instantaneous rate in
+    float64 per sample, integrated by ONE exclusive cumsum over the whole
+    run -- no blocks anywhere. Pure numpy, independent of the renderer."""
+    n = x.shape[-1]
+    V = params["voices"]
+    r = np.clip(params["rate"] * 2.0 ** (params["cv_depth"] * cv.astype(np.float64)),
+                0.01, 20.0)
+    phase = np.concatenate(([0.0], np.cumsum(r / SR)[:-1]))
+    ph = (phase[None, :] + (np.arange(V) / V)[:, None]) % 1.0
+    delay = (np.linspace(12.0, 24.0, V) * SR / 1000.0)[:, None] \
+        + (8.0 * params["depth"] * SR / 1000.0) * np.sin(2 * np.pi * ph)
+    back = np.ceil(delay)
+    frac = back - delay
+    i0 = np.arange(n)[None, :] - back.astype(np.int64)
+    xx = x.astype(np.float64)
+
+    def at(i):
+        return np.where(i >= 0, xx[np.clip(i, 0, n - 1)], 0.0)
+
+    tap = at(i0) * (1.0 - frac) + at(i0 + 1) * frac
+    pos = (np.arange(V) + 0.5) / V
+    gl, gr = np.cos(pos * np.pi / 2), np.sin(pos * np.pi / 2)
+    return np.stack([(gl @ tap) / np.sqrt(np.sum(gl * gl)),
+                     (gr @ tap) / np.sqrt(np.sum(gr * gr))])
+
+
+class TestRateCVPerSample:
+    def test_modulated_rate_is_bit_exact_across_block_sizes(self):
+        # SIX SECONDS of a 0.3 Hz sine on rate_cv (+/-1 octave) at four
+        # block sizes sharing no alignment. Before 2026-09-24 rate_cv was
+        # a BLOCK MEAN: the sweep re-anchored every block, so 64 / 128 /
+        # 1000 each differed from 512 at 526,914 of 528,000 samples (both
+        # channels). The CV's share of the phase is now summed on an
+        # integer grid, so it is the same number however the stream is
+        # cut. Each size renders its whole blocks of 6 s; the first
+        # 264,000 samples are covered at every size.
+        m = 264000
+        x, cv = _ps_signals(6 * SR)
+        ref = _ps_render(x, cv, 512)[:, :m]
+        assert ref.shape == (2, m)
+        for block in (64, 128, 1000):
+            got = _ps_render(x, cv, block)[:, :m]
+            assert np.array_equal(got, ref), (
+                f"block {block}: {int(np.count_nonzero(got != ref))} samples differ")
+
+    @pytest.mark.parametrize("block", [64, 1000])
+    def test_modulated_rate_tracks_the_ideal_integral(self, block):
+        # The rate is continuous now, not a staircase. Against an ideal
+        # float64 per-sample integration over the whole run the render is
+        # within a float32 ulp or two (measured 5.96e-8 max at every block
+        # size over 6 s); the block mean was 1.0e-3 off at 64 and 0.24 at
+        # 1000 -- a 1000-sample staircase moves the sweep audibly.
+        n = 2 * SR - (2 * SR) % 1000 if block == 1000 else 2 * SR - (2 * SR) % 64
+        x, cv = _ps_signals(n)
+        got = _ps_render(x, cv, block).astype(np.float64)
+        ideal = _ideal_chorus(x, cv)
+        assert got.shape == ideal.shape
+        err = float(np.max(np.abs(got - ideal)))
+        assert err < 2.5e-7, f"block {block}: max error {err:.3e}"
+
+    def test_rate_moves_within_a_block(self):
+        # One 4096-sample block, CV stepping from 0 to +2 octaves at its
+        # middle. A per-sample read speeds the sweep up at the step, so
+        # the first half is bit-identical to the zero-CV render and the
+        # second half is not. (A block mean would have moved both halves.)
+        n = 4096
+        x = (np.random.default_rng(5).standard_normal(n) * 0.3).astype(np.float32)
+        cv = np.zeros(n, dtype=np.float32)
+        cv[n // 2:] = 2.0
+        params = dict(_PS_PARAMS, rate=4.0)
+        stepped = _ps_render(x, cv, n, params)
+        flat = _ps_render(x, np.zeros(n, dtype=np.float32), n, params)
+        # sample n//2 is the first to see the step's first increment
+        # at n//2 + 1 (the exclusive-sum convention): up to n//2 is equal
+        assert np.array_equal(stepped[:, :n // 2 + 1], flat[:, :n // 2 + 1])
+        assert not np.array_equal(stepped[:, n // 2 + 64:], flat[:, n // 2 + 64:])
+
+    def test_integrator_zero_cv_adds_exactly_nothing(self):
+        b = NumpyBackend(sample_rate=SR, block_size=F)
+        st = {}
+        inc = 0.6 / SR
+        d = b._chorus_rate_cv_phase(st, np.zeros(F, np.float32), 0.6, inc, 1.0, F)
+        assert d.dtype == np.float64
+        assert np.array_equal(d, np.zeros(F))
+        assert st["rc_acc"] == 0
+
+    def test_integrator_wraps_exactly_both_ways(self):
+        # Sample n sees the sum of the deviations BEFORE it, on a grid of
+        # 2**48 per cycle, wrapped by a mask -- including a negative sum.
+        b = NumpyBackend(sample_rate=SR, block_size=F)
+        bits = NumpyBackend._CHORUS_PH_BITS
+        mask = (1 << bits) - 1
+        for cv_value in (3.0, -3.0):
+            st = {}
+            knob = 2.0
+            inc = knob / SR
+            cv = np.full(F, cv_value, dtype=np.float32)
+            outs = [b._chorus_rate_cv_phase(st, cv, knob, inc, 1.0, F)
+                    for _ in range(200)]
+            d = np.concatenate(outs)
+            q = int(np.rint((knob * 2.0 ** cv_value / SR - inc) * float(1 << bits)))
+            k = np.arange(d.size, dtype=object)
+            want = np.array([float((q * int(i)) & mask) for i in k]) / float(1 << bits)
+            assert np.array_equal(d, want)
+            assert 0 <= st["rc_acc"] <= mask
+            assert np.all((d >= 0.0) & (d < 1.0))
+
+    def test_non_finite_cv_sample_is_no_modulation(self):
+        n = 4 * F
+        x = (np.random.default_rng(9).standard_normal(n) * 0.3).astype(np.float32)
+        cv = np.zeros(n, dtype=np.float32)
+        cv[100] = np.nan
+        cv[700] = np.inf
+        cv[1500] = -np.inf
+        got = _ps_render(x, cv, F)
+        clean = _ps_render(x, np.zeros(n, dtype=np.float32), F)
+        assert np.all(np.isfinite(got))
+        assert np.array_equal(got, clean)
 
 
 # ----- Integration -----------------------------------------------------------

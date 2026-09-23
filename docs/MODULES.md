@@ -107,7 +107,7 @@ The full map:
 | `motion_eq.band{i}_freq_cv` | `1.0` (shared) | octaves | `freq_i · 2^(d·mean cv)` |
 | `motion_eq.band{i}_gain_cv` | `6.0` (shared, `gain_cv_depth`) | dB | `gain_i + d·mean cv` (clamped ±24) |
 | `motion_eq.band{i}_q_cv` | `1.0` (shared, `q_cv_depth`) | Q doublings | `q_i · 2^(d·mean cv)` (clipped 0.1…20) |
-| `chorus.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
+| `chorus.rate_cv` | `1.0` | octaves | `rate · 2^(d·cv[n])`, **per sample** (since 2026-09-24; it was a block mean), clamped 0.01…20 Hz and integrated into the sweep's phase, so a modulated rate is continuous and bit-exact across block sizes; a zero CV is bit-identical to an unpatched jack; a non-finite sample reads as 0; mono (a `(V, F)` source is summed) |
 | `flanger.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `flanger.manual_cv` | `1.0` (`manual_depth`) | octaves | `manual · 2^(d·cv[n])`, **per sample**, clamped 0.1…10 ms; in through-zero mode it moves the reference tap too, so the crossing travels; mono (a `(V, F)` source is summed) |
 | `phaser.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
@@ -3295,9 +3295,18 @@ forming `absidx − delay` (**a ring index rounds at its own magnitude**,
 and the ring is `max_ms + frames` long, so it wraps at a different
 absolute sample per block size); and the sweep counts samples since the
 last rate change rather than carrying a float phase, re-anchoring on a
-change so the sweep stays continuous. With `rate_cv` patched the rate is
-a per-**block** mean by design, so that patched input is the one thing
-that does depend on the block size. See
+change so the sweep stays continuous. `rate_cv` is read **per sample**
+(since 2026-09-24 — it was a per-block mean, so a modulated rate moved in
+block-sized steps and every block size swept differently): the knob's
+sweep is kept exactly as above, and the CV's share — the instantaneous
+rate minus the knob's — is summed on an **integer** phase grid (2^48
+steps per cycle). Integer addition is exact and associative, so the sum
+at a sample is the same however the stream is cut, and wrapping it is
+exact too (a wrapped *float* running sum is not: the wrap lands on the
+block boundaries, which are the partition). A modulated chorus is
+therefore bit-exact at 64 / 128 / 512 / 1000 over six seconds, within a
+float32 ulp of an ideal float64 integral of the rate, and a zero CV adds
+exactly nothing. See
 `examples/chorus_lush.json` (a self-playing saw pad widened into a four-
 voice ensemble, with a slow LFO drifting the chorus rate through
 `rate_cv`).

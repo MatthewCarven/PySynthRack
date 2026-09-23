@@ -10762,8 +10762,14 @@ class NumpyBackend(AudioBackend):
         delay`` (**a ring index rounds at its own magnitude**), and the
         sweep counts samples since the last rate change rather than
         carrying a float phase (re-anchoring on a change, so a rate move
-        stays continuous). ``rate_cv`` is a per-BLOCK mean by design, so
-        it is the one input that does depend on the block size.
+        stays continuous). ``rate_cv`` is read PER SAMPLE (since
+        2026-09-24; it was a block mean, so a modulated rate moved in
+        block-sized steps and re-anchored every block): the knob's sweep
+        above is kept exactly as it was, and what the CV adds -- the
+        instantaneous rate minus the knob's -- is integrated on an
+        integer phase grid (:meth:`_chorus_rate_cv_phase`), which is
+        associative, so a modulated sweep is bit-exact across block
+        sizes too, and a zero CV adds exactly nothing.
         A polyphonic input is summed to mono first.
         """
         src = self._input_buffer(patch, buffers, module.id, "in")
@@ -10781,12 +10787,14 @@ class NumpyBackend(AudioBackend):
         mix = min(max(mix, 0.0), 1.0)
         voices = min(max(voices, 1), 6)
 
-        # rate_cv: 1 V/oct on the LFO rate, block-mean (a sub-audio LFO, so
-        # one rate per block is the right cost/quality trade-off -- the same
-        # cadence the LFO module uses for its own rate_cv).
+        # rate_cv: 1 V/oct on the LFO rate, read PER SAMPLE (see the sweep
+        # below). ``rate`` here stays the KNOB's rate -- the CV's share of
+        # the sweep is integrated separately so an unpatched jack, or a
+        # zero CV, leaves the knob's sweep bit-for-bit as it was.
         rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
-        if rate_cv is not None and rate_cv.size > 0:
-            rate = rate * self._pow2_clipped(cv_depth * self._finite_mean(rate_cv))
+        if rate_cv is not None and rate_cv.size == 0:
+            rate_cv = None
+        rate_knob = rate
         rate = min(max(rate, 0.01), 20.0)
 
         max_ms = self._CHORUS_MAX_MS
@@ -10839,9 +10847,8 @@ class NumpyBackend(AudioBackend):
         # ``rate`` knob, or ``rate_cv``) re-anchors instead: the phase
         # reached so far is frozen into the anchor and the count restarts,
         # so the sweep stays continuous -- a jump would click -- and each
-        # constant-rate run is exact. (With ``rate_cv`` patched the rate is
-        # a per-BLOCK mean by design, so it re-anchors every block and the
-        # block-size independence below goes with it.)
+        # constant-rate run is exact. ``rate_cv`` never re-anchors: its
+        # share is added on top, from its own integer accumulator.
         if inc != state["inc"]:
             state["phase"] = float(
                 (state["phase"] + state["ph_n"] * state["inc"]) % 1.0)
@@ -10849,7 +10856,12 @@ class NumpyBackend(AudioBackend):
             state["inc"] = inc
         phase0 = float(state["phase"])
         k = state["ph_n"] + n                                          # (F,)
-        ph = (phase0 + offs[:, None] + k[None, :] * inc) % 1.0         # (V, F)
+        ph = phase0 + offs[:, None] + k[None, :] * inc                 # (V, F)
+        if rate_cv is not None:
+            # + exactly 0.0 per sample for a zero CV: bit-exact unpatched
+            ph = ph + self._chorus_rate_cv_phase(
+                state, rate_cv, rate_knob, inc, cv_depth, frames)[None, :]
+        ph %= 1.0
         lfo = np.sin(2.0 * np.pi * ph)                                # (V, F)
 
         delay = base_samp[:, None] + sweep_samp * lfo                 # (V, F)
@@ -10890,6 +10902,55 @@ class NumpyBackend(AudioBackend):
         out_l = (dry + mix * wet_l).astype(np.float32)
         out_r = (dry + mix * wet_r).astype(np.float32)
         return {"out_l": out_l, "out_r": out_r}
+
+    # The rate_cv integrator's grid: 2**48 steps per LFO cycle. The
+    # largest increment (20 Hz at 8 kHz) is ~2**40 steps, so a block of a
+    # million samples still sums far inside int64, and one step is
+    # 3.6e-15 of a cycle -- the grid's rounding is ~1e-12 cycles after
+    # minutes of modulation, far under anything a delay line can show.
+    _CHORUS_PH_BITS = 48
+
+    def _chorus_rate_cv_phase(self, state, rate_cv, rate_knob: float,
+                              inc: float, cv_depth: float, frames: int):
+        """The chorus sweep's rate_cv share, per sample, in cycles [0, 1).
+
+        The instantaneous rate is ``knob * 2 ** (cv_depth * cv[n])``,
+        clamped to the knob's 0.01..20 Hz, per sample. The knob's own
+        sweep (``inc`` per sample) is already counted by the caller's
+        absolute-sample phase, so what is integrated here is only the
+        DEVIATION ``rate[n] / sr - inc`` -- exactly 0.0 at a zero CV,
+        which is what keeps a patched-but-silent jack bit-identical to an
+        unpatched one.
+
+        THE TRAP this dodges: a float running sum is not partition-
+        independent once it is wrapped. ``carry + cumsum(inc)`` rounds
+        differently per partition (``cumsum([carry, *inc])[1:]`` would
+        not), but an unwrapped float phase loses a bit of precision every
+        time it doubles, and wrapping it (``% 1.0``) at a block boundary
+        changes every later rounding -- and the boundaries are the
+        partition. So the deviation is rounded ONCE, per sample and on
+        its own, to an integer grid of 2**48 steps per cycle, and summed
+        in int64: integer addition is exact and associative, so the sum
+        at a sample is the same number however the stream was cut, and
+        the wrap (``& (2**48 - 1)``, two's complement, so a negative
+        deviation wraps too) is exact as well. Sample ``n`` sees the sum
+        of the deviations BEFORE it, the same convention as the knob's
+        ``k * inc``.
+        """
+        bits = self._CHORUS_PH_BITS
+        mask = (1 << bits) - 1
+        cv = np.asarray(rate_cv, dtype=np.float64)
+        # _pow2_clipped scrubs a non-finite exponent to 0 (no modulation)
+        # and rails a huge one; the clamp matches the knob's range.
+        r = np.clip(rate_knob * self._pow2_clipped(cv_depth * cv), 0.01, 20.0)
+        q = np.rint((r / float(self.sample_rate) - inc) * float(1 << bits))
+        run = np.cumsum(q.astype(np.int64))
+        acc0 = int(state.get("rc_acc", 0))
+        acc = np.empty(frames, dtype=np.int64)
+        acc[0] = acc0
+        acc[1:] = acc0 + run[:-1]
+        state["rc_acc"] = int((acc0 + int(run[-1])) & mask)
+        return (acc & mask).astype(np.float64) * (1.0 / float(1 << bits))
 
     # ----- Rotary (Leslie) rendering ---------------------------------------
 
