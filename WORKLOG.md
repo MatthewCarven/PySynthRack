@@ -196,6 +196,65 @@ own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
 
 ---
 
+## 2026-09-24 — nine follow-ons in parallel (the sixth batch)
+
+Matthew, planning a full day of re-listening: "feel free to invalidate
+previous examples … I don't want a previous position to hold us back
+here, we can just reinvent whatever fails". That unlocked the part of
+the follow-on list parked precisely because each item moved shipped
+renders and wanted its own reference-render pass. Nine agents ("all
+nine"), pushed first, cherry-picked in landing order with no textual
+conflicts. Two SEMANTIC conflicts surfaced only at the merge, both in
+the new module: `autopan` had been written against `_mod_clock_sync`'s
+old `(rate, phase0)` signature, which the flanger/phaser pass changed to
+take the caller's free-running phase line (c5467df), and it collapsed a
+poly `pan_cv` with a raw `.mean(axis=0)`, which the reductions pass's
+new tripwire rejects (3c3c2c0). **Lesson: parallel agents that share a
+helper can each be green alone and wrong together — the full suite on
+the merged main is where that shows, and it did.** Suite **5261 →
+5417**, 165 examples, **101 modules**.
+
+**The audit.** Before launching, every example was rendered twice (8 s,
+block 512) — all 164 identical run to run, so any later movement is the
+batch's. After merging: 84 bit-identical, ~55 moved only at rounding
+level, the rest attributed commit by commit (the big movers rendered at
+each of the eleven steps). Every large unexplained move was the
+oscillator's: naive saw/square at integer-Hz pitches, whose exact wrap
+sample the old accumulator put one ulp on the wrong side of the edge
+every time — sparse (< 1.2% of samples above 1e-2), spread by any filter
+downstream, and the new placement is the correct one. 29 examples
+render silent offline because they wait for a key, MIDI or the mic.
+
+What landed (details in TODO § "Nine follow-ons in parallel"):
+* **chorus `rate_cv` per sample** (5c65bb1) — integrated on an int64
+  grid: a wrapped FLOAT running sum is never partition-independent.
+* **pluck `carry` default ON** (65b3a4f) — re-plucks are superposition.
+* **voice collapses in float64** (f36977e) — order-independence, 24
+  sites + tripwire; `freeze.pitch_cv`; the CV meter says `nan`, and a
+  sticky NaN auto-range bug fixed on the way.
+* **`autopan`, module #101** (73047ce spec, dd0c161) — the keep-list's
+  panner; a triangle's float32 output hides a phase accumulator, so the
+  float64 anchor got its own pin.
+* **rotary** (96bbd15) — three bugs, incl. a ring that wiped itself and
+  the rotors on any block-size change (the buffer slider!). The organ
+  scanner was already exact.
+* **clock_divider** (83ae23c) — gates never merge (2519 + 2256 → 0).
+* **freeze** (e5dd7c2) — relative −120 dB floor; fixed a one-ulp
+  knife-edge that swapped half the partials between L and R; 65536 back
+  on the knob with a staged 93 ms birth.
+* **delay / flanger / phaser** (f345a5e, fe3f58c) — five mechanisms; the
+  flanger CUT its deepest sweep at block 64. Pins compare internal
+  float64 state: the delay's drift touched 1 output sample and 106817 of
+  its line.
+* **oscillator** (02f3916) — integer-count phase, the organ's numbers;
+  168/204 → 0/204.
+
+**Deviation noted (standing principle):** the pluck `carry` flip and the
+bowed/wind-style "moved above ulp" renders were ears decisions; Matthew's
+"invalidate previous examples" made them his re-listen's, not a
+blocker. The two EARS decisions that remain are on the checklist
+(bowed/wind A/B; the new `_wt` per-voice band question).
+
 ## 2026-09-22 — eleven follow-ons in parallel (the fifth batch)
 
 Matthew, after a lost afternoon: "Pick another 10 or items from the todo
