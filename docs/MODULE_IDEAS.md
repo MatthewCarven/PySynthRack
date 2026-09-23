@@ -31,7 +31,7 @@ Paste the preamble below plus one module spec as the task.
 
 Dynamics: `compressor` `limiter` `noise_gate` `transient_shaper` ·
 Pitch/frequency: `ring_mod` `freq_shifter` `bitcrusher` ·
-Character/space: `tape` `convolver` `freeze` ·
+Character/space: `tape` `convolver` `freeze` `autopan` ·
 CV tools: `cv_math` `cv_recorder` `quantizer` `slew` `pitch_detector` · Filters: `vowel` ·
 Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate` `burst` `arpeggiator` `chord` `chaos` `possibility_selector` `drift` ·
 Voices: `fm_op` `pluck` `bowed` `wind` `modal` `granular` `kick_drum`/`snare_drum`/`hat_drum` `sampler` `organ` ·
@@ -308,6 +308,84 @@ passing.
   within 2% forever. The read starts at frozen time `size` (the edge
   itself), so a stationary source's hold is in phase with the live
   input. 35 tests. Example `freeze_chord_pad.json`.
+
+### `autopan` (S) — "Routing & VCA" — the stereo motion utility — **module #101**
+
+The keep-list's "there's no dedicated panner anywhere in the rack.
+Equal-power pan with CV in; fold tremolo into it". The stereo speaker
+sink can already be panned by a cable, but only at the very end of the
+chain and only by building the LFO yourself; this is the panner as a
+module — before the delay, before the reverb, with its own LFO, synced
+to the clock if you like. Two VCAs and a law, in other words.
+
+- Ports: `in_l`, `in_r` (audio; the `mid_side` / stereo-sink pair; a
+  `(V, F)` source is summed — panning is linear, so panning the mix IS
+  panning every voice), `pan_cv` (cv, **per sample**, added 1:1 to the
+  position; a `(V, F)` source is averaged, the sink's rule), `rate_cv`
+  (cv, block mean, 1 V/oct × `cv_depth` on `rate`), `clock` (gate) →
+  `out_l`, `out_r` (audio).
+- Two source modes, decided by what is cabled (the sink's rule, made
+  symmetric): **one** input cabled (either jack) = a MONO source,
+  PLACED by `law`; **both** cabled = a STEREO pair, BALANCED — unity at
+  centre, the far side fades with the sink's cosine taper
+  (`gL = cos(max(p, 0)·π/2)`, mirrored), `law` does not apply.
+- Params: `pan` −1..1 (0.0 — the manual centre the LFO swings around)
+  · `depth` 0..1 (0.7 — LFO swing in pan units; 0 = a static panner)
+  · `rate` 0.01..20 Hz (0.5) · `shape` sine | triangle | square (sine)
+  · `tremolo` 0..1 (0.0 — see below) · `law` power | compromise |
+  linear (power = −3 dB centre, sin/cos, constant power; compromise =
+  −4.5 dB, the geometric mean of the other two; linear = −6 dB,
+  constant amplitude) · `division` 0.25..64 (4.0 — clock ticks per full
+  L→R→L cycle, only while `clock` is patched) · `cv_depth` (1.0 octaves
+  per unit on `rate_cv`).
+- Position: `p = clip(pan + pan_cv + depth·lfo, −1, 1)`; mono power
+  law `θ = (p+1)·π/4`, `(cos θ, sin θ)` — exactly the stereo sink's
+  placement, so an autopan into the sink at pan 0 depth 0 = the sink.
+- **Tremolo folded in** as the phase between the two sides: the right
+  channel's position reads the LFO `tremolo/2` cycles later than the
+  left's. 0 = both sides read the same position (autopan); 1 = half a
+  cycle apart, and for an odd-symmetric shape the right's position is
+  the left's mirrored, so the two gains are EQUAL and move together (a
+  mono tremolo, from 0 to unity around the −3 dB centre); between = the
+  swirl, part pan part throb. Constant power holds at `tremolo` 0 only
+  (documented — a tremolo is supposed to change the level).
+- LFO: phase keyed to an ABSOLUTE integer sample count — `phase[n] =
+  (φa + (n − na)·rate/sr) mod 1`, re-anchored only when the effective
+  rate changes (a knob move or a moving `rate_cv`), never accumulated,
+  so a constant-rate render is bit-identical at every block size.
+  `clock` patched and locked hands the phase to `_mod_clock_sync` (the
+  phaser/flanger helper: one cycle per `division` ticks, absolute-sample
+  anchor). Shapes start at 0 rising: `sin 2πφ`; the triangle
+  `1 − 4|((φ+¼) mod 1) − ½|`; the square = `sin(π/2 · clip(K·tri, −1,
+  1))` with `K = max(1, 1/(2·rate·T))`, `T` = 10 ms — the switch
+  between sides is a raised-cosine glide lasting T at every rate (the
+  pan moves across it exactly as a 50 Hz sine would, never faster), and
+  above 50 Hz-equivalent it degrades to a rounded triangle.
+- Neutral / contracts: stereo pair at pan 0 depth 0 = the inputs to the
+  bit; nothing cabled = silence (the LFO still keeps time); `rate_cv`
+  NaN reads as unpatched (`_finite_mean`), a NaN sample on `pan_cv`
+  reads 0 at that sample; `(V, F)` in = the summed render.
+- Tests: registration/category; constant power (L²+R² = x² for a sine
+  at every pan, power law); the three centre levels (−3.01 / −4.52 /
+  −6.02 dB); hard pan = silence opposite; balance mode unity at centre
+  bit-exact and the far side fades; depth 0 = static; the sine LFO's
+  recovered position = `depth·sin`; the triangle's corners;
+  `rate_cv` +1 == the knob doubled bit-exact; block-size exactness at
+  64/128/512/1000 over ≥ 4 s (square, tremolo, a per-sample `pan_cv`
+  and a constant `rate_cv`); clock-synced cycle length = `division` ×
+  the clock's interval, block-size exact; the square's steepest step
+  vs a sine's at the same rate (≈ K×, and far below a hard switch);
+  tremolo 1 = equal gains; NaN on both CVs finite; poly = summed;
+  widget sweep; the example.
+- Example `autopan_pluck_bounce.json` — a clocked pluck line through
+  the autopan synced to the same clock (a square that throws alternate
+  bars' notes across the field… or a triangle over two bars), then a
+  stereo delay/reverb so the echoes land where the notes were thrown.
+- Follow-ons (not in this build): a `random`/smooth-random shape (needs
+  a cycle counter carried through the clock lock); a `phase` offset for
+  where the clocked cycle starts on the downbeat (needs a reset edge
+  the helper does not have); a separate tremolo rate; `width` on the
+  stereo pair (the sink and `mid_side` have it).
 
 ## CV tools & bridges
 
@@ -1319,9 +1397,10 @@ full specs above.
   pad. A different animal from `granular`'s time-domain freeze.
   **Picked and SHIPPED 2026-09-19 as module #100 — full spec under
   Character & space.**
-- `autopan` (S) — there's no dedicated panner anywhere in the rack.
+- ~~`autopan` (S)~~ — there's no dedicated panner anywhere in the rack.
   Equal-power pan with CV in; fold tremolo into it and it's the
-  missing stereo motion utility.
+  missing stereo motion utility. **Picked 2026-09-24 as module #101 —
+  full spec under Character & space.**
 
 **I/O**
 - `midi_output` (M) — the rack has `midi_input` but can't drive
