@@ -3921,7 +3921,15 @@ Patch the outputs into [`left_speaker_output`](#left_speaker_output) and
 flanger's feedback makes each output sample depend on one just written, so
 the comb runs **per-sample** (the delay's short-time path) — but the LFO
 phase and ring state carry across blocks, so the render is still exactly
-**block-size independent** (bit-identical at 512 / 4096 / 333). This is a
+**block-size independent**: bit-identical at 64 / 128 / 512 / 1000 over
+four seconds with feedback, `spread`, `manual_cv`, a steady `rate_cv` and
+through-zero all live (2026-09-24 — before that it was only nearly so: the
+taps formed `index − delay`, which rounds at the index's magnitude, the
+sweep carried a float phase, and the line was `12 ms + block` long, so at
+a 64-sample block the delay clamp bit into the deepest sweeps — `manual`
+10 ms at `depth` 1 — that 512 let through; the line is now a fixed 16 ms,
+past the 14 ms deepest sweep, and the taps split the delay into whole
+samples and a fraction). This is a
 **standard** (positive-delay) flanger. Switch on **`through_zero`** and it
 becomes a tape-style *through-zero* flanger: a fixed reference tap plus a
 moving tap swept around it, so their relative delay passes through zero
@@ -3945,9 +3953,12 @@ patched clock never stalls the sweep. While the lock holds, `rate` and
 `rate_cv` step **aside**: the sweep length is the cable's. The locked
 phase is a pure function of the absolute sample index rather than an
 accumulator, which makes a *synced* sweep **exactly** bit-identical at 64
-and 512 — strictly better than the free-running one, whose float phase
-accumulator drifts about 1e-10 (phaser) / 3e-8 (flanger) over three
-seconds.
+and 512. Since 2026-09-24 the free-running sweep is exact too: it counts
+samples since the last rate change instead of carrying a float phase (the
+accumulator used to drift about 1e-10 (phaser) / 3e-8 (flanger) over
+three seconds), re-anchoring only when the rate moves — so a moving
+`rate_cv`, which is read once per block by design, is the one input that
+still depends on the block size; a steady one does not.
 
 **Stereo (`spread`).** The L and R combs have always run from one LFO with
 their phases offset; `spread` is that offset, and `0.5` is exactly the
@@ -4025,7 +4036,10 @@ Patch the outputs into [`left_speaker_output`](#left_speaker_output) and
 phaser's feedback makes each output sample depend on one just written, so
 the allpass cascade runs **per-sample** — but the LFO phase, the allpass
 state and the feedback memory carry across blocks, so the render is still
-exactly **block-size independent** (bit-identical at 512 / 4096 / 333). See
+exactly **block-size independent**: bit-identical at 64 / 128 / 512 / 1000
+over four seconds with feedback, eight stages, `spread`, `manual_cv` and a
+steady `rate_cv` live (2026-09-24 — the sweep's phase is a sample count
+since the last rate change, not a float carried block to block). See
 `examples/phaser_sweep.json` (a self-playing chord swept by the phaser, with
 a slow LFO drifting the sweep rate through `rate_cv`).
 
@@ -4042,9 +4056,12 @@ patched clock never stalls the sweep. While the lock holds, `rate` and
 `rate_cv` step **aside**: the sweep length is the cable's. The locked
 phase is a pure function of the absolute sample index rather than an
 accumulator, which makes a *synced* sweep **exactly** bit-identical at 64
-and 512 — strictly better than the free-running one, whose float phase
-accumulator drifts about 1e-10 (phaser) / 3e-8 (flanger) over three
-seconds.
+and 512. Since 2026-09-24 the free-running sweep is exact too: it counts
+samples since the last rate change instead of carrying a float phase (the
+accumulator used to drift about 1e-10 (phaser) / 3e-8 (flanger) over
+three seconds), re-anchoring only when the rate moves — so a moving
+`rate_cv`, which is read once per block by design, is the one input that
+still depends on the block size; a steady one does not.
 
 **Stereo (`spread`).** The L and R allpass chains have always run from one
 LFO with their phases offset; `spread` is that offset, and `0.5` is exactly

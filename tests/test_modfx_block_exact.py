@@ -1,23 +1,33 @@
-"""Block-size exactness pins for ``delay`` (the flanger and phaser join
-in the next commit).
+"""Block-size exactness pins for ``delay``, ``flanger`` and ``phaser``.
 
-Four seconds of noise through the delay with its features ON, rendered at
-blocks of 64, 128, 512 and 1000 (1000 does not divide the length, so the
-last block is a short one) -- and every render must be ``np.array_equal``
-to the 512 one -- the float32 output AND the float64 DSP state left at the
-end (the delay line, the damping memory). Exposure is part of the
-assertion: a pin that runs a few thousand samples passes a drift that four
-seconds catches, and an ulp in a float64 state flips a float32 output
-sample only rarely (against the old delay the short pin below differed in
-NO output sample over four seconds, and in 106,817 samples of its line).
+Four seconds of noise through each module with its features ON, rendered
+at blocks of 64, 128, 512 and 1000 (1000 does not divide the length, so
+the last block is a short one -- which is itself a case: the flanger used
+to size its ring from ``frames`` and re-initialised on a short block) --
+and every render must be ``np.array_equal`` to the 512 one -- the float32
+output AND the float64 DSP state left at the end (the delay line, the
+damping memory, the allpass memories). Exposure is part of the assertion:
+a pin that runs a few thousand samples passes a drift that four seconds
+catches, and an ulp in a float64 state flips a float32 output sample only
+rarely (against the old delay the short pin below differed in NO output
+sample over four seconds, and in 106,817 samples of its line).
 
 The mechanisms these pin (2026-09-24):
 
 * **A ring index rounds at its own magnitude.** ``wp - delay`` hands back
   a fraction a float64 ulp apart depending on where the index wrapped,
-  which depends on the block size. The delay core now splits the delay
-  into whole samples (``ceil``) and a fraction (``back - delay``, exact by
-  Sterbenz) and indexes the ring with integers.
+  which depends on the block size. The delay core and both flanger taps
+  now split the delay into whole samples (``ceil``) and a fraction
+  (``back - delay``, exact by Sterbenz) and index the ring with integers.
+* **The flanger's ring was ``max_ms + frames`` long,** so its delay clamp
+  moved with the block size (at 64 it bit into the deepest standard
+  sweeps -- ``manual`` 10 ms at ``depth`` 1 -- that 512 let through), and
+  a block of a different length re-initialised the line.
+* **The free-running LFO carried a float phase** (``ph += frames * inc``
+  rounds once per block). Both sweeps now count samples since the last
+  rate change (``_mod_free_phase``), re-anchoring only when the rate
+  moves; a STEADY ``rate_cv`` is a steady float64 (``_finite_mean``), so
+  it never re-anchors.
 * **The delay's two paths damped differently.** The fast path runs the
   damping one-pole through ``lfilter`` (``g*d + (1-g)*lp``) and the
   per-sample path spelled it ``lp + g*(d - lp)``; which path a block
@@ -28,6 +38,7 @@ The mechanisms these pin (2026-09-24):
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 import pysynthrack.modules  # noqa: F401
 from pysynthrack.audio.numpy_backend import NumpyBackend
@@ -83,9 +94,12 @@ def _render(mtype, params, jacks, block):
     return np.concatenate(outs, axis=-1), state
 
 
-# The float64 DSP state each renderer carries between blocks. The ring is a
-# fixed length, so it lines up sample for sample at any block size.
-_STATE = {"delay": ("buf", "lp", "write_idx")}
+# The float64 DSP state each renderer carries between blocks. The rings are
+# a fixed length now (the flanger's was ``+ frames``), so they line up
+# sample for sample at any block size.
+_STATE = {"delay": ("buf", "lp", "write_idx"),
+          "flanger": ("buf", "write_idx"),
+          "phaser": ("s", "yprev")}
 
 
 def _assert_exact(mtype, params, jacks):
@@ -133,3 +147,68 @@ def test_delay_long_modulated_frozen_is_block_size_exact():
              "freeze": _gate([(120001, 160000)])}
     _assert_exact("delay", {"time": 400.37, "feedback": 0.9,
                             "cv_depth": 100.0, "mix": 0.5}, jacks)
+
+
+# ----- flanger ----------------------------------------------------------------
+
+
+def test_flanger_deepest_standard_sweep_is_block_size_exact():
+    # manual 10 ms + a full 4 ms sweep = 14 ms: past the old 12 ms +
+    # ``frames`` ring at 64, so the old clamp bit only at small blocks.
+    # A steady rate_cv, spread and negative feedback ride along.
+    jacks = {"in": _noise(1), "rate_cv": np.full(N, 0.3, np.float32)}
+    _assert_exact("flanger", {"manual": 10.0, "depth": 1.0, "rate": 1.3,
+                              "spread": 0.3, "feedback": -0.6}, jacks)
+
+
+def test_flanger_through_zero_spread_manual_cv_is_block_size_exact():
+    jacks = {"in": _noise(2), "manual_cv": _sine(0.23, 0.8),
+             "rate_cv": np.full(N, -0.45, np.float32)}
+    _assert_exact("flanger", {"through_zero": True, "spread": 1.0,
+                              "feedback": 0.7, "depth": 0.9, "manual": 4.0,
+                              "rate": 2.0, "polarity": -1.0}, jacks)
+
+
+# ----- phaser -----------------------------------------------------------------
+
+
+def test_phaser_eight_stages_spread_feedback_manual_cv_is_block_size_exact():
+    jacks = {"in": _noise(3), "manual_cv": _sine(0.3, 1.0),
+             "rate_cv": np.full(N, 0.3, np.float32)}
+    _assert_exact("phaser", {"stages": 8, "spread": 1.0, "feedback": 0.9,
+                             "depth": 1.0, "rate": 0.7}, jacks)
+
+
+def test_phaser_fast_four_stage_sweep_is_block_size_exact():
+    _assert_exact("phaser", {"stages": 4, "rate": 5.0, "feedback": -0.7,
+                             "spread": 0.2, "depth": 0.8}, {"in": _noise(4)})
+
+
+# ----- the free-running anchor ----------------------------------------------
+
+
+@pytest.mark.parametrize("mtype", ["flanger", "phaser"])
+def test_a_rate_change_re_anchors_without_a_step(mtype):
+    # The knob moves mid-run: the phase reached so far is frozen into the
+    # anchor and the count restarts, so the sweep is continuous (no jump
+    # in phase across the change) -- and the first block after the change
+    # starts exactly where the old rate would have put it.
+    patch = Patch()
+    m = patch.add_module(mtype, params={"rate": 0.5})
+    src = patch.add_module("oscillator")
+    patch.connect(src.id, "out", m.id, "in")
+    b = NumpyBackend(sample_rate=SR, block_size=512)
+    b.compile(patch)
+    x = _noise(5, n=512 * 20)
+    fn = getattr(b, "_render_" + mtype)
+    for k in range(20):
+        if k == 10:
+            m.set_param("rate", 3.0)
+        fn(m, 512, {(src.id, "out"): x[k * 512:(k + 1) * 512]}, patch)
+        st = b._state[m.id]
+        if k == 9:
+            want = (0.5 / SR) * (10 * 512) % 1.0
+        if k == 10:
+            assert st["phase"] == pytest.approx(want, abs=1e-12)
+            assert st["ph_n"] == 512 and st["inc"] == 3.0 / SR
+    assert st["ph_n"] == 10 * 512

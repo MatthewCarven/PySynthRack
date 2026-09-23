@@ -43,7 +43,9 @@ knob still drives it, and with ``clock`` unpatched ``rate`` is all there
 is. While the lock holds, ``rate`` and ``rate_cv`` step aside entirely —
 the sweep length is the cable's, and the phase is keyed to the absolute
 sample count rather than accumulated, so a synced sweep renders
-bit-identically at any block size.
+bit-identically at any block size. So, since 2026-09-24, does a
+free-running one (a sample count since the last rate change); only a
+MOVING ``rate_cv``, read once per block by design, depends on it.
 
 Controls:
   * ``rate`` — LFO sweep speed in Hz. Slow (~0.3 Hz) is a long, breathing

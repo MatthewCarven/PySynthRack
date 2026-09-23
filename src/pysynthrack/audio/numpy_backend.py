@@ -11621,15 +11621,49 @@ class NumpyBackend(AudioBackend):
     _MOD_CLOCK_KEYS = ("samples", "prev_clock", "last_edge", "interval",
                        "anchor", "period")
 
+    def _mod_free_phase(self, state, frames: int, rate: float):
+        """The free-running LFO phase of a modulation sweep, ``(frames,)``.
+
+        Keyed to an integer sample COUNT since the last rate change, never
+        to a phase carried block by block: ``ph + frames * inc`` rounds
+        once per block, so the same stream cut into 64s and into 512s
+        accumulated a different phase and the two renders drifted apart
+        (~1e-8 over a second on the flanger, audible to nobody, but not the
+        same bits). ``k * inc`` from an exact integer ``k`` rounds once, the
+        same way, at every block size -- the chorus's fix (3f161fa). A rate
+        change (the knob, or ``rate_cv``) re-anchors instead: the phase
+        reached so far is frozen into ``phase`` and the count restarts, so
+        the sweep stays continuous and each constant-rate run is exact.
+        ``rate_cv`` is a per-BLOCK mean by design, so a MOVING cv
+        re-anchors every block and is the one input that does depend on
+        the block size; a steady one reads the same float64 at every block
+        size (``_finite_mean``), so it never re-anchors.
+
+        State: ``phase`` (the anchor), ``ph_n`` (samples since it) and
+        ``inc`` (the increment in force; start it impossible, -1.0, so the
+        first block anchors). The caller advances ``ph_n`` by ``frames``
+        after the block -- or, when :meth:`_mod_clock_sync` drove the
+        block, re-anchors at the locked sweep's end phase.
+        """
+        inc = rate / self.sample_rate
+        if inc != state["inc"]:
+            state["phase"] = float(
+                (state["phase"] + state["ph_n"] * state["inc"]) % 1.0)
+            state["ph_n"] = 0
+            state["inc"] = inc
+        k = state["ph_n"] + np.arange(frames, dtype=np.float64)
+        return (state["phase"] + k * inc) % 1.0
+
     def _mod_clock_sync(self, module, frames: int, buffers, patch, state,
-                        division: float, rate: float, phase0: float):
+                        division: float, free):
         """Absolute-sample LFO phase for a clock-synced modulation sweep.
 
         Returns ``None`` while ``clock`` is unpatched, or patched but still
         short of the two rising edges a period needs -- the caller then
-        runs its shipped free-running phase line, unchanged to the bit.
-        Otherwise returns ``(phase, end_phase)``: a ``(frames,)`` array of
-        LFO phase, one value per sample, and the phase just past the block.
+        runs its free-running phase line (``free``, the ``(frames,)``
+        array :meth:`_mod_free_phase` gave it). Otherwise returns
+        ``(phase, end_phase)``: a ``(frames,)`` array of LFO phase, one
+        value per sample, and the phase just past the block.
 
         Edges are found the way :meth:`_render_slew` finds them (a lagged
         compare against ``_GATE_HIGH``, the previous block's last sample
@@ -11643,18 +11677,17 @@ class NumpyBackend(AudioBackend):
 
         Nothing accumulates, so the phase at sample n is the same number
         at any block size -- the integer-tick lesson. (A float phase
-        accumulator is not: the shipped free-running sweep already drifts
-        ~1e-10 over three seconds at 64 vs 512, and a rate re-read once a
-        block would have drifted ~5e-2, which is audible.) When the
-        measured period changes, the anchor is re-derived at THAT EDGE's
-        own sample from the phase there, so the sweep keeps its place
-        rather than jumping -- and the re-derivation is integer-rounded,
-        which quantises away the free-running accumulator's drift as the
-        lock engages. The block where the lock engages is the one block
-        that is part free-running (before the edge) and part locked.
+        accumulator is not, which is why the free-running line is keyed
+        to a sample count too -- :meth:`_mod_free_phase`; a rate re-read
+        once a block would have drifted ~5e-2, which is audible.) When
+        the measured period changes, the anchor is re-derived at THAT
+        EDGE's own sample from the phase there, so the sweep keeps its
+        place rather than jumping. The block where the lock engages is
+        the one block that is part free-running (before the edge, read
+        off ``free``) and part locked.
 
         While the lock holds, ``rate`` and ``rate_cv`` step aside entirely
-        -- the sweep length is the cable's. ``rate`` is passed in only to
+        -- the sweep length is the cable's. ``free`` is passed in only to
         place the free-running stretch before the lock engages.
         """
         clock = self._input_buffer(patch, buffers, module.id, "clock")
@@ -11678,7 +11711,6 @@ class NumpyBackend(AudioBackend):
         interval = int(state.get("interval", 0))
         anchor = int(state.get("anchor", -1))
         period = float(state.get("period", 0.0))
-        inc = rate / self.sample_rate
 
         # Split the block at every edge that CHANGES the period. Each
         # stretch carries the (anchor, period) in force across it; a
@@ -11696,7 +11728,7 @@ class NumpyBackend(AudioBackend):
             if period > 0.0:
                 at = ((now - anchor) / period) % 1.0
             else:
-                at = (phase0 + n * inc) % 1.0
+                at = float(free[n])
             interval = new_interval
             period = interval * division
             anchor = now - int(round(at * period))
@@ -11714,19 +11746,23 @@ class NumpyBackend(AudioBackend):
         for (lo, hi_i, an, pe) in segs:
             if hi_i <= lo:
                 continue
-            idx = np.arange(lo, hi_i, dtype=np.float64)
             if pe > 0.0:
+                idx = np.arange(lo, hi_i, dtype=np.float64)
                 ph[lo:hi_i] = ((base + idx - an) / pe) % 1.0
             else:
-                ph[lo:hi_i] = (phase0 + idx * inc) % 1.0
+                ph[lo:hi_i] = free[lo:hi_i]
         return ph, float(((base + frames - anchor) / period) % 1.0)
 
     # ----- Flanger rendering ----------------------------------------------
 
     # Longest delay the flanger line can address, in milliseconds. The comb
     # is a *short* modulated delay, so this ring is tiny; it sizes the
-    # buffer and caps the swept delay.
-    _FLANGER_MAX_MS = 12.0
+    # buffer and caps the swept delay. The deepest standard sweep is
+    # ``manual`` 10 + ``_FLANGER_SWEEP_MS`` 4 = 14 ms, so 16 leaves the cap
+    # a margin it never reaches. (It was 12 ms + ``frames``: the cap moved
+    # with the block size, and at 64 it bit into the deepest sweeps that
+    # 512 let through -- a render that depended on the block size.)
+    _FLANGER_MAX_MS = 16.0
     # Largest sweep amplitude (ms) at depth == 1, added around ``manual``.
     _FLANGER_SWEEP_MS = 4.0
     # Shortest delay, in samples. >= 2 keeps both linear-interpolation taps
@@ -11800,10 +11836,13 @@ class NumpyBackend(AudioBackend):
         division = min(max(division, self._MOD_DIV_MIN), self._MOD_DIV_MAX)
 
         # Through-zero sweeps the moving tap out to ~2x the centre delay, so
-        # its line is longer; standard mode keeps the original length so its
-        # state and output stay byte-for-byte unchanged.
+        # its line is longer. The recirculation is per-sample, so the ring
+        # only has to hold the longest delay -- NOT ``+ frames``: a length
+        # (and so a clamp) that moved with the block size made the deepest
+        # sweeps block-size dependent, and a block-size change mid-stream
+        # re-initialised the line.
         max_ms = self._FLANGER_TZ_MAX_MS if tz_on else self._FLANGER_MAX_MS
-        L = int(max_ms * sr / 1000.0) + frames + 4
+        L = int(max_ms * sr / 1000.0) + 4
 
         state = self._state.setdefault(module.id, {})
         if (
@@ -11816,12 +11855,15 @@ class NumpyBackend(AudioBackend):
             state.update(keep)
             state["buf"] = np.zeros((2, L), dtype=np.float64)
             state["write_idx"] = 0
+            # LFO: anchor phase + integer count since the last rate change
+            # (``_mod_free_phase``); ``inc`` -1 makes the first block anchor.
             state["phase"] = 0.0
+            state["ph_n"] = 0
+            state["inc"] = -1.0
             state["tz"] = tz_on
 
         buf = state["buf"]
         wp = int(state["write_idx"])
-        phase0 = float(state["phase"])
 
         if frames == 0:
             e = np.empty(0, dtype=np.float32)
@@ -11857,20 +11899,17 @@ class NumpyBackend(AudioBackend):
         # run (0 = together, 0.5 = the shipped quarter-cycle quadrature,
         # 1 = a half cycle apart), so the two combs sweep out of step.
         # ``clock`` patched and locked replaces the free-running phase line
-        # with an absolute-sample one (one sweep per ``division`` ticks);
-        # unpatched, the shipped expression below runs untouched.
-        inc = rate / sr
-        n = np.arange(frames, dtype=np.float64)
+        # with an absolute-sample one (one sweep per ``division`` ticks).
+        # Free-running, the phase is an integer sample count since the last
+        # rate change (``_mod_free_phase``), so it is the same bits at any
+        # block size.
         offs = np.array([0.0, 0.5 * spread])      # L / R LFO phase offset
+        free = self._mod_free_phase(state, frames, rate)          # (F,)
         sync = self._mod_clock_sync(
-            module, frames, buffers, patch, state, division, rate, phase0
+            module, frames, buffers, patch, state, division, free
         )
-        if sync is None:
-            ph = (phase0 + offs[:, None] + n[None, :] * inc) % 1.0    # (2, F)
-            new_phase = (phase0 + frames * inc) % 1.0
-        else:
-            pb, new_phase = sync
-            ph = (pb[None, :] + offs[:, None]) % 1.0                  # (2, F)
+        pb = free if sync is None else sync[0]
+        ph = (pb[None, :] + offs[:, None]) % 1.0                  # (2, F)
         lfo = np.sin(2.0 * np.pi * ph)                            # (2, F)
 
         out = np.empty((2, frames), dtype=np.float64)
@@ -11883,10 +11922,18 @@ class NumpyBackend(AudioBackend):
             sweep_samp = (self._FLANGER_SWEEP_MS * depth) * sr / 1000.0
             delay = manual_samp + sweep_samp * lfo                    # (2, F)
             np.clip(delay, self._FLANGER_MIN_SAMP, float(L - 2), out=delay)
+            # THE TRAP (the chorus's and the tape's): a ring index rounds
+            # at its own magnitude, so ``wp - delay`` -- ``wp`` wraps at a
+            # different absolute sample for every block size -- hands back
+            # a fraction a float64 ulp apart. Split the delay into WHOLE
+            # samples and a FRACTION instead, both functions of the small
+            # delay alone (``back - delay`` is exact: Sterbenz, delay >= 2).
+            back = np.ceil(delay)                                     # (2, F)
+            fracs = back - delay               # forward weight, in [0, 1)
+            backs = back.astype(np.int64)
             for i in range(frames):
-                rp = wp - delay[:, i]                          # (2,)
-                i0 = np.floor(rp).astype(np.int64)
-                frac = rp - i0
+                i0 = wp - backs[:, i]                          # (2,)
+                frac = fracs[:, i]
                 d = (
                     buf[rows, i0 % L] * (1.0 - frac)
                     + buf[rows, (i0 + 1) % L] * frac
@@ -11907,30 +11954,35 @@ class NumpyBackend(AudioBackend):
             if man is None:
                 D0 = manual_ms * sr / 1000.0
                 d_ref = min(max(D0, self._FLANGER_MIN_SAMP), float(L - 2))
-                d_ref_seq = None
+                d_ref_seq = np.full(frames, d_ref)
                 sweep_samp = depth * max(D0 - move_min, 0.0)
             else:
                 # manual_cv moves the REFERENCE tap too, so the crossing
                 # itself travels: the zero is wherever the envelope put it.
                 D0 = man * sr / 1000.0                            # (F,)
-                d_ref = 0.0
                 d_ref_seq = np.clip(D0, self._FLANGER_MIN_SAMP, float(L - 2))
                 sweep_samp = depth * np.maximum(D0 - move_min, 0.0)
             dm = D0 + sweep_samp * lfo                                # (2, F)
             np.clip(dm, move_min, float(L - 2), out=dm)
+            # Both taps split into whole samples + a fraction, never
+            # ``wp - delay`` (see the standard path above).
+            back_a = np.ceil(d_ref_seq)                               # (F,)
+            fas = (back_a - d_ref_seq).tolist()
+            backs_a = back_a.astype(np.int64).tolist()
+            back = np.ceil(dm)                                        # (2, F)
+            fracs = back - dm
+            backs = back.astype(np.int64)
             for i in range(frames):
                 # reference tap (same delay both channels, own rows)
-                rpa = wp - (d_ref if d_ref_seq is None else d_ref_seq[i])
-                ja = int(np.floor(rpa))
-                fa = rpa - ja
+                ja = wp - backs_a[i]
+                fa = fas[i]
                 a = (
                     buf[rows, ja % L] * (1.0 - fa)
                     + buf[rows, (ja + 1) % L] * fa
                 )                                              # (2,)
                 # swept moving tap (per channel)
-                rp = wp - dm[:, i]                             # (2,)
-                i0 = np.floor(rp).astype(np.int64)
-                frac = rp - i0
+                i0 = wp - backs[:, i]                          # (2,)
+                frac = fracs[:, i]
                 b = (
                     buf[rows, i0 % L] * (1.0 - frac)
                     + buf[rows, (i0 + 1) % L] * frac
@@ -11942,7 +11994,13 @@ class NumpyBackend(AudioBackend):
 
         wp = wp % L
         state["write_idx"] = int(wp)
-        state["phase"] = new_phase
+        if sync is None:
+            state["ph_n"] += frames
+        else:
+            # The locked sweep drove this block: re-anchor the free-running
+            # line at its end, so pulling the cable carries on from there.
+            state["phase"] = sync[1]
+            state["ph_n"] = 0
 
         out_l = out[0].astype(np.float32)
         out_r = out[1].astype(np.float32)
@@ -12019,11 +12077,14 @@ class NumpyBackend(AudioBackend):
             state.update(keep)
             state["s"] = np.zeros((2, stages), dtype=np.float64)   # allpass memory
             state["yprev"] = np.zeros(2, dtype=np.float64)         # feedback memory
+            # LFO: anchor phase + integer count since the last rate change
+            # (``_mod_free_phase``); ``inc`` -1 makes the first block anchor.
             state["phase"] = 0.0
+            state["ph_n"] = 0
+            state["inc"] = -1.0
 
         s = state["s"]
         yprev = state["yprev"]
-        phase0 = float(state["phase"])
 
         if frames == 0:
             e = np.empty(0, dtype=np.float32)
@@ -12044,20 +12105,16 @@ class NumpyBackend(AudioBackend):
         # 1 = a half cycle apart), so the two notch chains sweep out of
         # step. ``clock`` patched and locked replaces the free-running
         # phase line with an absolute-sample one (one sweep per
-        # ``division`` ticks); unpatched, the shipped expression below
-        # runs untouched.
-        inc = rate / sr
-        n = np.arange(frames, dtype=np.float64)
+        # ``division`` ticks). Free-running, the phase is an integer
+        # sample count since the last rate change (``_mod_free_phase``),
+        # so it is the same bits at any block size.
         offs = np.array([0.0, 0.5 * spread])      # L / R LFO phase offset
+        free = self._mod_free_phase(state, frames, rate)          # (F,)
         sync = self._mod_clock_sync(
-            module, frames, buffers, patch, state, division, rate, phase0
+            module, frames, buffers, patch, state, division, free
         )
-        if sync is None:
-            ph = (phase0 + offs[:, None] + n[None, :] * inc) % 1.0    # (2, F)
-            new_phase = (phase0 + frames * inc) % 1.0
-        else:
-            pb, new_phase = sync
-            ph = (pb[None, :] + offs[:, None]) % 1.0                  # (2, F)
+        pb = free if sync is None else sync[0]
+        ph = (pb[None, :] + offs[:, None]) % 1.0                  # (2, F)
         lfo = np.sin(2.0 * np.pi * ph)                            # (2, F)
 
         # Exponential (musical) sweep of the break frequency: +/- depth*2
@@ -12103,7 +12160,13 @@ class NumpyBackend(AudioBackend):
 
         state["s"] = s
         state["yprev"] = yprev
-        state["phase"] = new_phase
+        if sync is None:
+            state["ph_n"] += frames
+        else:
+            # The locked sweep drove this block: re-anchor the free-running
+            # line at its end, so pulling the cable carries on from there.
+            state["phase"] = sync[1]
+            state["ph_n"] = 0
 
         dry = (1.0 - mix) * x
         out_l = (dry + mix * wet[0]).astype(np.float32)

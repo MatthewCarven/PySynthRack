@@ -34,8 +34,9 @@ Love pass (2026-09-22), three features all OFF at their defaults:
     unpatched (``division`` then changes nothing); needs two edges;
     the locked sweep rate is measured off a tone's AM via the Hilbert
     envelope; and the locked render is EXACTLY block-size independent
-    (the free-running one only approximately -- an absolute-sample phase
-    schedule against a float accumulator).
+    (and, since 2026-09-24, so is the free-running one -- an integer
+    sample count since the last rate change, not a float accumulator;
+    tests/test_modfx_block_exact.py has the four-second pins).
   - ``manual_cv`` + ``manual_depth``: the notch position as a per-sample
     jack. Measured by where the deepest notch lands (an octave of CV
     moves it an octave), depth-scales, disabled at depth 0, per-sample
@@ -613,7 +614,6 @@ class TestClockSync:
     def test_a_locked_sweep_is_exactly_block_size_independent(self):
         # The point of keying the locked phase to the ABSOLUTE sample
         # index instead of accumulating it: identical bits at 64 and 512.
-        # (The free-running sweep is only approximately so -- see below.)
         n = 44032                       # a whole number of 512s AND of 64s
         sig = _noise(n=n, seed=3)
         gate = _ticks(n, 64)                      # locks at sample 64
@@ -626,16 +626,25 @@ class TestClockSync:
         assert np.array_equal(a[0], b[0])
         assert np.array_equal(a[1], b[1])
 
-    def test_the_free_running_sweep_only_drifts_a_little(self):
-        # Honest counterpart to the test above: the shipped float phase
-        # accumulator is NOT bit-exact across block sizes (~1e-10 over a
-        # second), which is why the clocked path does not use one.
-        n = 44032
+    def test_the_free_running_sweep_is_exact_too(self):
+        # This used to be the honest counterpart -- the float phase
+        # accumulator drifted ~1e-10 over a second at 64 vs 512 and the pin
+        # was ``< 1e-6``. The free-running line now counts samples since
+        # the last rate change (``_mod_free_phase``), so it is exact too.
+        # Four seconds, and the float64 DSP state compared as well as the
+        # float32 output: an ulp in the state rarely flips a float32
+        # sample, so the output alone can pass a drift that is there.
+        n = (4 * SR // 512) * 512       # a whole number of 512s AND 64s
         sig = _noise(n=n, seed=3)
-        a = _plain({"depth": 0.8, "feedback": 0.5}, sig, block=512)[0]
-        b = _plain({"depth": 0.8, "feedback": 0.5}, sig, block=64)[0]
-        d = float(np.abs(a - b).max())
-        assert d < 1e-6
+        p = {"depth": 0.8, "feedback": 0.5}
+        ra, rb = _rig(p, block=512), _rig(p, block=64)
+        a = _run(*ra, sig, block=512)
+        b = _run(*rb, sig, block=64)
+        assert np.array_equal(a[0], b[0])
+        assert np.array_equal(a[1], b[1])
+        sa, sb = ra[3]._state[ra[2].id], rb[3]._state[rb[2].id]
+        for k in ("s", "yprev"):
+            assert np.array_equal(sa[k], sb[k]), k
 
     def test_a_faster_clock_sweeps_faster(self):
         n = SR * 4
