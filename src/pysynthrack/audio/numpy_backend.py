@@ -12378,8 +12378,13 @@ class NumpyBackend(AudioBackend):
         same per row regardless of V.
 
         Per-sample (not block-vectorized) because the feedback recirculation
-        is sequential when the delay is shorter than a block; the constant-
-        delay >= block case could be vectorized later (see WORKLOG).
+        is sequential when the delay is shorter than a block; when every
+        read this block lands at least a block back, a vectorized fast path
+        runs instead. Exact at any block size (2026-09-24): the read splits
+        the delay into whole samples and a fraction rather than forming
+        ``index - delay`` (a ring index rounds at its own magnitude), and
+        both paths spell the damping one-pole as ``lfilter`` evaluates it,
+        since which path a block takes depends on the block size.
 
         ``fz`` (the ``freeze`` gate row, or None): while high the echo
         hangs. A per-sample blend ``e`` (0 = normal, 1 = frozen) follows
@@ -12516,6 +12521,24 @@ class NumpyBackend(AudioBackend):
                 # exactly ``fzd``, and time_cv no longer moves it.
                 dly = dly * (1.0 - e) + fzd * e
 
+        # THE TRAP (the chorus's and the tape's): a ring index rounds at its
+        # own magnitude. ``wp + n - dly`` looks exact and is not -- the fast
+        # path forms it from an index that has not wrapped yet this block,
+        # the per-sample path from one that wrapped at a block boundary, so
+        # the same sample read a fraction a float64 ulp apart depending on
+        # the block size. Split the delay into WHOLE samples and a FRACTION
+        # instead, both functions of the small delay alone (``back - dly``
+        # is exact: Sterbenz, dly >= 2), and index the ring with integers.
+        # At a whole-sample delay (the held freeze) ``frac`` is exactly 0.
+        back = np.ceil(dly)                                  # (V, F)
+        fracs = back - dly                   # forward weight, in [0, 1)
+        backs = back.astype(np.int64)
+        # The damping one-pole's coefficients, spelled the way ``lfilter``
+        # evaluates them, so the per-sample path below computes the same
+        # bits as the fast path's ``lfilter`` (``g * d + (1 - g) * lp``,
+        # not ``lp + g * (d - lp)``, which rounds differently). Which path
+        # a block takes depends on the block size, so the two must agree.
+        c1 = 1.0 - g
         rows = np.arange(V)
         if float(dly.min()) >= frames:
             # Fast path: every read this block lands at least one block back,
@@ -12524,15 +12547,14 @@ class NumpyBackend(AudioBackend):
             # its state carried in ``zi``. This is the common echo case
             # (any musical delay time is many blocks long).
             absidx = wp + np.arange(frames)                  # (F,) absolute
-            rp = absidx[np.newaxis, :] - dly                 # (V, F) read pos
-            i0 = np.floor(rp).astype(np.int64)
-            frac = rp - i0
+            i0 = absidx[np.newaxis, :] - backs               # (V, F) whole
+            frac = fracs
             d = (
                 buf[rows[:, None], i0 % L] * (1.0 - frac)
                 + buf[rows[:, None], (i0 + 1) % L] * frac
             )
-            zi = ((1.0 - g) * lp)[:, np.newaxis]             # (V, 1)
-            damped = lfilter([g], [1.0, -(1.0 - g)], d, axis=-1, zi=zi)[0]
+            zi = (c1 * lp)[:, np.newaxis]                    # (V, 1)
+            damped = lfilter([g], [1.0, -c1], d, axis=-1, zi=zi)[0]
             if e is None:
                 buf[rows[:, None], absidx % L] = x + feedback * damped
             else:
@@ -12559,14 +12581,13 @@ class NumpyBackend(AudioBackend):
                 om = 1.0 - e
                 gain = feedback * om + e
             for n in range(frames):
-                rp = wp - dly[:, n]                          # (V,)
-                i0 = np.floor(rp).astype(np.int64)
-                frac = rp - i0
+                i0 = wp - backs[:, n]                        # (V,)
+                frac = fracs[:, n]
                 d = (
                     buf[rows, i0 % L] * (1.0 - frac)
                     + buf[rows, (i0 + 1) % L] * frac
                 )
-                lp = lp + g * (d - lp)                       # damped feedback
+                lp = g * d + c1 * lp                         # damped feedback
                 if e is None:
                     buf[rows, wp % L] = x[:, n] + feedback * lp
                 else:

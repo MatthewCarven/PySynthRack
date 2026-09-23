@@ -2348,6 +2348,21 @@ musical delay time is many blocks long, so the common case runs on a
 fully vectorized block path; only short or heavily modulated delays
 (under one block) fall back to a per-sample loop.
 
+**Block-size exact** (2026-09-24): the render is bit-identical at any
+block size — 64, 128, 512 or 1000, over four seconds with feedback,
+`time_cv`, voices and `freeze` all live, the delay line itself compared
+as well as the output. That took two deliberate choices. The read splits
+the delay into **whole samples and a fraction** (`ceil(delay)`, and
+`ceil(delay) − delay`, exact) instead of forming `index − delay`: **a
+ring index rounds at its own magnitude**, and the index wraps at a
+different sample for each block size (the tape's and the chorus's
+lesson). And the two paths spell the damping one-pole the same way: which
+path a block takes depends on the block size, so a delay between 64 and
+1000 samples used to switch arithmetic with it. Neither was audible (an
+ulp in the line flipped a float32 output sample at most once in four
+seconds in the renders measured), but a render should not depend on the
+buffer slider.
+
 **Patching.** `… → vca → delay → speaker` puts an echo on a voice; raise
 `feedback` and lower `tone` for a dub tail that melts away; wobble
 `time_cv` from an [LFO](#lfo) for tape flutter, or set a short `time`
