@@ -309,7 +309,7 @@ passing.
   itself), so a stationary source's hold is in phase with the live
   input. 35 tests. Example `freeze_chord_pad.json`.
 
-### `autopan` (S) — "Routing & VCA" — the stereo motion utility — **module #101**
+### `autopan` (S) — "Routing & VCA" — **SHIPPED 2026-09-24** (see TODO.md / WORKLOG.md) — the stereo motion utility — **module #101**
 
 The keep-list's "there's no dedicated panner anywhere in the rack.
 Equal-power pan with CV in; fold tremolo into it". The stereo speaker
@@ -386,6 +386,14 @@ to the clock if you like. Two VCAs and a law, in other words.
   where the clocked cycle starts on the downbeat (needs a reset edge
   the helper does not have); a separate tremolo rate; `width` on the
   stereo pair (the sink and `mid_side` have it).
+- As built (2026-09-24), verbatim. The example settled on a `square`
+  at `division` 2 on an eighth-note clock (alternate notes left and
+  right, `depth` 0.85) with a parallel reverb sink left centred, rather
+  than a stereo delay. Measured: centres −3.010 / −4.515 / −6.021 dB;
+  the square's steepest step is exactly K = 25× a 2 Hz sine's (0.0046
+  on a unit DC, against a hard switch's 1.0); bit-identical at 64 /
+  128 / 512 / 1000 over 4.5 s free-running and clock-locked; ~0.23 ms
+  per 512-sample block. 48 tests.
 
 ## CV tools & bridges
 

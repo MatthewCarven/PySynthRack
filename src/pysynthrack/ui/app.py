@@ -105,6 +105,7 @@ from ..modules.quantizer import (
     QUANTIZER_SCALES,
 )
 from ..modules.arpeggiator import ARP_MODES
+from ..modules.autopan import AUTOPAN_LAWS, AUTOPAN_SHAPES
 from ..modules.chord import (
     CHORD_ENABLE_KEYS,
     CHORD_INTERVAL_KEYS,
@@ -3839,6 +3840,64 @@ class App:
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
                     min_value=-1.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+
+        if module.TYPE == "autopan":
+            # Panner + LFO. ``pan`` is the manual centre; ``depth`` the
+            # LFO swing in pan units; ``rate`` Hz (or ``division`` clock
+            # ticks per L-R-L cycle while ``clock`` is patched); ``shape``
+            # sine / triangle / square (a 10 ms glide, never a click);
+            # ``tremolo`` the phase between the sides (0 autopan, 1 a mono
+            # tremolo); ``law`` the mono placement law (-3 / -4.5 / -6 dB
+            # centre); ``cv_depth`` octaves per unit on rate_cv.
+            if param_name == "pan":
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=-1.0, max_value=1.0, format="%.2f L..R",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name in ("depth", "tremolo"):
+                dpg.add_slider_float(
+                    label=param_name, default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "rate":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.01,
+                    min_value=0.01, max_value=20.0, format="%.2f Hz",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "shape":
+                dpg.add_combo(
+                    label=param_name, items=list(AUTOPAN_SHAPES),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "law":
+                dpg.add_combo(
+                    label=f"{param_name} (-3/-4.5/-6 dB)", items=list(AUTOPAN_LAWS),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "division":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.05,
+                    min_value=0.25, max_value=64.0, format="%.2f ticks",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cv_depth":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.02,
+                    min_value=0.0, max_value=4.0, format="%.2f oct/unit",
                     width=140, callback=self._on_param_changed, user_data=user_data,
                 )
                 return

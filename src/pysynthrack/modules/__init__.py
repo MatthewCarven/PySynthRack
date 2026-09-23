@@ -11,6 +11,7 @@ from .ad_envelope import ADEnvelope
 from .adsr import ADSR
 from .arpeggiator import Arpeggiator
 from .audiotocv import AudioToCV
+from .autopan import Autopan
 from .bitcrusher import Bitcrusher
 from .bowed import Bowed
 from .chaos import Chaos
@@ -110,6 +111,7 @@ __all__ = [
     "ADSR",
     "Arpeggiator",
     "AudioToCV",
+    "Autopan",
     "BernoulliGate",
     "Bitcrusher",
     "Bowed",

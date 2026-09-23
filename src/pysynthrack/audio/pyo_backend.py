@@ -305,6 +305,7 @@ class PyoBackend(AudioBackend):
             "cv_math",
             "cv_recorder",
             "vowel",
+            "autopan",
         ):
             # v0.3+ routing / bridge / CV-oscillator modules. The numpy
             # backend is the real implementation; pyo support arrives

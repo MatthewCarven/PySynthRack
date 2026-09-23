@@ -111,6 +111,8 @@ The full map:
 | `flanger.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
 | `flanger.manual_cv` | `1.0` (`manual_depth`) | octaves | `manual · 2^(d·cv[n])`, **per sample**, clamped 0.1…10 ms; in through-zero mode it moves the reference tap too, so the crossing travels; mono (a `(V, F)` source is summed) |
 | `phaser.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
+| `autopan.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)`, re-read per block; steps aside while the `clock` lock holds |
+| `autopan.pan_cv` | — (1:1) | pan units | `pan + cv[n] + depth·lfo`, **per sample**, clamped ±1; a `(V, F)` source is averaged; a non-finite sample reads 0 |
 | `phaser.manual_cv` | `1.0` (`manual_depth`) | octaves | `center · 2^(d·cv[n])`, **per sample**, clamped 100…6000 Hz; mono (a `(V, F)` source is summed) |
 | `ring_mod.freq_cv` | `1.0` (`freq_cv_depth`) | octaves | `freq · 2^(freq_cv_depth·cv[n])`, per-sample (internal carrier; bypassed when `carrier` patched) |
 | `freq_shifter.shift_cv` | `200.0` (`shift_cv_depth`) | Hz (linear, additive) | `shift + shift_cv_depth·cv[n]`, per-sample; a shift adds Hz, not V/oct; clamped ±Nyquist |
@@ -415,6 +417,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`combiner`](#combiner) | Routing & VCA | `in1`–`in4` (audio) → `out` (audio) |
 | [`cv_combiner`](#cv_combiner) | Routing & VCA | `in1`–`in4` (cv) → `out` (cv) |
 | [`mid_side`](#mid_side) | Routing & VCA | `in_l`,`in_r` (audio), `width_cv` (cv) → `mid`,`side`,`out_l`,`out_r` (audio) |
+| [`autopan`](#autopan) | Routing & VCA | `in_l`,`in_r` (audio), `pan_cv`,`rate_cv` (cv), `clock` (gate) → `out_l`,`out_r` (audio) |
 | [`constant`](#constant) | CV & Utilities | — → `out` (cv) |
 | [`cv_scale`](#cv_scale) | CV & Utilities | `in` (cv) → `out` (cv) |
 | [`cv_offset`](#cv_offset) | CV & Utilities | `in` (cv) → `out` (cv) |
@@ -5012,6 +5015,78 @@ rebuilt only when the corner moves. **Ports**: `in_l`, `in_r` (audio),
 `width` 0..2 (1); `side_hp` Hz, 0 = off, 20..500 when on (0). See
 `examples/mid_side_breathe.json` and `examples/mid_side_bass_mono.json`.
 
+#### `autopan`
+
+**A panner with its own LFO** — the stereo motion utility (module
+#101). The [`stereo_speaker_output`](#stereo_speaker_output) sink can be
+panned by a cable, but only at the very end of the chain and only by
+building the LFO yourself; this is the panner as a module — before the
+delay, before the reverb, swinging on its own, locked to the clock if you
+like. Two VCAs and a law.
+
+**Mono or stereo**, by what is cabled. **One** input (either jack) is a
+mono source *placed* by `law`: `power` (the default — `(cos θ, sin θ)`
+of `θ = (p+1)·π/4`, −3 dB at centre, constant power, exactly the stereo
+sink's placement), `compromise` (−4.5 dB, the geometric mean of the
+other two — the console compromise) or `linear` (−6 dB, `((1−p)/2,
+(1+p)/2)`, constant amplitude: the two sides always sum to the source,
+so a mono fold-down never moves). **Both** inputs is a stereo pair under
+a *balance* control — unity on both sides at centre, the far side fading
+with the sink's cosine taper — and at `pan` 0, `depth` 0 the pair passes
+through bit-exactly.
+
+**The LFO.** `position = clip(pan + pan_cv + depth · lfo, −1, 1)`, per
+sample. `shape` is `sine`, `triangle` (constant speed, a turn at each
+side) or `square` — a ping-pong that jumps side to side, but never
+instantly: the jump is a raised-cosine glide lasting 10 ms at every
+rate, exactly as steep as a 50 Hz sine sweep, so a hard ping-pong does
+not click (measured: its steepest step is `1/(2·rate·10 ms)` × a sine's
+at the same rate, a small fraction of a hard switch's full-gain step). `rate` 0.01..20 Hz,
+`rate_cv` 1 V/oct × `cv_depth`. The phase is keyed to an absolute sample
+count, not accumulated, so a steady-rate render is bit-identical at any
+block size. **Tempo sync**: patch a gate into `clock` and one full
+L → R → L cycle takes `division` ticks (the phaser/flanger sync —
+measured between the last two rising edges, `rate` rules until two have
+arrived; `division` 2 on an eighth-note clock throws alternate notes to
+alternate sides). Unpatch it and the free-running LFO carries on from
+where the locked sweep was.
+
+**Tremolo, folded in.** `tremolo` is the phase between the two sides:
+the right channel reads the LFO `tremolo/2` cycles after the left. **0**
+is a plain autopan; **1** puts them half a cycle apart, which mirrors
+the position, so the two gains are *equal* and rise and fall together —
+a mono tremolo, silence to unity around the −3 dB centre; in between the
+sound swirls, part pan, part throb. (Constant power holds at `tremolo` 0
+only — a tremolo is meant to change the level.) A `(V, F)` source is
+summed (panning is linear, so panning the mix is panning every voice);
+nothing cabled is silence while the LFO keeps time. Numpy backend only;
+silent stub under pyo. See `examples/autopan_pluck_bounce.json`.
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in_l` | in | audio | Left, or the mono source when it is the only one cabled. |
+| `in_r` | in | audio | Right, or the mono source when it is the only one cabled. |
+| `pan_cv` | in | cv | Added to the position per sample, 1:1 (a ±1 LFO sweeps the field). |
+| `rate_cv` | in | cv | 1 V/oct × `cv_depth` on `rate`, per block. |
+| `clock` | in | gate | Tempo sync: one cycle every `division` ticks. |
+| `out_l` | out | audio | Left. |
+| `out_r` | out | audio | Right. |
+
+**Parameters**
+
+| Param | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `pan` | `0.0` | −1 … 1 | The manual position the LFO swings around. |
+| `depth` | `0.7` | 0 … 1 | LFO swing in pan units; 0 = a static panner. |
+| `rate` | `0.5` | 0.01 … 20 Hz | Free-running LFO rate. |
+| `shape` | `sine` | sine / triangle / square | The swing; the square glides in 10 ms. |
+| `tremolo` | `0.0` | 0 … 1 | Phase between the sides: 0 autopan, 1 a mono tremolo. |
+| `law` | `power` | power / compromise / linear | Mono placement: −3 / −4.5 / −6 dB centre. |
+| `division` | `4.0` | 0.25 … 64 | Clock ticks per full cycle (with `clock` patched). |
+| `cv_depth` | `1.0` | 0 … 4 | Octaves per unit on `rate_cv`. |
+
 ---
 
 ### Utilities
@@ -6083,6 +6158,7 @@ loads in the app. Notable ones referenced above:
 - `pitch_shifter_harmonizer.json` — a stereo major triad from one module: `semitones` +4, `harmony` +7, `spread` 1 → third left, fifth right, root centred.
 - `chorus_lush.json` — a saw pad widened into a four-voice stereo ensemble; a slow LFO drifts the chorus rate.
 - `mid_side_bass_mono.json` — bass mono: a wide [`supersaw`](#supersaw) pad (`spread` 0.9) and a 55 Hz sub summed into each channel, through [`mid_side`](#mid_side) at `width` 1.6 with `side_hp` 120 — the pad's detune would otherwise smear the sub across the field; with the corner in, the sub sits dead centre and the pad stays wide.
+- `autopan_pluck_bounce.json` — the clocked ping-pong: an eighth-note [`clock`](#clock) plays an A-minor-pentatonic [`sequencer`](#sequencer) line on a short [`pluck`](#pluck) AND locks the [`autopan`](#autopan) (`square`, `division` 2, `depth` 0.85), so alternate notes land well left and well right (the far side ~19 dB down); a parallel [`reverb`](#reverb) sink stays centred, so the room holds still while the notes are thrown.
 - `lfo_random_replay.json` — the replaying random: an 8-step C-minor melody ([`sequencer`](#sequencer) → [`quantizer`](#quantizer) → saw → lowpass) under a 6 Hz `random` [`lfo`](#lfo) on the filter's `cutoff_cv` with `seed` 4242, and the [`clock_divider`](#clock_divider)'s `div8` bar pulse on the sequencer's `reset` *and* the LFO's — the same twelve-step random wah phrase every bar, a written-down accident; every module with a seed has one set, so the patch renders bit-identically run after run.
 - `lfo_retrigger.json` — the key-synced tremolo: a 90 BPM sequencer melody through an ADSR VCA and then a 7 Hz [`lfo`](#lfo) VCA, with the sequencer's `gate` also into the LFO's `reset` and `phase` 0.25 — every note opens at the top of the tremolo and pulses down from there, instead of landing wherever the cycle happened to be.
 - `sequencer_pendulum.json` — the [`sequencer`](#sequencer)'s `direction`: a five-step [`pluck`](#pluck) line in `pendulum` (an 8-note period, `1 2 3 4 5 4 3 2`) against a second sequencer in `random` (`seed` 7) gating a [`hat`](#hat) on sixteenths, with a [`clock_divider`](#clock_divider) at /16 resetting both every bar — so the "random" hat pattern is one reproducible bar, replayed.

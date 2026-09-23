@@ -2725,6 +2725,8 @@ class NumpyBackend(AudioBackend):
             return self._render_logic(module, frames, buffers, patch)
         if module.TYPE == "mid_side":
             return self._render_mid_side(module, frames, buffers, patch)
+        if module.TYPE == "autopan":
+            return self._render_autopan(module, frames, buffers, patch)
         if module.TYPE == "octaver":
             return self._render_octaver(module, frames, buffers, patch)
         if module.TYPE == "midi_input":
@@ -19650,6 +19652,175 @@ class NumpyBackend(AudioBackend):
         else:
             st["hp_hist"] = (float(side[-1]), x1, float(out[-1]), y1)
         return out
+
+    # ----- Autopan rendering ----------------------------------------------
+
+    def _render_autopan(self, module, frames: int, buffers, patch) -> dict:
+        """Panner + LFO: ``in_l``/``in_r`` -> ``out_l``/``out_r``.
+
+        ONE input cabled (either jack) is a mono source PLACED by ``law``
+        (power = the stereo sink's ``(cos, sin)`` of ``(p+1)*pi/4``;
+        linear = ``((1-p)/2, (1+p)/2)``; compromise = their geometric
+        mean); BOTH cabled is a stereo pair BALANCED with the sink's
+        cosine taper (unity at centre, so pan 0 depth 0 is the inputs to
+        the bit). The position is ``clip(pan + pan_cv + depth*lfo, -1,
+        1)`` per sample; ``tremolo`` makes the right side read the LFO
+        ``tremolo/2`` cycles later than the left (1 = the two gains
+        equal: a mono tremolo).
+
+        The LFO phase is keyed to an ABSOLUTE sample count -- ``(phi_a +
+        (n - n_a) * rate/sr) mod 1``, re-anchored only when the
+        effective rate changes -- so a steady-rate render is the same
+        float at sample n whatever the block size (the integer-tick
+        lesson; nothing accumulates). A locked ``clock`` hands the phase
+        to :meth:`_mod_clock_sync`; while it holds, the free-running
+        anchor follows the locked phase so an unpatch carries on from
+        where the sweep was. The square is ``sin(pi/2 * clip(K*tri))``
+        with ``K = 1/(2*rate*T)``: a raised-cosine glide of
+        ``AUTOPAN_SQUARE_EDGE_S`` between sides at every rate.
+        """
+        from ..modules.autopan import (
+            AUTOPAN_LAWS,
+            AUTOPAN_RATE_MAX,
+            AUTOPAN_RATE_MIN,
+            AUTOPAN_SHAPES,
+            AUTOPAN_SQUARE_EDGE_S,
+        )
+
+        if frames == 0:
+            e = np.empty(0, dtype=np.float32)
+            return {"out_l": e, "out_r": e.copy()}
+
+        params = module.params
+
+        def fparam(name, default, lo, hi):
+            try:
+                v = float(params.get(name, default))
+            except (TypeError, ValueError):
+                v = default
+            if not math.isfinite(v):
+                v = default
+            return min(max(v, lo), hi)
+
+        sr = self.sample_rate
+        pan = fparam("pan", 0.0, -1.0, 1.0)
+        depth = fparam("depth", 0.7, 0.0, 1.0)
+        rate = fparam("rate", 0.5, AUTOPAN_RATE_MIN, AUTOPAN_RATE_MAX)
+        tremolo = fparam("tremolo", 0.0, 0.0, 1.0)
+        division = fparam("division", 4.0, self._MOD_DIV_MIN, self._MOD_DIV_MAX)
+        cv_depth = fparam("cv_depth", 1.0, -16.0, 16.0)
+        shape = str(params.get("shape", "sine"))
+        if shape not in AUTOPAN_SHAPES:
+            shape = "sine"
+        law = str(params.get("law", "power"))
+        if law not in AUTOPAN_LAWS:
+            law = "power"
+
+        state = self._state.setdefault(module.id, {})
+        # The absolute sample index of this block's first sample. Read it
+        # BEFORE _mod_clock_sync, which owns the counter and advances it.
+        base = int(state.get("samples", 0))
+
+        rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
+        if rate_cv is not None and rate_cv.size > 0:
+            rate = rate * self._pow2_clipped(cv_depth * self._finite_mean(rate_cv))
+        rate = min(max(rate, AUTOPAN_RATE_MIN), AUTOPAN_RATE_MAX)
+        inc = rate / sr
+
+        # Free-running phase: an anchor (sample, phase) and the increment
+        # in force since it. A new rate re-anchors at this block's start.
+        if "fr_n" not in state:
+            state["fr_n"] = base
+            state["fr_ph"] = 0.0
+            state["fr_inc"] = inc
+        elif state["fr_inc"] != inc:
+            state["fr_ph"] = (
+                state["fr_ph"] + (base - state["fr_n"]) * state["fr_inc"]
+            ) % 1.0
+            state["fr_n"] = base
+            state["fr_inc"] = inc
+        an = int(state["fr_n"])
+        aph = float(state["fr_ph"])
+        phase0 = (aph + (base - an) * inc) % 1.0
+
+        sync = self._mod_clock_sync(
+            module, frames, buffers, patch, state, division, rate, phase0
+        )
+        if sync is None:
+            n = (base - an) + np.arange(frames, dtype=np.float64)
+            ph = (aph + n * inc) % 1.0
+            eff_rate = rate
+        else:
+            ph, end_phase = sync
+            eff_rate = sr / float(state["period"])
+            state["fr_n"] = base + frames
+            state["fr_ph"] = float(end_phase)
+            state["fr_inc"] = inc
+
+        if shape == "square":
+            sq_k = max(1.0, 1.0 / (2.0 * eff_rate * AUTOPAN_SQUARE_EDGE_S))
+
+        def lfo(phs):
+            if shape == "sine":
+                return np.sin(2.0 * np.pi * phs)
+            tri = 1.0 - 4.0 * np.abs(((phs + 0.25) % 1.0) - 0.5)
+            if shape == "triangle":
+                return tri
+            return np.sin((0.5 * np.pi) * np.clip(sq_k * tri, -1.0, 1.0))
+
+        centre = pan
+        pan_cv = self._input_buffer(
+            patch, buffers, module.id, "pan_cv", collapse=False
+        )
+        if pan_cv is not None and pan_cv.size > 0:
+            c = pan_cv.astype(np.float64)
+            c = np.where(np.isfinite(c), c, 0.0)
+            if c.ndim == 2:
+                c = c.mean(axis=0)
+            centre = pan + c
+
+        pos_l = np.clip(centre + depth * lfo(ph), -1.0, 1.0)
+        if tremolo > 0.0:
+            pos_r = np.clip(
+                centre + depth * lfo((ph + 0.5 * tremolo) % 1.0), -1.0, 1.0
+            )
+        else:
+            pos_r = pos_l
+
+        cabled = {c.dst_port for c in patch.cables_into(module.id)}
+        l_on = "in_l" in cabled
+        r_on = "in_r" in cabled
+        if not (l_on or r_on):
+            z = np.zeros(frames, dtype=np.float32)
+            return {"out_l": z, "out_r": z.copy()}
+
+        def audio(port):
+            buf = self._input_buffer(patch, buffers, module.id, port)
+            if buf is None:
+                return np.zeros(frames, dtype=np.float64)
+            return buf.astype(np.float64)
+
+        if l_on and r_on:
+            # Stereo pair: balance, the stereo sink's cosine taper.
+            g_l = np.cos(np.maximum(pos_l, 0.0) * (0.5 * np.pi))
+            g_r = np.cos(np.maximum(-pos_r, 0.0) * (0.5 * np.pi))
+            x_l = audio("in_l")
+            x_r = audio("in_r")
+        else:
+            x_l = x_r = audio("in_l" if l_on else "in_r")
+            if law == "linear":
+                g_l = 0.5 * (1.0 - pos_l)
+                g_r = 0.5 * (1.0 + pos_r)
+            else:
+                g_l = np.cos((pos_l + 1.0) * (0.25 * np.pi))
+                g_r = np.sin((pos_r + 1.0) * (0.25 * np.pi))
+                if law == "compromise":
+                    g_l = np.sqrt(np.maximum(g_l * 0.5 * (1.0 - pos_l), 0.0))
+                    g_r = np.sqrt(np.maximum(g_r * 0.5 * (1.0 + pos_r), 0.0))
+        return {
+            "out_l": (x_l * g_l).astype(np.float32),
+            "out_r": (x_r * g_r).astype(np.float32),
+        }
 
     def _render_mid_side(self, module, frames: int, buffers, patch) -> dict:
         """M/S encode/decode + width + bass mono (see modules/mid_side.py).
