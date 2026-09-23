@@ -400,7 +400,9 @@ def test_a_voiced_input_is_the_summed_render():
     n = 4096
     v = np.stack([_noise(n, s) for s in (1, 2, 3)])
     a = _render({"depth": 0.8, "rate": 3.0}, {"in_l": v})
-    b = _render({"depth": 0.8, "rate": 3.0}, {"in_l": v.sum(axis=0)})
+    # The house collapse (float64 sum, cast back) -- not a float32
+    # v.sum(axis=0), which rounds per voice and depends on voice order.
+    b = _render({"depth": 0.8, "rate": 3.0}, {"in_l": NumpyBackend._voice_sum(v)})
     assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
 
 

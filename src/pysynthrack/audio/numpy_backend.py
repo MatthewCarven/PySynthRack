@@ -20174,14 +20174,14 @@ class NumpyBackend(AudioBackend):
             state["fr_inc"] = inc
         an = int(state["fr_n"])
         aph = float(state["fr_ph"])
-        phase0 = (aph + (base - an) * inc) % 1.0
+        n = (base - an) + np.arange(frames, dtype=np.float64)
+        free = (aph + n * inc) % 1.0
 
         sync = self._mod_clock_sync(
-            module, frames, buffers, patch, state, division, rate, phase0
+            module, frames, buffers, patch, state, division, free
         )
         if sync is None:
-            n = (base - an) + np.arange(frames, dtype=np.float64)
-            ph = (aph + n * inc) % 1.0
+            ph = free
             eff_rate = rate
         else:
             ph, end_phase = sync
