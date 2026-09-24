@@ -196,6 +196,50 @@ own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
 
 ---
 
+## 2026-09-24 — the sink scrubs NaN before it clips
+
+The top follow-on from the sixth batch, on Matthew's yes. The output stage
+ended in `np.clip(out, -1.0, 1.0)` for the master bus and each routed
+device bus — and `np.clip` passes NaN straight through and turns +/-inf
+into a full-scale sample. So a module blowing up anywhere upstream handed
+the audio device garbage. The feedback door already scrubbed what a loop
+feeds BACK, but the block a loop blew up in still flowed FORWARD to the
+speaker unscrubbed; the test that proves the fix reproduces exactly that
+(a gain-2 bare mixer loop, 300 blocks).
+
+**The fix** (`render_block_multi`): for each bus, if any sample is
+non-finite, `nan_to_num` it in place (nan/inf/-inf all to 0 — silence is
+the only safe value for a sample that is wrong, same convention as the
+door), then clip. Only the bad samples change; a finite block takes one
+`isfinite().all()` and is otherwise untouched, so no example render moved
+(the examples sweep is green). One increment of `_sink_nonfinite` per
+render that scrubbed anything; `sink_scrubs()` is the lock-free
+observable.
+
+**Saying so** (the media-path lesson — a subsystem that must fail soft
+needs something else to say it failed): `App._update_sink_scrubs`, driven
+from the DSP-load tick, posts a status line whenever the count rises
+while running ("Output: N block(s) carried NaN/inf and were silenced
+before the speakers ... A CV meter on the chain reads nan where it
+starts" — the CV meter learned to paint `nan` in the sixth batch). Silent
+while the count holds; restarts from zero for a fresh backend.
+
+**Design calls:** per-sample zeroing, not muting the whole block (a lone
+NaN shouldn't cost 10 ms of audio, and the tests pin that the rest of the
+block is bit-identical); a status line rather than a new toolbar slot
+(it's a fault report, not a running readout — the `loops !K` slot shows
+the door's scrubs because those belong to a visible cable).
+
+15 tests: 9 in `tests/test_sink_scrub.py` (master + routed bus, blocks
+not samples, block sizes 64/1000, the runaway loop) and 6 in
+`test_late_cable_ui.py::TestSinkScrubStatus` (posts on rise only, ASCII,
+driven by the tick, absent-observable safe). Self-tested by removing the
+`nan_to_num`: 5 of the 9 fail (the 4 that pass are the clean and counting
+ones). Suite **5436 passed, 1 skipped** — 7 min 16 s this run against the
+usual ~90 s; probably a busy machine — the change adds one isfinite() per bus per block.
+
+---
+
 ## 2026-09-24 — nine follow-ons in parallel (the sixth batch)
 
 Matthew, planning a full day of re-listening: "feel free to invalidate

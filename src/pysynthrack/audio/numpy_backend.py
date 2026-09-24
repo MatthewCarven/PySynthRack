@@ -1169,6 +1169,12 @@ class NumpyBackend(AudioBackend):
         # that blew past float range). A counter, not a silencer: the
         # loop keeps running, the readout can say it happened.
         self._late_nonfinite: int = 0
+        # Blocks in which a bus bound for an audio device carried a
+        # non-finite sample (NaN / inf from anything upstream) and was
+        # scrubbed before the clip -- np.clip passes NaN straight through,
+        # so without this the device would be handed garbage. Counted so
+        # the status bar can say it happened (see :meth:`sink_scrubs`).
+        self._sink_nonfinite: int = 0
         self._state: dict[int, dict[str, Any]] = {}
         # Parallel map from module_id → module TYPE that owned the state.
         # Used in compile() to discard state when a patch swap reuses the
@@ -1648,6 +1654,14 @@ class NumpyBackend(AudioBackend):
         past float range -- see :meth:`render_block_multi`). Lock-free:
         one int, read by the GUI tick."""
         return int(self._late_nonfinite)
+
+    def sink_scrubs(self) -> int:
+        """Blocks so far in which an output bus (master or a routed
+        device's) carried a NaN / inf sample and had it silenced before it
+        reached the device -- a module upstream is producing garbage. Only
+        the bad samples are zeroed; the rest of the block plays. Lock-free:
+        one int, read by the GUI tick."""
+        return int(self._sink_nonfinite)
 
     # ----- start / stop ----------------------------------------------------
 
@@ -2281,9 +2295,20 @@ class NumpyBackend(AudioBackend):
             if right:
                 out[:, 1] += mixed
 
-        np.clip(out, -1.0, 1.0, out=out)
-        for blk in device_blocks.values():
+        # Scrub, then clip. np.clip passes NaN straight through (and turns
+        # inf into a full-scale sample), so one non-finite sample anywhere
+        # upstream would go to the device as garbage. Zero just the bad
+        # samples -- a finite block is untouched, bit for bit -- and count
+        # the block so the status bar can say so: a sink that must never
+        # raise needs something else to SAY it failed.
+        scrubbed = False
+        for blk in (out, *device_blocks.values()):
+            if not np.isfinite(blk).all():
+                np.nan_to_num(blk, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+                scrubbed = True
             np.clip(blk, -1.0, 1.0, out=blk)
+        if scrubbed:
+            self._sink_nonfinite += 1
         # Governor actuation: time-stretch each governed stream's block to
         # frames * ratio before it is handed to the ring (the ring counts in
         # samples, so a push size that differs from the pop size is already

@@ -265,6 +265,9 @@ class App:
         self._late_keys: set[tuple[int, str, int, str]] = set()
         self._late_link_theme: int | None = None
         self._loops_text: str = ""
+        # The backend's sink-scrub count last reported in the status bar
+        # (blocks whose NaN / inf samples were silenced before the device).
+        self._sink_scrubs_seen: int = 0
 
         # dpg-id → (module_id, param_name) for every scrollable param widget,
         # so a mouse wheel over one can nudge its value. Filled as nodes are
@@ -6574,6 +6577,34 @@ class App:
         dpg.configure_item(DSP_TEXT_TAG, color=load_color(load))
         self._update_stream_health(load)
         self._update_loops_readout()
+        self._update_sink_scrubs()
+
+    def _update_sink_scrubs(self) -> None:
+        """Say so in the status bar when the output stage has had to
+        silence NaN / inf samples on their way to the device.
+
+        The scrub itself lives in the backend (the speakers never get
+        garbage); this is the half that stops a broken patch passing for
+        a quiet one. Touches the status bar only when the count rises."""
+        if not self.backend.is_running:
+            return
+        getter = getattr(self.backend, "sink_scrubs", None)
+        if getter is None:
+            return
+        try:
+            n = int(getter())
+        except Exception:
+            return
+        if n < self._sink_scrubs_seen:
+            # A fresh backend counts from zero again.
+            self._sink_scrubs_seen = 0
+        if n > self._sink_scrubs_seen:
+            self._sink_scrubs_seen = n
+            self._set_status(
+                f"Output: {n} block(s) carried NaN/inf and were silenced "
+                "before the speakers - a module upstream is blowing up. "
+                "A CV meter on the chain reads nan where it starts."
+            )
 
     def _update_stream_health(self, load: float | None) -> None:
         """Refresh the underflow count and host-API readouts.

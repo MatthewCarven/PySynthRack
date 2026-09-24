@@ -5796,6 +5796,16 @@ every pluck).
 
 The end of a patch — where signal leaves the graph. Sinks have no outputs.
 
+**Every bus bound for a device is scrubbed, then clipped at ±1
+(2026-09-24).** A NaN or inf sample from anything upstream is zeroed
+before the clip (`np.clip` alone passes NaN through and turns inf into a
+full-scale sample), on the master bus and on every routed sink's own
+bus. Only the bad samples change — a finite block is untouched bit for
+bit — and each scrubbed block is counted (`NumpyBackend.sink_scrubs()`);
+while audio runs the status bar says so, since a silenced sample would
+otherwise pass for a quiet patch. A CV meter on the chain reads `nan`
+where the trouble starts.
+
 **Loudness + clip accounting (2026-07-02).** Two K-weighted modes read
 loudness the broadcast way: `lufs_m` (momentary, 400 ms) and `lufs_s`
 (short-term, 3 s) run the signal through a BS.1770-style pre-filter

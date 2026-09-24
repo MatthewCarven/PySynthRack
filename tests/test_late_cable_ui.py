@@ -256,3 +256,61 @@ class TestAmberLinks:
         app._on_new()
         assert app._late_keys == set()
         assert _readout(dpg)[0] == "loops --"
+
+
+# ----- the sink scrub's status line ---------------------------------------------------
+
+
+class TestSinkScrubStatus:
+    def _running(self, monkeypatch, app, n):
+        monkeypatch.setattr(type(app.backend), "is_running", property(lambda self: True))
+        app.backend._sink_nonfinite = n
+
+    def test_a_scrub_posts_a_status_line(self, monkeypatch, tmp_path):
+        app, dpg = _make_app(monkeypatch, tmp_path)
+        self._running(monkeypatch, app, 4)
+        app._update_sink_scrubs()
+        msg = _status(dpg)
+        assert "4 block(s)" in msg and "NaN/inf" in msg and "silenced" in msg
+        assert all(ord(ch) < 128 for ch in msg)   # DPG paints above U+00FF as "?"
+
+    def test_it_posts_only_when_the_count_rises(self, monkeypatch, tmp_path):
+        app, dpg = _make_app(monkeypatch, tmp_path)
+        self._running(monkeypatch, app, 2)
+        app._update_sink_scrubs()
+        dpg.set_value.reset_mock()
+        app._update_sink_scrubs()                 # unchanged: leave the bar alone
+        assert _status(dpg) == ""
+        app.backend._sink_nonfinite = 3
+        app._update_sink_scrubs()
+        assert "3 block(s)" in _status(dpg)
+
+    def test_a_clean_run_says_nothing(self, monkeypatch, tmp_path):
+        app, dpg = _make_app(monkeypatch, tmp_path)
+        self._running(monkeypatch, app, 0)
+        dpg.set_value.reset_mock()
+        app._update_sink_scrubs()
+        assert _status(dpg) == ""
+
+    def test_a_fresh_backend_is_reported_from_zero(self, monkeypatch, tmp_path):
+        app, dpg = _make_app(monkeypatch, tmp_path)
+        self._running(monkeypatch, app, 9)
+        app._update_sink_scrubs()
+        app.backend._sink_nonfinite = 1           # a new backend counting again
+        app._update_sink_scrubs()
+        assert "1 block(s)" in _status(dpg)
+
+    def test_the_dsp_tick_drives_it(self, monkeypatch, tmp_path):
+        app, dpg = _make_app(monkeypatch, tmp_path)
+        self._running(monkeypatch, app, 1)
+        app._update_dsp_load()
+        assert "NaN/inf" in _status(dpg)
+
+    def test_a_backend_without_the_observable_is_left_alone(self, monkeypatch, tmp_path):
+        app, dpg = _make_app(monkeypatch, tmp_path)
+        bare = mock.MagicMock(spec=[])
+        bare.is_running = True
+        app.backend = bare
+        dpg.set_value.reset_mock()
+        app._update_sink_scrubs()
+        assert _status(dpg) == ""

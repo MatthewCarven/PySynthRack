@@ -799,9 +799,17 @@ its commit — see the listening checklist.
       the audit; the new edge is the correct one).
 
 Follow-ons surfaced:
-- [ ] **The speaker output clips but doesn't scrub — a NaN reaches the
-      audio device.** Probably the most important item here: one
-      `nan_to_num` at the sink (and say so, the media-path lesson).
+- [x] **The speaker output clips but doesn't scrub — a NaN reaches the
+      audio device.** FIXED 2026-09-24 (next session). Scrub-then-clip on
+      the master bus AND every routed device bus: only the non-finite
+      samples go to 0 (inf too — clip would have made it full scale), a
+      finite block is bit-identical, each scrubbed block counts in
+      `sink_scrubs()`, and the status bar posts a line when the count
+      rises while running. 15 tests (`tests/test_sink_scrub.py` + a class
+      in `test_late_cable_ui.py`), including the real shape — a runaway
+      bare loop whose blow-up block flows forward past the door's scrub.
+      Self-tested: with the `nan_to_num` removed, 5 of the 9 backend
+      tests fail. Suite **5436**.
 - [ ] **EARS DECISION: `_wt` band follows the HIGHEST voice**, so a low
       voice in a chord loses harmonics. Per-voice bands are more correct
       but change how steady poly `_wt` patches sound.
