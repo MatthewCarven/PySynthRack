@@ -1468,6 +1468,8 @@ every example before and after the batch: **84 of 164 are bit-identical**
 (below −88 dB — nothing to hear), and the rest are listed here by cause.
 **29 examples render silent offline because they wait for a live key,
 MIDI or the mic** — those need your hands either way.
+(The audit is `tools/render_audit.py` — `render` / `compare` / `bisect`;
+its docstring has the whole session.)
 - [ ] `autopan_pluck_bounce.json` — **module #101.** Alternate eighth-note plucks land left, then right, with no click at the flip; the reverb wash stays centred. The first note plays centred (before the clock lock). Try `shape` triangle / sine, `law` compromise, `tremolo` 1 (a mono tremolo). EYES: the autopan panel.
 - [ ] **Pluck re-plucks (`carry` now on by default)** — the loudest movers: `freeze_wide_wash` (the freeze holds the difference), `clock_transport`, `delay_freeze_stutter`, `sequencer_pendulum`, `sequencer_reverse_bars`, `pluck_velocity`, `pluck_velocity_color`, `possibility_selector_kit`, `pitch_shifter_shimmer`, `reverb_freeze_pad`. A re-plucked string should now continue under the new hit instead of stepping. If any of these sounds worse, untick `carry` on that node and say which.
 - [ ] `freeze_drone_breathe.json` — the stereo image reshuffled (which partials lean left vs right; same levels and correlation). Then put `size` on **65536** on `freeze_chord_pad.json`: the hold starts 93 ms after the gate (by design), is it a longer, smoother moment?
