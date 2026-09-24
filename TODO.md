@@ -1470,23 +1470,135 @@ sounds wrong, one line here is enough and Claude takes it from there.
 **First run `python examples/samples/generate_samples.py` once** (the
 sampler examples need it).
 
-*The sixth batch (2026-09-24) — start here.* An offline audit rendered
-every example before and after the batch: **84 of 164 are bit-identical**
-(their lines below stand as written), **~55 moved only at rounding level**
-(below −88 dB — nothing to hear), and the rest are listed here by cause.
-**29 examples render silent offline because they wait for a live key,
-MIDI or the mic** — those need your hands either way.
-(The audit is `tools/render_audit.py` — `render` / `compare` / `bisect`;
-its docstring has the whole session.)
+*The sixth batch (2026-09-24) — start here. Every example that changed.*
+Re-audited after the NaN fix: every example rendered offline (8 s, block
+512) at the commit before the batch and at HEAD, plus a second pre-batch
+render to confirm nothing is random run to run (nothing was). **80 moved,
+84 are bit-identical (not listed — nothing to hear), 1 is new**, and 25
+more can't be heard offline because they wait for your keys, MIDI or the
+mic. The NaN fix moved none of them. Grouped loudest-first; the dB figure
+is the biggest difference relative to the example's own peak. Anything that
+sounds wrong: one line here and Claude takes it from there. (The audit is
+`tools/render_audit.py`; its docstring has the whole session.)
+
+**1. The new module**
 - [ ] `autopan_pluck_bounce.json` — **module #101.** Alternate eighth-note plucks land left, then right, with no click at the flip; the reverb wash stays centred. The first note plays centred (before the clock lock). Try `shape` triangle / sine, `law` compromise, `tremolo` 1 (a mono tremolo). EYES: the autopan panel.
-- [ ] **Pluck re-plucks (`carry` now on by default)** — the loudest movers: `freeze_wide_wash` (the freeze holds the difference), `clock_transport`, `delay_freeze_stutter`, `sequencer_pendulum`, `sequencer_reverse_bars`, `pluck_velocity`, `pluck_velocity_color`, `possibility_selector_kit`, `pitch_shifter_shimmer`, `reverb_freeze_pad`. A re-plucked string should now continue under the new hit instead of stepping. If any of these sounds worse, untick `carry` on that node and say which.
-- [ ] `freeze_drone_breathe.json` — the stereo image reshuffled (which partials lean left vs right; same levels and correlation). Then put `size` on **65536** on `freeze_chord_pad.json`: the hold starts 93 ms after the gate (by design), is it a longer, smoother moment?
-- [ ] `chorus_lush.json` — its `rate_cv` is read per sample now: the sweep's speed glides instead of stepping.
-- [ ] **The oscillator's edge samples** — naive saw/square at 110/220 Hz moved an edge sample per cycle (about 22 µs; the new one is the correct one). These should sound IDENTICAL; flag any that don't: `fat_saw`, `meter_levels`, `mixer_crossfade_verb`, `noise_gate_chop`, `limiter_brickwall`, `transient_shaper_snap`, `tilt_eq_seesaw`, `parametric_eq_bass`, `motion_eq_focus`, `phaser_sweep`, `freq_shifter_barberpole`, `flanger_jet_sweep`, `flanger_through_zero`, `clock_swing_breathe`, `distortion_drive`, `sidechain_pump`, `meter_stereo_master`.
-- [ ] **Buffer slider, new behaviour:** play `flanger_jet_sweep.json` at buffer **64** — the deepest sweep used to be clipped there and now reaches full depth. Play `organ_leslie.json` and move the buffer slider while it runs — the rotor no longer resets.
-- [ ] `clock_divider` — no example audio changed, but try `pw` 0.9 + `swing` 0.3 on `divn` into an ADSR: every gate should be its own note now.
+
+**2. Moved enough to hear — the oscillator's saw/square edges (17).** Naive
+saw/square at integer-Hz pitches (110/220 Hz): the exact sample each
+waveform edge lands on moved by one (about 22 µs), and the new one is the
+correct one. The number is big because an edge is a jump of 1.0, but it
+should sound **identical** — flag any that don't.
+- [ ] `noise_gate_chop.json` (+6 dB)
+- [ ] `meter_levels.json` (+5 dB)
+- [ ] `mixer_crossfade_verb.json` (+5 dB)
+- [ ] `parametric_eq_bass.json` (+1 dB)
+- [ ] `tilt_eq_seesaw.json` (+1 dB)
+- [ ] `transient_shaper_snap.json` (+1 dB)
+- [ ] `limiter_brickwall.json` (0 dB)
+- [ ] `phaser_sweep.json` (−1 dB) — the phaser's sweep is also exact across buffer sizes now.
+- [ ] `meter_stereo_master.json` (−2 dB) — also has a chorus (`rate_cv` read per sample now).
+- [ ] `motion_eq_focus.json` (−2 dB)
+- [ ] `clock_swing_breathe.json` (−3 dB) — also a `clock_divider` (gates never merge now). Straight at 0 s, triplet at 10 s, straight at 20 s; the kick must not flutter.
+- [ ] `sidechain_pump.json` (−3 dB)
+- [ ] `distortion_drive.json` (−7 dB)
+- [ ] `flanger_jet_sweep.json` (−7 dB) — also the flanger fix. **Play it at buffer 64:** the deepest sweep used to be clipped there and now reaches full depth.
+- [ ] `flanger_through_zero.json` (−8 dB) — also the flanger fix.
+- [ ] `freq_shifter_barberpole.json` (−10 dB)
+- [ ] `fat_saw.json` (−17 dB)
+
+**3. Moved enough to hear — pluck re-plucks (`carry` is on by default now) (11).**
+A re-plucked string should now carry on under the new hit instead of
+stepping. If one sounds worse, untick `carry` on that pluck node and say
+which.
+- [ ] `freeze_wide_wash.json` (−13 dB) — the loudest pluck mover, because the freeze holds the difference; freeze's quieter-partials change is in here too.
+- [ ] `clock_transport.json` (−19 dB)
+- [ ] `delay_freeze_stutter.json` (−23 dB) — the delay is also exact across buffer sizes now.
+- [ ] `sequencer_pendulum.json` (−23 dB)
+- [ ] `sequencer_reverse_bars.json` (−24 dB)
+- [ ] `freeze_drone_breathe.json` (−33 dB) — the freeze's stereo image also reshuffled (which partials lean left vs right; same levels). Then put `size` on **65536** on `freeze_chord_pad.json`: the hold starts 93 ms after the gate (by design) — a longer, smoother moment?
+- [ ] `pluck_velocity_color.json` (−35 dB)
+- [ ] `possibility_selector_kit.json` (−36 dB)
+- [ ] `pluck_velocity.json` (−37 dB)
+- [ ] `pitch_shifter_shimmer.json` (−51 dB)
+- [ ] `reverb_freeze_pad.json` (−57 dB)
+
+**4. The chorus**
+- [ ] `chorus_lush.json` (−63 dB) — its `rate_cv` is read per sample now: the sweep's speed glides instead of stepping.
+
+**5. Below hearing, but a quick play won't hurt (−88 to −95 dB) (3).** A
+trace of the pluck change; should sound the same.
+- [ ] `fg_eor_swell_strike.json` (−88 dB)
+- [ ] `drift_wander.json` (−93 dB)
+- [ ] `granular_haze.json` (−95 dB)
+
+**6. Rounding only (−131 dB and quieter) (48).** Differences of about one
+part in ten million — float rounding from the exact-phase and float64
+voice-sum fixes. These should sound **identical**; a few seconds each
+confirms it. (Several have their own listening notes further down — those
+still stand.)
+- [ ] `chord_arp_factory.json`
+- [ ] `freeze_chord_pad.json`
+- [ ] `shift_random_melody.json`
+- [ ] `chord_legato_inversions.json`
+- [ ] `adsr_velocity.json`
+- [ ] `organ_leslie.json` — also move the buffer slider while it plays: the rotor no longer resets.
+- [ ] `lfo_retrigger.json`
+- [ ] `sample_hold_prob_sweep.json`
+- [ ] `stereo_field_pluck.json`
+- [ ] `supersaw_detune_rise.json`
+- [ ] `cv_math_delayed_vibrato.json`
+- [ ] `delay_dub_echo.json`
+- [ ] `krell_feedback.json`
+- [ ] `reverb_space.json`
+- [ ] `chaos_melody.json`
+- [ ] `lfo_random_replay.json`
+- [ ] `organ_scanner.json`
+- [ ] `oscillator_pwm.json`
+- [ ] `sample_hold_sometimes.json`
+- [ ] `slew_clocked_glide.json`
+- [ ] `supersaw_chord_wall.json`
+- [ ] `tape_cassette.json`
+- [ ] `tape_stop_drop.json`
+- [ ] `vibrato.json`
+- [ ] `krell_machine.json`
+- [ ] `vinyl_dust.json`
+- [ ] `loudness_demo.json`
+- [ ] `mod_matrix.json`
+- [ ] `sequencer_melody.json`
+- [ ] `pitch_shifter_harmonizer.json`
+- [ ] `phaser_envelope_sweep.json`
+- [ ] `ambient_bloom.json`
+- [ ] `ring_governor_auto.json`
+- [ ] `ring_governor_monitor.json`
+- [ ] `warping_buffer_tape.json`
+- [ ] `mid_side_breathe.json`
+- [ ] `flanger_jet.json`
+- [ ] `pitch_shifter_harmony.json`
+- [ ] `stereo_hard_pan.json`
+- [ ] `filter_resonance_sweep.json`
+- [ ] `key_trigger_latch_brake.json`
+- [ ] `schmitt_lfo_clock.json`
+- [ ] `resampler_tape_wobble.json`
+- [ ] `crossover_sweep.json`
+- [ ] `hello_sine.json`
+- [ ] `ring_mod_bells.json`
+- [ ] `saw_blep_vs_naive.json`
+- [ ] `ad_kick.json`
+
+**7. Can't be heard offline — they need your hands (25).** Each waits for a
+key, MIDI or the mic, and each contains a module the batch touched. The
+likeliest to sound different come first.
+- [ ] `pluck_strings.json` — pluck `carry` is on now: re-pluck the same key fast and the string should carry on under the new hit.
+- [ ] `organ_jazz.json` — has a chorus (`rate_cv` read per sample).
+- [ ] Keyboard / MIDI voices — the oscillator's exact phase, and if the wave is set to a wavetable (`_wt`), its harmonic band is now chosen per sample. Should sound the same: `keyboard_play.json`, `keyboard_adsr.json`, `keyboard_filtered.json`, `keyboard_tremolo.json`, `filter_envelope.json`, `dual_mod_filter.json`, `envelope_follower_wah.json`, `fan_out.json`, `two_way_crossover.json`, `wah.json`, `record_a_take.json`, `cvtofreq_blip.json`, `midi_simple.json`, `midi_lead.json`, `mod_wheel_filter.json`, `pitch_bend.json`, `aftertouch_filter.json`, `poor_mans_theremin.json`.
+- [ ] Oscillators behind a key or the mic — exact phase, should sound the same: `cv_gates_amp.json`, `cv_keyboard_external_voice.json`, `octaver_bass_lead.json`, `slew_portamento.json`, `vocoder_robot_choir.json`.
+
+**8. Behaviour checks (no example file)**
+- [ ] `clock_divider` — try `pw` 0.9 + `swing` 0.3 on `divn` into an ADSR: every gate should be its own note now.
 - [ ] EYES: a CV meter on a broken (NaN) cable reads `nan` and holds its bar, and recovers when the cable does.
-- [ ] Gain check (pre-existing): `organ_leslie`, `noise_hat`, `clock_divider_swing` hit full scale; `resampler_tape_stop` has a DC offset.
+- [ ] EYES: the NaN guard at the speakers (new today). Oscillator into a mixer's `in1`, the mixer's `out` back into its own `in2` with `gain2` at 2, out to a speaker, and play: the speakers stay clean and the status bar says "Output: N block(s) carried NaN/inf and were silenced...".
+- [ ] Gain check (pre-existing, not the batch): `organ_leslie`, `noise_hat`, `clock_divider_swing` hit full scale; `resampler_tape_stop` has a DC offset.
 
 
 *The new modules (seven):*

@@ -196,6 +196,31 @@ own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
 
 ---
 
+## 2026-09-24 — every changed example on the listening checklist
+
+Matthew: "throw every changed example on my todo please ... and I'll start
+testing". The sixth batch's checklist named the loud movers by cause but
+summarised the rest as "~55 rounding-only"; he asked for all of them. The
+audit's renders hadn't been kept, so it was re-run: `render_audit.py
+render` at 9ec4462 (the commit before the batch, via a throwaway detached
+worktree) twice, and at HEAD (which includes the NaN fix, 3bf0be4), then
+`compare --noise`. Result: **80 moved, 84 bit-identical, 1 new, no
+example nondeterministic**; the NaN fix moved nothing, as designed. Same
+figures as the batch's own audit.
+
+The checklist's sixth-batch block is now one checkbox per example, eight
+groups loudest-first with each one's dB: the new module; 17 oscillator-edge
+movers (should sound identical); 11 pluck `carry` movers; chorus_lush; 3
+below hearing (-88..-95 dB); 48 rounding-only (-131 dB and quieter, listed
+anyway because he asked for every one); the 25 silent-offline examples that
+contain a touched module (need his keys/MIDI/mic; the 4 silent ones with no
+touched module are left off); and the behaviour checks, plus an EYES item
+for today's NaN status line. Causes are attributed by which touched module
+types each example contains (a heuristic, not a fresh bisect; it matches
+the causes the batch's own audit named).
+
+---
+
 ## 2026-09-24 — the sink scrubs NaN before it clips
 
 The top follow-on from the sixth batch, on Matthew's yes. The output stage
