@@ -18181,12 +18181,19 @@ class NumpyBackend(AudioBackend):
         gates -> 0 and 0 (``div2``/``div4``/``div8`` never merged -- an
         even division spans ``k`` x the mean exactly). The 0.3-swung
         ``n`` 3 ``pw`` 0.9 case: 15 of 32 ``divn`` gates merged -> none.
-        One residue that is not a merge: with clock swing AND divider
-        swing both at 0.5 on ``n`` 1, a late gate's offset (half the LONG
-        interval) lands after the next (short) edge, and the on-time gate
-        there supersedes it -- 47 of 96 dropped at every ``pw``, before
-        and after (the other 235 of the sweep's 2754 missing ``divn``
-        rises).
+
+        **A late gate past the next edge keeps its place (2026-09-25).**
+        With clock swing AND divider swing both at 0.5 on ``n`` 1, a late
+        gate's offset (half the LONG interval) lands after the next
+        (short) edge, and the on-time gate scheduled there used to
+        supersede it -- 47 of 96 dropped at every ``pw``. Now a gate
+        already scheduled two or more samples after a new one is KEPT
+        and the new one ends a sample before it rises: both keep their
+        own rising edge, and the swing offset stays a position. Over the
+        real-clock sweep (clock swing 0/0.3/0.5 x ``pw`` 0.5..0.95 x
+        divider swing 0/0.3/0.5 x ``n`` 1/3/4/5) that took 188 missing
+        ``divn`` rises of 6192 to 0; every render without a crossing is
+        bit-identical.
         """
         clock = self._input_buffer(patch, buffers, module.id, "clock")
         reset = self._input_buffer(patch, buffers, module.id, "reset")
@@ -18272,7 +18279,10 @@ class NumpyBackend(AudioBackend):
             * Any earlier gate of the same output is truncated to end one
               sample before this one (and dropped if that leaves
               nothing) -- the clock's own "cut a sample before the next
-              edge" ceiling, applied here.
+              edge" ceiling, applied here. A gate already scheduled at
+              least two samples LATER (a swung ``divn`` gate reaching
+              past this one) is kept, and this one is cut to end a
+              sample before it; one at or a sample after is superseded.
             """
             now_ = base + n
             if start <= now_ and (outs[name][n - 1] > 0.0 if n else last_high[name]):
@@ -18284,7 +18294,14 @@ class NumpyBackend(AudioBackend):
             kept = []
             for ev in row:
                 if ev[0] >= start:
-                    continue           # scheduled at or after us: superseded
+                    if ev[0] - start >= 2:
+                        # Already scheduled LATER than us -- a swung divn
+                        # gate whose offset reaches past this on-time one.
+                        # Both keep their rising edge: we end a sample
+                        # before it starts.
+                        length = min(length, ev[0] - start - 1)
+                        kept.append(ev)
+                    continue           # at (or a sample after) us: superseded
                 ev[1] = min(ev[1], start - ev[0] - 1)
                 if ev[1] > 0:
                     kept.append(ev)

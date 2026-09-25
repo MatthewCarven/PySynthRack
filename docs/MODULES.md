@@ -4832,10 +4832,20 @@ swing 0/0.3/0.5 × divider swing 0/0.3/0.5 × `n` 1/3/4/5: 2519 merged
 `divn` gates and 2256 merged `mult` gates → **0 and 0**; `div2` /
 `div4` / `div8` never merged (an even division spans exactly `k` × the
 mean period). Where nothing collided the render is bit-exact — every
-shipped example's audio is unchanged. One case that is not a merge
-stays: clock swing *and* divider swing both at 0.5 on `n` 1 pushes a
-late gate past the next (short) edge, and the on-time gate there
-supersedes it.
+shipped example's audio is unchanged.
+
+**A late gate keeps its place (2026-09-25).** The one case the merge pass
+left open: clock swing *and* divider swing both at 0.5 on `n` 1 push a
+late gate (half the **long** interval on) past the next, short, edge —
+and the on-time gate scheduled there used to replace it, dropping 47 of
+96 `divn` gates at every `pw`. A gate already scheduled at least two
+samples later is now kept, and the on-time gate ends a sample before it
+rises: every gate has its own rising edge, and the swing offset stays a
+position (the late gate lands exactly where it always meant to — here a
+quarter period after the on-time one). Over the same real-clock sweep,
+188 missing `divn` rises of 6192 → **0**; every render without a crossing
+is bit-identical, including all nine shipped examples that use the
+divider.
 
 **Ports**
 

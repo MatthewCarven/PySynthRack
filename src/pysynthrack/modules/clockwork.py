@@ -71,6 +71,14 @@ swung clock); when a tempo change or a reset makes the prediction wrong,
 the late gate starts one sample late instead of merging. Where nothing
 collided, nothing moves.
 
+**A late gate keeps its place (2026-09-25).** With clock swing and
+``divn`` swing both high (0.5 and 0.5 on ``n`` 1), a late gate's offset
+reaches past the next on-time gate, which used to replace it -- 47 of 96
+gates dropped. The late gate now keeps its swing position and the
+on-time gate ends a sample before it, so every gate still gets its own
+rising edge (the pair lands a quarter period apart: the settings asked
+for it). Nothing without a crossing moves.
+
 **CV on the counts (2026-09-11):** ``euclidean.fills_cv`` and
 ``burst.count_cv`` move ``fills`` / ``count`` by ``*_cv_depth`` per unit
 (default 8 — 0..1 V sweeps eight), read at the clock / trigger edge and
