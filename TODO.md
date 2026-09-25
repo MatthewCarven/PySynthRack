@@ -779,6 +779,13 @@ green) and the tooling thin. Suite **5426 passed** on 3.11 and **5416** on
       panels (possibility, selector, sampler face, scope) first.
 - [ ] **Compact TODO.md / WORKLOG.md** again (2.9k / 8.2k lines) the
       2026-07 way; move `error_handler_*.md` into `docs/`.
+- [x] **App icon** — Matthew's screenshot (`packaging/icon_source.png`)
+      becomes `packaging/icon.ico` via `tools/make_icon.py` (Pillow):
+      canvas crop at 256/128, tighter node crop at 64/48, and a drawn
+      two-nodes-and-a-cable glyph in the app's sampled colours at 32/24/16
+      (the screenshot is mush below ~48). Wired into both PyInstaller specs
+      and the DearPyGui viewport (`_resources.app_icon()`, optional).
+      **EYES wanted:** the taskbar / title-bar icon in a real Windows build.
 - [ ] Gotcha for tests: `test_voice_collapse`'s tripwire reads the backend
       with `inspect.getsource`, so editing `numpy_backend.py` DURING a run
       fails it spuriously (line numbers shift). Not a bug; don't chase it.

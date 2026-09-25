@@ -196,6 +196,22 @@ own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
 
 ---
 
+## 2026-09-25 — the app icon
+
+Matthew spotted the 🎛️ emoji, then made his own: a screenshot of the rack
+(`packaging/icon_source.png`, 774×793). Downscaled previews showed the
+whole window reads at 256/128 and is grey mush at 32/16, so the `.ico`
+carries different art per size (`tools/make_icon.py`, rerunnable): the
+canvas cropped past the chrome at 256/128, a tighter crop on the osc and
+LFOs at 64/48, and a drawn glyph at 32/24/16 -- two nodes (one with the
+selected blue title bar), a cable between yellow jacks, colours sampled
+from the screenshot. First glyph draft had the nodes touching, which
+crushed the cable into a zigzag; spreading them fixed it. Wired into both
+specs (`icon=` + bundled as data) and the viewport's `small_icon` /
+`large_icon` via `_resources.app_icon()` (returns `None` if absent, so the
+app never depends on it). 2 tests read the ICO header directly. Needs a
+real Windows build to see it in the taskbar.
+
 ## 2026-09-25 — the tooling love pass
 
 Matthew asked where the project could use love, then "Lets go with your

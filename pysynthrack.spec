@@ -52,6 +52,8 @@ datas = [
     # Bundle the example patches read-only.  ``examples_dir()`` in
     # ``pysynthrack._resources`` resolves this at runtime via ``sys._MEIPASS``.
     ("examples", "examples"),
+    # The window/taskbar icon, read at runtime by ``_resources.app_icon()``.
+    ("packaging/icon.ico", "packaging"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -124,6 +126,7 @@ exe = EXE(
     a.datas,
     [],
     name="PySynthRack",
+    icon="packaging/icon.ico",      # built by tools/make_icon.py
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

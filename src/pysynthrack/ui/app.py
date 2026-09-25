@@ -21,7 +21,7 @@ import numpy as np
 # Ensure all module types are registered before we build any UI.
 import pysynthrack.modules  # noqa: F401
 
-from .._resources import examples_dir
+from .._resources import app_icon, examples_dir
 from ..audio import AudioBackend, pick_backend
 from ..core.module import grouped_module_types
 from ..core.patch import Cable, Patch
@@ -441,7 +441,10 @@ class App:
         _frame_count = 0
         try:
             self._build_ui()
-            dpg.create_viewport(title="PySynthRack v0.1", width=1280, height=800)
+            icon = app_icon()
+            icon_kw = {"small_icon": str(icon), "large_icon": str(icon)} if icon else {}
+            dpg.create_viewport(title="PySynthRack v0.1", width=1280, height=800,
+                                **icon_kw)
             dpg.setup_dearpygui()
             dpg.show_viewport()
             dpg.set_primary_window(MAIN_WINDOW_TAG, True)
