@@ -63,6 +63,7 @@ exe = EXE(
     a.datas,
     [],
     name="PySynthRack-cli",
+    icon="packaging/icon.ico",      # built by tools/make_icon.py
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

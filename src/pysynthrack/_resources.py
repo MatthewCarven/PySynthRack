@@ -12,7 +12,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-__all__ = ["is_frozen", "resource_root", "examples_dir"]
+__all__ = ["is_frozen", "resource_root", "examples_dir", "app_icon"]
 
 
 def is_frozen() -> bool:
@@ -47,3 +47,10 @@ def resource_root() -> Path:
 def examples_dir() -> Path:
     """Directory containing the bundled example ``.json`` patches."""
     return resource_root() / "examples"
+
+
+def app_icon() -> Path | None:
+    """The window/taskbar icon (``packaging/icon.ico``), or ``None`` if it
+    isn't there -- the app runs fine without one."""
+    path = resource_root() / "packaging" / "icon.ico"
+    return path if path.is_file() else None
