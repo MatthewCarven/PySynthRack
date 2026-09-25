@@ -38,5 +38,5 @@ jobs:
       # sounddevice needs the PortAudio shared library even with no audio
       # device present (the backend tests never open a stream).
       - run: sudo apt-get update && sudo apt-get install -y libportaudio2
-      - run: pip install -e ".[dev,gui]" pytest-xdist
+      - run: pip install -e ".[dev,gui]"
       - run: python -m pytest -n auto

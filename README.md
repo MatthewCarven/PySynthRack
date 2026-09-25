@@ -66,7 +66,7 @@ can build real patches in it today.
   reference implementation every module targets, and the default — plus an
   optional, partial **pyo** backend.
 - **CLI mode** for headless rendering, backed by an extensive headless test
-  suite (~2,650 tests — no audio device or display required).
+  suite (~5,400 tests — no audio device or display required).
 
 See **[docs/MODULES.md](docs/MODULES.md)** for the full per-module reference,
 **[TODO.md](TODO.md)** for the roadmap, and **[docs/architecture.md](docs/architecture.md)**
@@ -240,12 +240,15 @@ python -m pysynthrack --cli --seconds 2
 ## Development
 
 ```powershell
-pip install -r requirements-dev.txt
-pytest
-ruff check src tests
+pip install -e ".[dev,gui]"
+pytest -n auto        # parallel (pytest-xdist); plain `pytest` works too
+ruff check src tests tools examples packaging
 ```
 
 Headless tests (everything under `tests/`) don't require an audio device or display.
+Without the `[gui]` extra the DearPyGui tests skip; everything else still runs.
+CI (`.github/workflows/ci.yml`) runs ruff plus the suite on Python 3.10 and 3.12
+on every push and pull request.
 
 ## Project conventions
 
