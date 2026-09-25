@@ -21,14 +21,14 @@ OS-maximized state.
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 # Sane floor so a corrupt/tiny saved size can't produce an unusable window.
 MIN_W = 320
 MIN_H = 240
 
 
-def _as_int(v: Any) -> Optional[int]:
+def _as_int(v: Any) -> int | None:
     try:
         return int(v)
     except (TypeError, ValueError):
@@ -43,7 +43,7 @@ def _clamp(v: int, lo: int, hi: int) -> int:
     return v
 
 
-def make_geometry(width: Any, height: Any, x: Any, y: Any) -> Optional[dict]:
+def make_geometry(width: Any, height: Any, x: Any, y: Any) -> dict | None:
     """Build the serializable ``patch.ui["window"]`` dict from raw values.
 
     Returns ``None`` if width/height aren't usable numbers (nothing worth
@@ -57,7 +57,7 @@ def make_geometry(width: Any, height: Any, x: Any, y: Any) -> Optional[dict]:
     return {"width": w, "height": h, "x": _as_int(x), "y": _as_int(y)}
 
 
-def resolve(saved: Any, screen: Optional[tuple]) -> Optional[dict]:
+def resolve(saved: Any, screen: tuple | None) -> dict | None:
     """Resolve saved geometry against the current desktop bounds.
 
     ``saved`` is a ``patch.ui["window"]`` dict (or junk). ``screen`` is the

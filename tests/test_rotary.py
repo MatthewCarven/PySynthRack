@@ -480,7 +480,7 @@ class TestExample:
         b.compile(patch)
         rates = []
         peak = 0.0
-        for k in range(int(12 * 44100 / 512)):
+        for _k in range(int(12 * 44100 / 512)):
             out, _ = b.render_block_multi(512)
             assert out is not None and np.all(np.isfinite(out))
             rates.append(b._state[rot.id]["horn_f"])

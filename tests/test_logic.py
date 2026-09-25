@@ -10,11 +10,10 @@ euclidean complementary-rhythm patch.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
-from pysynthrack.core.patch import Patch
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.module import all_module_types, get_module_type
+from pysynthrack.core.patch import Patch
 
 SR = 1000
 

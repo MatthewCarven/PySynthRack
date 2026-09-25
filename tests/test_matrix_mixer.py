@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from pysynthrack.core.patch import Patch
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.module import all_module_types, get_module_type
+from pysynthrack.core.patch import Patch
 from pysynthrack.modules.matrix_mixer import MATRIX_CLIP_KNEE, MATRIX_SIZE
 
 SR = 8000
@@ -219,7 +219,7 @@ def test_one_block_feedback_latency_pinned():
     F = 256
     # Square at default freq starts high: in_1 = +0.4 on sample 0.
     expected = 0.0
-    for i in range(6):
+    for _i in range(6):
         b.render_block_multi(F)
         out0 = float(b._late_prev[(m.id, "out_1")][0])
         expected = 0.4 + 0.5 * expected  # one generation per block

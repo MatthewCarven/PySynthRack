@@ -23,7 +23,6 @@ from pysynthrack.core import Patch
 from pysynthrack.core.module import get_module_type
 from pysynthrack.core.patch import Cable
 
-
 # ----- Filter cutoff CV -----------------------------------------------------
 
 
@@ -54,7 +53,7 @@ class TestFilterCutoffCV:
         # Render via render_block. With cutoff=200 and a 4 kHz sine,
         # output should be heavily attenuated (matches prior baseline).
         peak_after_warmup = 0.0
-        for i in range(10):
+        for _i in range(10):
             block = backend.render_block(1024)
         peak_after_warmup = float(np.max(np.abs(block)))
         assert peak_after_warmup < 0.1
@@ -102,7 +101,7 @@ class TestFilterCutoffCV:
         backend.compile(patch)
         from pysynthrack.core.patch import Cable
         patch.cables.append(Cable(99, "cv", filt.id, "cutoff_cv"))
-        for i in range(10):  # let filter settle
+        for _i in range(10):  # let filter settle
             cv = np.full(1024, -5.0, dtype=np.float32)
             osc_buf = backend._render_oscillator(osc, 1024, {}, patch)
             buffers = {(osc.id, "out"): osc_buf, (99, "cv"): cv}

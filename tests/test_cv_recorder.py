@@ -47,7 +47,10 @@ from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.module import all_module_types, get_module_type
 from pysynthrack.core.patch import Patch
 from pysynthrack.modules.cv_recorder import (
-    CV_RECORDER_MODES, CV_RECORDER_PLAY_MODES, CV_RECORDER_SPEEDS)
+    CV_RECORDER_MODES,
+    CV_RECORDER_PLAY_MODES,
+    CV_RECORDER_SPEEDS,
+)
 
 SR = 1000
 BLOCK = 50
@@ -888,7 +891,6 @@ def test_the_example_loops_a_layering_modulation():
     L = b._state[recs[0].id]["L"]
     assert L > 0
     # Bar 3 is bar 2 with another layer on top: the loop keeps evolving.
-    sr = 44100
     bar2 = loop[2 * L:3 * L]
     bar3 = loop[3 * L:4 * L]
     assert bar2.std() > 0.05 and not np.array_equal(bar2, bar3)

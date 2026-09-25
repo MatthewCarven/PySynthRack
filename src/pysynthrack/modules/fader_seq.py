@@ -39,7 +39,7 @@ from ..core.port import Port
 
 # Shared param-layout contract with the original panel. MAX_STEPS and the
 # default C-major scale come from sequencer so the two can't drift apart.
-from .sequencer import MAX_STEPS, _default_params
+from .sequencer import MAX_STEPS, _default_params  # noqa: F401 -- re-exported
 
 # UI fader range in semitones (±). The engine is range-free; this constant
 # only bounds the on-screen sliders (and lives here, dpg-free, so tests and

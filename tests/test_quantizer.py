@@ -17,18 +17,15 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pysynthrack.core.patch import Patch
 from pysynthrack.audio.numpy_backend import NumpyBackend
-
+from pysynthrack.core.module import all_module_types, get_module_type
+from pysynthrack.core.patch import Patch
 from pysynthrack.modules import constant as _constant  # noqa: F401
-from pysynthrack.modules import quantizer as _quantizer
 from pysynthrack.modules.quantizer import (
     CUSTOM_KEYS,
-    QUANTIZER_ROOTS,
     QUANTIZER_SCALES,
     SCALE_INTERVALS,
 )
-from pysynthrack.core.module import all_module_types, get_module_type
 
 SR = 1000  # pulse length = 5 samples exactly
 

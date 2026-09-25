@@ -34,15 +34,17 @@ import tempfile
 
 import numpy as np
 import pytest
-from scipy.signal import fftconvolve
 from scipy.io import wavfile
+from scipy.signal import fftconvolve
 
 import pysynthrack.modules  # noqa: F401
-from pysynthrack.core import Patch
 from pysynthrack.audio import numpy_backend as _nbmod
 from pysynthrack.audio.numpy_backend import (
-    NumpyBackend, _PartitionedConvolver, _normalize_ir,
+    NumpyBackend,
+    _normalize_ir,
+    _PartitionedConvolver,
 )
+from pysynthrack.core import Patch
 from pysynthrack.modules.convolver import Convolver
 
 SR = 44100

@@ -9,7 +9,7 @@ import pytest
 
 # Import modules subpackage so its types register with the core registry.
 import pysynthrack.modules  # noqa: F401
-from pysynthrack.core import Cable, Patch, Port, all_module_types
+from pysynthrack.core import Patch, Port, all_module_types
 
 
 class TestPort:

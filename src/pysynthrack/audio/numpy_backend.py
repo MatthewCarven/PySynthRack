@@ -47,31 +47,38 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy.signal import butter, firwin, lfilter, resample_poly, sosfilt
-
-from . import media
 from scipy.io import wavfile
+from scipy.signal import butter, firwin, lfilter, resample_poly, sosfilt
 
 from .._resources import resource_root
 from ..core.patch import Patch
+from ..modules.clockwork import DIVIDER_MAX_SWING
+from ..modules.cv_gates import KEY_CV_NAMES
+from ..modules.cv_keyboard import CV_REFERENCE_NOTE, KEY_GATE_NAMES
+from ..modules.fm_op import snap_ratio as _fm_snap_ratio
 from ..modules.keyboard import midi_to_freq
 from ..modules.oscillator import (
     PULSE_WIDTH_MAX as _PW_MAX,
+)
+from ..modules.oscillator import (
     PULSE_WIDTH_MIN as _PW_MIN,
 )
-from ..modules.cv_keyboard import CV_REFERENCE_NOTE, KEY_GATE_NAMES
-from ..modules.cv_gates import KEY_CV_NAMES
-from ..modules.clockwork import DIVIDER_MAX_SWING
-from ..modules.fm_op import snap_ratio as _fm_snap_ratio
 from ..modules.quantizer import (
     CUSTOM_KEYS as _Q_CUSTOM_KEYS,
+)
+from ..modules.quantizer import (
     QUANTIZER_ROOTS as _Q_ROOTS,
+)
+from ..modules.quantizer import (
     SCALE_INTERVALS as _Q_SCALES,
 )
 from ..modules.sequencer import (
     SEQ_DIRECTIONS as _SEQ_DIRECTIONS,
+)
+from ..modules.sequencer import (
     next_step_index as _seq_next_step_index,
 )
+from . import media
 from .backend import AudioBackend
 
 # Imported lazily so a missing PortAudio install doesn't crash module import.
@@ -1761,7 +1768,7 @@ class NumpyBackend(AudioBackend):
         # Close any open MIDI ports so the next start() reopens cleanly.
         # The module instances stay alive (they're owned by the patch),
         # so the next compile() will reopen the port via start_midi().
-        for mid, module in list(self._midi_inputs.items()):
+        for module in list(self._midi_inputs.values()):
             try:
                 module.stop_midi()
             except Exception:
@@ -1998,8 +2005,9 @@ class NumpyBackend(AudioBackend):
         self._crash_reported = True
         try:
             import sys as _sys
+
+            from .._crash import explicit_write, write_crash_report
             from ..error_handler import describe_error
-            from .._crash import write_crash_report, explicit_write
             # Guard so the global crash observer (if installed) doesn't also
             # write this report -- we write it here with the precise
             # "audio_callback" source tag.
@@ -4816,6 +4824,8 @@ class NumpyBackend(AudioBackend):
         """
         from ..modules.possibility_seq import (
             MAX_STEPS as _PSEQ_MAX,
+        )
+        from ..modules.possibility_seq import (
             POSSIBILITY_MODES,
             STEP_STATES,
             resolve_step,
@@ -4949,7 +4959,11 @@ class NumpyBackend(AudioBackend):
         """
         from ..modules.possibility_selector import (
             MAX_STEPS as _PSEL_MAX,
+        )
+        from ..modules.possibility_selector import (
             N_OUTS as _PSEL_OUTS,
+        )
+        from ..modules.possibility_selector import (
             POSSIBILITY_MODES,
             parse_route,
             resolve_route,
@@ -13126,7 +13140,7 @@ class NumpyBackend(AudioBackend):
 
         buf = state["buf"]
         write_idx = int(state["write_idx"])
-        delay = state["delay"]      # (V,) float, the read head's lag in (1, L)
+        # state["delay"]: (V,) float, the read head's lag in (1, L)
         last_st = state["last_st"]  # (V,) float, glide one-pole memory
 
         if frames == 0:
@@ -13184,7 +13198,7 @@ class NumpyBackend(AudioBackend):
                     state.pop(k + suf, None)
 
         ratios = {}
-        for name, ch, off in chans:
+        for name, _ch, off in chans:
             s = smoothed + off if off else smoothed
             ratios[name] = np.exp2(
                 np.clip(s, -self._RESAMP_MAX_ST, self._RESAMP_MAX_ST) / 12.0
@@ -16584,7 +16598,11 @@ class NumpyBackend(AudioBackend):
     def _start_sample_loader(self, path):
         """Spawn a background whole-file decode (plus mip chain) for ``path``."""
         from ..modules.sampler import (
-            HALFBAND_TAPS, MAX_SECONDS, MIP_LEVELS, MIP_MIN_SAMPLES, OVERVIEW_COLS,
+            HALFBAND_TAPS,
+            MAX_SECONDS,
+            MIP_LEVELS,
+            MIP_MIN_SAMPLES,
+            OVERVIEW_COLS,
         )
 
         return _SampleLoader(
@@ -18975,7 +18993,10 @@ class NumpyBackend(AudioBackend):
         lap that ends while recording just clears the shot.
         """
         from ..modules.cv_recorder import (
-            CV_RECORDER_MODES, CV_RECORDER_PLAY_MODES, CV_RECORDER_SPEEDS)
+            CV_RECORDER_MODES,
+            CV_RECORDER_PLAY_MODES,
+            CV_RECORDER_SPEEDS,
+        )
 
         cv_in = self._input_buffer(patch, buffers, module.id, "in")
         clock = self._input_buffer(patch, buffers, module.id, "clock")
@@ -21364,7 +21385,11 @@ class NumpyBackend(AudioBackend):
         equal-power, ×√2 so centre ≡ mono). Returns a port dict.
         """
         from ..modules.modal import (
-            MALLET_OCTAVES, MODAL_MAX_MODES, modal_ratios, mode_pans, strike_comb,
+            MALLET_OCTAVES,
+            MODAL_MAX_MODES,
+            modal_ratios,
+            mode_pans,
+            strike_comb,
         )
 
         excite = self._input_buffer(

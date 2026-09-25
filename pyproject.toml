@@ -7,7 +7,7 @@ name = "pysynthrack"
 version = "0.1.0"
 description = "Modular Python software synthesizer with a drag-cable node-graph UI"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Matthew" }]
 classifiers = [
@@ -58,8 +58,20 @@ addopts = "-ra"
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
-ignore = ["E501"]
+# House style, not defects: `a = x; b = y` pairs in the DSP code, named
+# lambdas as local helpers, and `l`/`I` names that mirror the maths. B905:
+# `zip(strict=)` would turn a silent length mismatch into a raise -- opt in
+# per call, not wholesale.
+ignore = ["E501", "E702", "E731", "E741", "B905"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately raise/evaluate broad things (error_handler probes,
+# attribute access that must not throw).
+"tests/**" = ["B017", "B018"]
+# A clean copy of the upstream ErrorHandler suite (see its header): the unused
+# locals, bare re-raises and 3.11-only names are what it is testing.
+"tests/test_error_handler.py" = ["B904", "E402", "F821", "F841"]

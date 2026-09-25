@@ -81,7 +81,6 @@ from __future__ import annotations
 from ..core.module import Module, register_module_type
 from ..core.port import Port
 
-
 NOISE_COLORS = ("white", "pink", "brown", "violet")
 
 # ``corner`` (brown's leak) in Hz. 2 Hz is about as low as the leak can

@@ -24,22 +24,21 @@ from .compressor import Compressor
 from .constant import Constant
 from .convolver import Convolver
 from .crossover import Crossover
-from .cvcombiner import CVCombiner
-from .cvoffset import CVOffset
-from .cvscale import CVScale
 from .cv_gates import CVGates
 from .cv_keyboard import CVKeyboard
 from .cv_math import CVMath
 from .cv_recorder import CVRecorder
+from .cvcombiner import CVCombiner
+from .cvoffset import CVOffset
+from .cvscale import CVScale
 from .cvtoaudio import CVToAudio
 from .cvtofrequency import CVToFrequency
 from .delay import Delay
+from .diskwriter import DiskWriter
 from .distortion import Distortion
 from .drift import Drift
-from .waveshaper import Waveshaper
-from .wind import Wind
-from .diskwriter import DiskWriter
 from .drums import HatDrum, KickDrum, SnareDrum
+from .fader_seq import FaderSeq
 from .fileplayer import FilePlayer
 from .filter import Filter
 from .flanger import Flanger
@@ -47,15 +46,16 @@ from .fm_op import FMOperator
 from .freeze import Freeze
 from .freq_shifter import FreqShifter
 from .function_generator import FunctionGenerator
-from .keyboard import Keyboard
+from .granular import Granular
 from .key_trigger import KeyTrigger
+from .keyboard import Keyboard
 from .lfo import LFO
 from .limiter import Limiter
 from .logic import Logic
 from .loudness import Loudness
 from .matrix_mixer import MatrixMixer
-from .micinput import MicInput
 from .meter import Meter
+from .micinput import MicInput
 from .mid_side import MidSide
 from .midiinput import MIDIInput
 from .mixer import Mixer
@@ -66,19 +66,6 @@ from .noise_gate import NoiseGate
 from .octaver import Octaver
 from .organ import Organ
 from .oscillator import Oscillator
-from .parametric_eq import ParametricEQ
-from .phaser import Phaser
-from .pluck import Pluck
-from .possibility_selector import PossibilitySelector
-from .possibility_seq import PossibilitySeq
-from .quantizer import Quantizer
-from .resampler import Resampler
-from .sampler import Sampler
-from .reverb import Reverb
-from .ring_mod import RingMod
-from .rotary import Rotary
-from .pitch_shifter import PitchShifter
-from .granular import Granular
 from .output import (
     BufferedSpecificSpeakerOutput,
     LeftSpeakerOutput,
@@ -88,23 +75,36 @@ from .output import (
     StereoSpeakerOutput,
     WarpingBufferedSpeakerOutput,
 )
+from .parametric_eq import ParametricEQ
+from .phaser import Phaser
+from .pitch_shifter import PitchShifter
+from .pluck import Pluck
+from .possibility_selector import PossibilitySelector
+from .possibility_seq import PossibilitySeq
+from .quantizer import Quantizer
+from .resampler import Resampler
+from .reverb import Reverb
+from .ring_mod import RingMod
+from .rotary import Rotary
 from .samplehold import SampleHold
+from .sampler import Sampler
 from .schmitt import Schmitt
 from .scope import Scope
+from .sequencer import Sequencer
 from .shift_random import ShiftRandom
 from .slew import Slew
-from .sequencer import Sequencer
-from .fader_seq import FaderSeq
 from .supersaw import Supersaw
 from .sweep_eq import SweepEQ
 from .tape import Tape
-from .wavetable_morph import WavetableMorph
 from .tilt_eq import TiltEQ
 from .transient_shaper import TransientShaper
 from .vca import VCA
 from .vinyl import Vinyl
 from .vocoder import Vocoder
 from .vowel import Vowel
+from .waveshaper import Waveshaper
+from .wavetable_morph import WavetableMorph
+from .wind import Wind
 
 __all__ = [
     "ADEnvelope",

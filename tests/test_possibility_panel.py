@@ -32,7 +32,6 @@ from pysynthrack.modules.possibility_seq import (
     undecided_count,
 )
 
-
 # ----- the dpg-free helpers --------------------------------------------------
 
 def test_next_state_cycles_zero_one_undecided():

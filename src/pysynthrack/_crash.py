@@ -18,7 +18,7 @@ import logging
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ def crash_dir() -> Path:
     return Path.home() / _CRASH_DIR_NAME / _CRASH_SUBDIR
 
 
-def write_crash_report(report: Any, source: str = "unknown") -> Optional[str]:
+def write_crash_report(report: Any, source: str = "unknown") -> str | None:
     """Write ``report.for_claude()`` to a timestamped file in the user's
     profile crash directory. Returns the file path as a string on
     success, or ``None`` on any failure.

@@ -467,7 +467,7 @@ def test_the_velocity_example_accents_each_note():
 
     path = Path(__file__).resolve().parent.parent / "examples" / "adsr_velocity.json"
     patch = load_patch(path)
-    env = next(m for m in patch if m.TYPE == "adsr")
+    assert any(m.TYPE == "adsr" for m in patch)
     seq = next(m for m in patch if m.TYPE == "sequencer")
     off = next(m for m in patch if m.TYPE == "cv_offset")
     b = NumpyBackend(sample_rate=SR, block_size=512)

@@ -9,7 +9,6 @@ suite; the app.py glue that reads real node rects gets a manual eyeball.
 from pysynthrack.ui import node_layout as nl
 from pysynthrack.ui.node_layout import find_free_position, rects_overlap
 
-
 # ----- rects_overlap ------------------------------------------------------
 
 def test_overlap_true_when_nested():

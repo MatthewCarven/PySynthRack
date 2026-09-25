@@ -16,9 +16,9 @@ import pysynthrack.modules  # noqa: F401  (registers types)
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core import Patch
 from pysynthrack.modules.cv_keyboard import (
-    CVKeyboard,
     CV_REFERENCE_NOTE,
     KEY_GATE_NAMES,
+    CVKeyboard,
 )
 from pysynthrack.modules.keyboard import Keyboard
 

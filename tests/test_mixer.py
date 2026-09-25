@@ -221,6 +221,7 @@ class TestMixerIntegration:
     def test_example_fat_saw_loads_and_renders(self):
         """The shipped fat_saw.json must load and produce audio."""
         from pathlib import Path
+
         from pysynthrack.io_patch import load_patch
 
         example = Path(__file__).parent.parent / "examples" / "fat_saw.json"

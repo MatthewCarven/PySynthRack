@@ -13,7 +13,6 @@ from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core import Patch
 from pysynthrack.modules.diskwriter import DiskWriter
 
-
 SR = 44100
 
 

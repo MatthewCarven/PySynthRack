@@ -27,12 +27,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pysynthrack.core.patch import Patch
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.module import all_module_types, get_module_type
+from pysynthrack.core.patch import Patch
 from pysynthrack.modules.chord import (
     CHORD_ENABLE_KEYS,
-    CHORD_INTERVAL_KEYS,
     CHORD_PRESETS,
     CHORD_SPREAD_OFFSETS,
 )

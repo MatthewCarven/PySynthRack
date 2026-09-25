@@ -72,8 +72,8 @@ def render(repo: Path, out_dir: Path, seconds: float = 8.0, block: int = 512,
     if src not in sys.path:
         sys.path.insert(0, src)
     import pysynthrack.modules  # noqa: F401 — registers module types
-    from pysynthrack.io_patch import load_patch
     from pysynthrack.audio.numpy_backend import NumpyBackend
+    from pysynthrack.io_patch import load_patch
 
     out_dir.mkdir(parents=True, exist_ok=True)
     n_blocks = max(1, int(seconds * SR / block))

@@ -53,9 +53,9 @@ import numpy as np
 import pytest
 from scipy.signal import hilbert
 
-from pysynthrack.core.patch import Patch
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.module import all_module_types, get_module_type
+from pysynthrack.core.patch import Patch
 from pysynthrack.modules.organ import (
     ORGAN_BARS,
     ORGAN_DEFAULT_BARS,
@@ -297,7 +297,6 @@ def _perc_diff(gates, perc="2nd"):
     """Render a (V, F) gate pattern with the register on and off; the
     difference isolates the percussion strike exactly (the tone paths
     are deterministic and identical)."""
-    F = gates.shape[1]
     pitch = np.zeros_like(gates, dtype=np.float32)
     on = _driver({"click": 0.0, "perc": perc, "perc_level": 1.0})
     off = _driver({"click": 0.0, "perc": "off"})

@@ -229,8 +229,8 @@ def _main() -> int:
         _checkpoint(f"pysynthrack.main() RAISED: {type(e).__name__}: {e}")
         # Try the heavy report first; fall back to pure-stdlib on failure.
         try:
-            from pysynthrack.error_handler import describe_error
             from pysynthrack._crash import write_crash_report
+            from pysynthrack.error_handler import describe_error
             report = describe_error(e, include_locals=True)
             write_crash_report(report, source="entry")
         except BaseException:

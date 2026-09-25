@@ -527,7 +527,7 @@ class TestFreeze:
         # why the snap exists.)
         params = dict(FZ_PARAMS, time=time_ms)
         D = _held_samples(params)
-        patch, src, clk, dl, b, _ = rig = _fz_rig(params)
+        patch, src, clk, dl, b, _ = _fz_rig(params)
         n = 12 * SR
         x = _burst(n)
         fz = _gate(n, T_FZ, n)

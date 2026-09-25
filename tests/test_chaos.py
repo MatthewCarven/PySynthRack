@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from pysynthrack.core.patch import Patch
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.module import all_module_types, get_module_type
+from pysynthrack.core.patch import Patch
 
 SR = 8000
 

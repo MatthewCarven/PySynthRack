@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Union
 
 # Module subpackage must be imported so its types register themselves before
 # we try to load a patch (otherwise ``Patch.from_dict`` raises KeyError for
@@ -13,7 +12,7 @@ import pysynthrack.modules  # noqa: F401
 
 from ..core.patch import Patch
 
-PathLike = Union[str, Path]
+PathLike = str | Path
 
 
 def save_patch(patch: Patch, path: PathLike) -> None:

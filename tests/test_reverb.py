@@ -386,7 +386,7 @@ class TestFreeze:
         # the energy in circulation: the last L[i] writes of each line.
         # (The whole ring is the WRONG observable -- beyond L[i] each row
         # holds stale samples that get overwritten as the state mixes.)
-        patch, src, clk, rv, b = rig = _fz_rig()
+        patch, src, clk, rv, b = _fz_rig()
         base = np.array(NumpyBackend._REVERB_BASE, dtype=np.float64)
         Lmax = int(base.max()) + 2
         L = np.clip(np.round(base * (0.25 + 0.75 * FZ_PARAMS["size"])).astype(np.int64), 32, Lmax - 2)

@@ -9,7 +9,6 @@ from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core import Patch
 from pysynthrack.modules.motion_eq import MotionEQ
 
-
 SR = 44100
 
 # A fixed band layout with real gains so spectral motion is measurable.

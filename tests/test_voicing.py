@@ -11,9 +11,7 @@ exercise the data structure directly, single-threaded.
 """
 from __future__ import annotations
 
-import pytest
-
-from pysynthrack.core.voicing import VoiceSlots, MAX_VOICES
+from pysynthrack.core.voicing import MAX_VOICES, VoiceSlots
 
 
 class TestAllocation:

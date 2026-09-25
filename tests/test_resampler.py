@@ -1123,7 +1123,6 @@ class TestBrake:
         # read head repeatedly; every lap re-centres under the seam
         # crossfade. Everything stays finite and movement-free.
         tone = _tone(500.0, 6.0)
-        bpb = SR // F
         out = _run_brake(
             {"brake": True, "brake_time": 0.1, "window": 200.0}, tone
         )

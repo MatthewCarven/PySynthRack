@@ -14,7 +14,6 @@ import os
 import sys
 import time
 import traceback
-from typing import Optional
 
 import dearpygui.dearpygui as dpg
 import numpy as np
@@ -22,30 +21,57 @@ import numpy as np
 # Ensure all module types are registered before we build any UI.
 import pysynthrack.modules  # noqa: F401
 
+from .._resources import examples_dir
 from ..audio import AudioBackend, pick_backend
 from ..core.module import grouped_module_types
 from ..core.patch import Cable, Patch
 from ..io_patch import load_patch, save_patch
+from ..modules.arpeggiator import ARP_MODES
+from ..modules.autopan import AUTOPAN_LAWS, AUTOPAN_SHAPES
+from ..modules.chaos import CHAOS_SYSTEMS
+from ..modules.chord import (
+    CHORD_ENABLE_KEYS,
+    CHORD_INTERVAL_KEYS,
+    CHORD_PRESETS,
+)
+from ..modules.clock import CLOCK_MAX_SWING_UI
+from ..modules.clockwork import BERNOULLI_MODES, DIVIDER_MAX_M, DIVIDER_MAX_N, DIVIDER_MAX_SWING
+from ..modules.compressor import DETECTOR_MODES
+from ..modules.cv_recorder import CV_RECORDER_MODES, CV_RECORDER_PLAY_MODES, CV_RECORDER_SPEEDS
+from ..modules.cvcombiner import CVCOMBINER_MODES
+from ..modules.cvtofrequency import MODES as CVTOFREQ_MODES
+from ..modules.distortion import DISTORTION_MODES
+from ..modules.drift import DRIFT_MODES
+from ..modules.drums import HAT_TONE_MAX, HAT_TONE_MIN
+from ..modules.fader_seq import FADER_RANGE_ST
 from ..modules.filter import FILTER_MODES
-from ..modules.fm_op import RATIO_TABLE as FM_RATIO_TABLE, snap_ratio as fm_snap_ratio
+from ..modules.fm_op import RATIO_TABLE as FM_RATIO_TABLE
+from ..modules.fm_op import snap_ratio as fm_snap_ratio
+from ..modules.freeze import FREEZE_SIZES
+from ..modules.function_generator import FUNCTION_GENERATOR_MODES
+from ..modules.granular import GRANULAR_WINDOWS
+from ..modules.key_trigger import KEY_TRIGGER_MODES
 from ..modules.keyboard import (
     midi_to_name,
     name_to_midi,
     semitone_to_midi,
 )
-from ..modules.key_trigger import KEY_TRIGGER_MODES
-from ..modules.cvcombiner import CVCOMBINER_MODES
-from ..modules.cvtofrequency import MODES as CVTOFREQ_MODES
 from ..modules.lfo import LFO_WAVEFORMS
+from ..modules.meter import METER_MODES
+from ..modules.micinput import available_input_devices as mic_available_devices
 from ..modules.midiinput import (
     AUTO_DEVICE,
-    available_devices as midi_available_devices,
     compute_velocity_curve,
 )
-from ..modules.micinput import available_input_devices as mic_available_devices
-from ..modules.output import available_output_devices as spk_available_devices
-from ..modules.fader_seq import FADER_RANGE_ST
-from ..modules.chaos import CHAOS_SYSTEMS
+from ..modules.midiinput import (
+    available_devices as midi_available_devices,
+)
+from ..modules.modal import MODAL_MATERIALS
+from ..modules.noise import (
+    NOISE_COLORS,
+    NOISE_CORNER_MAX,
+    NOISE_CORNER_MIN,
+)
 from ..modules.organ import (
     ORGAN_BARS,
     ORGAN_FOOTAGES,
@@ -53,74 +79,80 @@ from ..modules.organ import (
     PERC_DECAYS,
     PERC_MODES,
 )
-from ..modules.clock import CLOCK_MAX_SWING_UI
-from ..modules.clockwork import DIVIDER_MAX_M, DIVIDER_MAX_N, DIVIDER_MAX_SWING
-from ..modules.drums import HAT_TONE_MAX, HAT_TONE_MIN
-from ..modules.sequencer import MAX_STEPS as SEQ_MAX_STEPS, SEQ_DIRECTIONS
-from ..modules.sampler import (
-    ROOT_MAX_NOTE as SAMPLER_ROOT_MAX,
-    ROOT_MIN_NOTE as SAMPLER_ROOT_MIN,
-    SAMPLER_MODES,
+from ..modules.oscillator import PULSE_WIDTH_MAX, PULSE_WIDTH_MIN, WAVEFORMS
+from ..modules.output import available_output_devices as spk_available_devices
+from ..modules.possibility_selector import (
+    MAX_STEPS as PSEL_MAX_STEPS,
+)
+from ..modules.possibility_selector import (
+    N_OUTS as PSEL_N_OUTS,
+)
+from ..modules.possibility_selector import (
+    format_possibilities as psel_format_possibilities,
+)
+from ..modules.possibility_selector import (
+    format_route as psel_format_route,
+)
+from ..modules.possibility_selector import (
+    next_state as psel_next_state,
+)
+from ..modules.possibility_selector import (
+    parse_route as psel_parse_route,
 )
 from ..modules.possibility_seq import (
     MAX_STEPS as PSEQ_MAX_STEPS,
+)
+from ..modules.possibility_seq import (
     POSSIBILITY_MODES,
     format_possibilities,
+)
+from ..modules.possibility_seq import (
     next_state as pseq_next_state,
 )
-from ..modules.possibility_selector import (
-    MAX_STEPS as PSEL_MAX_STEPS,
-    N_OUTS as PSEL_N_OUTS,
-    format_possibilities as psel_format_possibilities,
-    format_route as psel_format_route,
-    next_state as psel_next_state,
-    parse_route as psel_parse_route,
+from ..modules.quantizer import (
+    CUSTOM_KEYS as QUANTIZER_CUSTOM_KEYS,
 )
-from ..modules.wavetable_morph import WT_STACKS
-from ..modules.wind import WIND_MODELS
-from ..modules.drift import DRIFT_MODES
-from ..modules.cv_recorder import (
-    CV_RECORDER_MODES, CV_RECORDER_PLAY_MODES, CV_RECORDER_SPEEDS)
+from ..modules.quantizer import (
+    QUANTIZER_ROOTS,
+    QUANTIZER_SCALES,
+)
+from ..modules.rotary import ROTARY_SPEEDS
+from ..modules.samplehold import SAMPLE_HOLD_MODES
+from ..modules.sampler import (
+    ROOT_MAX_NOTE as SAMPLER_ROOT_MAX,
+)
+from ..modules.sampler import (
+    ROOT_MIN_NOTE as SAMPLER_ROOT_MIN,
+)
+from ..modules.sampler import (
+    SAMPLER_MODES,
+)
+from ..modules.scope import SCOPE_MODES, SCOPE_TRIGGER_MODES
+from ..modules.sequencer import MAX_STEPS as SEQ_MAX_STEPS
+from ..modules.sequencer import SEQ_DIRECTIONS
+from ..modules.slew import SLEW_SHAPES
+from ..modules.sweep_eq import SWEEP_EQ_MODES
+from ..modules.transient_shaper import TRANSIENT_SHAPER_SPEEDS
 from ..modules.vowel import (
     VOWEL_CUSTOM_FREQ_MAX,
     VOWEL_CUSTOM_FREQ_MIN,
     VOWEL_CV_RATES,
     VOWEL_VOICE_CHOICES,
 )
-from ..modules.freeze import FREEZE_SIZES
-from ..modules.samplehold import SAMPLE_HOLD_MODES
-from ..modules.compressor import DETECTOR_MODES
-from ..modules.distortion import DISTORTION_MODES
-from ..modules.meter import METER_MODES
 from ..modules.waveshaper import WAVESHAPER_MODES
-from ..modules.noise import (
-    NOISE_COLORS,
-    NOISE_CORNER_MAX,
-    NOISE_CORNER_MIN,
-)
-from ..modules.oscillator import PULSE_WIDTH_MAX, PULSE_WIDTH_MIN, WAVEFORMS
-from ..modules.quantizer import (
-    CUSTOM_KEYS as QUANTIZER_CUSTOM_KEYS,
-    QUANTIZER_ROOTS,
-    QUANTIZER_SCALES,
-)
-from ..modules.arpeggiator import ARP_MODES
-from ..modules.autopan import AUTOPAN_LAWS, AUTOPAN_SHAPES
-from ..modules.chord import (
-    CHORD_ENABLE_KEYS,
-    CHORD_INTERVAL_KEYS,
-    CHORD_PRESETS,
-)
-from ..modules.clockwork import BERNOULLI_MODES
-from ..modules.function_generator import FUNCTION_GENERATOR_MODES
-from ..modules.modal import MODAL_MATERIALS
-from ..modules.scope import SCOPE_MODES, SCOPE_TRIGGER_MODES
-from ..modules.slew import SLEW_SHAPES
-from ..modules.rotary import ROTARY_SPEEDS
-from ..modules.granular import GRANULAR_WINDOWS
-from ..modules.sweep_eq import SWEEP_EQ_MODES
+from ..modules.wavetable_morph import WT_STACKS
+from ..modules.wind import WIND_MODELS
+from ..settings import load_settings, save_settings
 from . import scope_math
-from ..modules.transient_shaper import TRANSIENT_SHAPER_SPEEDS
+from .buffer import (
+    BUFFER_SIZES,
+    SINK_BUFFER_SIZES,
+    coerce_buffer_size,
+    coerce_sink_buffer_size,
+    format_sink_buffer,
+    index_to_size,
+    size_to_index,
+)
 from .dsp_load import (
     IDLE_COLOR,
     WARN_COLOR,
@@ -132,6 +164,9 @@ from .dsp_load import (
     xrun_color,
 )
 from .node_layout import find_free_position
+from .param_scroll import cycle_index, decimals_from_format, nudge_number
+from .window_geometry import make_geometry
+from .window_geometry import resolve as resolve_window
 from .zoom import (
     ZOOM_DEFAULT,
     ZOOM_MAX,
@@ -142,19 +177,6 @@ from .zoom import (
     scale_pos,
     step_zoom,
 )
-from .buffer import (
-    BUFFER_SIZES,
-    SINK_BUFFER_SIZES,
-    coerce_buffer_size,
-    coerce_sink_buffer_size,
-    format_sink_buffer,
-    index_to_size,
-    size_to_index,
-)
-from .param_scroll import cycle_index, decimals_from_format, nudge_number
-from ..settings import load_settings, save_settings
-from .window_geometry import make_geometry, resolve as resolve_window
-
 
 # Computer-keyboard → semitone-offset mapping. Home row A..K = white keys
 # of one octave; W E T Y U = black keys. The upper row K L ; spans the
@@ -239,8 +261,6 @@ LATE_LINK_HOVER_COLOR = (255, 200, 90, 255)
 DSP_TOOLTIP_TAG = "dsp_load_tooltip_text"
 XRUN_TOOLTIP_TAG = "xrun_tooltip_text"
 
-from .._resources import examples_dir
-
 DEFAULT_PATCH_PATH = str(examples_dir() / "hello_sine.json")
 
 
@@ -293,13 +313,13 @@ class App:
         # clicked, so the shared WAV file dialog's callback knows which
         # module to update, and whether to set ``path`` ("path") or append
         # to the queue ("playlist").
-        self._wav_target_id: Optional[int] = None
+        self._wav_target_id: int | None = None
         self._wav_target_mode: str = "path"
 
         # The midi_input whose Calibrate-keys dialog is open, plus the
         # last stopped-but-not-yet-computed learn capture (Learn -> Stop
         # stashes here so Compute can still use it).
-        self._vel_target_id: Optional[int] = None
+        self._vel_target_id: int | None = None
         self._vel_captured: dict[int, list[float]] = {}
 
         # Diagonal stagger for newly-added nodes so they don't stack.
@@ -3205,9 +3225,7 @@ class App:
             if param_name == CHORD_INTERVAL_KEYS[0]:
                 # Draw the whole 4-slot bank (tickbox + semitone drag per
                 # row, read when preset=custom) in one go.
-                for i, (ikey, ekey) in enumerate(
-                    zip(CHORD_INTERVAL_KEYS, CHORD_ENABLE_KEYS)
-                ):
+                for ikey, ekey in zip(CHORD_INTERVAL_KEYS, CHORD_ENABLE_KEYS):
                     with dpg.group(horizontal=True):
                         dpg.add_checkbox(
                             default_value=bool(module.params.get(ekey, True)),
@@ -7143,9 +7161,11 @@ class App:
                 overview, loaded = hook(module_id)
                 prm = module.params
 
+                # Called within this iteration only -- the late binding
+                # of the loop variables (B023) is safe.
                 def frac(name, default):
                     try:
-                        return min(1.0, max(0.0, float(prm.get(name, default))))
+                        return min(1.0, max(0.0, float(prm.get(name, default))))  # noqa: B023
                     except (TypeError, ValueError):
                         return default
 
@@ -7183,10 +7203,12 @@ class App:
                     bundle["caption"], text=caption, show=bool(caption),
                 )
 
+                # Called within this iteration only -- the late binding
+                # of the loop variables (B023) is safe.
                 def place(name, fraction, show=True):
                     x = min(w - 1.0, max(0.0, fraction * (w - 1.0)))
                     dpg.configure_item(
-                        bundle["markers"][name], p1=(x, 0), p2=(x, h - 1),
+                        bundle["markers"][name], p1=(x, 0), p2=(x, h - 1),  # noqa: B023
                         show=show,
                     )
 

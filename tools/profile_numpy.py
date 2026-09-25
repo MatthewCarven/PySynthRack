@@ -124,7 +124,7 @@ def main() -> int:
                     help="untimed warmup blocks (default 50)")
     args = ap.parse_args()
 
-    print(f"PySynthRack numpy-backend CPU profile")
+    print("PySynthRack numpy-backend CPU profile")
     print(f"  python {platform.python_version()} | numpy {np.__version__} "
           f"| {platform.system()} {platform.machine()}")
     print(f"  {BLOCK} frames @ {SAMPLE_RATE} Hz -> budget {BUDGET_MS:.2f} ms/block")

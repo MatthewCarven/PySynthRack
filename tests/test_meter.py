@@ -48,7 +48,7 @@ import pytest
 import pysynthrack.modules  # noqa: F401  (registers types)
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core import Patch
-from pysynthrack.modules.meter import Meter, METER_MODES
+from pysynthrack.modules.meter import METER_MODES, Meter
 
 SR, F = 44100, 512
 

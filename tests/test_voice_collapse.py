@@ -28,8 +28,8 @@ from unittest import mock
 import numpy as np
 import pytest
 
-import pysynthrack.modules  # noqa: F401  (registers every type)
 import pysynthrack.audio.numpy_backend as nb_mod
+import pysynthrack.modules  # noqa: F401  (registers every type)
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.patch import Patch
 

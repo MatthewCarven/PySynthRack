@@ -1427,7 +1427,7 @@ def test_the_chord_pad_example_holds_between_chords():
 
     path = Path(__file__).resolve().parent.parent / "examples" / "freeze_chord_pad.json"
     patch = load_patch(path)
-    fz = next(m for m in patch if m.TYPE == "freeze")
+    assert any(m.TYPE == "freeze" for m in patch)
     b = NumpyBackend(sample_rate=SR, block_size=512)
     b.compile(patch)
     cap = []

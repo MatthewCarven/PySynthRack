@@ -6,8 +6,9 @@ JSON via ``to_dict`` / ``from_dict``.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any
 
 from .module import Module, get_module_type
 
@@ -30,7 +31,7 @@ class Cable:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Cable":
+    def from_dict(cls, data: dict[str, Any]) -> Cable:
         return cls(
             src_module_id=int(data["src_module_id"]),
             src_port=str(data["src_port"]),
@@ -253,7 +254,7 @@ class Patch:
         return out
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Patch":
+    def from_dict(cls, data: dict[str, Any]) -> Patch:
         """Rebuild a patch from its JSON dict.
 
         **Dead cables are dropped, not obeyed and not raised on.** A

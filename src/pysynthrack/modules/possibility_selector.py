@@ -86,7 +86,9 @@ from __future__ import annotations
 
 from ..core.module import Module, register_module_type
 from ..core.port import Port
-from .possibility_seq import POSSIBILITY_MODES
+from .possibility_seq import (
+    POSSIBILITY_MODES,  # noqa: F401 -- re-exported (the backend reads it here)
+)
 
 #: Maximum addressable steps — the sequencer family's ceiling.
 MAX_STEPS = 16

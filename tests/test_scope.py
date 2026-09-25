@@ -14,11 +14,10 @@ pipeline runs headless: renderer → scope_window → build_snapshot.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
-from pysynthrack.core.patch import Patch
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.module import all_module_types, get_module_type
+from pysynthrack.core.patch import Patch
 from pysynthrack.modules import scope as _scope  # noqa: F401
 from pysynthrack.ui import scope_math as sm
 

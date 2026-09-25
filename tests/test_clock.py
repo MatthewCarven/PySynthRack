@@ -794,7 +794,7 @@ def test_the_transport_example_plays_two_bars_and_holds_one():
     assert len(patch.modules) <= 12
     clk = next(m for m in patch if m.TYPE == "clock" and m.params["division"] == 4.0)
     bar = next(m for m in patch if m.TYPE == "clock" and m.params["bpm"] == 120.0)
-    seq = next(m for m in patch if m.TYPE == "sequencer")
+    assert any(m.TYPE == "sequencer" for m in patch)
     b = NumpyBackend(sample_rate=SR, block_size=512)
     b.compile(patch)
     gates = {clk.id: [], bar.id: []}

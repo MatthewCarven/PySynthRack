@@ -14,7 +14,6 @@ import pytest
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.patch import Patch
 
-
 # ---------------------------------------------------------------------------
 # ADSR voice-aware path
 # ---------------------------------------------------------------------------

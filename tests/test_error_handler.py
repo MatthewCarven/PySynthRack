@@ -25,26 +25,26 @@ import unittest
 # ``import error_handler`` sites deeper in the file) resolve unchanged, which
 # keeps this file a clean copy that's trivial to re-sync from upstream.
 from pysynthrack import error_handler as _pysr_error_handler
+
 sys.modules.setdefault("error_handler", _pysr_error_handler)
 
 from error_handler import (
-    describe_error,
     ErrorReport,
-    register_redactor,
-    redact_pattern,
-    clear_redactors,
-    register_extractor,
-    unregister_extractor,
-    install,
-    uninstall,
+    ReportFormatter,
     capture,
     capturing,
-    register_observer,
-    unregister_observer,
     clear_observers,
-    ReportFormatter,
+    clear_redactors,
+    describe_error,
+    install,
+    redact_pattern,
+    register_extractor,
+    register_observer,
+    register_redactor,
+    uninstall,
+    unregister_extractor,
+    unregister_observer,
 )
-
 
 # ---------------------------------------------------------------------------
 # Adversarial classes used across multiple tests
@@ -414,6 +414,7 @@ class CallerContextTests(unittest.TestCase):
 
     def test_caller_context_skips_error_handler_frames(self):
         import os
+
         import error_handler as eh_module
         eh_file = os.path.normcase(os.path.abspath(eh_module.__file__))
         try:
@@ -1349,7 +1350,6 @@ class ReportFormatterTests(unittest.TestCase):
         self.assertIn("[missing_key='missing']", out)  # our concise marker
 
     def test_heavy_style(self):
-        import logging
         self.handler.setFormatter(ReportFormatter(
             "%(message)s", report_style="heavy",
         ))
