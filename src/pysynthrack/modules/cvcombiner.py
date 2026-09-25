@@ -28,7 +28,6 @@ from __future__ import annotations
 from ..core.module import Module, register_module_type
 from ..core.port import Port
 
-
 CVCOMBINER_MODES = ("sum", "average")
 
 

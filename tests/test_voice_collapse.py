@@ -21,15 +21,18 @@ behind ``_finite_mean``. Three reductions were left:
 """
 from __future__ import annotations
 
+import importlib
 import inspect
+import pkgutil
 import re
 from unittest import mock
 
 import numpy as np
 import pytest
 
-import pysynthrack.modules  # noqa: F401  (registers every type)
 import pysynthrack.audio.numpy_backend as nb_mod
+import pysynthrack.audio.renderers as renderers_pkg
+import pysynthrack.modules  # noqa: F401  (registers every type)
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.patch import Patch
 
@@ -165,8 +168,14 @@ _NOT_A_VOICE_COLLAPSE = {
 def test_every_voice_collapse_goes_through_a_door():
     """Count the doors: a new ``.sum(axis=0)`` / ``.mean(axis=0)`` in the
     backend is either a voice collapse (use ``_voice_sum`` /
-    ``_voice_mean``) or belongs on the allow-list above with a reason."""
-    src = inspect.getsource(nb_mod).split("\n")
+    ``_voice_mean``) or belongs on the allow-list above with a reason.
+    Scans the backend AND every renderer family split out of it."""
+    mods = [nb_mod] + [
+        importlib.import_module(f"{renderers_pkg.__name__}.{info.name}")
+        for info in pkgutil.iter_modules(renderers_pkg.__path__)
+    ]
+    assert len(mods) > 1, "no renderer modules found: the scan would be partial"
+    src = "\n".join(inspect.getsource(m) for m in mods).split("\n")
     owner = ""
     offenders = []
     for line in src:

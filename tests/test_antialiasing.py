@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from pysynthrack.audio.numpy_backend import NumpyBackend
-from pysynthrack.core.patch import Patch, Cable
+from pysynthrack.core.patch import Cable, Patch
 from pysynthrack.modules.oscillator import WAVEFORMS
 
 SR = 44100

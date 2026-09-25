@@ -26,7 +26,6 @@ readout paints is non-ASCII.
 from __future__ import annotations
 
 import itertools
-import json
 from unittest import mock
 
 import numpy as np

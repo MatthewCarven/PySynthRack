@@ -15,9 +15,9 @@ from __future__ import annotations
 import numpy as np
 from scipy.io import wavfile
 
-from pysynthrack.core.patch import Patch
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.module import all_module_types, get_module_type
+from pysynthrack.core.patch import Patch
 from pysynthrack.modules.wavetable_morph import WT_STACKS
 
 SR = 8000

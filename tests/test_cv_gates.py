@@ -16,10 +16,10 @@ import pysynthrack.modules  # noqa: F401  (registers types)
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core import Patch
 from pysynthrack.modules.cv_gates import (
-    CVGates,
     KEY_BASE_NOTE,
     KEY_CV_NAMES,
     NUM_KEYS,
+    CVGates,
 )
 
 SR = 44100

@@ -739,6 +739,50 @@ same session.
       anyone is playing). Decide whether that asymmetry should be
       documented as-is or changed; do not change it silently.
 
+## The tooling love pass (2026-09-25)
+
+Matthew: "Where could we apply some love to this project" → "Lets go with
+your suggestions". The health check found the code solid (every test
+green) and the tooling thin. Suite **5426 passed** on 3.11 and **5416** on
+3.10 (the rest skip), 0 failures; ruff 494 → 0.
+
+- [x] **The suite could not run without DearPyGui.** `ui/__init__.py`
+      imported `app.py` eagerly, so the dpg-free helpers dragged dpg in: 9
+      test files failed to collect and pytest ran nothing. Lazy `App`.
+- [x] **CI** — `.github/workflows/ci.yml`: ruff, then pytest `-n auto` on
+      3.10 + 3.12 with the GUI extra (needs `libportaudio2`). xdist is safe:
+      ~4 min on 4 cores against 7.5 serial. `pytest-xdist` is in `[dev]`.
+- [x] **ruff clean** — house-style rules ignored in config (E702/E731/E741,
+      B905), the rest fixed. Caught on the way: `test_limiter`'s release
+      test computed the ceiling and never used it (now pinned to 1 - C).
+      Lesson: an "unused" import can be a re-export another module reads
+      lazily (`possibility_selector.POSSIBILITY_MODES` -- the backend imports
+      it inside a function); both such re-exports now carry a noqa.
+- [x] **Python floor 3.10** (3.9 is EOL; error_handler's did-you-mean needs
+      3.10's exception attributes -- four of its tests failed on 3.9).
+- [x] **`clock_divider` late gate past the next edge** — kept at its swing
+      position; the on-time gate ends a sample before it. 188 missing of
+      6192 swept `divn` rises → 0; every other render bit-identical,
+      including all nine shipped examples that use the divider.
+- [ ] **Split `audio/numpy_backend.py`** (21.8k lines, 127 `_render_*`) into
+      per-family renderer modules -- the plug-in shape architecture.md
+      already anticipates. One family per session; the block-exact pins and
+      `tools/render_audit.py` prove each move is behaviour-neutral.
+      **STARTED 2026-09-25:** the mixin pattern is in (`audio/renderers/`,
+      docs/architecture.md § "Renderer families") and **clockwork** moved
+      (587 lines, verbatim bar one import depth; 165/165 examples
+      bit-identical). The voice-collapse tripwire now scans the package.
+      Next families, smallest-coupling first: the dynamics set
+      (compressor / limiter / gate / transient shaper), then the mod-FX
+      (chorus / flanger / phaser / rotary -- mind their shared helpers).
+- [ ] **Split `ui/app.py`** (7.4k lines, one `App` class) -- the custom
+      panels (possibility, selector, sampler face, scope) first.
+- [ ] **Compact TODO.md / WORKLOG.md** again (2.9k / 8.2k lines) the
+      2026-07 way; move `error_handler_*.md` into `docs/`.
+- [ ] Gotcha for tests: `test_voice_collapse`'s tripwire reads the backend
+      with `inspect.getsource`, so editing `numpy_backend.py` DURING a run
+      fails it spuriously (line numbers shift). Not a bug; don't chase it.
+
 ## Nine follow-ons in parallel (2026-09-24, the sixth batch)
 
 Matthew: "I am just going to retest every example … feel free to
@@ -835,9 +879,10 @@ Follow-ons surfaced:
       erodes to ~−116 dB after 24 h of running. Low priority.
 - [ ] **`freeze`: stage 32768 too** (a 2048-sample delay, worst block
       ~25% from 46%) — shifts `freeze_drone_breathe`'s timing. Offered.
-- [ ] **`clock_divider`:** clock swing 0.5 + divider swing 0.5 at n 1
+- [x] **`clock_divider`:** clock swing 0.5 + divider swing 0.5 at n 1
       drops 47 of 96 gates (a late gate's offset lands past the next
-      short edge and the on-time gate replaces it).
+      short edge and the on-time gate replaces it). FIXED 2026-09-25 --
+      see § "The tooling love pass".
 - [ ] **`autopan` follow-ons:** smooth-random shape, a clocked phase
       offset, a separate tremolo rate, `width` for a stereo pair, a
       `pan_cv` depth knob.

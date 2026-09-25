@@ -29,7 +29,7 @@ class Port:
     direction: Direction
     signal_kind: SignalKind = "audio"
 
-    def is_compatible_with(self, other: "Port") -> bool:
+    def is_compatible_with(self, other: Port) -> bool:
         """Two ports can be cabled together if directions oppose and kinds match."""
         if self.direction == other.direction:
             return False

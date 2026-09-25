@@ -6,7 +6,6 @@ user config file is never touched.
 
 from pysynthrack import settings as s
 
-
 # ----- settings_path ------------------------------------------------------
 
 def test_path_honors_env_override(monkeypatch, tmp_path):

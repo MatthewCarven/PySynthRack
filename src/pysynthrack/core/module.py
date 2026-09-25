@@ -28,10 +28,10 @@ from .port import Port
 
 # Module-type registry. Populated by ``register_module_type`` (called by
 # ``modules/__init__.py``). The patch loader uses it to look up a class by type.
-_REGISTRY: dict[str, type["Module"]] = {}
+_REGISTRY: dict[str, type[Module]] = {}
 
 
-def register_module_type(cls: type["Module"]) -> type["Module"]:
+def register_module_type(cls: type[Module]) -> type[Module]:
     """Class decorator that adds a Module subclass to the type registry."""
     if not cls.TYPE:
         raise ValueError(f"Module subclass {cls.__name__} must set TYPE")
@@ -47,7 +47,7 @@ def register_module_type(cls: type["Module"]) -> type["Module"]:
     return cls
 
 
-def get_module_type(type_name: str) -> type["Module"]:
+def get_module_type(type_name: str) -> type[Module]:
     """Look up a Module subclass by its TYPE string."""
     try:
         return _REGISTRY[type_name]
@@ -58,7 +58,7 @@ def get_module_type(type_name: str) -> type["Module"]:
         ) from exc
 
 
-def all_module_types() -> dict[str, type["Module"]]:
+def all_module_types() -> dict[str, type[Module]]:
     """Return a copy of the registry — used by the UI palette."""
     return dict(_REGISTRY)
 
@@ -198,7 +198,7 @@ class Module:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Module":
+    def from_dict(cls, data: dict[str, Any]) -> Module:
         module_cls = get_module_type(data["type"])
         return module_cls(
             module_id=data["id"],

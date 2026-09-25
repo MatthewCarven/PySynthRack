@@ -234,7 +234,7 @@ class TestRelease:
         gain = out[start:2 * N] / xd[start:2 * N]
         red = 1.0 - gain
         red0 = red[0]
-        assert red0 > 0.3            # was clamped down to the ceiling
+        assert abs(red0 - (1.0 - C)) < 0.01   # was clamped down to the ceiling
         # First sample where the reduction has decayed to 1/e of its start.
         idx = int(np.argmax(red <= red0 / np.e))
         rel_samples = release_ms * 1e-3 * SR

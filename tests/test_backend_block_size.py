@@ -8,7 +8,6 @@ installed) and never open a stream, so no audio hardware is required.
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.audio.pyo_backend import PyoBackend
 
-
 # ----- numpy (inherits the base record-only implementation) ---------------
 
 def test_numpy_set_block_size_records_value():

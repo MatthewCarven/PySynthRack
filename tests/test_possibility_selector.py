@@ -9,7 +9,6 @@ tested for exact equivalence against it.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 import pysynthrack.modules  # noqa: F401  (registers types)
 from pysynthrack.audio.numpy_backend import NumpyBackend

@@ -366,7 +366,7 @@ def test_the_cello_example_plays_a_moving_line():
 
     path = Path(__file__).resolve().parent.parent / "examples" / "bowed_cello.json"
     patch = load_patch(path)
-    bow = next(m for m in patch if m.TYPE == "bowed")
+    assert any(m.TYPE == "bowed" for m in patch)
     b = NumpyBackend(sample_rate=44100, block_size=512)
     b.compile(patch)
     cap = []

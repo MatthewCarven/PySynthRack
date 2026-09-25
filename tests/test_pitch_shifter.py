@@ -524,8 +524,9 @@ class TestFormantPreserve:
         assert float(np.abs(out).max()) < 4.0
 
     def test_lpc_recovers_known_ar2(self):
-        from pysynthrack.audio.numpy_backend import _lpc_coeffs
         from scipy.signal import lfilter as _lf
+
+        from pysynthrack.audio.numpy_backend import _lpc_coeffs
         rng = np.random.RandomState(3)
         x = _lf([1.0], [1.0, -1.2, 0.72], rng.randn(8192))
         a = _lpc_coeffs(x, 8, SR)

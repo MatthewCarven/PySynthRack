@@ -11,11 +11,10 @@ independent); unpatched input is silence.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
-from pysynthrack.core.patch import Patch
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.module import all_module_types, get_module_type
+from pysynthrack.core.patch import Patch
 
 SR = 8000
 
@@ -90,7 +89,7 @@ def test_subs_land_half_and_quarter_frequency():
 
 def test_sub_gains_isolate_their_octave():
     only1 = _driver({"dry": 0.0, "sub1": 1.0, "sub2": 0.0, "tone": 2000.0})
-    out1 = step_out = only1(_sine(400.0))
+    out1 = only1(_sine(400.0))
     assert _peak_near(out1, 200.0) > 10 * _peak_near(out1, 100.0)
     only2 = _driver({"dry": 0.0, "sub1": 0.0, "sub2": 1.0, "tone": 2000.0})
     out2 = only2(_sine(400.0))

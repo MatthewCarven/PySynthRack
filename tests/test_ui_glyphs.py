@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import ast
 import glob
-import io
 import json
 import os
 import unicodedata
@@ -49,7 +48,7 @@ def _display_strings(path: str):
     (their literal halves are `Constant` nodes under `JoinedStr`) and
     docstrings are excluded precisely instead of by guesswork.
     """
-    tree = ast.parse(io.open(path, encoding="utf-8").read())
+    tree = ast.parse(open(path, encoding="utf-8").read())
     docstrings = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
@@ -89,7 +88,7 @@ def test_display_strings_are_ascii(path):
 @pytest.mark.parametrize("path", sorted(glob.glob(os.path.join("examples", "*.json"))))
 def test_example_patch_names_are_ascii(path):
     """Node names ship to users and are painted straight onto the node."""
-    patch_data = json.load(io.open(path, encoding="utf-8"))
+    patch_data = json.load(open(path, encoding="utf-8"))
     bad = [
         (module.get("id"), name, ch)
         for module in patch_data.get("modules", [])
@@ -106,7 +105,7 @@ def test_example_patch_names_are_ascii(path):
 
 def test_port_labels_use_ascii_arrows():
     """The 336-label one: the jack decorations themselves."""
-    source = io.open(os.path.join(UI_DIR, "app.py"), encoding="utf-8").read()
+    source = open(os.path.join(UI_DIR, "app.py"), encoding="utf-8").read()
     assert '"< {port.name}"' in source
     assert '"{port.name} >"' in source
 

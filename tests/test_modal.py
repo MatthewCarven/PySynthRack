@@ -12,11 +12,10 @@ zeros.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
-from pysynthrack.core.patch import Patch
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.module import all_module_types, get_module_type
+from pysynthrack.core.patch import Patch
 from pysynthrack.modules.modal import MODAL_MATERIALS, modal_ratios
 
 C4 = 261.6255653005986

@@ -51,7 +51,7 @@ def ffmpeg_available() -> bool:
     return find_ffmpeg() is not None
 
 
-def decode_with_ffmpeg(path, target_sr) -> "np.ndarray | None":
+def decode_with_ffmpeg(path, target_sr) -> np.ndarray | None:
     """Decode any ffmpeg-readable file to a contiguous ``(2, N)`` float32.
 
     Mirrors ``NumpyBackend._load_wav``'s contract: stereo, resampled to
@@ -80,8 +80,7 @@ def decode_with_ffmpeg(path, target_sr) -> "np.ndarray | None":
     try:
         proc = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
         )
     except Exception as exc:  # pragma: no cover - OS/spawn-specific

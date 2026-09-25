@@ -813,7 +813,7 @@ class TestVoiceDraws:
         events.sort()
         draws = np.random.default_rng(5).random(len(events)) < 0.5
         expect = {0: [], 1: []}
-        for (e, v), d in zip(events, draws):
+        for (_e, v), d in zip(events, draws):
             expect[v].append(bool(d))
         for v in range(2):
             assert np.array_equal(_sampled_edges(out[v], tv[v]), np.array(expect[v]))
@@ -1146,7 +1146,7 @@ class TestProbCVVoice:
         verdict = p >= 1.0
         verdict[need] = np.random.default_rng(5).random(int(need.sum())) < p[need]
         expect = {0: [], 1: []}
-        for (e, v), d in zip(events, verdict):
+        for (_e, v), d in zip(events, verdict):
             expect[v].append(bool(d))
         for v in range(2):
             assert np.array_equal(_sampled_edges(out[v], tv[v]), np.array(expect[v])), v

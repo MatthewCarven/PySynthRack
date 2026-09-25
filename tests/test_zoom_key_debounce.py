@@ -8,7 +8,11 @@ Imports pysynthrack.ui.app, so it is collected only where dearpygui is present
 (the UI-test convention in this project)."""
 from __future__ import annotations
 
-from pysynthrack.ui.app import App
+import pytest
+
+pytest.importorskip("dearpygui.dearpygui")
+
+from pysynthrack.ui.app import App  # noqa: E402
 
 
 class _Stub:

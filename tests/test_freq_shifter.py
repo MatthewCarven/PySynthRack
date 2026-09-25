@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 
 import pysynthrack.modules  # noqa: F401  (registers types)
-from pysynthrack.audio.numpy_backend import NumpyBackend, _FS_LATENCY
+from pysynthrack.audio.numpy_backend import _FS_LATENCY, NumpyBackend
 from pysynthrack.core import Patch
 from pysynthrack.modules.freq_shifter import FreqShifter
 

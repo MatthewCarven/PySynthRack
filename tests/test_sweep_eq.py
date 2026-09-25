@@ -7,8 +7,7 @@ import pytest
 import pysynthrack.modules  # noqa: F401
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core import Patch
-from pysynthrack.modules.sweep_eq import SweepEQ, SWEEP_EQ_MODES
-
+from pysynthrack.modules.sweep_eq import SWEEP_EQ_MODES, SweepEQ
 
 SR = 44100
 

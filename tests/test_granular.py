@@ -886,7 +886,7 @@ class TestExample:
         b = NumpyBackend(sample_rate=44100, block_size=512)
         b.compile(patch)
         peak = 0.0
-        for k in range(int(6 * 44100 / 512)):
+        for _k in range(int(6 * 44100 / 512)):
             out, _ = b.render_block_multi(512)
             assert out is not None and np.all(np.isfinite(out))
             peak = max(peak, float(np.abs(out).max()))
@@ -902,7 +902,7 @@ class TestExample:
         b = NumpyBackend(sample_rate=44100, block_size=512)
         b.compile(patch)
         outs = []
-        for k in range(int(6 * 44100 / 512)):
+        for _k in range(int(6 * 44100 / 512)):
             out, _ = b.render_block_multi(512)
             assert out is not None and np.all(np.isfinite(out))
             outs.append(np.asarray(out))
@@ -942,7 +942,7 @@ class TestExample:
         b = NumpyBackend(sample_rate=44100, block_size=512)
         b.compile(patch)
         cs, peak = [], 0.0
-        for k in range(int(8 * 44100 / 512)):
+        for _k in range(int(8 * 44100 / 512)):
             out, _ = b.render_block_multi(512)
             assert out is not None and np.all(np.isfinite(out))
             peak = max(peak, float(np.abs(out).max()))

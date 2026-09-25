@@ -15,8 +15,8 @@ import numpy as np
 import pytest
 
 import pysynthrack.modules  # noqa: F401 — registers module types for load
-from pysynthrack.io_patch import load_patch
 from pysynthrack.audio.numpy_backend import NumpyBackend
+from pysynthrack.io_patch import load_patch
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 EXAMPLE_FILES = sorted(EXAMPLES_DIR.glob("*.json"))

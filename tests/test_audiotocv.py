@@ -75,15 +75,13 @@ class TestAudioToCVMonoBehavior:
         atc = patch.add_module("audio_to_cv")
         backend = NumpyBackend(sample_rate=44100, block_size=512)
         backend.compile(patch)
-        # Inject silence directly.
-        buffers = {(atc.id, "in"): np.zeros(512, dtype=np.float32)}
         # _input_buffer looks up cables; we need a real source. Build it.
         src = patch.add_module("oscillator", params={"amp": 0.0})
         patch.connect(src.id, "out", atc.id, "in")
         backend.compile(patch)
         # Render via dispatch so state initializes correctly.
         for _ in range(5):
-            out = backend.render_block(512)
+            backend.render_block(512)
         # Read AudioToCV's level from state.
         level = backend._state[atc.id]["level"]
         assert level < 1e-4

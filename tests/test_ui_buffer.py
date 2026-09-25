@@ -5,7 +5,6 @@ suite without a graphics context. They pin the pure logic the toolbar's
 buffer slider relies on: index<->size mapping and nearest-stop snapping.
 """
 
-import pytest
 
 from pysynthrack.ui import buffer as b
 

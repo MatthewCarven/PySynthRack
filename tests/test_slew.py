@@ -24,12 +24,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pysynthrack.core.patch import Patch
 from pysynthrack.audio.numpy_backend import NumpyBackend
-
+from pysynthrack.core.module import all_module_types, get_module_type
+from pysynthrack.core.patch import Patch
 from pysynthrack.modules import constant as _constant  # noqa: F401
 from pysynthrack.modules import slew as _slew  # noqa: F401
-from pysynthrack.core.module import get_module_type, all_module_types
 
 SR = 1000  # 1 kHz keeps sample-count math exact and readable
 

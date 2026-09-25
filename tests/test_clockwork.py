@@ -16,9 +16,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pysynthrack.core.patch import Patch
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.module import all_module_types, get_module_type
+from pysynthrack.core.patch import Patch
 from pysynthrack.modules.clockwork import euclidean_pattern
 
 SR = 1000
@@ -815,6 +815,27 @@ def test_a_long_swung_divn_gate_no_longer_merges_into_the_next():
     rises, lens = _lengths(outs["divn"])
     for r, ln, r_next in zip(rises, lens, rises[1:]):
         assert r + ln <= r_next - 1
+
+
+def test_a_late_divn_gate_past_the_next_edge_keeps_its_place():
+    """The residue the 2026-09-24 pass left documented: clock swing 0.5
+    and divider swing 0.5 on ``n`` 1. The clock's intervals alternate
+    1.5 / 0.5 of its straight period, so every late gate (half the LONG
+    interval on) lands AFTER the next on-time gate -- which used to
+    supersede it: 47 of 96 dropped at every ``pw``. Now the late gate
+    keeps its swing position and the on-time one ends a sample before
+    it, so every gate has its own rising edge, block-size exact."""
+    clock = _real_clock_row(0.5)
+    starts = _edges(clock)
+    assert len(starts) == 96
+    want = _divn_expected(starts, 1, 0.5)
+    assert want != sorted(want), "no late gate crosses an edge: vacuous"
+    for pw in (0.2, 0.5, 0.95):
+        p = {"n": 1, "m": 3, "swing": 0.5, "pw": pw}
+        outs = _run_row(clock, p, block=512)
+        assert _edges(outs["divn"]) == sorted(want), pw
+        for blk in (64, 1000):
+            assert np.array_equal(_run_row(clock, p, block=blk)["divn"], outs["divn"]), (pw, blk)
 
 
 @pytest.mark.parametrize("long_short", [(200, 200), (260, 140)])

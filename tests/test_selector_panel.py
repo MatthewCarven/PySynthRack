@@ -31,7 +31,6 @@ from pysynthrack.modules.possibility_selector import (
     undecided_count,
 )
 
-
 # ----- the dpg-free helpers --------------------------------------------------
 
 def test_next_state_cycles_rest_each_output_then_open():

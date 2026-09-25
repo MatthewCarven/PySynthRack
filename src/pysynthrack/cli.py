@@ -19,7 +19,6 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 # Ensure module types register themselves.
 import pysynthrack.modules  # noqa: F401
@@ -35,9 +34,9 @@ def _default_patch() -> Path:
 
 
 def run_cli(
-    patch_path: Optional[str] = None,
-    seconds: Optional[float] = None,
-    backend_name: Optional[str] = None,
+    patch_path: str | None = None,
+    seconds: float | None = None,
+    backend_name: str | None = None,
 ) -> int:
     """Run a patch headlessly. Returns a process exit code."""
     target = Path(patch_path) if patch_path else _default_patch()

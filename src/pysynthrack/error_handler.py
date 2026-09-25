@@ -51,9 +51,9 @@ try:
     import ssl
 except ImportError:  # pragma: no cover — rare builds without OpenSSL
     ssl = None
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional
-
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Safety primitives
@@ -110,7 +110,7 @@ def _safe_repr(value, max_len=_REPR_MAX_LEN_DEFAULT):
 # Every redactor call is individually try/except'd so a broken redactor
 # falls back to the un-redacted string rather than breaking the report.
 
-_DEFAULT_REDACTORS: List[Callable[[str], str]] = []
+_DEFAULT_REDACTORS: list[Callable[[str], str]] = []
 _active_redactors: contextvars.ContextVar = contextvars.ContextVar(
     "error_handler_active_redactors", default=()
 )
@@ -174,13 +174,13 @@ def redact_pattern(
 # calls describe_error() won't re-fire the observer list, so a
 # misbehaving observer can't recurse the module to death.
 
-_OBSERVERS: List[Callable[["ErrorReport"], None]] = []
+_OBSERVERS: list[Callable[[ErrorReport], None]] = []
 _notifying_observers: contextvars.ContextVar = contextvars.ContextVar(
     "error_handler_notifying_observers", default=False
 )
 
 
-def register_observer(fn: Callable[["ErrorReport"], None]) -> Callable:
+def register_observer(fn: Callable[[ErrorReport], None]) -> Callable:
     """Add an observer (ErrorReport -> None) fired for every report built.
     Returns the function for decorator-style use:
 
@@ -2335,7 +2335,7 @@ def _format_markdown(data):
 
 _VALID_HOOKS = ("excepthook", "threading", "unraisable")
 _VALID_STYLES = ("concise", "heavy")
-_installed_state: Dict[str, Any] = {}  # hook name -> prior hook callable
+_installed_state: dict[str, Any] = {}  # hook name -> prior hook callable
 
 
 def _validate_hook_params(style, describe_kwargs):

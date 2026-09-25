@@ -35,7 +35,7 @@ import pytest
 import pysynthrack.modules  # noqa: F401 -- registers module types for load
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.patch import Cable, Patch
-from pysynthrack.io_patch import load_patch, patch_to_json
+from pysynthrack.io_patch import load_patch
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 
@@ -192,7 +192,7 @@ class TestDroppedCables:
 
     def test_two_dead_cables_give_two_lines(self):
         data = _base()
-        ids = data.pop("_ids")
+        data.pop("_ids")
         data["cables"][0] = dict(data["cables"][0], dst_port="frequency_cv")
         data["cables"][1] = dict(data["cables"][1], dst_module_id=4242)
         patch = Patch.from_dict(data)
@@ -387,7 +387,7 @@ class TestStatusLine:
 
     def test_two_dead_cables_pluralise(self, monkeypatch, tmp_path, capsys):
         data = _base()
-        ids = data.pop("_ids")
+        data.pop("_ids")
         data["cables"][0] = dict(data["cables"][0], dst_port="frequency_cv")
         data["cables"][1] = dict(data["cables"][1], dst_module_id=4242)
         _app, dpg = _open(monkeypatch, tmp_path, data, "worse.json")

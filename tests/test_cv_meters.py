@@ -9,8 +9,6 @@ all headless.
 """
 from __future__ import annotations
 
-import numpy as np
-
 import pysynthrack.modules  # noqa: F401  (registers module types)
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core import Patch

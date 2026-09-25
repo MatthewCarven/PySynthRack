@@ -14,14 +14,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pysynthrack.core.patch import Patch
 from pysynthrack.audio.numpy_backend import (
     NumpyBackend,
-    _hat_hit,
     _kick_hit,
-    _snare_hit,
 )
 from pysynthrack.core.module import all_module_types, get_module_type
+from pysynthrack.core.patch import Patch
 from pysynthrack.modules import drums as _drums  # noqa: F401
 
 SR = 44100

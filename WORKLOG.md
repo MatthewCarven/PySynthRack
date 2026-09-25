@@ -196,6 +196,67 @@ own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
 
 ---
 
+## 2026-09-25 — the tooling love pass
+
+Matthew asked where the project could use love, then "Lets go with your
+suggestions". Health check first: every test green, so the work was in
+the tooling around the code.
+
+*The suite needed the GUI to run at all.* In a fresh `.[dev]` environment
+(no DearPyGui) 9 test files failed to collect -- `ui/__init__.py` imported
+`app.py`, which imports dpg, so even `ui.zoom` needed it -- and pytest
+aborts the whole run on a collection error. A module `__getattr__` makes
+`App`/`main` lazy; `test_zoom_key_debounce` now importorskips like its
+siblings (its docstring already said it would).
+
+*CI* didn't exist. `.github/workflows/ci.yml`: ruff, then pytest `-n auto`
+on 3.10 and 3.12 with `[dev,gui]`; `libportaudio2` because sounddevice
+won't import without the library. xdist verified safe on the full suite.
+
+*ruff 494 → 0.* Decision: E702 (`a = x; b = y`), E731, E741 are house
+style, so ignored in config rather than rewritten; B905 too (`zip(strict=)`
+changes behaviour). The rest fixed. Two things worth remembering: an
+"unused" import removed by `--fix` was a re-export the backend imports
+lazily (`POSSIBILITY_MODES` from `possibility_selector`) -- 22 tests broke
+and only a second full run caught it; and one unused local was a weak
+test (`test_limiter` computed the ceiling, asserted `red0 > 0.3`; the
+reduction is 1 - C to 6e-5, now pinned). `test_error_handler.py` is kept
+a clean upstream copy via per-file ignores.
+
+*Python floor 3.9 → 3.10* (deviation from "just fix lint", noted here):
+3.9 is EOL, and error_handler's suggestions read `NameError.name` /
+`AttributeError.obj`, which 3.9 doesn't have. Measured: 3.10 5416 passed,
+3.11 5426 passed, 0 failed.
+
+*`clock_divider` -- the last documented residue.* Clock swing 0.5 +
+divider swing 0.5 on `n` 1: intervals alternate 1.5P / 0.5P, so a late
+gate (0.75P on) lands after the next edge, and `pulse()` superseded any
+event scheduled at or after a new one -- 47 of 96 gates dropped. Now an
+event two or more samples later is kept and the new gate is cut to end a
+sample before it: the swing offset stays a position, every gate its own
+rising edge. Census (real 8 Hz clock, swing 0/0.3/0.5 × pw 0.5–0.95 ×
+divider swing 0/0.3/0.5 × n 1/3/4/5): 188 missing of 6192 → 0, no rise
+moved > 1 sample, `mult` untouched; 54-case bit-compare differs only in
+the crossing case; `render_audit` over the nine divider examples: moved 0.
+New test fails without the fix. Musically the pair lands a quarter period
+apart -- a flam, which is what those settings ask for; worth a listen if
+Matthew ever runs both swings that high.
+
+*The split, started.* Mixins in `audio/renderers/`: a family's renderers
+move verbatim into a class `NumpyBackend` inherits, so every `self.` and
+every `NumpyBackend._render_x` (tests call and monkeypatch these) resolves
+unchanged. Clockwork went first -- 587 lines, dependencies just `np` and
+four `self` attributes, one lazy import one dot deeper. Proof: a textual
+diff of the moved block against HEAD (only that import differs), MRO
+resolution checked, `render_audit` over all 165 examples moved 0. One
+trap found before it bit: `test_every_voice_collapse_goes_through_a_door`
+scanned only `numpy_backend.py`'s source, so moved code would have escaped
+it silently; it now scans the whole package (and asserts it found the
+renderer modules), and a planted raw `.sum(axis=0)` in the moved file
+fails it.
+
+**Next:** the dynamics family, then the mod-FX, per the TODO.
+
 ## 2026-09-24 — every changed example on the listening checklist
 
 Matthew: "throw every changed example on my todo please ... and I'll start

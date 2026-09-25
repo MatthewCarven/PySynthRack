@@ -23,7 +23,6 @@ from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core import Patch
 from pysynthrack.core.module import Module, all_module_types
 
-
 SR = 44100
 
 

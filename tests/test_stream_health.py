@@ -29,7 +29,6 @@ Same injection trick as test_dsp_load.py / test_backend_crash.py: drive
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from pysynthrack.audio import numpy_backend as nb
 from pysynthrack.audio.numpy_backend import NumpyBackend

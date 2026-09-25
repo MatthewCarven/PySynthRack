@@ -15,7 +15,6 @@ from pysynthrack.core import Patch
 from pysynthrack.core.module import all_module_types
 from pysynthrack.modules import micinput
 
-
 SR = 44100
 
 

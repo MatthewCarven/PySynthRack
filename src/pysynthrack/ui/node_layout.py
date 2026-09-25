@@ -21,10 +21,10 @@ un-zooming it, and creating the node) lives in ``app.py``.
 """
 from __future__ import annotations
 
-from typing import Iterable, Sequence, Tuple
+from collections.abc import Iterable, Sequence
 
-Rect = Tuple[float, float, float, float]  # (x, y, w, h)
-Point = Tuple[float, float]
+Rect = tuple[float, float, float, float]  # (x, y, w, h)
+Point = tuple[float, float]
 
 # A new node hasn't rendered yet, so its true size is unknown at placement
 # time. This nominal (logical-pixel) size is used for the clearance test; a

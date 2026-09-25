@@ -95,7 +95,7 @@ class TestModel:
     def test_pre_retrofit_filter_patch_loads_with_default(self):
         # A patch saved before the retrofit has no cv_depth key.
         d = Patch()
-        f = d.add_module("filter")
+        d.add_module("filter")
         raw = d.to_dict()
         for m in raw["modules"]:
             m["params"].pop("cv_depth", None)

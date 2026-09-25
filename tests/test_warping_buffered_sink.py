@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from pysynthrack.core.patch import Patch
 from pysynthrack.audio.numpy_backend import NumpyBackend, _DeviceOutput
+from pysynthrack.core.patch import Patch
 
 # Importing the module files registers their types with the Patch factory.
 from pysynthrack.modules import constant as _constant  # noqa: F401

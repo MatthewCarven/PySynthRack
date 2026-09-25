@@ -92,7 +92,6 @@ def test_compile_drops_state_when_module_type_changes():
     different types would leak the first patch's state into the second
     patch's renderer (e.g. oscillator phase dict surviving into the
     keyboard renderer, which then KeyError'd on ``state["voices"]``)."""
-    import pysynthrack.modules  # noqa: F401
     from pysynthrack.audio.numpy_backend import NumpyBackend
     from pysynthrack.core import Patch
 
@@ -129,7 +128,6 @@ def test_compile_drops_state_when_module_type_changes():
 def test_compile_preserves_state_when_type_stays():
     """Compile across an unchanged module type should preserve continuity
     (oscillator phase carries forward across cable adds, no clicks)."""
-    import pysynthrack.modules  # noqa: F401
     from pysynthrack.audio.numpy_backend import NumpyBackend
     from pysynthrack.core import Patch
 

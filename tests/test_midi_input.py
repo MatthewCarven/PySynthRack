@@ -21,9 +21,9 @@ import pytest
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.patch import Patch
 from pysynthrack.modules.midiinput import (
+    _MIDO_AVAILABLE,
     AUTO_DEVICE,
     MIDIInput,
-    _MIDO_AVAILABLE,
     available_devices,
     compute_velocity_curve,
 )
@@ -945,7 +945,7 @@ class TestPolyphonicRendering:
         midi.note_on(69, 1.0)  # A4, 440 Hz
         # Let attack settle.
         for _ in range(10):
-            r = backend._render_midi_input(midi, 512)
+            backend._render_midi_input(midi, 512)
         # Now grab two consecutive blocks.
         block1 = backend._render_midi_input(midi, 512)["out"][0].copy()
         block2 = backend._render_midi_input(midi, 512)["out"][0].copy()
