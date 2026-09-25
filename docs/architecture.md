@@ -55,6 +55,27 @@ Trade-off:
 
 - Each backend has to know how to render every module type. As the module library grows we may want a plug-in style where modules ship their per-backend renderers themselves. Easy to migrate to later.
 
+### Renderer families (the split, started 2026-09-25)
+
+`audio/numpy_backend.py` grew to ~22k lines with every renderer on one
+class. Families now move out one at a time into `audio/renderers/<family>.py`
+as **mixin classes** that `NumpyBackend` inherits:
+
+```python
+class NumpyBackend(ClockworkRenderers, AudioBackend): ...
+```
+
+A move is verbatim (only relative-import depth changes), so `self` is still
+the backend — `self._state`, `self._input_buffer`, `self._GATE_HIGH` all
+resolve as before — and `NumpyBackend._render_x` is still found by attribute
+lookup, so tests that call or monkeypatch renderers need no changes. Each
+move is proven behaviour-neutral by `tools/render_audit.py` (every example
+bit-identical) plus the full suite. Source-scanning tripwires must cover the
+package: `test_every_voice_collapse_goes_through_a_door` scans the backend
+**and** every module under `audio/renderers/`.
+
+Moved so far: **clockwork** (euclidean, burst, bernoulli gate, clock divider).
+
 ## Connection rules
 
 - Cables go from an output port on one module to an input port on another.

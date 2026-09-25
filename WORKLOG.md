@@ -242,8 +242,20 @@ New test fails without the fix. Musically the pair lands a quarter period
 apart -- a flam, which is what those settings ask for; worth a listen if
 Matthew ever runs both swings that high.
 
-**Next:** start splitting `numpy_backend.py` into per-family renderer
-modules, one family per session.
+*The split, started.* Mixins in `audio/renderers/`: a family's renderers
+move verbatim into a class `NumpyBackend` inherits, so every `self.` and
+every `NumpyBackend._render_x` (tests call and monkeypatch these) resolves
+unchanged. Clockwork went first -- 587 lines, dependencies just `np` and
+four `self` attributes, one lazy import one dot deeper. Proof: a textual
+diff of the moved block against HEAD (only that import differs), MRO
+resolution checked, `render_audit` over all 165 examples moved 0. One
+trap found before it bit: `test_every_voice_collapse_goes_through_a_door`
+scanned only `numpy_backend.py`'s source, so moved code would have escaped
+it silently; it now scans the whole package (and asserts it found the
+renderer modules), and a planted raw `.sum(axis=0)` in the moved file
+fails it.
+
+**Next:** the dynamics family, then the mod-FX, per the TODO.
 
 ## 2026-09-24 — every changed example on the listening checklist
 

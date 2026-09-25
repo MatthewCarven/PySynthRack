@@ -767,7 +767,14 @@ green) and the tooling thin. Suite **5426 passed** on 3.11 and **5416** on
 - [ ] **Split `audio/numpy_backend.py`** (21.8k lines, 127 `_render_*`) into
       per-family renderer modules -- the plug-in shape architecture.md
       already anticipates. One family per session; the block-exact pins and
-      `tools/render_audit.py` prove each move is behaviour-neutral. NEXT.
+      `tools/render_audit.py` prove each move is behaviour-neutral.
+      **STARTED 2026-09-25:** the mixin pattern is in (`audio/renderers/`,
+      docs/architecture.md § "Renderer families") and **clockwork** moved
+      (587 lines, verbatim bar one import depth; 165/165 examples
+      bit-identical). The voice-collapse tripwire now scans the package.
+      Next families, smallest-coupling first: the dynamics set
+      (compressor / limiter / gate / transient shaper), then the mod-FX
+      (chorus / flanger / phaser / rotary -- mind their shared helpers).
 - [ ] **Split `ui/app.py`** (7.4k lines, one `App` class) -- the custom
       panels (possibility, selector, sampler face, scope) first.
 - [ ] **Compact TODO.md / WORKLOG.md** again (2.9k / 8.2k lines) the
