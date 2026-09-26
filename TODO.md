@@ -778,8 +778,10 @@ green) and the tooling thin. Suite **5426 passed** on 3.11 and **5416** on
       **2026-09-26: mod-FX moved** (chorus / rotary / flanger / phaser +
       the `_mod_clock_sync` helpers, 1056 lines in three blocks); the tool
       learned multi-block moves, tuple-assigned constants and a built-in
-      name-clash refusal. Backend 21.2k -> 19.5k lines. Next: reverb /
-      delay / freeze (the time-based FX), then granular / pitch / resampler.
+      name-clash refusal. **Reverb + delay moved** too (533 lines; the
+      stray `_CHORUS_MAX_MS` rehomed beside the chorus). Backend 21.2k ->
+      19.0k lines, four mixins. Next: the pitch/time family (granular /
+      pitch shifter / resampler / tape), then freeze + vocoder (spectral).
 - [ ] **Split `ui/app.py`** (7.4k lines, one `App` class) -- the custom
       panels (possibility, selector, sampler face, scope) first.
 - [ ] **Compact TODO.md / WORKLOG.md** again (2.9k / 8.2k lines) the

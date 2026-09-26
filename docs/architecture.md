@@ -83,8 +83,8 @@ JSON config); its docstring lists the four checks every move must pass.
 Moved so far: **clockwork** (euclidean, burst, bernoulli gate, clock divider),
 **dynamics** (compressor, limiter, noise gate, transient shaper) and **modfx**
 (chorus, rotary, flanger, phaser, plus the `_mod_clock_sync` helpers that
-`autopan` shares through `self`). A family scattered through the file moves
-as several blocks into one mixin.
+`autopan` shares through `self`) and **reverb_delay** (reverb, delay). A
+family scattered through the file moves as several blocks into one mixin.
 
 ## Connection rules
 

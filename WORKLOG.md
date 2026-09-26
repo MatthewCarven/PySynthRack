@@ -229,6 +229,12 @@ written). `autopan` stays in the backend and reaches `_mod_clock_sync`
 and `_MOD_DIV_*` through `self`. Diff vs HEAD: one import gains a dot.
 490 targeted tests, then render_audit and the full suite.
 
+*Then reverb + delay* (533 lines, three blocks: delay's constants sit
+before the vocoder and its renderers after it). The reverb section also
+held `_CHORUS_MAX_MS`, a chorus constant -- dropped from the moved text by
+a `sub` and added beside `_CHORUS_PH_BITS` in modfx, so it's defined once
+where it's used. The block diff vs HEAD is exactly that line.
+
 ## 2026-09-25 — the app icon
 
 Matthew spotted the 🎛️ emoji, then made his own: a screenshot of the rack

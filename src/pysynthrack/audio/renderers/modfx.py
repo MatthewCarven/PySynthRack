@@ -4,8 +4,7 @@ and the shared clock-sync helpers (``_mod_clock_sync``, ``_mod_free_phase``).
 Moved verbatim out of ``numpy_backend.py`` (2026-09-26) into a mixin that
 ``NumpyBackend`` inherits -- see docs/architecture.md, "Renderer
 families". ``autopan`` (still in the backend) reaches the clock-sync
-helpers through ``self``. ``_CHORUS_MAX_MS`` stays with the reverb
-constants in the backend, also reached through ``self``.
+helpers through ``self``.
 """
 from __future__ import annotations
 
@@ -178,6 +177,7 @@ class ModFXRenderers:
     # 3.6e-15 of a cycle -- the grid's rounding is ~1e-12 cycles after
     # minutes of modulation, far under anything a delay line can show.
     _CHORUS_PH_BITS = 48
+    _CHORUS_MAX_MS = 40.0  # longest chorus delay (ms); sizes the ring
 
     def _chorus_rate_cv_phase(self, state, rate_cv, rate_knob: float,
                               inc: float, cv_depth: float, frames: int):
