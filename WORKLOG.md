@@ -217,6 +217,18 @@ does the cut from a JSON config whose `subs` are the only edits allowed
 inside the block. Validated by replaying the dynamics move in a
 throwaway worktree: byte-identical to the hand move on all three files.
 
+*Later the same day: mod-FX.* Chorus, rotary, flanger and phaser plus the
+shared clock-sync helpers -- not contiguous (chorus sits inside the reverb
+section, granular between rotary and the flanger), so the tool grew
+multi-block moves. Its analysis also showed a blind spot: constants
+assigned by tuple unpacking (`_ROT_HORN_UP, _ROT_HORN_DOWN = 1.0, 1.5`)
+weren't counted as members, which would have hidden a clash; fixed, and
+`move` now refuses a clash itself -- proven by planting a duplicate
+`_ROT_WRAP` on the backend in a throwaway worktree (refused, nothing
+written). `autopan` stays in the backend and reaches `_mod_clock_sync`
+and `_MOD_DIV_*` through `self`. Diff vs HEAD: one import gains a dot.
+490 targeted tests, then render_audit and the full suite.
+
 ## 2026-09-25 — the app icon
 
 Matthew spotted the 🎛️ emoji, then made his own: a screenshot of the rack

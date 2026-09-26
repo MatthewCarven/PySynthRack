@@ -7,5 +7,6 @@ block-exact pins and ``tools/render_audit.py``. See docs/architecture.md.
 """
 from .clockwork import ClockworkRenderers
 from .dynamics import DynamicsRenderers
+from .modfx import ModFXRenderers
 
-__all__ = ["ClockworkRenderers", "DynamicsRenderers"]
+__all__ = ["ClockworkRenderers", "DynamicsRenderers", "ModFXRenderers"]

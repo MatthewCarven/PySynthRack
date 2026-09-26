@@ -80,8 +80,11 @@ point of use, since `numpy_backend` imports the mixin module. The mechanics
 live in `tools/split_renderers.py` (`analyse` a block, then `move` it from a
 JSON config); its docstring lists the four checks every move must pass.
 
-Moved so far: **clockwork** (euclidean, burst, bernoulli gate, clock divider)
-and **dynamics** (compressor, limiter, noise gate, transient shaper).
+Moved so far: **clockwork** (euclidean, burst, bernoulli gate, clock divider),
+**dynamics** (compressor, limiter, noise gate, transient shaper) and **modfx**
+(chorus, rotary, flanger, phaser, plus the `_mod_clock_sync` helpers that
+`autopan` shares through `self`). A family scattered through the file moves
+as several blocks into one mixin.
 
 ## Connection rules
 
