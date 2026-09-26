@@ -196,6 +196,45 @@ own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
 
 ---
 
+## 2026-09-26 — backend split: dynamics, and a tool for the rest
+
+Matthew: "keep going on the backend split". Dynamics went second:
+compressor, limiter, noise gate and transient shaper, 671 lines, 13
+methods plus their 11 class constants -- called only from
+`_render_module`. One wrinkle: the two static sidechain key-align helpers
+call `NumpyBackend._voice_mean` BY NAME, and the mixin can't import the
+backend at top level (the backend imports it). A lazy import sits in the
+one fallback branch that needs it (a key whose voice count matches
+neither `in` nor mono), which no test reached -- so one now does, for
+both helpers. Checks: no class-level name on both sides (a clash would
+let the backend's copy win silently), the block diff is exactly the two
+lazy imports, `render_audit` HEAD (rendered from a git worktree via
+`--repo`, not a stash this time) vs working tree over all 165 examples.
+
+The mechanics are now `tools/split_renderers.py`: `analyse` prints what
+a block would move, what it needs imported and who calls into it; `move`
+does the cut from a JSON config whose `subs` are the only edits allowed
+inside the block. Validated by replaying the dynamics move in a
+throwaway worktree: byte-identical to the hand move on all three files.
+
+*Later the same day: mod-FX.* Chorus, rotary, flanger and phaser plus the
+shared clock-sync helpers -- not contiguous (chorus sits inside the reverb
+section, granular between rotary and the flanger), so the tool grew
+multi-block moves. Its analysis also showed a blind spot: constants
+assigned by tuple unpacking (`_ROT_HORN_UP, _ROT_HORN_DOWN = 1.0, 1.5`)
+weren't counted as members, which would have hidden a clash; fixed, and
+`move` now refuses a clash itself -- proven by planting a duplicate
+`_ROT_WRAP` on the backend in a throwaway worktree (refused, nothing
+written). `autopan` stays in the backend and reaches `_mod_clock_sync`
+and `_MOD_DIV_*` through `self`. Diff vs HEAD: one import gains a dot.
+490 targeted tests, then render_audit and the full suite.
+
+*Then reverb + delay* (533 lines, three blocks: delay's constants sit
+before the vocoder and its renderers after it). The reverb section also
+held `_CHORUS_MAX_MS`, a chorus constant -- dropped from the moved text by
+a `sub` and added beside `_CHORUS_PH_BITS` in modfx, so it's defined once
+where it's used. The block diff vs HEAD is exactly that line.
+
 ## 2026-09-25 — the app icon
 
 Matthew spotted the 🎛️ emoji, then made his own: a screenshot of the rack

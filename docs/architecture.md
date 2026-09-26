@@ -74,7 +74,17 @@ bit-identical) plus the full suite. Source-scanning tripwires must cover the
 package: `test_every_voice_collapse_goes_through_a_door` scans the backend
 **and** every module under `audio/renderers/`.
 
-Moved so far: **clockwork** (euclidean, burst, bernoulli gate, clock divider).
+A renderer that names `NumpyBackend` itself (usually a static helper calling
+another static on the backend) reaches it through a **lazy import** at the
+point of use, since `numpy_backend` imports the mixin module. The mechanics
+live in `tools/split_renderers.py` (`analyse` a block, then `move` it from a
+JSON config); its docstring lists the four checks every move must pass.
+
+Moved so far: **clockwork** (euclidean, burst, bernoulli gate, clock divider),
+**dynamics** (compressor, limiter, noise gate, transient shaper) and **modfx**
+(chorus, rotary, flanger, phaser, plus the `_mod_clock_sync` helpers that
+`autopan` shares through `self`) and **reverb_delay** (reverb, delay). A
+family scattered through the file moves as several blocks into one mixin.
 
 ## Connection rules
 

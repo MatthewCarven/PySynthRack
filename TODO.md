@@ -772,9 +772,54 @@ green) and the tooling thin. Suite **5426 passed** on 3.11 and **5416** on
       docs/architecture.md § "Renderer families") and **clockwork** moved
       (587 lines, verbatim bar one import depth; 165/165 examples
       bit-identical). The voice-collapse tripwire now scans the package.
-      Next families, smallest-coupling first: the dynamics set
-      (compressor / limiter / gate / transient shaper), then the mod-FX
-      (chorus / flanger / phaser / rotary -- mind their shared helpers).
+      **2026-09-26: dynamics moved** (compressor / limiter / noise gate /
+      transient shaper, 671 lines) with `tools/split_renderers.py`, which
+      reproduced the hand move byte-for-byte; 165/165 examples identical.
+      **2026-09-26: mod-FX moved** (chorus / rotary / flanger / phaser +
+      the `_mod_clock_sync` helpers, 1056 lines in three blocks); the tool
+      learned multi-block moves, tuple-assigned constants and a built-in
+      name-clash refusal. **Reverb + delay moved** too (533 lines; the
+      stray `_CHORUS_MAX_MS` rehomed beside the chorus). Backend 21.2k ->
+      19.0k lines, four mixins.
+
+      **The plan for the rest (one family per session, in this order).**
+      Each: `split_renderers.py analyse` → `move` → the four checks in its
+      docstring (block diff, clash refusal, render_audit via a HEAD
+      worktree, full suite) → commit → TODO/WORKLOG line.
+      1. [ ] **pitch_time** — granular, pitch_shifter, resampler, tape
+      2. [ ] **spectral** — freeze, vocoder, convolver
+      3. [ ] **eq_filter** — filter, crossover, parametric / motion / sweep /
+             tilt EQ, loudness, vowel
+      4. [ ] **colour** — distortion, waveshaper, bitcrusher, ring_mod,
+             freq_shifter, vinyl, octaver
+      5. [ ] **mod_sources** — lfo, adsr, ad, function_generator, slew,
+             drift, chaos, sample_hold, noise, shift_random
+      6. [ ] **sequencing** — clock, sequencer, possibility_seq / _selector,
+             arpeggiator, chord, cv_recorder, quantizer
+      7. [ ] **cv_routing** — vca, mixer, combiners, constant / cv_scale /
+             cv_offset, cv_math, logic, audio_to_cv, cv_to_audio, schmitt,
+             cv_to_frequency, matrix_mixer, mid_side, autopan
+      8. [ ] **physical** — pluck, bowed, wind, modal, drums, sampler
+      9. [ ] **oscillators** — oscillator, supersaw, wavetable_morph, fm_op,
+             organ (last of the sound sources: its phase/wavetable helpers
+             are shared with keyboard / midi_input / cv_to_frequency)
+      10. [ ] **io** — keyboard, cv_keyboard, cv_gates, key_trigger,
+              midi_input, mic_input, file_player, scope, meter, disk_writer
+      11. [ ] **endgame** — what's left is the engine (compile, callback,
+              sinks, `_render_module`) plus shared helpers
+              (`_input_buffer`, `_voice_*`, `_finite_mean`, gate/ramp and
+              wavetable helpers). Move the helpers into
+              `renderers/_shared.py`, and consider a type → method table
+              in place of `_render_module`'s if-chain.
+
+      Lessons so far: **section markers lie** -- `_render_mic_input` and
+      `_render_file_player` sit under "PitchShifter", `cv_math` / `logic`
+      under "Freeze", `bitcrusher` under "ring modulator" -- so bound blocks
+      by `def` lines, and read `analyse`'s member list before moving. A
+      helper that several families use stays in the backend (reached via
+      `self`) until the endgame. A `NumpyBackend.X` by name needs a lazy
+      import at the point of use. Moving 500-1000 lines is ~1 session of
+      checks; the render audit (two 165-example renders) is the slow step.
 - [ ] **Split `ui/app.py`** (7.4k lines, one `App` class) -- the custom
       panels (possibility, selector, sampler face, scope) first.
 - [ ] **Compact TODO.md / WORKLOG.md** again (2.9k / 8.2k lines) the
