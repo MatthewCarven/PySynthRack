@@ -196,6 +196,27 @@ own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
 
 ---
 
+## 2026-09-26 — backend split: dynamics, and a tool for the rest
+
+Matthew: "keep going on the backend split". Dynamics went second:
+compressor, limiter, noise gate and transient shaper, 671 lines, 13
+methods plus their 11 class constants -- called only from
+`_render_module`. One wrinkle: the two static sidechain key-align helpers
+call `NumpyBackend._voice_mean` BY NAME, and the mixin can't import the
+backend at top level (the backend imports it). A lazy import sits in the
+one fallback branch that needs it (a key whose voice count matches
+neither `in` nor mono), which no test reached -- so one now does, for
+both helpers. Checks: no class-level name on both sides (a clash would
+let the backend's copy win silently), the block diff is exactly the two
+lazy imports, `render_audit` HEAD (rendered from a git worktree via
+`--repo`, not a stash this time) vs working tree over all 165 examples.
+
+The mechanics are now `tools/split_renderers.py`: `analyse` prints what
+a block would move, what it needs imported and who calls into it; `move`
+does the cut from a JSON config whose `subs` are the only edits allowed
+inside the block. Validated by replaying the dynamics move in a
+throwaway worktree: byte-identical to the hand move on all three files.
+
 ## 2026-09-25 — the app icon
 
 Matthew spotted the 🎛️ emoji, then made his own: a screenshot of the rack

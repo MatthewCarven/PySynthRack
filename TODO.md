@@ -772,9 +772,11 @@ green) and the tooling thin. Suite **5426 passed** on 3.11 and **5416** on
       docs/architecture.md § "Renderer families") and **clockwork** moved
       (587 lines, verbatim bar one import depth; 165/165 examples
       bit-identical). The voice-collapse tripwire now scans the package.
-      Next families, smallest-coupling first: the dynamics set
-      (compressor / limiter / gate / transient shaper), then the mod-FX
-      (chorus / flanger / phaser / rotary -- mind their shared helpers).
+      **2026-09-26: dynamics moved** (compressor / limiter / noise gate /
+      transient shaper, 671 lines) with `tools/split_renderers.py`, which
+      reproduced the hand move byte-for-byte; 165/165 examples identical.
+      Next: the mod-FX (chorus / flanger / phaser / rotary -- mind their
+      shared helpers like `_mod_clock_sync`), then reverb / delay.
 - [ ] **Split `ui/app.py`** (7.4k lines, one `App` class) -- the custom
       panels (possibility, selector, sampler face, scope) first.
 - [ ] **Compact TODO.md / WORKLOG.md** again (2.9k / 8.2k lines) the

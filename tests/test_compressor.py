@@ -159,6 +159,19 @@ class TestGainLaw:
         got = red(np.array([-40.0, 0.0, 12.0]), -18.0, 1.0, 6.0)
         np.testing.assert_allclose(got, 0.0, atol=1e-12)
 
+
+@pytest.mark.parametrize("align", ["_compressor_align_key", "_gate_align_key"])
+def test_a_mismatched_key_collapses_to_its_voice_mean(align):
+    """A sidechain key whose voice count matches neither ``in`` nor mono
+    collapses to its voice mean on every voice. This branch reaches
+    ``NumpyBackend._voice_mean`` through a lazy import (the dynamics
+    renderers live in a mixin module the backend imports), so pin it."""
+    key = np.arange(12, dtype=np.float32).reshape(3, 4)
+    src = np.zeros((2, 4), np.float32)
+    got = getattr(NumpyBackend, align)(key, src, 2)
+    assert got.shape == (2, 4)
+    np.testing.assert_array_equal(got, np.broadcast_to(key.mean(axis=0), (2, 4)))
+
     def test_steady_sine_matches_law(self):
         # RMS detector: a steady sine has constant mean-square, so the gain
         # settles exactly on the analytic law.
