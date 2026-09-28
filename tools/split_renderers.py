@@ -85,6 +85,23 @@ def _class_members(cls_node) -> set[str]:
     return out
 
 
+def _names(text: str) -> list[str]:
+    """The comma-separated names in ``a, b`` or ``(\n    a,\n    b,\n)``."""
+    return [n.strip() for n in text.strip().strip("()").split(",") if n.strip()]
+
+
+def _wrap(head: str, names: list[str], tail: str) -> str:
+    """``head + names + tail`` on one line if it fits in 100 columns, else
+    one name per line with a trailing comma (ruff's style). ``head`` ends
+    in "(" and ``tail`` starts with ")"; an import drops them on one line."""
+    one = head + ", ".join(names) + tail
+    if head.startswith("from "):
+        one = head[:-1] + ", ".join(names) + tail[1:]
+    if len(one) <= 100:
+        return one
+    return head + "\n" + "".join(f"    {n},\n" for n in names) + tail
+
+
 def analyse(pairs) -> None:
     src = BACKEND.read_text(encoding="utf-8")
     lines = src.split("\n")
@@ -188,13 +205,15 @@ def move(config_path: str) -> None:
         if moving & names:
             sys.exit(f"name clash with {owner}: {sorted(moving & names)}")
     target.write_text(new_src, encoding="utf-8")
-    m = re.search(r"^class NumpyBackend\((.*)\):$", s, re.M)
-    bases = [b.strip() for b in m.group(1).split(",")]
+    # Both statements may be one line or wrapped in parentheses (ruff wraps
+    # them past 100 columns); read either, write whichever fits.
+    m = re.search(r"^class NumpyBackend\(([^)]*)\):$", s, re.M)
+    bases = _names(m.group(1))
     bases.insert(len(bases) - 1, cfg["cls"])          # mixins before AudioBackend
-    s = s[: m.start()] + f"class NumpyBackend({', '.join(bases)}):" + s[m.end():]
-    m = re.search(r"^from \.renderers import (.*)$", s, re.M)
-    names = sorted(set(m.group(1).split(", ")) | {cfg["cls"]})
-    s = s[: m.start()] + "from .renderers import " + ", ".join(names) + s[m.end():]
+    s = s[: m.start()] + _wrap("class NumpyBackend(", bases, "):") + s[m.end():]
+    m = re.search(r"^from \.renderers import (\([^)]*\)|.*)$", s, re.M)
+    names = sorted(set(_names(m.group(1))) | {cfg["cls"]})
+    s = s[: m.start()] + _wrap("from .renderers import (", names, ")") + s[m.end():]
     BACKEND.write_text(s, encoding="utf-8")
 
     init = RENDERERS / "__init__.py"
