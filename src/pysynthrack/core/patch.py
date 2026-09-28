@@ -75,7 +75,8 @@ class Patch:
     # the instrument -- and it is excluded from ``__eq__`` / ``__repr__``
     # so a patch that dropped a cable still compares equal to the same
     # patch loaded from a tidied file. The UI reports the count on the
-    # status line and the detail to the console; see ``App._load_patch_from``.
+    # status line and the detail in a load report file (and the console);
+    # see ``App._report_load_warnings``.
     load_warnings: list[str] = field(
         default_factory=list, compare=False, repr=False
     )
@@ -271,7 +272,8 @@ class Patch:
         must still open and play the rest. It is the CALLER's job to say
         something -- fail-soft only works when something else speaks up
         (the same lesson the relative-media-path fix left behind). The
-        GUI prints the lines and puts the count on the status line; the
+        GUI puts the count on the status line and the lines in a load
+        report under ``~/.pysynthrack/crashes/`` (and the console); the
         CLI prints them; tests read the list directly.
 
         A patch with no dead cables loads exactly as it always did.

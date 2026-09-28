@@ -21,6 +21,7 @@ import numpy as np
 # Ensure all module types are registered before we build any UI.
 import pysynthrack.modules  # noqa: F401
 
+from .. import _crash
 from .._resources import app_icon, examples_dir
 from ..audio import AudioBackend, pick_backend
 from ..core.module import grouped_module_types
@@ -6491,13 +6492,16 @@ class App:
         self._set_status(f"Loaded: {os.path.basename(path)}{tail}")
 
     def _report_load_warnings(self, path: str) -> str:
-        """Print what the loader threw away; return the status-line tail.
+        """Report what the loader threw away; return the status-line tail.
 
         ``Patch.from_dict`` drops a cable whose module or port is gone
         rather than loading it silently inert (the old failure looked
         exactly like "nothing happens"). Fail-soft only helps if
         something SAYS so, and the status bar is one line: it carries
-        the count, the console carries the list.
+        the count, and the list goes to a load report in the crash
+        folder (``_crash.write_load_report``) -- the windowed build has
+        no console, so "see console" pointed nowhere. The console gets
+        the list too; if the file can't be written, it's the fallback.
 
         Returns ``""`` for a clean patch so the usual "Loaded: foo.json"
         is untouched. ASCII only -- the UI font paints nothing above
@@ -6512,8 +6516,12 @@ class App:
         )
         for line in warnings:
             print(f"    - {line}")
+        report = _crash.write_load_report(path, warnings)
+        if report is not None:
+            print(f"    (written to {report})")
+        where = f"list in {report}" if report is not None else "see console"
         plural = "" if len(warnings) == 1 else "s"
-        return f" - {len(warnings)} dead cable{plural} dropped (see console)"
+        return f" - {len(warnings)} dead cable{plural} dropped ({where})"
 
     # ----- helpers --------------------------------------------------------
 

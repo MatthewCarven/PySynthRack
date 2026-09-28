@@ -347,6 +347,8 @@ def _status(dpg) -> str:
 
 def _open(monkeypatch, tmp_path, data, name="patch.json"):
     monkeypatch.setenv("PYSYNTHRACK_BACKEND", "numpy")
+    # The load report goes to ~/.pysynthrack/crashes/: keep it in tmp.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     dpg = _mock_dpg()
     monkeypatch.setattr(app_mod, "dpg", dpg)
     app = app_mod.App()
@@ -377,13 +379,27 @@ class TestStatusLine:
         assert line.isascii(), line
         assert "broken.json" in line
         assert "1 dead cable dropped" in line
-        assert "see console" in line
         assert len(app.patch.cables) == 3
-        # one status line; the console carries the detail
+        # one status line; the load report file carries the detail (the
+        # windowed build has no console), and the console gets it too
         assert "\n" not in line
+        reports = list((tmp_path / "home" / ".pysynthrack" / "crashes").glob("load_*_broken.txt"))
+        assert len(reports) == 1
+        assert f"list in {reports[0]}" in line
+        body = reports[0].read_text(encoding="utf-8")
+        assert "frequency_cv" in body and "oscillator" in body
         out = capsys.readouterr().out
         assert "broken.json: dropped 1 dead cable(s) on load:" in out
         assert "frequency_cv" in out and "oscillator" in out
+
+    def test_no_report_file_falls_back_to_the_console(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        monkeypatch.setattr(app_mod._crash, "write_load_report", lambda *a: None)
+        data, _ids = _with_first_cable(dst_port="frequency_cv")
+        _app, dpg = _open(monkeypatch, tmp_path, data, "broken.json")
+        assert "1 dead cable dropped (see console)" in _status(dpg)
+        assert "frequency_cv" in capsys.readouterr().out
 
     def test_two_dead_cables_pluralise(self, monkeypatch, tmp_path, capsys):
         data = _base()

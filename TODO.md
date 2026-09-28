@@ -341,8 +341,16 @@ once the board cleared.
       `test_example_cables_land_on_real_ports` to the sweep; it
       immediately caught `clock_divider_swing.json`'s dead LFO cable
       (fixed). The loader itself is below.
-- [ ] **`Patch.from_dict` accepts cables to ports that don't exist —
-      silently inert.** Found 2026-09-16 (above). `Patch.connect`
+- [x] **DONE 2026-09-22 (357d99b), finished 2026-09-28 — `Patch.from_dict` accepts cables to ports that don't exist —
+      silently inert.** Went with (b): `from_dict` drops each dead cable
+      and records a line in `patch.load_warnings`; the GUI puts the count
+      on the status line, and the CLI prints the lines. 2026-09-28: the
+      GUI's detail only went to the console, which the windowed exe
+      doesn't have. It now also goes to a load report,
+      `~/.pysynthrack/crashes/load_<time>_<patch>.txt`, written by
+      `_crash.write_load_report` next to the crash reports, and the status
+      line names that file. (c), flagging the cable in the editor, is
+      still open if a drop ever bites. Found 2026-09-16 (above). `Patch.connect`
       validates; the JSON loader doesn't, so a hand-edited or
       version-drifted patch can carry a dead cable that renders as
       "nothing happens". Same shape as the media-path bug: fail soft
@@ -1586,7 +1594,23 @@ sounds wrong, one line here is enough and Claude takes it from there.
 **First run `python examples/samples/generate_samples.py` once** (the
 sampler examples need it).
 
-*The sixth batch (2026-09-24) — start here. Every example that changed.*
+*After the backend split (2026-09-28) — start here, EYES more than EARS.*
+Every offline render is bit-identical before and after the split (165/165),
+so there's nothing new to *hear*. What renders can't reach is the GUI side:
+hooks the app calls on the backend that now live in mixins, plus the
+dropped-cable report. Also run `python examples/irs/generate_irs.py` once.
+Test the exe too (it's the windowed build).
+- [ ] App starts, a patch loads and plays, Stop/Start works, DSP% and the stream-health readout tick over.
+- [ ] `sampler_breaks.json` / `sampler_scrub.json`. The waveform overview appears on the sampler panel (`sampler_overview`). Scrub still scrubs.
+- [ ] `file_crossover_split.json`: the file player plays, and seek / rewind move the playhead. A track end is noticed (`file_player_finished`). Point `path` at a missing file: the status line names it (`media_load_failures`).
+- [ ] `scope_tap.json`: the scope draws (`scope_window`).
+- [ ] `record_a_take.json`: the disk writer records, and the .wav plays back in another player.
+- [ ] `mic_karaoke_recorder.json` (needs a mic): the input device opens (`_resolve_mic_input`).
+- [ ] `convolver_reverb.json`: the IR loads and you hear the room.
+- [ ] `keyboard_play.json` / `midi_lead.json`: notes play; in the MIDI one, the velocity-calibration dialog opens.
+- [ ] **Dead-cable report.** Copy any example and hand-edit one cable's `dst_port` to `nope`, then open the copy. The status line reads "1 dead cable dropped (list in ...load_<time>_<name>.txt)". That file under `~/.pysynthrack/crashes/` names the cable and warns that saving drops it for good. In the exe this is the only place the list appears.
+
+*The sixth batch (2026-09-24). Every example that changed.*
 Re-audited after the NaN fix: every example rendered offline (8 s, block
 512) at the commit before the batch and at HEAD, plus a second pre-batch
 render to confirm nothing is random run to run (nothing was). **80 moved,

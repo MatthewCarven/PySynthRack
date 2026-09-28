@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from pysynthrack._crash import crash_dir, write_crash_report
+from pysynthrack._crash import crash_dir, write_crash_report, write_load_report
 from pysynthrack.error_handler import describe_error
 
 
@@ -131,3 +131,30 @@ class TestEndToEndWithRealReport:
             # the message somewhere.
             assert "ValueError" in body
             assert "invalid literal" in body
+
+
+class TestWriteLoadReport:
+    """The patch loader's report: what ``Patch.from_dict`` dropped."""
+
+    LINES = ["lfo#4.out -> euclidean#3.fills_cv: no such input port",
+             "cable 7: unreadable entry (KeyError: 'dst_port')"]
+
+    def test_writes_the_lines_next_to_the_crash_reports(self, home):
+        path = write_load_report("/songs/my patch.json", self.LINES)
+        assert path is not None
+        p = Path(path)
+        assert p.parent == crash_dir()
+        assert p.name.startswith("load_") and p.name.endswith("_my_patch.txt")
+        body = p.read_text(encoding="utf-8")
+        assert "Patch: /songs/my patch.json" in body
+        assert "Dropped 2 dead cable(s) on load:" in body
+        for line in self.LINES:
+            assert f"  - {line}" in body
+        assert "WITHOUT these cables" in body      # the save warning
+        assert body.isascii()
+
+    def test_returns_none_when_home_unwritable(self, tmp_path, monkeypatch):
+        bogus_home = tmp_path / "im-a-file"
+        bogus_home.write_text("nope")
+        monkeypatch.setattr(Path, "home", lambda: bogus_home)
+        assert write_load_report("x.json", self.LINES) is None
