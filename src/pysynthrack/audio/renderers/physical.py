@@ -9,15 +9,15 @@ families". The synthesis kernels are module-level functions of
 ``_hat_hit``, ``_hermite4`` -- tests import them from there, and the
 resampler shares ``_hermite4``), so each renderer imports the one it
 needs lazily at the top of its body, outside every loop (``numpy_backend``
-imports this module, so a top-level import would be circular). Still in
-the backend and reached through ``self``: ``_drum_edge_value`` (also read
-by the ADSR), ``_gate_ramp_env`` / ``_finite_mean`` / ``_pow2_clipped`` /
-``_GATE_HIGH``, and the sampler's lifecycle members that the engine, the
-GUI or other tests call -- ``_new_sampler_state`` and
-``_start_sample_loader`` (``compile`` pre-warms loads),
-``sampler_overview`` (GUI hook), ``wait_for_sample_loads`` (test hook)
--- plus ``_new_sampler_voice`` / ``_sampler_advance``, which sit between
-them as decorated statics a block boundary cannot anchor on.
+imports this module, so a top-level import would be circular). In the
+``_shared`` mixin and reached through ``self``: ``_drum_edge_value`` (also
+read by the ADSR), ``_gate_ramp_env`` / ``_finite_mean`` /
+``_pow2_clipped`` / ``_GATE_HIGH``. The sampler's lifecycle members joined
+this mixin in the endgame -- ``_new_sampler_state`` and
+``_start_sample_loader`` (``compile`` pre-warms loads through ``self``),
+``sampler_overview`` (GUI hook), ``wait_for_sample_loads`` (test hook),
+``_new_sampler_voice`` / ``_sampler_advance``; the two that name
+``_SampleLoader`` import it lazily.
 """
 from __future__ import annotations
 

@@ -8,13 +8,15 @@ player's UI hooks (rewind / seek / finished / failed / decode_gen,
 ``wait_for_file_decodes``) and ``scope_window`` came along; the UI still
 reaches them on the backend instance. So did ``_resolve_mic_input``,
 ``_start_file_decoder`` and ``_close_disk_writer_state``, which the
-engine's ``start`` / ``compile`` / ``stop`` call through ``self``.
+engine's ``start`` / ``compile`` / ``stop`` call through ``self``, and
+(in the endgame) ``_MAX_VOICES`` and the disk writer's thread,
+``_disk_writer_worker``.
 
-Shared helpers stay in the backend and are reached through ``self``:
-``_osc_waveshape`` (keyboard / MIDI voices), ``_MAX_VOICES``, the meter's
-``_meter_k_coeffs`` / ``_loud_shelf`` / ``_filter_coeffs`` biquads,
-``_resolve_media_path``, ``_load_wav``, ``_disk_writer_worker`` and
-``_voice_sum``. ``_resolve_mic_input`` reads the backend's optional
+Shared helpers are reached through ``self``: ``_osc_waveshape``
+(keyboard / MIDI voices; the ``_waveshapes`` mixin), the meter's
+``_loud_shelf`` / ``_filter_coeffs`` biquads and ``_voice_sum`` (the
+``_shared`` mixin), and ``_resolve_media_path`` / ``_load_wav`` (the
+``_media`` mixin). ``_resolve_mic_input`` reads the backend's optional
 ``sd`` (sounddevice) through a lazy import, so a test that swaps
 ``numpy_backend.sd`` still reaches it (``numpy_backend`` imports this
 module, so a top-level import would be circular).

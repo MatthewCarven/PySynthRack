@@ -6,10 +6,11 @@ families". The oscillator's mono/voice paths and the wavetable-morph
 stack builders came along; the phase / wave-shaping core they share with
 keyboard, MIDI input and CV-to-frequency (``_osc_waveshape``,
 ``_waveshape_blep`` / ``_waveshape_wt`` / ``_get_wavetable``, the
-``WT_*`` mipmap constants, ``_osc_pw_increment``) stays in the backend and
-is reached through ``self``, as are ``_osc_carried_phase`` /
-``_OSC_EPOCH``, ``_input_buffer``, ``_ring_match_voices`` and
-``_pow2_clipped``. The pulse-width bounds and the FM ratio snap are
+``WT_*`` mipmap constants) lives in the ``_waveshapes`` mixin and is
+reached through ``self``, as are ``_input_buffer``,
+``_ring_match_voices`` and ``_pow2_clipped`` (``_shared``). The
+oscillator-only ``_osc_carried_phase`` / ``_OSC_EPOCH`` /
+``_osc_pw_increment`` joined this mixin in the endgame. The pulse-width bounds and the FM ratio snap are
 imported from their ``modules`` source, as the backend did.
 """
 from __future__ import annotations

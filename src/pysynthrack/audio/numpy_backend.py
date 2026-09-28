@@ -2701,198 +2701,122 @@ class NumpyBackend(
 
     # ----- per-module rendering -------------------------------------------
 
+    # Module TYPE -> the renderer that renders it (a mixin method). The
+    # note sources in _FRAMES_ONLY render from their own state and take
+    # ``(module, frames)``; every other renderer takes ``(module, frames,
+    # buffers, patch)``. A type with no entry renders nothing here: the
+    # speaker-family sinks are drained by the speaker pass.
+    # tests/test_render_dispatch.py checks this against the registry.
+    _RENDERERS = {
+        "oscillator": "_render_oscillator",
+        "keyboard": "_render_keyboard",
+        "cv_keyboard": "_render_cv_keyboard",
+        "cv_gates": "_render_cv_gates",
+        "key_trigger": "_render_key_trigger",
+        "clock": "_render_clock",
+        # fader_seq is the Sequencer with a different front panel —
+        # identical param contract, one engine (see modules/fader_seq.py).
+        "sequencer": "_render_sequencer",
+        "fader_seq": "_render_sequencer",
+        "shift_random": "_render_shift_random",
+        "chaos": "_render_chaos",
+        "organ": "_render_organ",
+        "matrix_mixer": "_render_matrix_mixer",
+        "vinyl": "_render_vinyl",
+        "supersaw": "_render_supersaw",
+        "wavetable_morph": "_render_wavetable_morph",
+        "possibility_seq": "_render_possibility_seq",
+        "possibility_selector": "_render_possibility_selector",
+        "drift": "_render_drift",
+        "sampler": "_render_sampler",
+        "euclidean": "_render_euclidean",
+        "burst": "_render_burst",
+        "bernoulli_gate": "_render_bernoulli",
+        "clock_divider": "_render_clock_divider",
+        "arpeggiator": "_render_arpeggiator",
+        "chord": "_render_chord",
+        "cv_math": "_render_cv_math",
+        "vowel": "_render_vowel",
+        "freeze": "_render_freeze",
+        "cv_recorder": "_render_cv_recorder",
+        "logic": "_render_logic",
+        "mid_side": "_render_mid_side",
+        "autopan": "_render_autopan",
+        "octaver": "_render_octaver",
+        "midi_input": "_render_midi_input",
+        "filter": "_render_filter",
+        "adsr": "_render_adsr",
+        "ad_envelope": "_render_ad",
+        "function_generator": "_render_function_generator",
+        "vca": "_render_vca",
+        "audio_to_cv": "_render_audio_to_cv",
+        "cv_to_audio": "_render_cv_to_audio",
+        "schmitt": "_render_schmitt",
+        "cv_to_frequency": "_render_cv_to_frequency",
+        "fm_op": "_render_fm_op",
+        "bowed": "_render_bowed",
+        "wind": "_render_wind",
+        "pluck": "_render_pluck",
+        "modal": "_render_modal",
+        "kick_drum": "_render_kick",
+        "snare_drum": "_render_snare",
+        "hat_drum": "_render_hat",
+        "lfo": "_render_lfo",
+        "mixer": "_render_mixer",
+        "combiner": "_render_combiner",
+        "cv_combiner": "_render_cv_combiner",
+        "constant": "_render_constant",
+        "cv_scale": "_render_cv_scale",
+        "cv_offset": "_render_cv_offset",
+        "slew": "_render_slew",
+        "quantizer": "_render_quantizer",
+        "scope": "_render_scope",
+        "sample_hold": "_render_sample_hold",
+        "noise": "_render_noise",
+        "crossover": "_render_crossover",
+        "parametric_eq": "_render_parametric_eq",
+        "motion_eq": "_render_motion_eq",
+        "sweep_eq": "_render_sweep_eq",
+        "tilt_eq": "_render_tilt_eq",
+        "meter": "_render_meter",
+        "chorus": "_render_chorus",
+        "rotary": "_render_rotary",
+        "granular": "_render_granular",
+        "flanger": "_render_flanger",
+        "phaser": "_render_phaser",
+        "vocoder": "_render_vocoder",
+        "delay": "_render_delay",
+        "reverb": "_render_reverb",
+        "loudness": "_render_loudness",
+        "compressor": "_render_compressor",
+        "limiter": "_render_limiter",
+        "noise_gate": "_render_noise_gate",
+        "transient_shaper": "_render_transient_shaper",
+        "distortion": "_render_distortion",
+        "ring_mod": "_render_ring_mod",
+        "freq_shifter": "_render_freq_shifter",
+        "bitcrusher": "_render_bitcrusher",
+        "waveshaper": "_render_waveshaper",
+        "tape": "_render_tape",
+        "convolver": "_render_convolver",
+        "resampler": "_render_resampler",
+        "pitch_shifter": "_render_pitch_shifter",
+        "disk_writer": "_render_disk_writer",
+        "file_player": "_render_file_player",
+        "mic_input": "_render_mic_input",
+    }
+    _FRAMES_ONLY = frozenset({
+        "keyboard",
+        "cv_keyboard",
+        "cv_gates",
+        "key_trigger",
+        "midi_input",
+    })
+
     def _render_module(self, module, frames, buffers, patch):
-        if module.TYPE == "oscillator":
-            return self._render_oscillator(module, frames, buffers, patch)
-        if module.TYPE == "keyboard":
-            return self._render_keyboard(module, frames)
-        if module.TYPE == "cv_keyboard":
-            return self._render_cv_keyboard(module, frames)
-        if module.TYPE == "cv_gates":
-            return self._render_cv_gates(module, frames)
-        if module.TYPE == "key_trigger":
-            return self._render_key_trigger(module, frames)
-        if module.TYPE == "clock":
-            return self._render_clock(module, frames, buffers, patch)
-        if module.TYPE in ("sequencer", "fader_seq"):
-            # fader_seq is the Sequencer with a different front panel —
-            # identical param contract, one engine (see modules/fader_seq.py).
-            return self._render_sequencer(module, frames, buffers, patch)
-        if module.TYPE == "shift_random":
-            return self._render_shift_random(module, frames, buffers, patch)
-        if module.TYPE == "chaos":
-            return self._render_chaos(module, frames, buffers, patch)
-        if module.TYPE == "organ":
-            return self._render_organ(module, frames, buffers, patch)
-        if module.TYPE == "matrix_mixer":
-            return self._render_matrix_mixer(module, frames, buffers, patch)
-        if module.TYPE == "vinyl":
-            return self._render_vinyl(module, frames, buffers, patch)
-        if module.TYPE == "supersaw":
-            return self._render_supersaw(module, frames, buffers, patch)
-        if module.TYPE == "wavetable_morph":
-            return self._render_wavetable_morph(module, frames, buffers, patch)
-        if module.TYPE == "possibility_seq":
-            return self._render_possibility_seq(module, frames, buffers, patch)
-        if module.TYPE == "possibility_selector":
-            return self._render_possibility_selector(module, frames, buffers, patch)
-        if module.TYPE == "drift":
-            return self._render_drift(module, frames, buffers, patch)
-        if module.TYPE == "sampler":
-            return self._render_sampler(module, frames, buffers, patch)
-        if module.TYPE == "euclidean":
-            return self._render_euclidean(module, frames, buffers, patch)
-        if module.TYPE == "burst":
-            return self._render_burst(module, frames, buffers, patch)
-        if module.TYPE == "bernoulli_gate":
-            return self._render_bernoulli(module, frames, buffers, patch)
-        if module.TYPE == "clock_divider":
-            return self._render_clock_divider(module, frames, buffers, patch)
-        if module.TYPE == "arpeggiator":
-            return self._render_arpeggiator(module, frames, buffers, patch)
-        if module.TYPE == "chord":
-            return self._render_chord(module, frames, buffers, patch)
-        if module.TYPE == "cv_math":
-            return self._render_cv_math(module, frames, buffers, patch)
-        if module.TYPE == "vowel":
-            return self._render_vowel(module, frames, buffers, patch)
-        if module.TYPE == "freeze":
-            return self._render_freeze(module, frames, buffers, patch)
-        if module.TYPE == "cv_recorder":
-            return self._render_cv_recorder(module, frames, buffers, patch)
-        if module.TYPE == "logic":
-            return self._render_logic(module, frames, buffers, patch)
-        if module.TYPE == "mid_side":
-            return self._render_mid_side(module, frames, buffers, patch)
-        if module.TYPE == "autopan":
-            return self._render_autopan(module, frames, buffers, patch)
-        if module.TYPE == "octaver":
-            return self._render_octaver(module, frames, buffers, patch)
-        if module.TYPE == "midi_input":
-            return self._render_midi_input(module, frames)
-        if module.TYPE == "filter":
-            return self._render_filter(module, frames, buffers, patch)
-        if module.TYPE == "adsr":
-            return self._render_adsr(module, frames, buffers, patch)
-        if module.TYPE == "ad_envelope":
-            return self._render_ad(module, frames, buffers, patch)
-        if module.TYPE == "function_generator":
-            return self._render_function_generator(module, frames, buffers, patch)
-        if module.TYPE == "vca":
-            return self._render_vca(module, frames, buffers, patch)
-        if module.TYPE == "audio_to_cv":
-            return self._render_audio_to_cv(module, frames, buffers, patch)
-        if module.TYPE == "cv_to_audio":
-            return self._render_cv_to_audio(module, frames, buffers, patch)
-        if module.TYPE == "schmitt":
-            return self._render_schmitt(module, frames, buffers, patch)
-        if module.TYPE == "cv_to_frequency":
-            return self._render_cv_to_frequency(module, frames, buffers, patch)
-        if module.TYPE == "fm_op":
-            return self._render_fm_op(module, frames, buffers, patch)
-        if module.TYPE == "bowed":
-            return self._render_bowed(module, frames, buffers, patch)
-        if module.TYPE == "wind":
-            return self._render_wind(module, frames, buffers, patch)
-        if module.TYPE == "pluck":
-            return self._render_pluck(module, frames, buffers, patch)
-        if module.TYPE == "modal":
-            return self._render_modal(module, frames, buffers, patch)
-        if module.TYPE == "kick_drum":
-            return self._render_kick(module, frames, buffers, patch)
-        if module.TYPE == "snare_drum":
-            return self._render_snare(module, frames, buffers, patch)
-        if module.TYPE == "hat_drum":
-            return self._render_hat(module, frames, buffers, patch)
-        if module.TYPE == "lfo":
-            return self._render_lfo(module, frames, buffers, patch)
-        if module.TYPE == "mixer":
-            return self._render_mixer(module, frames, buffers, patch)
-        if module.TYPE == "combiner":
-            return self._render_combiner(module, frames, buffers, patch)
-        if module.TYPE == "cv_combiner":
-            return self._render_cv_combiner(module, frames, buffers, patch)
-        if module.TYPE == "constant":
-            return self._render_constant(module, frames, buffers, patch)
-        if module.TYPE == "cv_scale":
-            return self._render_cv_scale(module, frames, buffers, patch)
-        if module.TYPE == "cv_offset":
-            return self._render_cv_offset(module, frames, buffers, patch)
-        if module.TYPE == "slew":
-            return self._render_slew(module, frames, buffers, patch)
-        if module.TYPE == "quantizer":
-            return self._render_quantizer(module, frames, buffers, patch)
-        if module.TYPE == "scope":
-            return self._render_scope(module, frames, buffers, patch)
-        if module.TYPE == "sample_hold":
-            return self._render_sample_hold(module, frames, buffers, patch)
-        if module.TYPE == "noise":
-            return self._render_noise(module, frames, buffers, patch)
-        if module.TYPE == "crossover":
-            return self._render_crossover(module, frames, buffers, patch)
-        if module.TYPE == "parametric_eq":
-            return self._render_parametric_eq(module, frames, buffers, patch)
-        if module.TYPE == "motion_eq":
-            return self._render_motion_eq(module, frames, buffers, patch)
-        if module.TYPE == "sweep_eq":
-            return self._render_sweep_eq(module, frames, buffers, patch)
-        if module.TYPE == "tilt_eq":
-            return self._render_tilt_eq(module, frames, buffers, patch)
-        if module.TYPE == "meter":
-            return self._render_meter(module, frames, buffers, patch)
-        if module.TYPE == "chorus":
-            return self._render_chorus(module, frames, buffers, patch)
-        if module.TYPE == "rotary":
-            return self._render_rotary(module, frames, buffers, patch)
-        if module.TYPE == "granular":
-            return self._render_granular(module, frames, buffers, patch)
-        if module.TYPE == "flanger":
-            return self._render_flanger(module, frames, buffers, patch)
-        if module.TYPE == "phaser":
-            return self._render_phaser(module, frames, buffers, patch)
-        if module.TYPE == "vocoder":
-            return self._render_vocoder(module, frames, buffers, patch)
-        if module.TYPE == "delay":
-            return self._render_delay(module, frames, buffers, patch)
-        if module.TYPE == "reverb":
-            return self._render_reverb(module, frames, buffers, patch)
-        if module.TYPE == "loudness":
-            return self._render_loudness(module, frames, buffers, patch)
-        if module.TYPE == "compressor":
-            return self._render_compressor(module, frames, buffers, patch)
-        if module.TYPE == "limiter":
-            return self._render_limiter(module, frames, buffers, patch)
-        if module.TYPE == "noise_gate":
-            return self._render_noise_gate(module, frames, buffers, patch)
-        if module.TYPE == "transient_shaper":
-            return self._render_transient_shaper(module, frames, buffers, patch)
-        if module.TYPE == "distortion":
-            return self._render_distortion(module, frames, buffers, patch)
-        if module.TYPE == "ring_mod":
-            return self._render_ring_mod(module, frames, buffers, patch)
-        if module.TYPE == "freq_shifter":
-            return self._render_freq_shifter(module, frames, buffers, patch)
-        if module.TYPE == "bitcrusher":
-            return self._render_bitcrusher(module, frames, buffers, patch)
-        if module.TYPE == "waveshaper":
-            return self._render_waveshaper(module, frames, buffers, patch)
-        if module.TYPE == "tape":
-            return self._render_tape(module, frames, buffers, patch)
-        if module.TYPE == "convolver":
-            return self._render_convolver(module, frames, buffers, patch)
-        if module.TYPE == "resampler":
-            return self._render_resampler(module, frames, buffers, patch)
-        if module.TYPE == "pitch_shifter":
-            return self._render_pitch_shifter(module, frames, buffers, patch)
-        if module.TYPE == "disk_writer":
-            return self._render_disk_writer(module, frames, buffers, patch)
-        if module.TYPE == "file_player":
-            return self._render_file_player(module, frames, buffers, patch)
-        if module.TYPE == "mic_input":
-            return self._render_mic_input(module, frames, buffers, patch)
-        if (
-            module.TYPE in self._SPEAKER_CHANNELS
-            or module.TYPE in self._STEREO_SPEAKERS
-        ):
-            return None  # speaker-family sink — drained by the speaker pass
-        return None
+        name = self._RENDERERS.get(module.TYPE)
+        if name is None:
+            return None  # a speaker-family sink (or an unknown type)
+        if module.TYPE in self._FRAMES_ONLY:
+            return getattr(self, name)(module, frames)
+        return getattr(self, name)(module, frames, buffers, patch)

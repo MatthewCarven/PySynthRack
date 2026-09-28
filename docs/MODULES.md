@@ -305,8 +305,11 @@ The pattern, end to end:
    it's pure data.
 2. **Register it** by importing the class in `src/pysynthrack/modules/__init__.py`
    (and adding it to `__all__`).
-3. **Write the renderer** in `src/pysynthrack/audio/numpy_backend.py`: add a
-   `_render_<type>` method and wire it into the `_render_module` dispatch. A
+3. **Write the renderer** in the family mixin it belongs to under
+   `src/pysynthrack/audio/renderers/` (see docs/architecture.md, "Renderer
+   families"): add a `_render_<type>` method there, and add a
+   `"<type>": "_render_<type>"` entry to `NumpyBackend._RENDERERS` in
+   `numpy_backend.py`. `tests/test_render_dispatch.py` fails until you do. A
    module with multiple outputs returns a dict like `{"low": ..., "high": ...}`;
    a single-output module returns one array. Read inputs with
    `_input_buffer(patch, buffers, module_id, port_name)`.

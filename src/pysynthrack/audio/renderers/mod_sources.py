@@ -6,8 +6,8 @@ Moved verbatim out of ``numpy_backend.py`` (2026-09-28) into a mixin that
 families". Each renderer came with its ``_mono`` / ``_voice`` paths and the
 helpers and constants only it uses (the noise colour constants sat under
 the ADSR section marker; they came with ``_render_noise``). The gate
-threshold ``_GATE_HIGH`` stays on the backend -- a score of renderers in
-every family share it -- as do ``_pow2_clipped``, ``_finite_mean``,
+threshold ``_GATE_HIGH`` lives in the ``_shared`` mixin -- a score of
+renderers in every family share it -- as do ``_pow2_clipped``, ``_finite_mean``,
 ``_voice_mean`` / ``_voice_sum`` and the drums' ``_drum_edge_value`` (the
 ADSR's velocity read): all reached through ``self``. ``_lfo_reset_edges``
 lives here with the LFO; the clock (renderers/sequencing.py) reaches it

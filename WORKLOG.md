@@ -196,6 +196,48 @@ own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
 
 ---
 
+## 2026-09-28 — the backend split's endgame: helpers and the dispatch table
+
+Matthew: "tie up the rest of the backend split". Every helper left on the
+class moved. First I mapped who uses each one (which mixins, the engine,
+and anything outside the audio package).
+
+- **One family's helpers joined that family:** the oscillator phase carry,
+  the sampler and convolver lifecycle hooks, `_freeze_gate_row`,
+  `_MAX_VOICES` and the disk-writer thread.
+- **Helpers several families share went to three underscore mixins:**
+  `_shared` (input lookup, gates, voice collapse, CV maths, envelope
+  follower, biquads, distortion curve), `_waveshapes` (the
+  BLEP/wavetable core) and `_media` (path resolution and decoding).
+
+The tool gained an append mode for adding to an existing mixin. Blocks
+anchored on a decorated `def` now carry its decorators with them, which
+removes the "can't anchor on a bare `@staticmethod`" leftovers. `EOF`
+ends a block at the end of the file.
+
+**Lesson:** moves applied in sequence eat each other's anchors. The last
+two configs ended on members an earlier move had taken, and `move`
+refused cleanly. The shared block was one contiguous run by then.
+
+`_render_module`'s 93-branch if-chain is now a `_RENDERERS` table
+(TYPE → method name) plus a `_FRAMES_ONLY` set, generated from the chain
+rather than retyped. `tests/test_render_dispatch.py` checks the table
+against the module registry and each renderer's signature, so a new
+module that forgets its entry now fails a test instead of rendering
+silence.
+
+**Proof:**
+
+- All 101 of HEAD's backend members are byte-identical where they now
+  live, except 5 that gained the lazy imports.
+- Decorators: 294/294.
+- Full suite: 5429 passed.
+- render_audit: 165/165 identical, after the moves and again after the
+  table.
+
+`numpy_backend.py` now holds only the engine plus the module-level DSP
+kernels that tests import by name: 2.8k lines, down from 21.8k.
+
 ## 2026-09-28 — the backend split, finished with five agents
 
 Matthew: "keep going on the backend split" then "fire up some subagents

@@ -2,8 +2,9 @@
 
 Moved verbatim out of ``numpy_backend.py`` (2026-09-26) into a mixin that
 ``NumpyBackend`` inherits -- see docs/architecture.md, "Renderer
-families". Both freezes reach the backend's shared gate helpers
-(``_freeze_gate_row``, ``_gate_ramp_env``) through ``self``.
+families". Both freezes reach their gate helpers through ``self``:
+``_freeze_gate_row``, which joined this mixin in the endgame, and
+``_gate_ramp_env`` from ``_shared``.
 """
 from __future__ import annotations
 
