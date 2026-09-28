@@ -64,11 +64,23 @@ def _block(lines, start_re, end_re):
 
 
 def _blocks(lines, pairs):
-    """Sorted, non-overlapping ``(start, end)`` line ranges."""
+    """Sorted, non-overlapping ``(start, end)`` line ranges.
+
+    Refuses a boundary that separates a decorator from its ``def``: an end
+    anchored on a decorated ``def`` line would carry the ``@staticmethod``
+    away to decorate the wrong method, and neither ruff nor a text diff
+    notices."""
     spans = sorted(_block(lines, a, b) for a, b in pairs)
     for (_, e1), (s2, _) in zip(spans, spans[1:]):
         if s2 < e1:
             sys.exit("blocks overlap")
+    for start, end in spans:
+        before = next((ln for ln in reversed(lines[:start]) if ln.strip()), "")
+        last = next((ln for ln in reversed(lines[start:end]) if ln.strip()), "")
+        for where, ln in (("before", before), ("at the end of", last)):
+            if ln.lstrip().startswith("@"):
+                sys.exit(f"a decorator sits {where} the block at line {start + 1}: {ln.strip()!r}"
+                         " -- anchor on the decorator line instead")
     return spans
 
 
