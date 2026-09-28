@@ -21,7 +21,14 @@ the mixin), and who outside the block calls into it.
     {"blocks": [["START_RE", "END_RE"], ...], "module": "dynamics",
      "cls": "DynamicsRenderers", "imports": "import numpy as np",
      "doc": "module docstring",
-     "subs": [["old text", "new text", expected_count], ...]}
+     "subs": [["old text", "new text", expected_count], ...],
+     "expect": ["_render_x", "_X_CONST", ...]}
+
+``expect`` (optional, strongly advised) is the exact set of class-level
+names the blocks must contain; ``move`` refuses if they differ. Block
+regexes anchor on neighbouring members, and once other families have
+moved, a neighbour can be gone -- ``expect`` turns that drift into a
+refusal instead of a silently larger move.
 
 ``subs`` are the only edits allowed inside the moved block (typically a
 relative import gaining a dot, or a lazy ``NumpyBackend`` import); each
@@ -167,6 +174,10 @@ def move(config_path: str) -> None:
         return _class_members(next(n for n in tree.body
                                    if isinstance(n, ast.ClassDef) and n.name == name))
     moving = members(new_src, cfg["cls"])
+    if "expect" in cfg and moving != set(cfg["expect"]):
+        sys.exit("blocks don't hold the expected members:\n"
+                 f"  missing: {sorted(set(cfg['expect']) - moving)}\n"
+                 f"  extra:   {sorted(moving - set(cfg['expect']))}")
     others = {"NumpyBackend": members(s, "NumpyBackend")}
     for path in RENDERERS.glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
