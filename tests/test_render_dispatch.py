@@ -31,7 +31,9 @@ def test_every_entry_names_a_renderer_with_the_right_signature():
         fn = getattr(NumpyBackend, name)
         sig = inspect.signature(fn)
         if ty in NumpyBackend._FRAMES_ONLY:
-            sig.bind(None, "module", "frames")
+            # Exactly (self, module, frames): a renderer that also takes
+            # buffers / patch (even defaulted) would silently get none.
+            assert list(sig.parameters) == ["self", "module", "frames"], name
         else:
             sig.bind(None, "module", "frames", "buffers", "patch")
 

@@ -29,7 +29,8 @@ selected by the ``waveform`` string suffix:
     extreme FM excursions fall back conservatively (fewer harmonics).
 
 ``sine`` is already band-limited, so it has only the one naive form. The
-shaping is centralised in :meth:`_osc_waveshape`, which both the
+shaping is centralised in :meth:`_osc_waveshape` (in the
+``renderers/_waveshapes.py`` mixin), which both the
 Oscillator and CVToFrequency renderers (and, via the same call, the
 Keyboard / MIDIInput note sources) route through. The Oscillator alone
 also hands it a pulse width for ``square`` / ``square_blep`` (per-sample

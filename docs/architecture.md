@@ -88,7 +88,8 @@ through the file moved as several blocks into one mixin.
 
 **The endgame** (2026-09-28) moved the helpers too. One family's helpers
 joined that family (the oscillator phase carry, the sampler and convolver
-lifecycle hooks, the disk writer's thread). Helpers several families share
+lifecycle hooks, `_freeze_gate_row`, `_MAX_VOICES` and the disk writer's
+thread). Helpers several families share
 went to three underscore modules, which are mixins like the rest:
 
 - `_shared.py` (`SharedHelpers`): `_input_buffer`, `_GATE_HIGH`, the gate

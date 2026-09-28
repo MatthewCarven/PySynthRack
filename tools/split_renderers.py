@@ -214,7 +214,10 @@ def move(config_path: str) -> None:
         head = old_src.split("\n")
         extra = [ln for ln in cfg.get("imports", "").split("\n") if ln and ln not in head]
         if extra:
-            at = max(n.end_lineno for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom)))
+            ends = [n.end_lineno for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+            if not ends:
+                sys.exit(f"{target.name} has no imports to add after")
+            at = max(ends)
             head[at:at] = extra
         new_src = "\n".join(head).rstrip("\n") + "\n\n" + text
     elif target.exists():

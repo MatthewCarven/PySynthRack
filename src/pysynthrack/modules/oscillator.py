@@ -68,7 +68,8 @@ class Oscillator(Module):
     an integer sample count (the organ's scheme), with it patched a
     running sum carried unwrapped across blocks and wrapped only at
     absolute 65 536-sample epochs, and the ``_wt`` mipmap band is picked
-    per sample. See the renderer's docstrings in ``numpy_backend``.
+    per sample. See the renderer's docstrings in ``audio/renderers/``
+    (``oscillators._osc_carried_phase``, ``_waveshapes``).
     """
 
     TYPE = "oscillator"

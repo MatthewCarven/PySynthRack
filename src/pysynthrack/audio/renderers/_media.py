@@ -4,8 +4,7 @@
 ``media_load_failures`` (the UI's "what didn't load" list),
 ``_decode_audio`` and ``_load_wav``, moved verbatim out of
 ``numpy_backend.py`` (2026-09-28) into a mixin ``NumpyBackend``
-inherits. The engine's ``compile``, the file player / disk writer
-(``io``), the sampler (``physical``) and the convolver (``spectral``)
+inherits. The engine's ``compile``, the file player (``io``), the sampler (``physical``) and the convolver (``spectral``)
 reach them through ``self``.
 """
 from __future__ import annotations

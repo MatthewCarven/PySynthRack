@@ -529,12 +529,14 @@ class TestDefaultsAreOff:
         assert before == np.random.default_rng(1).bit_generator.state
 
     def test_glide_zero_calls_no_filter(self, monkeypatch):
-        import pysynthrack.audio.numpy_backend as nb
+        # Patch the name the renderer reads: its own module's lfilter
+        # (renderers/mod_sources.py), not numpy_backend's.
+        import pysynthrack.audio.renderers.mod_sources as ms
 
         def boom(*_a, **_k):
             raise AssertionError("lfilter must not run at glide 0")
 
-        monkeypatch.setattr(nb, "lfilter", boom)
+        monkeypatch.setattr(ms, "lfilter", boom)
         patch, sh, backend = _make({"glide": 0.0})
         out = _run(backend, sh, patch, _X, _TRIG, 512)
         assert np.array_equal(out, _model_sample_hold(_X, _TRIG))
