@@ -786,24 +786,24 @@ green) and the tooling thin. Suite **5426 passed** on 3.11 and **5416** on
       Each: `split_renderers.py analyse` → `move` → the four checks in its
       docstring (block diff, clash refusal, render_audit via a HEAD
       worktree, full suite) → commit → TODO/WORKLOG line.
-      1. [ ] **pitch_time** — granular, pitch_shifter, resampler, tape
-      2. [ ] **spectral** — freeze, vocoder, convolver
-      3. [ ] **eq_filter** — filter, crossover, parametric / motion / sweep /
+      1. [x] **pitch_time** — granular, pitch_shifter, resampler, tape
+      2. [x] **spectral** — freeze, vocoder, convolver
+      3. [x] **eq_filter** — filter, crossover, parametric / motion / sweep /
              tilt EQ, loudness, vowel
-      4. [ ] **colour** — distortion, waveshaper, bitcrusher, ring_mod,
+      4. [x] **colour** — distortion, waveshaper, bitcrusher, ring_mod,
              freq_shifter, vinyl, octaver
-      5. [ ] **mod_sources** — lfo, adsr, ad, function_generator, slew,
+      5. [x] **mod_sources** — lfo, adsr, ad, function_generator, slew,
              drift, chaos, sample_hold, noise, shift_random
-      6. [ ] **sequencing** — clock, sequencer, possibility_seq / _selector,
+      6. [x] **sequencing** — clock, sequencer, possibility_seq / _selector,
              arpeggiator, chord, cv_recorder, quantizer
-      7. [ ] **cv_routing** — vca, mixer, combiners, constant / cv_scale /
+      7. [x] **cv_routing** — vca, mixer, combiners, constant / cv_scale /
              cv_offset, cv_math, logic, audio_to_cv, cv_to_audio, schmitt,
              cv_to_frequency, matrix_mixer, mid_side, autopan
-      8. [ ] **physical** — pluck, bowed, wind, modal, drums, sampler
-      9. [ ] **oscillators** — oscillator, supersaw, wavetable_morph, fm_op,
+      8. [x] **physical** — pluck, bowed, wind, modal, drums, sampler
+      9. [x] **oscillators** — oscillator, supersaw, wavetable_morph, fm_op,
              organ (last of the sound sources: its phase/wavetable helpers
              are shared with keyboard / midi_input / cv_to_frequency)
-      10. [ ] **io** — keyboard, cv_keyboard, cv_gates, key_trigger,
+      10. [x] **io** — keyboard, cv_keyboard, cv_gates, key_trigger,
               midi_input, mic_input, file_player, scope, meter, disk_writer
       11. [ ] **endgame** — what's left is the engine (compile, callback,
               sinks, `_render_module`) plus shared helpers
@@ -811,6 +811,18 @@ green) and the tooling thin. Suite **5426 passed** on 3.11 and **5416** on
               wavetable helpers). Move the helpers into
               `renderers/_shared.py`, and consider a type → method table
               in place of `_render_module`'s if-chain.
+
+      **Steps 1-10 DONE 2026-09-28** (Matthew: "keep going ... fire up some
+      subagents"): five agents each prepared and test-drove two families
+      in their own worktree; I applied the ten configs in sequence, one
+      commit per pair. Backend 19.0k -> 4.2k lines; the full suite and a
+      165-example render audit against the pre-session commit both clean.
+      Endgame leftovers found on the way: `_osc_carried_phase` /
+      `_OSC_EPOCH` (oscillator-only, but the tool can't start a block on a
+      bare `@staticmethod` line), `_disk_writer_worker` (last member of
+      the file -- no end anchor), the sampler's compile/UI lifecycle hooks
+      (an agent drafted a "whole sampler" config as the alternative), and
+      section-marker comments now orphaned over what stayed behind.
 
       Lessons so far: **section markers lie** -- `_render_mic_input` and
       `_render_file_player` sit under "PitchShifter", `cv_math` / `logic`
