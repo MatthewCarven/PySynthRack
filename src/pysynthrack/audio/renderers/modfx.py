@@ -3,7 +3,7 @@ and the shared clock-sync helpers (``_mod_clock_sync``, ``_mod_free_phase``).
 
 Moved verbatim out of ``numpy_backend.py`` (2026-09-26) into a mixin that
 ``NumpyBackend`` inherits -- see docs/architecture.md, "Renderer
-families". ``autopan`` (still in the backend) reaches the clock-sync
+families". ``autopan`` (now in ``cv_routing``) reaches the clock-sync
 helpers through ``self``.
 """
 from __future__ import annotations

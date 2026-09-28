@@ -196,6 +196,34 @@ own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
 
 ---
 
+## 2026-09-28 — the backend split, finished with five agents
+
+Matthew: "keep going on the backend split" then "fire up some subagents
+... 5 for about an hour". The file couldn't take five editors at once, so
+the work split in two: each agent took two families of the plan in its
+OWN worktree -- found the exact blocks, what's shared, the subs -- applied
+them there with the tool and ran that family's tests (with
+`PYTHONPATH=src`, since the editable install points at the main
+checkout), then handed back an `expect`-guarded config. I applied the ten
+configs in sequence on the branch: each pair a commit, each checked for
+decorators (294/294 unchanged vs before the split began), missing
+imports (AST over tests/src/tools), and its targeted tests.
+
+The agents found two real bugs in my tool, both fixed and guarded: ruff
+wraps `from .renderers import (...)` past 100 columns and the one-line
+regex then misparsed it (the next move would have written a broken
+import); and an end anchor on a decorated `def` line carries the
+`@staticmethod` away to decorate the wrong method -- invisible to ruff and
+to a text diff. `move` now reads/writes both forms and refuses a boundary
+between a decorator and its def. The `expect` guard caught one real
+drift while applying: with slew gone, a cv_routing block ran on into the
+shared `_crossover_coeffs`; refused, anchor tightened.
+
+Result: 14 mixins; `numpy_backend.py` 19.0k -> 4.2k lines (21.8k before
+the split), 77 methods left, all engine or shared helpers. Full suite
+5429 passed; render_audit of all 165 examples vs the pre-session commit
+moved 0, both after six families and at the end.
+
 ## 2026-09-26 — backend split: dynamics, and a tool for the rest
 
 Matthew: "keep going on the backend split". Dynamics went second:

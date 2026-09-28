@@ -80,11 +80,19 @@ point of use, since `numpy_backend` imports the mixin module. The mechanics
 live in `tools/split_renderers.py` (`analyse` a block, then `move` it from a
 JSON config); its docstring lists the four checks every move must pass.
 
-Moved so far: **clockwork** (euclidean, burst, bernoulli gate, clock divider),
-**dynamics** (compressor, limiter, noise gate, transient shaper) and **modfx**
-(chorus, rotary, flanger, phaser, plus the `_mod_clock_sync` helpers that
-`autopan` shares through `self`) and **reverb_delay** (reverb, delay). A
-family scattered through the file moves as several blocks into one mixin.
+**Every renderer has moved** (2026-09-28): fourteen mixins, one per
+family: `clockwork`, `dynamics`, `modfx`, `reverb_delay`, `pitch_time`,
+`spectral`, `eq_filter`, `colour`, `mod_sources`, `sequencing`,
+`cv_routing`, `physical`, `oscillators` and `io`. `numpy_backend.py` (21.8k
+lines before the split, 4.2k after) now holds the engine: compile, the
+audio callback, sinks and the feedback door, `_render_module`'s dispatch,
+the module-level DSP kernels (oversampler, grain shifter, Hermite read,
+drum hits, ...) and the helpers several families share (`_input_buffer`,
+`_voice_sum` / `_voice_mean`, `_finite_mean`, `_GATE_HIGH`, gate ramps, the
+wave-shaping/BLEP/wavetable helpers, shared biquads, media loading). The
+mixins reach those through `self`, and module-level names through a lazy
+import at the point of use. A family scattered through the file moved as
+several blocks into one mixin.
 
 ## Connection rules
 

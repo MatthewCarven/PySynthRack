@@ -21,7 +21,14 @@ the mixin), and who outside the block calls into it.
     {"blocks": [["START_RE", "END_RE"], ...], "module": "dynamics",
      "cls": "DynamicsRenderers", "imports": "import numpy as np",
      "doc": "module docstring",
-     "subs": [["old text", "new text", expected_count], ...]}
+     "subs": [["old text", "new text", expected_count], ...],
+     "expect": ["_render_x", "_X_CONST", ...]}
+
+``expect`` (optional, strongly advised) is the exact set of class-level
+names the blocks must contain; ``move`` refuses if they differ. Block
+regexes anchor on neighbouring members, and once other families have
+moved, a neighbour can be gone -- ``expect`` turns that drift into a
+refusal instead of a silently larger move.
 
 ``subs`` are the only edits allowed inside the moved block (typically a
 relative import gaining a dot, or a lazy ``NumpyBackend`` import); each
@@ -57,11 +64,23 @@ def _block(lines, start_re, end_re):
 
 
 def _blocks(lines, pairs):
-    """Sorted, non-overlapping ``(start, end)`` line ranges."""
+    """Sorted, non-overlapping ``(start, end)`` line ranges.
+
+    Refuses a boundary that separates a decorator from its ``def``: an end
+    anchored on a decorated ``def`` line would carry the ``@staticmethod``
+    away to decorate the wrong method, and neither ruff nor a text diff
+    notices."""
     spans = sorted(_block(lines, a, b) for a, b in pairs)
     for (_, e1), (s2, _) in zip(spans, spans[1:]):
         if s2 < e1:
             sys.exit("blocks overlap")
+    for start, end in spans:
+        before = next((ln for ln in reversed(lines[:start]) if ln.strip()), "")
+        last = next((ln for ln in reversed(lines[start:end]) if ln.strip()), "")
+        for where, ln in (("before", before), ("at the end of", last)):
+            if ln.lstrip().startswith("@"):
+                sys.exit(f"a decorator sits {where} the block at line {start + 1}: {ln.strip()!r}"
+                         " -- anchor on the decorator line instead")
     return spans
 
 
@@ -76,6 +95,23 @@ def _class_members(cls_node) -> set[str]:
         elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
             out.add(n.target.id)
     return out
+
+
+def _names(text: str) -> list[str]:
+    """The comma-separated names in ``a, b`` or ``(\n    a,\n    b,\n)``."""
+    return [n.strip() for n in text.strip().strip("()").split(",") if n.strip()]
+
+
+def _wrap(head: str, names: list[str], tail: str) -> str:
+    """``head + names + tail`` on one line if it fits in 100 columns, else
+    one name per line with a trailing comma (ruff's style). ``head`` ends
+    in "(" and ``tail`` starts with ")"; an import drops them on one line."""
+    one = head + ", ".join(names) + tail
+    if head.startswith("from "):
+        one = head[:-1] + ", ".join(names) + tail[1:]
+    if len(one) <= 100:
+        return one
+    return head + "\n" + "".join(f"    {n},\n" for n in names) + tail
 
 
 def analyse(pairs) -> None:
@@ -167,6 +203,10 @@ def move(config_path: str) -> None:
         return _class_members(next(n for n in tree.body
                                    if isinstance(n, ast.ClassDef) and n.name == name))
     moving = members(new_src, cfg["cls"])
+    if "expect" in cfg and moving != set(cfg["expect"]):
+        sys.exit("blocks don't hold the expected members:\n"
+                 f"  missing: {sorted(set(cfg['expect']) - moving)}\n"
+                 f"  extra:   {sorted(moving - set(cfg['expect']))}")
     others = {"NumpyBackend": members(s, "NumpyBackend")}
     for path in RENDERERS.glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -177,13 +217,15 @@ def move(config_path: str) -> None:
         if moving & names:
             sys.exit(f"name clash with {owner}: {sorted(moving & names)}")
     target.write_text(new_src, encoding="utf-8")
-    m = re.search(r"^class NumpyBackend\((.*)\):$", s, re.M)
-    bases = [b.strip() for b in m.group(1).split(",")]
+    # Both statements may be one line or wrapped in parentheses (ruff wraps
+    # them past 100 columns); read either, write whichever fits.
+    m = re.search(r"^class NumpyBackend\(([^)]*)\):$", s, re.M)
+    bases = _names(m.group(1))
     bases.insert(len(bases) - 1, cfg["cls"])          # mixins before AudioBackend
-    s = s[: m.start()] + f"class NumpyBackend({', '.join(bases)}):" + s[m.end():]
-    m = re.search(r"^from \.renderers import (.*)$", s, re.M)
-    names = sorted(set(m.group(1).split(", ")) | {cfg["cls"]})
-    s = s[: m.start()] + "from .renderers import " + ", ".join(names) + s[m.end():]
+    s = s[: m.start()] + _wrap("class NumpyBackend(", bases, "):") + s[m.end():]
+    m = re.search(r"^from \.renderers import (\([^)]*\)|.*)$", s, re.M)
+    names = sorted(set(_names(m.group(1))) | {cfg["cls"]})
+    s = s[: m.start()] + _wrap("from .renderers import (", names, ")") + s[m.end():]
     BACKEND.write_text(s, encoding="utf-8")
 
     init = RENDERERS / "__init__.py"
