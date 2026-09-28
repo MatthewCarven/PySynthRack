@@ -11,7 +11,9 @@ from .dynamics import DynamicsRenderers
 from .eq_filter import EQFilterRenderers
 from .mod_sources import ModSourceRenderers
 from .modfx import ModFXRenderers
+from .pitch_time import PitchTimeRenderers
 from .reverb_delay import ReverbDelayRenderers
 from .sequencing import SequencingRenderers
+from .spectral import SpectralRenderers
 
-__all__ = ["ClockworkRenderers", "ColourRenderers", "DynamicsRenderers", "EQFilterRenderers", "ModFXRenderers", "ModSourceRenderers", "ReverbDelayRenderers", "SequencingRenderers"]
+__all__ = ["ClockworkRenderers", "ColourRenderers", "DynamicsRenderers", "EQFilterRenderers", "ModFXRenderers", "ModSourceRenderers", "PitchTimeRenderers", "ReverbDelayRenderers", "SequencingRenderers", "SpectralRenderers"]
