@@ -24,6 +24,7 @@ from __future__ import annotations
 import math
 import queue
 import threading
+import wave
 
 import numpy as np
 from scipy.signal import lfilter
@@ -1318,3 +1319,35 @@ class IORenderers:
         state["thread"] = None
         state["stop_event"] = None
         state["path"] = None
+
+    # Polyphonic voice count: matches VoiceSlots.MAX_VOICES. Kept local
+    # as a module constant rather than imported to keep the backend
+    # free of circular imports with the modules layer.
+    _MAX_VOICES = 16
+
+    @staticmethod
+    def _disk_writer_worker(q, stop_event, path, sample_rate) -> None:
+        """Write queued blocks to a mono 16-bit WAV until stop is set.
+
+        On stop we drain anything still in the queue before closing so
+        the final block of a take always lands.
+        """
+        try:
+            wf = wave.open(path, "wb")
+        except Exception as exc:  # pragma: no cover - filesystem-specific
+            print(f"[DiskWriter] cannot open {path}: {exc}")
+            return
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(int(sample_rate))
+        try:
+            while not stop_event.is_set() or not q.empty():
+                try:
+                    block = q.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                clipped = np.clip(block, -1.0, 1.0)
+                ints = (clipped * 32767.0).astype(np.int16)
+                wf.writeframes(ints.tobytes())
+        finally:
+            wf.close()

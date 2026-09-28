@@ -542,3 +542,36 @@ class ReverbDelayRenderers:
         state["write_idx"] = int(wp)
         state["lp"] = lp
         return out.astype(np.float32)
+
+    def _freeze_gate_row(self, gate, frames: int, tick: bool, state, ramp_n: int):
+        """The reverb's / delay's freeze row: the ``freeze`` gate cable
+        ORed with the ``freeze`` tickbox, or None when the pre-freeze
+        code should run instead.
+
+        Cable patched: the bool row (a ``(V, F)`` cable is already the
+        house sum), all-high while the tick is on. Cable unpatched:
+        all-high while the tick is on -- the first block it is seen on
+        carries a rising edge at sample 0, exactly like a cable rising
+        there, ramp and all -- and all-low while the ramp state is still
+        live (the tick was on at the block's last sample, or the release
+        from the last fall has not run out yet), so clearing the tick
+        releases like a gate fall. Otherwise None: the unpatched,
+        un-ticked module never enters the freeze machinery, so it is
+        bit-exact with the pre-freeze render by construction. ``state``
+        carries ``fz_prev`` / ``fz_off`` / ``fz_env`` as ``_gate_ramp_env``
+        left them; a run-out release (``fz_off >= ramp_n``) is the same
+        state a fresh module starts in as far as the next edge can tell.
+        """
+        if gate is not None and gate.shape[0] == frames:
+            gt = gate > self._GATE_HIGH
+            if tick:
+                gt = np.ones(frames, dtype=bool)
+            return gt
+        if tick:
+            return np.ones(frames, dtype=bool)
+        live = bool(state["fz_prev"]) or (
+            float(state["fz_env"]) > 0.0 and int(state["fz_off"]) < ramp_n
+        )
+        if live:
+            return np.zeros(frames, dtype=bool)
+        return None

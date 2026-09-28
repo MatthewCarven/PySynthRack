@@ -1311,3 +1311,91 @@ class OscillatorRenderers:
         st["perc_n"] = int(st["perc_n"]) + n
         if amp0 * (perc_g ** float(st["perc_n"])) <= 1e-6:
             st["perc_amp"] = 0.0  # nothing left to pour but zeros
+
+    # Samples per phase-wrap epoch of :meth:`_osc_carried_phase`. The
+    # running sum is wrapped back into [0, 1) only at ABSOLUTE multiples
+    # of this count, so the wrap lands on the same sample at any block
+    # size; between wraps the sum reaches at most ``inc * 65536`` cycles
+    # (~33k at Nyquist), far inside float64's exact-enough range.
+    _OSC_EPOCH = 1 << 16
+
+    @staticmethod
+    def _osc_carried_phase(carry, n0, inc, epoch):
+        """Integrate per-sample phase increments, exact across blocks.
+
+        ``inc`` is ``(..., F)`` float64 (per-sample cycles per sample),
+        ``carry`` the ``(...)`` running phase before this block's first
+        sample, ``n0`` the absolute index of that sample. Returns
+        ``(phases, carry)``: the wrapped ``(..., F)`` phase of every
+        sample and the carry for the next block.
+
+        ``np.cumsum`` is a strictly sequential accumulation, so
+        ``cumsum([carry, inc...])`` performs exactly the additions a
+        sample-at-a-time loop would -- the value at sample n does not
+        depend on where the block boundaries fell, PROVIDED the carry
+        is never rounded or wrapped at a block boundary. So the sum
+        runs unwrapped and is wrapped (``x - floor(x)``, exact in
+        binary) only at absolute multiples of ``epoch`` samples; a block
+        that straddles one is summed in two segments. The old
+        ``(start + cumsum(inc)) % 1`` -- a fresh sum per block, added to
+        a start wrapped at every block end -- took a different rounding
+        path per partition and drifted a float32 ulp within ~0.1 s under
+        a held CV.
+        """
+        F = inc.shape[-1]
+        carry = np.asarray(carry, dtype=np.float64)
+        to_edge = epoch - n0 % epoch
+        if F < to_edge:
+            # The common case: no epoch wrap inside this block.
+            seg = np.cumsum(
+                np.concatenate((carry[..., None], inc), axis=-1), axis=-1
+            )
+            return seg[..., 1:] % 1.0, seg[..., -1]
+        cum = np.empty_like(inc)
+        pos = 0
+        while pos < F:
+            to_edge = epoch - (n0 + pos) % epoch
+            end = min(F, pos + to_edge)
+            seg = np.cumsum(
+                np.concatenate((carry[..., None], inc[..., pos:end]), axis=-1),
+                axis=-1,
+            )
+            cum[..., pos:end] = seg[..., 1:]
+            carry = seg[..., -1]
+            if end - pos == to_edge:
+                carry = carry - np.floor(carry)  # the epoch wrap
+            pos = end
+        return cum % 1.0, carry
+
+    @staticmethod
+    def _osc_pw_increment(state, pw):
+        """Per-sample change of an array pulse width, continuous across
+        blocks.
+
+        The falling edge of ``square_blep`` is corrected on the falling
+        edge's own phase, ``(phase - pw) mod 1``, which advances by
+        ``dt - dpw`` per sample rather than ``dt``. Sizing that edge's
+        correction window with its own increment is what keeps the
+        "sample before" and "sample after" halves of a PolyBLEP pair in
+        agreement when the width moves: both then measure the crossing
+        in the same units, exactly as the rising edge's pair does under
+        per-sample FM. The first sample's increment reads against the
+        previous block's last width (``state["pw_last"]``), so a sweep
+        that crosses a block boundary is not seen as a jump there.
+
+        Returns an array shaped like ``pw``. For a scalar width (pw_cv
+        unpatched) the caller passes ``None`` instead -- the increment
+        is zero and the window is plain ``dt``, the pre-PWM arithmetic.
+        """
+        pw = np.asarray(pw, dtype=np.float64)
+        last = pw[..., -1].copy()
+        prev = state.get("pw_last")
+        if prev is None or np.shape(prev) != np.shape(last):
+            # First block, or the voice count / path changed: no history
+            # to diff against, so the first sample's increment is zero.
+            prev = pw[..., 0]
+        dpw = np.empty_like(pw)
+        dpw[..., 0] = pw[..., 0] - prev
+        dpw[..., 1:] = np.diff(pw, axis=-1)
+        state["pw_last"] = last
+        return dpw

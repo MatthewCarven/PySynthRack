@@ -1047,3 +1047,21 @@ class SpectralRenderers:
             "out_l": (x * dry + wet_l * level).astype(np.float32),
             "out_r": (x * dry + wet_r * level).astype(np.float32),
         }
+
+    @staticmethod
+    def _new_convolver_state():
+        return {
+            "engine_l": None, "engine_r": None, "ir_l": None, "ir_r": None,
+            "loaded_path": None, "pending": None, "block": None,
+            "dry_prev": None,
+            "tone_zi_l": None, "tone_zi_r": None,
+            "pd_buf_l": None, "pd_buf_r": None,
+        }
+
+    def _start_ir_loader(self, path, block):
+        """Spawn a background IR decode+build for ``path`` (None if empty)."""
+        if not path:
+            return None
+        from ..numpy_backend import _IRLoader  # lazy: it imports this module
+
+        return _IRLoader(path, self.sample_rate, block, self._decode_audio)
