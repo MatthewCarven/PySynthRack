@@ -764,7 +764,7 @@ green) and the tooling thin. Suite **5426 passed** on 3.11 and **5416** on
       position; the on-time gate ends a sample before it. 188 missing of
       6192 swept `divn` rises → 0; every other render bit-identical,
       including all nine shipped examples that use the divider.
-- [ ] **Split `audio/numpy_backend.py`** (21.8k lines, 127 `_render_*`) into
+- [x] **DONE 2026-09-28 — Split `audio/numpy_backend.py`** (21.8k lines, 127 `_render_*`) into
       per-family renderer modules -- the plug-in shape architecture.md
       already anticipates. One family per session; the block-exact pins and
       `tools/render_audit.py` prove each move is behaviour-neutral.
@@ -805,12 +805,19 @@ green) and the tooling thin. Suite **5426 passed** on 3.11 and **5416** on
              are shared with keyboard / midi_input / cv_to_frequency)
       10. [x] **io** — keyboard, cv_keyboard, cv_gates, key_trigger,
               midi_input, mic_input, file_player, scope, meter, disk_writer
-      11. [ ] **endgame** — what's left is the engine (compile, callback,
-              sinks, `_render_module`) plus shared helpers
-              (`_input_buffer`, `_voice_*`, `_finite_mean`, gate/ramp and
-              wavetable helpers). Move the helpers into
-              `renderers/_shared.py`, and consider a type → method table
-              in place of `_render_module`'s if-chain.
+      11. [x] **endgame** — each single-family helper joined its family.
+              The shared helpers went to `renderers/_shared.py`,
+              `_waveshapes.py` and `_media.py`. `_render_module`'s if-chain
+              became the `_RENDERERS` table, guarded by
+              `tests/test_render_dispatch.py`. The backend is 2.8k lines
+              of engine plus the module-level DSP kernels. Proof: 101/101
+              members matched against HEAD (5 differ only by lazy
+              imports), the full suite, and a render audit of 165/165
+              identical. **Left, optional:** the module-level kernels
+              (`_Oversampler4`, `_GrainShifter`, the drum hits, ...) could
+              move to their own `audio/dsp/` module, but tests import them
+              from `numpy_backend` by name, so that needs a re-export
+              shim.
 
       **Steps 1-10 DONE 2026-09-28** (Matthew: "keep going ... fire up some
       subagents"): five agents each prepared and test-drove two families

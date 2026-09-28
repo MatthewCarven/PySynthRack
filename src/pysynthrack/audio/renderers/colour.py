@@ -3,11 +3,11 @@ modulator, frequency shifter, vinyl, octaver.
 
 Moved verbatim out of ``numpy_backend.py`` (2026-09-28) into a mixin that
 ``NumpyBackend`` inherits -- see docs/architecture.md, "Renderer
-families". Shared helpers stay in the backend and are reached through
-``self``: ``_dist_curve`` and its ``_TUBE_BIAS`` (tape's saturation uses
+families". Shared helpers live in the ``_shared`` mixin and are reached
+through ``self``: ``_dist_curve`` and its ``_TUBE_BIAS`` (tape's saturation uses
 the curve too), ``_ring_match_voices`` (``fm_op`` uses it too), and the
 octaver's ``_audio_to_cv_block`` / ``_audio_to_cv_loop_mono`` core, with
-the backend-wide ``_finite_mean`` / ``_pow2_clipped``. Module-level
+the generic ``_finite_mean`` / ``_pow2_clipped``. Module-level
 primitives of ``numpy_backend`` come in through lazy imports at the point
 of use, once per block (``numpy_backend`` imports this module, so a
 top-level import would be circular): the 4x oversampler, its latency and

@@ -5,11 +5,11 @@ schmitt, cv_to_frequency, matrix_mixer, mid_side, autopan.
 Moved verbatim out of ``numpy_backend.py`` (2026-09-28) into a mixin that
 ``NumpyBackend`` inherits -- see docs/architecture.md, "Renderer
 families". Reached through ``self`` because other families share them,
-so they stay in the backend: the audio_to_cv envelope-follower engine
+so they live in the ``_shared`` mixin: the audio_to_cv envelope-follower engine
 (``_ATC_*``, ``_audio_to_cv_block`` / ``_solve`` / ``_loop_mono`` /
 ``_loop_voice`` -- also used by the dynamics mixin, octaver and vocoder),
 the oscillator waveshaper ``cv_to_frequency`` drives
-(``_osc_waveshape``), ``_vocoder_hp_coeffs`` (mid_side's bass-mono
+(``_osc_waveshape``, in ``_waveshapes``), ``_vocoder_hp_coeffs`` (mid_side's bass-mono
 highpass), and the generic ``_finite_mean`` / ``_pow2_clipped`` /
 ``_voice_mean`` / ``_GATE_HIGH``; autopan's clock sync comes from the
 modfx mixin. The static ``_cv_to_hz_mapped`` calls

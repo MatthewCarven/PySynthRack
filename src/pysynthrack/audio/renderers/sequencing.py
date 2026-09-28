@@ -11,7 +11,7 @@ time) are imported here instead, straight from ``pysynthrack.modules``
 under the same aliases -- nothing in ``modules`` imports the audio
 layer, so there is no cycle, and ``next_step_index`` runs once per
 clock edge, too hot for a lazy import. The gate threshold ``_GATE_HIGH``
-stays on the backend and the clock's reset-edge scan
+lives in the ``_shared`` mixin and the clock's reset-edge scan
 ``_lfo_reset_edges`` lives with the LFO in renderers/mod_sources.py; both
 are reached through ``self``.
 """

@@ -9,15 +9,15 @@ families". The synthesis kernels are module-level functions of
 ``_hat_hit``, ``_hermite4`` -- tests import them from there, and the
 resampler shares ``_hermite4``), so each renderer imports the one it
 needs lazily at the top of its body, outside every loop (``numpy_backend``
-imports this module, so a top-level import would be circular). Still in
-the backend and reached through ``self``: ``_drum_edge_value`` (also read
-by the ADSR), ``_gate_ramp_env`` / ``_finite_mean`` / ``_pow2_clipped`` /
-``_GATE_HIGH``, and the sampler's lifecycle members that the engine, the
-GUI or other tests call -- ``_new_sampler_state`` and
-``_start_sample_loader`` (``compile`` pre-warms loads),
-``sampler_overview`` (GUI hook), ``wait_for_sample_loads`` (test hook)
--- plus ``_new_sampler_voice`` / ``_sampler_advance``, which sit between
-them as decorated statics a block boundary cannot anchor on.
+imports this module, so a top-level import would be circular). In the
+``_shared`` mixin and reached through ``self``: ``_drum_edge_value`` (also
+read by the ADSR), ``_gate_ramp_env`` / ``_finite_mean`` /
+``_pow2_clipped`` / ``_GATE_HIGH``. The sampler's lifecycle members joined
+this mixin in the endgame -- ``_new_sampler_state`` and
+``_start_sample_loader`` (``compile`` pre-warms loads through ``self``),
+``sampler_overview`` (GUI hook), ``wait_for_sample_loads`` (test hook),
+``_new_sampler_voice`` / ``_sampler_advance``; the two that name
+``_SampleLoader`` import it lazily.
 """
 from __future__ import annotations
 
@@ -1850,3 +1850,127 @@ class PhysicalRenderers:
             "out_l": (out_l if voiced else out_l[0]).astype(np.float32),
             "out_r": (out_r if voiced else out_r[0]).astype(np.float32),
         }
+
+    def _new_sampler_state(self) -> dict:
+        return {"path": None, "loaded_path": None, "samples": None,
+                "chains": None, "overview": None,
+                "pending": None, "V": 0, "voices": []}
+
+    @staticmethod
+    def _new_sampler_voice() -> dict:
+        return {
+            "active": False,       # a playhead is running
+            "pos": 0.0,            # playhead, in samples into the file
+            "rate": 1.0,           # samples advanced per output sample (signed)
+            "start": 0.0,          # this voice's region start (start_cv latched)
+            "gain": 1.0,           # `vel` latched at the edge
+            "releasing": False,    # gated fall -> ramping out
+            "rel_left": 0,         # release samples still to serve
+            "rel_total": 0,
+            "atk_left": 0,         # declick ramp-in samples still to serve
+            "atk_total": 0,
+            "xf_left": 0,          # retrigger tail still to serve
+            "xf_total": 0,
+            "xf_pos": 0.0,         # the abandoned playhead
+            "xf_rate": 1.0,
+            "xf_start": 0.0,
+            "xf_gain": 1.0,
+            "prev_gate": False,
+        }
+
+    @staticmethod
+    def _sampler_advance(pos, rate, count, region, loop):
+        """Where the playhead reads, where it ends up, and how much counts.
+
+        Returns ``(positions, next_pos, live)``. Without a ``loop`` the
+        playhead is affine — ``pos + rate·arange(count)`` — and eventually
+        walks off the region ``(lo, hi)``: forward off ``hi`` (positions
+        ``< hi`` play), in reverse off ``lo`` (positions ``>= lo`` play).
+        Either way the inside part is a *prefix*, so ``live`` says how much
+        of the segment is still in the region.
+
+        With a loop it wraps ``loop_end`` back to ``loop_start`` instead
+        (or the other way round in reverse) and so never leaves the region
+        at all (``live`` is the whole segment — that is what looping
+        means). The wrap is one modulo on the same affine array, which
+        keeps it a single vectorized expression *and* keeps it exact on
+        integers: a unity-rate loop of an integer-bounded region is a
+        bit-exact tiling of the file, not an approximation of one — and a
+        reversed one is a bit-exact tiling of the region mirrored.
+        """
+        raw = pos + rate * np.arange(count, dtype=np.float64)
+        end_raw = float(pos + rate * count)
+        forward = rate >= 0.0
+        if loop is None:
+            if forward:
+                live = int(np.searchsorted(raw, float(region[1])))
+            else:
+                live = int(np.count_nonzero(raw >= float(region[0])))
+            return raw, end_raw, live
+        lo, hi, length = loop[0], loop[1], loop[2]
+        if forward:
+            over = raw - hi
+            positions = np.where(over < 0.0, raw, lo + np.mod(over, length))
+            if end_raw >= hi:
+                end_raw = float(lo + np.mod(end_raw - hi, length))
+        else:
+            under = raw - lo
+            positions = np.where(under >= 0.0, raw, lo + np.mod(under, length))
+            if end_raw < lo:
+                end_raw = float(lo + np.mod(end_raw - lo, length))
+        return positions, end_raw, count
+
+    def _start_sample_loader(self, path):
+        """Spawn a background whole-file decode (plus mip chain) for ``path``."""
+        from ...modules.sampler import (
+            HALFBAND_TAPS,
+            MAX_SECONDS,
+            MIP_LEVELS,
+            MIP_MIN_SAMPLES,
+            OVERVIEW_COLS,
+        )
+        from ..numpy_backend import _SampleLoader  # lazy: it imports this module
+
+        return _SampleLoader(
+            path, self.sample_rate, self._decode_audio, MAX_SECONDS,
+            mip_levels=MIP_LEVELS, mip_min=MIP_MIN_SAMPLES,
+            halfband_taps=HALFBAND_TAPS, overview_cols=OVERVIEW_COLS,
+        )
+
+    def sampler_overview(self, module_id: int):
+        """(GUI hook) The loaded sample's waveform overview for the face.
+
+        Returns ``(overview, loaded_path)`` — a ``(cols, 2)`` float32
+        column min/max array built by the loader, and the path it belongs
+        to (the face uses it as its "already painted?" key) — or
+        ``(None, None)`` while nothing is loaded. GUI thread only; a
+        couple of dict reads.
+        """
+        st = self._state.get(module_id)
+        if not isinstance(st, dict):
+            return None, None
+        return st.get("overview"), st.get("loaded_path")
+
+    def wait_for_sample_loads(self, timeout: float = 10.0) -> bool:
+        """Block until every sampler's pending load finishes. Tests only.
+
+        Never call from the audio thread. Returns True when every pending
+        load finished with a usable buffer (no pending load counts as
+        trivially ready, matching the render-silence contract).
+        """
+        import time as _time
+
+        from ..numpy_backend import _SampleLoader  # lazy: it imports this module
+
+        deadline = _time.monotonic() + float(timeout)
+        ok = True
+        for st in list(self._state.values()):
+            if not isinstance(st, dict):
+                continue
+            pend = st.get("pending")
+            loader = pend.get("loader") if isinstance(pend, dict) else None
+            if loader is None or not isinstance(loader, _SampleLoader):
+                continue
+            remaining = max(0.0, deadline - _time.monotonic())
+            ok = loader.wait(remaining) and ok
+        return ok

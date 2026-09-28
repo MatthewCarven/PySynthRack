@@ -2,12 +2,12 @@
 
 Moved verbatim out of ``numpy_backend.py`` (2026-09-28) into a mixin that
 ``NumpyBackend`` inherits -- see docs/architecture.md, "Renderer
-families". Three convolver/vocoder helpers stay on the backend because
-code outside this family calls them, and are reached through ``self``:
-``_vocoder_hp_coeffs`` (mid_side's bass-mono highpass shares it) and
-``_new_convolver_state`` / ``_start_ir_loader`` (``compile()`` pre-starts
-IR loads). Freeze reaches the AudioToCV follower (``_audio_to_cv_block``,
-``_audio_to_cv_loop_voice``) and ``_gate_ramp_env`` the same way. The
+families". ``_new_convolver_state`` / ``_start_ir_loader`` joined it in
+the endgame; ``compile()`` still calls them through ``self`` to pre-start
+IR loads. ``_vocoder_hp_coeffs`` (mid_side's bass-mono highpass shares
+it), the AudioToCV follower freeze uses (``_audio_to_cv_block``,
+``_audio_to_cv_loop_voice``) and ``_gate_ramp_env`` live in the
+``_shared`` mixin and are reached through ``self``. The
 convolver's module-level pieces of ``numpy_backend`` --
 ``_PartitionedConvolver`` and the ``_CONV_*`` limits -- come in through
 lazy imports at their point of use (``numpy_backend`` imports this
@@ -1047,3 +1047,21 @@ class SpectralRenderers:
             "out_l": (x * dry + wet_l * level).astype(np.float32),
             "out_r": (x * dry + wet_r * level).astype(np.float32),
         }
+
+    @staticmethod
+    def _new_convolver_state():
+        return {
+            "engine_l": None, "engine_r": None, "ir_l": None, "ir_r": None,
+            "loaded_path": None, "pending": None, "block": None,
+            "dry_prev": None,
+            "tone_zi_l": None, "tone_zi_r": None,
+            "pd_buf_l": None, "pd_buf_r": None,
+        }
+
+    def _start_ir_loader(self, path, block):
+        """Spawn a background IR decode+build for ``path`` (None if empty)."""
+        if not path:
+            return None
+        from ..numpy_backend import _IRLoader  # lazy: it imports this module
+
+        return _IRLoader(path, self.sample_rate, block, self._decode_audio)

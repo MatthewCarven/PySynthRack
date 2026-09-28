@@ -8,13 +8,15 @@ player's UI hooks (rewind / seek / finished / failed / decode_gen,
 ``wait_for_file_decodes``) and ``scope_window`` came along; the UI still
 reaches them on the backend instance. So did ``_resolve_mic_input``,
 ``_start_file_decoder`` and ``_close_disk_writer_state``, which the
-engine's ``start`` / ``compile`` / ``stop`` call through ``self``.
+engine's ``start`` / ``compile`` / ``stop`` call through ``self``, and
+(in the endgame) ``_MAX_VOICES`` and the disk writer's thread,
+``_disk_writer_worker``.
 
-Shared helpers stay in the backend and are reached through ``self``:
-``_osc_waveshape`` (keyboard / MIDI voices), ``_MAX_VOICES``, the meter's
-``_meter_k_coeffs`` / ``_loud_shelf`` / ``_filter_coeffs`` biquads,
-``_resolve_media_path``, ``_load_wav``, ``_disk_writer_worker`` and
-``_voice_sum``. ``_resolve_mic_input`` reads the backend's optional
+Shared helpers are reached through ``self``: ``_osc_waveshape``
+(keyboard / MIDI voices; the ``_waveshapes`` mixin), the meter's
+``_loud_shelf`` / ``_filter_coeffs`` biquads and ``_voice_sum`` (the
+``_shared`` mixin), and ``_resolve_media_path`` / ``_load_wav`` (the
+``_media`` mixin). ``_resolve_mic_input`` reads the backend's optional
 ``sd`` (sounddevice) through a lazy import, so a test that swaps
 ``numpy_backend.sd`` still reaches it (``numpy_backend`` imports this
 module, so a top-level import would be circular).
@@ -24,6 +26,7 @@ from __future__ import annotations
 import math
 import queue
 import threading
+import wave
 
 import numpy as np
 from scipy.signal import lfilter
@@ -1318,3 +1321,35 @@ class IORenderers:
         state["thread"] = None
         state["stop_event"] = None
         state["path"] = None
+
+    # Polyphonic voice count: matches VoiceSlots.MAX_VOICES. Kept local
+    # as a module constant rather than imported to keep the backend
+    # free of circular imports with the modules layer.
+    _MAX_VOICES = 16
+
+    @staticmethod
+    def _disk_writer_worker(q, stop_event, path, sample_rate) -> None:
+        """Write queued blocks to a mono 16-bit WAV until stop is set.
+
+        On stop we drain anything still in the queue before closing so
+        the final block of a take always lands.
+        """
+        try:
+            wf = wave.open(path, "wb")
+        except Exception as exc:  # pragma: no cover - filesystem-specific
+            print(f"[DiskWriter] cannot open {path}: {exc}")
+            return
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(int(sample_rate))
+        try:
+            while not stop_event.is_set() or not q.empty():
+                try:
+                    block = q.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                clipped = np.clip(block, -1.0, 1.0)
+                ints = (clipped * 32767.0).astype(np.int16)
+                wf.writeframes(ints.tobytes())
+        finally:
+            wf.close()

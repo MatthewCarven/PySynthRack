@@ -83,16 +83,33 @@ JSON config); its docstring lists the four checks every move must pass.
 **Every renderer has moved** (2026-09-28): fourteen mixins, one per
 family: `clockwork`, `dynamics`, `modfx`, `reverb_delay`, `pitch_time`,
 `spectral`, `eq_filter`, `colour`, `mod_sources`, `sequencing`,
-`cv_routing`, `physical`, `oscillators` and `io`. `numpy_backend.py` (21.8k
-lines before the split, 4.2k after) now holds the engine: compile, the
-audio callback, sinks and the feedback door, `_render_module`'s dispatch,
-the module-level DSP kernels (oversampler, grain shifter, Hermite read,
-drum hits, ...) and the helpers several families share (`_input_buffer`,
-`_voice_sum` / `_voice_mean`, `_finite_mean`, `_GATE_HIGH`, gate ramps, the
-wave-shaping/BLEP/wavetable helpers, shared biquads, media loading). The
-mixins reach those through `self`, and module-level names through a lazy
-import at the point of use. A family scattered through the file moved as
-several blocks into one mixin.
+`cv_routing`, `physical`, `oscillators` and `io`. A family scattered
+through the file moved as several blocks into one mixin.
+
+**The endgame** (2026-09-28) moved the helpers too. One family's helpers
+joined that family (the oscillator phase carry, the sampler and convolver
+lifecycle hooks, `_freeze_gate_row`, `_MAX_VOICES` and the disk writer's
+thread). Helpers several families share
+went to three underscore modules, which are mixins like the rest:
+
+- `_shared.py` (`SharedHelpers`): `_input_buffer`, `_GATE_HIGH`, the gate
+  ramps, `_voice_sum` / `_voice_mean`, `_pow2_clipped` / `_finite_mean`,
+  the envelope follower, the shared biquads and the distortion curve.
+- `_waveshapes.py` (`WaveshapeHelpers`): `_osc_waveshape` with its BLEP and
+  wavetable machinery.
+- `_media.py` (`MediaHelpers`): media path resolution and audio-file
+  decoding.
+
+`numpy_backend.py` (21.8k lines before the split, 2.8k after) is now the
+engine alone: compile, the audio callback, the sinks and the feedback door.
+It also keeps `_render_module` and the module-level DSP kernels
+(oversampler, grain shifter, Hermite read, drum hits, ...), which tests
+import from there by name.
+
+`_render_module` looks the module's `TYPE` up in the `_RENDERERS` table
+(TYPE → method name). The note sources in `_FRAMES_ONLY` take
+`(module, frames)` and the rest take `(module, frames, buffers, patch)`.
+`test_render_dispatch` checks the table against the module registry.
 
 ## Connection rules
 

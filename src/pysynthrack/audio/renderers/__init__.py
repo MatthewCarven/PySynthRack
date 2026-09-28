@@ -5,6 +5,9 @@ class. Families move here one at a time as mixins the backend inherits --
 verbatim, so behaviour is unchanged by construction and proven by the
 block-exact pins and ``tools/render_audit.py``. See docs/architecture.md.
 """
+from ._media import MediaHelpers
+from ._shared import SharedHelpers
+from ._waveshapes import WaveshapeHelpers
 from .clockwork import ClockworkRenderers
 from .colour import ColourRenderers
 from .cv_routing import CVRoutingRenderers
@@ -20,4 +23,4 @@ from .reverb_delay import ReverbDelayRenderers
 from .sequencing import SequencingRenderers
 from .spectral import SpectralRenderers
 
-__all__ = ["CVRoutingRenderers", "ClockworkRenderers", "ColourRenderers", "DynamicsRenderers", "EQFilterRenderers", "IORenderers", "ModFXRenderers", "ModSourceRenderers", "OscillatorRenderers", "PhysicalRenderers", "PitchTimeRenderers", "ReverbDelayRenderers", "SequencingRenderers", "SpectralRenderers"]
+__all__ = ["CVRoutingRenderers", "ClockworkRenderers", "ColourRenderers", "DynamicsRenderers", "EQFilterRenderers", "IORenderers", "MediaHelpers", "ModFXRenderers", "ModSourceRenderers", "OscillatorRenderers", "PhysicalRenderers", "PitchTimeRenderers", "ReverbDelayRenderers", "SequencingRenderers", "SharedHelpers", "SpectralRenderers", "WaveshapeHelpers"]

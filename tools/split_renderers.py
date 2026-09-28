@@ -10,7 +10,8 @@ every time:
 
 ``START_RE`` / ``END_RE`` are regexes for the first line of a block and
 the first line AFTER it (usually a ``    # ----- X`` section marker or the
-next family's ``    def``). A family scattered through the file is
+next family's ``    def``; ``EOF`` for the end of the file). Anchoring on a
+decorated ``def`` carries its decorators with it. A family scattered through the file is
 several blocks; they land in the new module in file order. ``analyse`` prints what would move, what it
 uses (module-level names need importing in the new file; a bare
 ``NumpyBackend`` reference needs a lazy import, since the backend imports
@@ -29,6 +30,12 @@ names the blocks must contain; ``move`` refuses if they differ. Block
 regexes anchor on neighbouring members, and once other families have
 moved, a neighbour can be gone -- ``expect`` turns that drift into a
 refusal instead of a silently larger move.
+
+``"append": true`` adds the blocks to the END of an existing mixin
+(``module`` must exist and ``cls`` be its last top-level statement)
+instead of creating one; ``imports`` lines it doesn't already have go
+after its last top-level import (run ``ruff check --select I --fix`` on
+it afterwards). The backend's bases and imports are left alone.
 
 ``subs`` are the only edits allowed inside the moved block (typically a
 relative import gaining a dot, or a lazy ``NumpyBackend`` import); each
@@ -59,17 +66,27 @@ RENDERERS = ROOT / "src" / "pysynthrack" / "audio" / "renderers"
 
 def _block(lines, start_re, end_re):
     start = next(i for i, ln in enumerate(lines) if re.match(start_re, ln))
-    end = next(i for i, ln in enumerate(lines) if i > start and re.match(end_re, ln))
+    if end_re == "EOF":
+        end = len(lines)
+    else:
+        end = next(i for i, ln in enumerate(lines) if i > start and re.match(end_re, ln))
+    # A decorator belongs to the ``def`` under it: a block anchored on a
+    # decorated ``def`` takes its decorators, and one ending on a decorated
+    # ``def`` leaves them behind with it.
+    while start > 0 and lines[start - 1].lstrip().startswith("@"):
+        start -= 1
+    while end > start and end < len(lines) and lines[end - 1].lstrip().startswith("@"):
+        end -= 1
     return start, end
 
 
 def _blocks(lines, pairs):
     """Sorted, non-overlapping ``(start, end)`` line ranges.
 
-    Refuses a boundary that separates a decorator from its ``def``: an end
-    anchored on a decorated ``def`` line would carry the ``@staticmethod``
-    away to decorate the wrong method, and neither ruff nor a text diff
-    notices."""
+    Refuses a boundary that still separates a decorator from its ``def``
+    (``_block`` keeps them together; this is the net under it): a stray
+    ``@staticmethod`` would decorate the wrong method, and neither ruff
+    nor a text diff notices."""
     spans = sorted(_block(lines, a, b) for a, b in pairs)
     for (_, e1), (s2, _) in zip(spans, spans[1:]):
         if s2 < e1:
@@ -187,10 +204,27 @@ def move(config_path: str) -> None:
         text = text.replace(old, new)
 
     target = RENDERERS / f"{cfg['module']}.py"
-    if target.exists():
+    append = cfg.get("append", False)
+    if append:
+        old_src = target.read_text(encoding="utf-8")
+        tree = ast.parse(old_src)
+        last = tree.body[-1]
+        if not (isinstance(last, ast.ClassDef) and last.name == cfg["cls"]):
+            sys.exit(f"{cfg['cls']} is not the last statement of {target.name}")
+        head = old_src.split("\n")
+        extra = [ln for ln in cfg.get("imports", "").split("\n") if ln and ln not in head]
+        if extra:
+            ends = [n.end_lineno for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+            if not ends:
+                sys.exit(f"{target.name} has no imports to add after")
+            at = max(ends)
+            head[at:at] = extra
+        new_src = "\n".join(head).rstrip("\n") + "\n\n" + text
+    elif target.exists():
         sys.exit(f"{target} already exists")
-    new_src = (f'"""{cfg["doc"]}"""\nfrom __future__ import annotations\n\n'
-               f'{cfg["imports"]}\n\n\nclass {cfg["cls"]}:\n{text}')
+    else:
+        new_src = (f'"""{cfg["doc"]}"""\nfrom __future__ import annotations\n\n'
+                   f'{cfg["imports"]}\n\n\nclass {cfg["cls"]}:\n{text}')
 
     for start, end in reversed(spans):
         del lines[start:end]
@@ -203,6 +237,8 @@ def move(config_path: str) -> None:
         return _class_members(next(n for n in tree.body
                                    if isinstance(n, ast.ClassDef) and n.name == name))
     moving = members(new_src, cfg["cls"])
+    if append:                          # only what this move adds
+        moving -= members(old_src, cfg["cls"])
     if "expect" in cfg and moving != set(cfg["expect"]):
         sys.exit("blocks don't hold the expected members:\n"
                  f"  missing: {sorted(set(cfg['expect']) - moving)}\n"
@@ -213,10 +249,23 @@ def move(config_path: str) -> None:
         for n in tree.body:
             if isinstance(n, ast.ClassDef):
                 others[n.name] = _class_members(n)
+    if append:
+        # ``moving`` had the mixin's own members subtracted, so a name the
+        # blocks share with it needs its own check.
+        dup = members(f"class _X:\n{text}", "_X") & members(old_src, cfg["cls"])
+        if dup:
+            sys.exit(f"name clash with {cfg['cls']}: {sorted(dup)}")
+        others.pop(cfg["cls"], None)
     for owner, names in others.items():
         if moving & names:
             sys.exit(f"name clash with {owner}: {sorted(moving & names)}")
     target.write_text(new_src, encoding="utf-8")
+    if append:
+        moved = sum(e - s for s, e in spans)
+        BACKEND.write_text(s, encoding="utf-8")
+        print(f"moved {moved} lines ({len(spans)} block(s)) onto the end of "
+              f"{target.relative_to(ROOT)}")
+        return
     # Both statements may be one line or wrapped in parentheses (ruff wraps
     # them past 100 columns); read either, write whichever fits.
     m = re.search(r"^class NumpyBackend\(([^)]*)\):$", s, re.M)

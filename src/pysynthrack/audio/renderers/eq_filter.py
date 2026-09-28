@@ -3,11 +3,11 @@ crossover, parametric EQ, motion EQ, sweep EQ, tilt EQ, loudness, vowel.
 
 Moved verbatim out of ``numpy_backend.py`` (2026-09-28) into a mixin that
 ``NumpyBackend`` inherits -- see docs/architecture.md, "Renderer
-families". Three coefficient helpers stay in the backend because other
-families share them, and are reached through ``self``:
+families". Three coefficient helpers live in the ``_shared`` mixin because
+other families share them, and are reached through ``self``:
 ``_filter_coeffs`` (also the meter's K-weighting), ``_crossover_coeffs``
 (also the rotary in ``modfx``) and ``_loud_shelf`` (also tape and the
-meter). ``_finite_mean`` and ``_pow2_clipped`` are backend-wide helpers,
+meter). ``_finite_mean`` and ``_pow2_clipped`` are generic helpers there,
 likewise via ``self``. The vowel renderer's lazy ``modules.vowel`` imports
 gained a dot for the deeper package.
 """
