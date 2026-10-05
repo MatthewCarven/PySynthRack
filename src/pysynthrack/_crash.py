@@ -1,5 +1,10 @@
 """Crash-report writer used by PySynthRack's two structured catch points.
 
+Also writes the patch loader's reports (``write_load_report``): what
+``Patch.from_dict`` had to drop. Those land in the same folder, so there
+is one place to look when something went wrong, and the windowed build
+(which has no console) still leaves the detail somewhere readable.
+
 Used by ``ui/app.py``'s outermost ``try/except`` around ``App().run()``
 and by ``numpy_backend._audio_callback`` when a render raises. Writes
 the heavy/labeled ``for_claude()`` output of ``describe_error()`` to a
@@ -36,6 +41,13 @@ def crash_dir() -> Path:
     (e.g. "where does my crash file end up?" in the UI).
     """
     return Path.home() / _CRASH_DIR_NAME / _CRASH_SUBDIR
+
+
+def _safe_fragment(text: Any) -> str:
+    """``text`` as a filename fragment: alphanumerics, hyphen and
+    underscore kept, anything else an underscore, empty -> "unknown"."""
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in str(text))
+    return safe or "unknown"
 
 
 def write_crash_report(report: Any, source: str = "unknown") -> str | None:
@@ -81,14 +93,7 @@ def write_crash_report(report: Any, source: str = "unknown") -> str | None:
 
     try:
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        # Sanitize source to a safe filename fragment - alphanumerics,
-        # hyphen, underscore only. Anything else becomes an underscore.
-        safe_source = "".join(
-            c if (c.isalnum() or c in "-_") else "_" for c in str(source)
-        )
-        if not safe_source:
-            safe_source = "unknown"
-        path = cdir / f"crash_{ts}_{safe_source}.txt"
+        path = cdir / f"crash_{ts}_{_safe_fragment(source)}.txt"
     except BaseException:
         logger.warning("Could not build crash filename; crash report not persisted.")
         return None
@@ -112,6 +117,46 @@ def write_crash_report(report: Any, source: str = "unknown") -> str | None:
         return None
 
     return str(path)
+
+
+def write_load_report(patch_path: str, warnings: list[str]) -> str | None:
+    """Write what the patch loader dropped to the crash folder.
+
+    ``warnings`` is ``patch.load_warnings``: one line per cable
+    ``Patch.from_dict`` left out. The GUI puts only the count on its
+    one-line status bar, and the windowed build has no console for the
+    detail, so the detail goes here. Returns the file path as a string,
+    or ``None`` on any failure -- never raises, like
+    ``write_crash_report``. Filename shape::
+
+        ~/.pysynthrack/crashes/load_2026-09-28_10-11-12_mypatch.txt
+    """
+    try:
+        cdir = crash_dir()
+        cdir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now()
+        stem = Path(str(patch_path)).stem
+        path = cdir / f"load_{now.strftime('%Y-%m-%d_%H-%M-%S')}_{_safe_fragment(stem)}.txt"
+        lines = [
+            "PySynthRack load report",
+            f"Patch: {patch_path}",
+            f"When:  {now.strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+            f"Dropped {len(warnings)} dead cable(s) on load:",
+            *(f"  - {w}" for w in warnings),
+            "",
+            "Each one names a module or port the patch doesn't have, or a",
+            "connection the editor would refuse (a hand edit, or a port",
+            "renamed since the patch was saved). The rest of the patch loaded",
+            "and plays. Saving the patch now writes it WITHOUT these cables,",
+            "so re-cable them in the editor first if you want to keep them.",
+            "",
+        ]
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return str(path)
+    except BaseException:
+        logger.warning("Could not write the load report; it went to the console only.")
+        return None
 
 
 # ---------------------------------------------------------------------------
