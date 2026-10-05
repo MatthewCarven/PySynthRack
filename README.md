@@ -12,6 +12,8 @@ can build real patches in it today.
 
 ### What works
 
+Fixed the backspace key too
+
 - **101 modules** in seven Add-menu categories:
   - **Sources (22)** — oscillator (sine / saw / square / triangle, each in
     naive, PolyBLEP/PolyBLAMP `*_blep`, and wavetable `*_wt` flavours),
@@ -125,7 +127,10 @@ https://drive.google.com/file/d/1GNms7bbO4TcPTAoCGIKJ6UW_IzhtMFPs/view?usp=shari
 
 <img width="591" height="22" alt="image" src="https://github.com/user-attachments/assets/bdf558a6-7528-4a55-8be3-0a29c672aa7b" />
 
+Newer Than New
+https://drive.google.com/file/d/12wpLxhdnzm9HvwlulOsWHfhqtpiy06tP/view?usp=drive_link
 
+<img width="605" height="22" alt="image" src="https://github.com/user-attachments/assets/bed98e1b-1581-4bdf-ba36-de6c7e55dc0c" />
 
 ## Installation (Windows)
 
