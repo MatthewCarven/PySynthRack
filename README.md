@@ -128,6 +128,8 @@ https://drive.google.com/file/d/1GNms7bbO4TcPTAoCGIKJ6UW_IzhtMFPs/view?usp=shari
 Newer Than New
 https://drive.google.com/file/d/12wpLxhdnzm9HvwlulOsWHfhqtpiy06tP/view?usp=drive_link
 
+<img width="605" height="22" alt="image" src="https://github.com/user-attachments/assets/bed98e1b-1581-4bdf-ba36-de6c7e55dc0c" />
+
 ## Installation (Windows)
 
 PySynthRack splits its dependencies so the audio engine can be installed on any Python version, while the GUI (DearPyGui) is optional — DPG sometimes lags on bleeding-edge Python releases.
