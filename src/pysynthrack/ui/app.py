@@ -632,11 +632,11 @@ class App:
                 dpg.add_key_press_handler(
                     key=del_key, callback=self._on_delete_selected
                 )
-            back_key = getattr(dpg, "mvKey_Back", None)
-            if back_key is not None:
-                dpg.add_key_press_handler(
-                    key=back_key, callback=self._on_delete_selected
-                )
+#            back_key = getattr(dpg, "mvKey_Back", None)
+#            if back_key is not None:
+#                dpg.add_key_press_handler(
+#                    key=back_key, callback=self._on_delete_selected
+#                )
             # Ctrl+= / Ctrl+- / Ctrl+0 and Ctrl+mouse-wheel drive the UI
             # zoom. Each callback re-checks Ctrl so a bare key still
             # reaches the keyboard-as-MIDI handler untouched. Register

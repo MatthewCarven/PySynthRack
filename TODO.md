@@ -253,9 +253,9 @@ once the board cleared.
       suite **3027**. **Wants ears** (scrub), **eyes** (the face), and a
       real keyboard on `velocity_cv → vel`. The sampler is
       feature-complete against its spec.
-- [ ] **EARS (meatthread0, banked 2026-09-11): `sampler_scrub.json` +
-      `sampler_mellotron.json` + `drum_dynamics.json` +
-      `modal_mallets.json` + `clock_divider_swing.json`** — Matthew:
+- [ ] **EARS (meatthread0, banked 2026-09-11): `sampler_scrub.json`done +
+      `sampler_mellotron.json`done + `drum_dynamics.json`done +
+      `modal_mallets.json`done love the marimbra + `clock_divider_swing.json`done** — Matthew:
       "bank sampler_scrub.json in my todo for now, and I'll test when I
       can do it properly, where I am is noisy." All five unheard (the
       modal one also wants eyes on its xy scope — the spread should draw
@@ -264,25 +264,27 @@ once the board cleared.
       new `reverse` / `antialias` tickboxes, and `gated` in the mode
       dropdown (never once selectable before 08-30). Unblocks nothing —
       the sampler is feature-complete; this is confirmation.
-      **Added 2026-09-14:** `pitch_shifter_shimmer.json` (the built-in
+      **Added 2026-09-14:** `pitch_shifter_shimmer.json`done (the built-in
       octave bloom — is the 6 kHz loop damping right, or does it want a
-      knob?) and `pitch_shifter_harmonizer.json` (stereo triad — does
+      knob?) and `pitch_shifter_harmonizer.json` done sounds good(stereo triad — does
       the hard pan feel wide or just split?). Same session, same bank.
-      And `chord_legato_inversions.json` (does the one-sample gate drop
+      And `chord_legato_inversions.json` done sounds very happy (does the one-sample gate drop
       on `retrig` read as a clean re-articulation through the ADSR, or
-      does it want a longer gap?). And `slew_clocked_glide.json` — change
+      does it want a longer gap?). And `slew_clocked_glide.json`done sounds good — change
       the clock's BPM while it plays; the glide should keep its fraction
-      of a step. And `organ_leslie.json` (2026-09-14, module #91) — the
+      of a step. And `organ_leslie.json`done sounds good (2026-09-14, module #91) — the
       pairing: does the drum's lag behind the horn read as a Leslie, or
       does it want the ramps trimmed? Is 0.7 depth / 0.8 spread the
       right default feel? **Added 2026-09-15:** `granular_cloud.json`
+      done didn't notice anything wrong with it like
       (module #92, slice 1) — a pluck melody with an octave-up grain
       cloud 300 ms behind it. The synchronous train puts a sideband
       within ±30 Hz of the octave on held notes: does that read as "the
       granular sound" or as out of tune? (Slice 2's spray smears it.)
       And is `hann` at 25 × 80 ms — transparent — the right default,
       or should a fresh node sound granular out of the box?
-      **Same day, slice 2:** `granular_haze.json` — the cloud proper
+      **Same day, slice 2:** `granular_haze.json` done same as granular 
+      haze but different samples? — the cloud proper
       (async, ±0.44 s position scatter, ±25 ct, full width). Does the
       constant-peak pan law read as wide or as lumpy? Is `spray_time` 1
       too random for a melody, and where does the sideband vanish
