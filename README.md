@@ -12,6 +12,8 @@ can build real patches in it today.
 
 ### What works
 
+Fixed the backspace key too
+
 - **101 modules** in seven Add-menu categories:
   - **Sources (22)** — oscillator (sine / saw / square / triangle, each in
     naive, PolyBLEP/PolyBLAMP `*_blep`, and wavetable `*_wt` flavours),
