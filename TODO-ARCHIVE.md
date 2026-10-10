@@ -3310,3 +3310,49 @@ items they changed are in TODO.md (§ "Plan together first", the
       **Un-parked 2026-10-10:** Matthew wants it, plus a timestamped
       filename tickbox. Superseded by the live follow-on "`disk_writer`:
       a real output path + a timestamp tickbox".
+- [x] **`disk_writer`: a real output path + a timestamp tickbox** —
+      un-parked 2026-10-10. Matthew: "this is one I'd like to add, but
+      also time and date based filename as a tickbox, on start timestamp
+      filename". Was: a relative `path` lands in the process's working
+      directory, which is how `recordingleft.wav`, `recordingright.wav`
+      and `take_01.wav` ended up in the repo root.
+      * **Where relative paths go: the Music folder** (Matthew, 2026-10-10:
+        "Music folder please"). That's `<Music>/PySynthRack/`, created on
+        first use, instead of the cwd. Find `<Music>` with the Windows
+        known-folder lookup (FOLDERID_Music, so a OneDrive-redirected
+        Music folder is honoured), falling back to `~/Music`.
+        Absolute paths are honoured as today.
+      * **A Browse... button for `path`** (Matthew: "yes a browse button
+        too"). `file_player` / `convolver` / `sampler` already have the
+        pattern (`_add_param_widget` path field + button →
+        `wav_dialog` → `_on_wav_selected`), but that dialog picks an
+        existing file to OPEN. A recording is a destination, so it wants
+        a save-style dialog (type a new name, `.wav` filter) that starts
+        in the Music folder. The write goes through
+        `App._set_module_param`.
+      * **`timestamp` tickbox, default OFF** (a bool that changes
+        shipped behaviour defaults off): when ticked, each Start opens a
+        new file `<stem>_YYYY-MM-DD_HH-MM-SS.wav`, stamped when Start
+        is pressed (ASCII, no colons, Windows-safe), so takes never
+        overwrite. Unticked = today's overwrite-the-same-name behaviour.
+      * **Say where it went:** the status bar names the full path of
+        each take when it opens (the media-path lesson: a subsystem
+        that fails soft needs something to say what happened).
+      * Spec settled 2026-10-10; S, one session. Tests: relative → the
+        Music folder (monkeypatch the lookup), absolute untouched,
+        timestamp names unique per Start and ASCII, tickbox off =
+        today's filename byte-for-byte, the Browse button exists for
+        `disk_writer` only.
+      **SHIPPED 2026-10-10.** `audio/recordings.py` (the Music known
+      folder via `SHGetKnownFolderPath`, `~/Music` fallback,
+      `PYSYNTHRACK_RECORDINGS_DIR` override); the `timestamp` param;
+      the writer thread makes the folders, steps a same-second take
+      aside (`_2`) and logs each take to `recording_log()`; the node's
+      save-style Browse... (relative when inside the folder) and the
+      status-bar line. Found on the way: a failed `wave.open(name)`
+      left a half-built writer whose `__del__` raised, which the crash
+      hooks would have logged as a crash on every failed take; the
+      worker opens the file itself now (tripwired). And
+      `tests/conftest.py` points the folder at a temp dir, since the
+      examples sweep renders `record_a_take.json`: that is how
+      `take_01.wav` got into the repo root. 30 disk_writer tests.

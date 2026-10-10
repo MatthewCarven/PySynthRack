@@ -24,6 +24,7 @@ import pysynthrack.modules  # noqa: F401
 from .. import _crash
 from .._resources import app_icon, examples_dir
 from ..audio import AudioBackend, pick_backend
+from ..audio import recordings
 from ..core.module import grouped_module_types
 from ..core.patch import Cable, Patch
 from ..io_patch import load_patch, save_patch
@@ -289,6 +290,13 @@ class App:
         # The backend's sink-scrub count last reported in the status bar
         # (blocks whose NaN / inf samples were silenced before the device).
         self._sink_scrubs_seen: int = 0
+        # Length of the backend's recording log last reported (each
+        # disk_writer take appends one entry when its file opens).
+        self._recordings_seen: int = 0
+        # The disk_writer whose Browse... button opened the recording
+        # dialog (the dialog is rebuilt per click; see
+        # _show_recording_dialog).
+        self._rec_target_id: int | None = None
 
         # dpg-id → (module_id, param_name) for every scrollable param widget,
         # so a mouse wheel over one can nudge its value. Filled as nodes are
@@ -1081,6 +1089,44 @@ class App:
                     callback=self._show_wav_dialog,
                     user_data=module.id,
                 )
+            return
+
+        if module.TYPE == "disk_writer" and param_name == "path":
+            # Path field + a Browse... button opening a SAVE-style picker
+            # that starts in the recordings folder (a take is a
+            # destination, so it gets its own dialog, not the shared
+            # open-a-WAV one). A relative name lands in <Music>/PySynthRack;
+            # the tooltip says where that is on this machine.
+            with dpg.group(horizontal=True):
+                path_tag = f"diskwriter_path_{module.id}"
+                dpg.add_input_text(
+                    label=param_name,
+                    default_value=str(current),
+                    width=140,
+                    tag=path_tag,
+                    callback=self._on_param_changed,
+                    user_data=user_data,
+                )
+                self._text_input_tags.add(path_tag)
+                with dpg.tooltip(path_tag):
+                    dpg.add_text(
+                        "A name without a folder records into "
+                        f"{recordings.recordings_dir()}"
+                    )
+                dpg.add_button(
+                    label="Browse...",
+                    callback=self._show_recording_dialog,
+                    user_data=module.id,
+                )
+            return
+
+        if module.TYPE == "disk_writer" and param_name == "timestamp":
+            dpg.add_checkbox(
+                label="timestamp (new file per take)",
+                default_value=bool(current),
+                callback=self._on_param_changed,
+                user_data=user_data,
+            )
             return
 
         if module.TYPE == "file_player" and param_name == "playing":
@@ -4758,6 +4804,69 @@ class App:
             dpg.set_value(text_tag, path)
         self._set_status(f"Selected: {os.path.basename(path)}")
 
+    _REC_DIALOG_TAG = "rec_dialog"
+
+    def _show_recording_dialog(self, sender, app_data, user_data) -> None:
+        """A disk_writer's Browse... button: open a save-style WAV picker.
+
+        Rebuilt on every click so it opens where this writer records now
+        (its folder if that exists, else the recordings folder, created
+        here so there is somewhere to land) with its current file name
+        filled in. Only the ``.wav`` filter: dpg's ``.*`` filter hands
+        back a typed name with ``.*`` glued on.
+        """
+        module = self.patch.modules.get(user_data)
+        if module is None:
+            return
+        self._rec_target_id = user_data
+        current = str(module.params.get("path", recordings.DEFAULT_NAME))
+        resolved = recordings.resolve_recording_path(current)
+        folder = recordings.recordings_dir()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            folder = recordings.music_dir()
+        start = resolved.parent if resolved.parent.is_dir() else folder
+        if dpg.does_item_exist(self._REC_DIALOG_TAG):
+            dpg.delete_item(self._REC_DIALOG_TAG)
+        with dpg.file_dialog(
+            label="Record to WAV",
+            show=True,
+            callback=self._on_recording_selected,
+            tag=self._REC_DIALOG_TAG,
+            width=700,
+            height=500,
+            default_path=str(start),
+            default_filename=resolved.name,
+        ):
+            dpg.add_file_extension(".wav", color=(150, 220, 255))
+
+    def _on_recording_selected(self, sender, app_data) -> None:
+        """Store the picked destination on the disk_writer that asked.
+
+        Inside the recordings folder it is stored relative (the patch
+        keeps recording "into Music" on another machine); anywhere else,
+        absolute. A name typed without ``.wav`` gets it.
+        """
+        module_id = self._rec_target_id
+        self._rec_target_id = None
+        if module_id is None:
+            return
+        chosen = str(app_data.get("file_path_name") or "")
+        if not chosen:
+            return
+        if chosen.endswith(".*"):
+            chosen = chosen[:-2]
+        if not os.path.splitext(chosen)[1]:
+            chosen += ".wav"
+        value = recordings.as_patch_path(chosen)
+        if not self._set_module_param(module_id, "path", value):
+            return
+        text_tag = f"diskwriter_path_{module_id}"
+        if dpg.does_item_exist(text_tag):
+            dpg.set_value(text_tag, value)
+        self._set_status(f"Recordings will go to: {chosen}")
+
     # ----- file_player queue ("file list") ---------------------------------
 
     @staticmethod
@@ -6607,6 +6716,36 @@ class App:
         self._update_stream_health(load)
         self._update_loops_readout()
         self._update_sink_scrubs()
+        self._update_recordings()
+
+    def _update_recordings(self) -> None:
+        """Name each new disk_writer take in the status bar as its file
+        opens -- or say it could not open. Without this a take that went
+        somewhere unexpected (or nowhere) is silent; the same lesson as
+        the media-path report. Touches the status bar only on new
+        entries."""
+        getter = getattr(self.backend, "recording_log", None)
+        if getter is None:
+            return
+        try:
+            log = getter()
+        except Exception:
+            return
+        n = len(log)
+        if n < self._recordings_seen:
+            # A fresh backend starts its log from empty.
+            self._recordings_seen = 0
+        if n <= self._recordings_seen:
+            return
+        self._recordings_seen = n
+        entry = log[-1]
+        if entry[0] == "opened":
+            self._set_status(f"Recording -> {entry[1]}")
+        else:
+            reason = entry[2] if len(entry) > 2 else "unknown error"
+            self._set_status(
+                f"Recording FAILED - cannot open {entry[1]}: {reason}"
+            )
 
     def _update_sink_scrubs(self) -> None:
         """Say so in the status bar when the output stage has had to

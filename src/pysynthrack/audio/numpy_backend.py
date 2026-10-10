@@ -1189,6 +1189,10 @@ class NumpyBackend(
         # so without this the device would be handed garbage. Counted so
         # the status bar can say it happened (see :meth:`sink_scrubs`).
         self._sink_nonfinite: int = 0
+        # One entry per disk_writer take, appended by the writer thread:
+        # ("opened", path) or ("failed", path, reason). The status bar
+        # names each take's file from it (see :meth:`recording_log`).
+        self._recording_log: list[tuple[str, ...]] = []
         self._state: dict[int, dict[str, Any]] = {}
         # Parallel map from module_id → module TYPE that owned the state.
         # Used in compile() to discard state when a patch swap reuses the
@@ -1676,6 +1680,14 @@ class NumpyBackend(
         the bad samples are zeroed; the rest of the block plays. Lock-free:
         one int, read by the GUI tick."""
         return int(self._sink_nonfinite)
+
+    def recording_log(self) -> list[tuple[str, ...]]:
+        """Every disk_writer take so far, oldest first: ``("opened",
+        path)`` with the full path the WAV is being written to, or
+        ``("failed", path, reason)`` when it could not be opened. A copy;
+        the writer threads only ever append, so the GUI tick reads the
+        new tail by length."""
+        return list(self._recording_log)
 
     # ----- start / stop ----------------------------------------------------
 

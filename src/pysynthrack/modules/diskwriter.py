@@ -22,15 +22,25 @@ the writer in a compiled patch, and closes it when the transport stops
 (``AudioBackend.stop()``). Re-arming creates a new file with the same
 name — existing files are overwritten without prompting, matching the
 unsentimental nature of a hobby synth and avoiding modal dialogs
-during a take.
+during a take. Tick ``timestamp`` to give every take its own file
+instead. The status bar names each take's full path as it opens.
 
 Parameters:
-    path: Filename for the recording. Relative paths land in the
-        process working directory; absolute paths are honored. Stick
-        ``.wav`` on the end yourself — we don't second-guess.
+    path: Filename for the recording. A relative path is a name inside
+        the recordings folder, ``<Music>/PySynthRack/`` (created on
+        first use; sub-folders allowed); an absolute path is used as
+        given. The node's Browse... button picks one. Stick ``.wav`` on
+        the end yourself when typing — we don't second-guess. (Before
+        2026-10-10 relative paths landed in the process working
+        directory.) See ``audio/recordings.py``.
     armed: When False the writer ignores incoming audio and never
         opens a file. Lets you keep the module in the patch without
         a take being made every time you hit play.
+    timestamp: When True each take (every Start, re-arm, or path
+        change) writes a NEW file, ``<stem>_YYYY-MM-DD_HH-MM-SS.wav``,
+        stamped when the take opens; a second take inside the same
+        second gets ``_2``. Off (the default) keeps the one name and
+        overwrites it, as before.
 """
 from __future__ import annotations
 
@@ -44,6 +54,6 @@ class DiskWriter(Module):
 
     TYPE = "disk_writer"
     CATEGORY = "Outputs"
-    DEFAULT_PARAMS = {"path": "recording.wav", "armed": True}
+    DEFAULT_PARAMS = {"path": "recording.wav", "armed": True, "timestamp": False}
     INPUT_PORTS = [Port("in", "in", "audio")]
     OUTPUT_PORTS: list = []  # sink — no audio output

@@ -35,6 +35,7 @@ from ...modules.cv_gates import KEY_CV_NAMES
 from ...modules.cv_keyboard import CV_REFERENCE_NOTE, KEY_GATE_NAMES
 from ...modules.keyboard import midi_to_freq
 from .. import media
+from .. import recordings
 
 
 class IORenderers:
@@ -1285,15 +1286,29 @@ class IORenderers:
             return None
 
         path = str(module.params.get("path", "recording.wav"))
-        if state["queue"] is None or state["path"] != path:
-            # First arrival, or path changed — (re)start the writer.
+        stamp = bool(module.params.get("timestamp", False))
+        if (
+            state["queue"] is None
+            or state["path"] != path
+            or state.get("timestamp") != stamp
+        ):
+            # First arrival (a Start, or a re-arm), or the path or the
+            # timestamp tickbox changed: a new take, so (re)start the
+            # writer. Only path arithmetic happens here; the worker does
+            # the filesystem side (folders, the name probe, the open).
             self._close_disk_writer_state(state)
             state["path"] = path
+            state["timestamp"] = stamp
+            target = recordings.resolve_recording_path(path, timestamp=stamp)
+            state["target"] = target
             state["queue"] = queue.Queue(maxsize=64)
             state["stop_event"] = threading.Event()
             t = threading.Thread(
                 target=self._disk_writer_worker,
-                args=(state["queue"], state["stop_event"], path, self.sample_rate),
+                args=(
+                    state["queue"], state["stop_event"], target,
+                    self.sample_rate, self._recording_log, stamp,
+                ),
                 daemon=True,
                 name=f"DiskWriter-{module.id}",
             )
@@ -1328,17 +1343,40 @@ class IORenderers:
     _MAX_VOICES = 16
 
     @staticmethod
-    def _disk_writer_worker(q, stop_event, path, sample_rate) -> None:
+    def _disk_writer_worker(
+        q, stop_event, target, sample_rate, log=None, unique=False
+    ) -> None:
         """Write queued blocks to a mono 16-bit WAV until stop is set.
+
+        ``target`` is the resolved path (see ``audio/recordings.py``). A
+        take inside the recordings folder creates the folders it needs; a
+        timestamped one (``unique``) steps aside from an existing file
+        rather than overwrite it. ``log`` gets ``("opened", path)`` or
+        ``("failed", path, reason)`` so the status bar can say where the
+        take went -- a recording that fails soft must not pass for one
+        that worked.
 
         On stop we drain anything still in the queue before closing so
         the final block of a take always lands.
         """
+        path = target
         try:
-            wf = wave.open(path, "wb")
-        except Exception as exc:  # pragma: no cover - filesystem-specific
+            if recordings.is_in_recordings_dir(target):
+                target.parent.mkdir(parents=True, exist_ok=True)
+            if unique:
+                path = recordings.unique_path(target)
+            # Open the file ourselves: ``wave.open(name)`` that fails
+            # leaves a half-built Wave_write whose __del__ raises, which
+            # the crash hooks would log as a crash on every failed take.
+            fh = open(path, "wb")
+        except Exception as exc:
             print(f"[DiskWriter] cannot open {path}: {exc}")
+            if log is not None:
+                log.append(("failed", str(path), str(exc)))
             return
+        if log is not None:
+            log.append(("opened", str(path)))
+        wf = wave.open(fh, "wb")
         wf.setnchannels(1)
         wf.setsampwidth(2)  # 16-bit
         wf.setframerate(int(sample_rate))
@@ -1352,4 +1390,5 @@ class IORenderers:
                 ints = (clipped * 32767.0).astype(np.int16)
                 wf.writeframes(ints.tobytes())
         finally:
-            wf.close()
+            wf.close()  # patches the header; leaves a caller's file open
+            fh.close()

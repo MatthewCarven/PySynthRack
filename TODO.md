@@ -241,9 +241,36 @@ likeliest to sound different come first.
       (`sampler_mellotron` and `sampler_scrub` heard 2026-10-05.)
 
 *Hands-on checks outside the examples:*
+- [ ] **HANDS + EYES: `disk_writer`** (new 2026-10-10) — load
+      `record_a_take.json`, play, Stop: the status bar should read
+      `Recording -> ...Music\PySynthRack\take_01.wav` and the file
+      should be there. Then click **Browse...** (opens in that folder,
+      `.wav` only), type a new name, and tick **timestamp (new file per
+      take)**: each Start should leave its own dated file. Your old
+      `recordingleft/right.wav` and `take_01.wav` in the repo root are
+      from the old cwd rule. Keep or delete them, your call.
 - [ ] **Real-GUI eyeball: governor patch** (meatthread0) — fill →
       CVOffset(−0.5) → CVScale → ratio_cv against a second device; watch
       fill hold ~50% and find the gain where it starts to warble.
+      *2026-10-10, first half (Matthew, on `ring_governor_monitor.json`,
+      device "Speakers 1 (Realtek HD Aud...)"):* "50% stays kind of
+      there sometimes 75 sometimes less than 50 ... it seems happy and
+      there is no distortion to the sound". *Second half, same session
+      (`scale` on "loop gain (NEGATIVE!)"):*
+      * **-4: steady**, "cycles happily between 50% buffer est to 66%",
+        which is tighter than the shipped -2 (50 to ~75%).
+      * **-8:** "seems to drops some but I didn't hear it". That's the
+        edge. Claude's full test suite was running on the same machine
+        throughout, so some of those drops may be CPU contention rather
+        than the loop.
+      * **Positive (+2.69, the wrong sign):** "starts breaking apart", as
+        expected, since positive gain is a runaway.
+      * **No audible warble** anywhere on the negative side. The 0.15 Hz
+        wobble first heard was the patch's own LFO filter sweep.
+      Open: whether the example should ship at -4 instead of -2
+      (Matthew's call), and whether that Realtek is also the main
+      output (if so, both share a clock and a second card is the real
+      test).
 - [ ] **Stream-health reading under load** (meatthread0, pending since
       2026-07-20) — run it under load (load some Chrome tabs) and report
       `DSP%` / `xrun` / `api` together; that reading decides between
@@ -386,39 +413,6 @@ session before anything is built. Don't build ahead.
       + `_RENDERERS` row, pyo stub, the `ui/app.py` widget block and the
       shared `mode` branch, ASCII-only labels, the registry-wide
       tripwires). *Found 2026-10-10.*
-- [ ] **`disk_writer`: a real output path + a timestamp tickbox** —
-      un-parked 2026-10-10. Matthew: "this is one I'd like to add, but
-      also time and date based filename as a tickbox, on start timestamp
-      filename". Was: a relative `path` lands in the process's working
-      directory, which is how `recordingleft.wav`, `recordingright.wav`
-      and `take_01.wav` ended up in the repo root.
-      * **Where relative paths go: the Music folder** (Matthew, 2026-10-10:
-        "Music folder please"). That's `<Music>/PySynthRack/`, created on
-        first use, instead of the cwd. Find `<Music>` with the Windows
-        known-folder lookup (FOLDERID_Music, so a OneDrive-redirected
-        Music folder is honoured), falling back to `~/Music`.
-        Absolute paths are honoured as today.
-      * **A Browse... button for `path`** (Matthew: "yes a browse button
-        too"). `file_player` / `convolver` / `sampler` already have the
-        pattern (`_add_param_widget` path field + button →
-        `wav_dialog` → `_on_wav_selected`), but that dialog picks an
-        existing file to OPEN. A recording is a destination, so it wants
-        a save-style dialog (type a new name, `.wav` filter) that starts
-        in the Music folder. The write goes through
-        `App._set_module_param`.
-      * **`timestamp` tickbox, default OFF** (a bool that changes
-        shipped behaviour defaults off): when ticked, each Start opens a
-        new file `<stem>_YYYY-MM-DD_HH-MM-SS.wav`, stamped when Start
-        is pressed (ASCII, no colons, Windows-safe), so takes never
-        overwrite. Unticked = today's overwrite-the-same-name behaviour.
-      * **Say where it went:** the status bar names the full path of
-        each take when it opens (the media-path lesson: a subsystem
-        that fails soft needs something to say what happened).
-      * Spec settled 2026-10-10; S, one session. Tests: relative → the
-        Music folder (monkeypatch the lookup), absolute untouched,
-        timestamp names unique per Start and ASCII, tickbox off =
-        today's filename byte-for-byte, the Browse button exists for
-        `disk_writer` only.
 - [ ] **Scope afterglow, opt-in** — revived 2026-10-10 (Matthew: "I
       love options but if it's too much CPU let's skip it"). An
       `afterglow` tickbox, default OFF, plus a frame count: keep the

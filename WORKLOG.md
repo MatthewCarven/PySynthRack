@@ -196,6 +196,56 @@ own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
 
 ---
 
+## 2026-10-10 — disk_writer: recordings go to Music, takes can be timestamped
+
+Matthew: "go ahead and build the disk_writer please". Spec settled the same
+day: "Music folder please, and yes a browse button too".
+
+- **`audio/recordings.py`** (new, dpg-free): a relative `path` resolves
+  into `<Music>/PySynthRack/`. `<Music>` comes from `SHGetKnownFolderPath`
+  with private ctypes prototypes, so a OneDrive-moved Music folder is
+  honoured; the fallback is `~/Music`. Absolute paths are used as given
+  and their folders are not created. `PYSYNTHRACK_RECORDINGS_DIR`
+  overrides the whole folder.
+- **`timestamp` param** (default OFF): each take (Start, re-arm, path
+  change, or ticking the box) opens `<stem>_YYYY-MM-DD_HH-MM-SS.wav`, and
+  a same-second take steps aside to `_2`. Off is one name, overwritten,
+  as before.
+- **The writer thread does all the filesystem work** (making folders,
+  the name probe, the open); the audio callback only does path
+  arithmetic. Each take is logged to `NumpyBackend.recording_log()`, and
+  the status bar says `Recording -> <full path>` or `Recording FAILED -
+  cannot open ...`.
+- **UI:** a save-style Browse... (`.wav` filter only, since dpg's `.*`
+  filter glues `.*` onto a typed name). It's rebuilt per click so it
+  opens in this writer's folder with its name filled in. A pick inside
+  the recordings folder is stored relative, so the patch records into
+  Music on any machine. The tickbox reads "timestamp (new file per take)".
+- **Found on the way:**
+  1. `wave.open(name)` that fails leaves a half-built `Wave_write` whose
+     `__del__` raises an unraisable `AttributeError`, which the crash
+     hooks log as a crash. Every failed take would have written a bogus
+     crash report. The worker now opens the file itself and hands
+     `wave` the handle; a `filterwarnings("error::...Unraisable...")`
+     mark is the tripwire.
+  2. The examples sweep renders `record_a_take.json` and
+     `mic_karaoke_recorder.json`, both armed with relative names. That's
+     how `take_01.wav` and `recordingleft/right.wav` (dated 2026-09-24,
+     the last full suite run) landed in the repo root. The new
+     `tests/conftest.py` points the recordings folder at a session temp
+     dir, and after this run `~/Music/PySynthRack` still doesn't exist.
+- Tests: 22 new in `test_disk_writer.py` (30 total), covering the paths,
+  stamps, uniqueness, per-take files, the log, the failure path, and the
+  UI with mocked dpg. Suite **5469 passed, 1 skipped** (8.5 min, sharing
+  the machine with Matthew's running app).
+- **The governor eyeball got its answer the same session**
+  (`ring_governor_monitor.json`, details in TODO): -4 is steady and holds
+  the buffer at 50–66%, -8 is the edge (drops, inaudible), and positive
+  breaks apart as it should. Open: ship the example at -4, and was that
+  Realtek also the main output?
+
+---
+
 ## 2026-10-10 — the plan and the TODO, brought back into line
 
 Matthew: "one to inspect the plan, or what's left of it after I've thrown

@@ -6129,10 +6129,25 @@ sink: audio in, nothing out, a file on disk. The renderer opens the file
 lazily the first time a compiled patch contains an armed writer and closes
 it when the transport stops; re-arming creates a new take under the same
 name (existing files are overwritten without prompting — no modal dialogs
-mid-take). Disk I/O never touches the audio callback: each writer owns a
+mid-take), unless `timestamp` is ticked, in which case every take gets its
+own file. Disk I/O never touches the audio callback: each writer owns a
 daemon worker thread behind a bounded queue, and in the rare case the queue
 is momentarily full the block is dropped (counted) rather than letting the
 audible output glitch.
+
+**Where takes land** (since 2026-10-10, `audio/recordings.py`): a relative
+`path` is a name inside the recordings folder, **`<Music>/PySynthRack/`**,
+created on first use (sub-folders in the name are created too). `<Music>`
+is the Music folder Windows reports, so one moved by OneDrive is honoured,
+else `~/Music`. An absolute path is used as given, and its folder is not
+created. Before 2026-10-10 relative paths landed in the process working
+directory, which scattered takes wherever the app was launched from. The
+node's **Browse...** button opens a save picker in that folder; a pick
+inside it is stored relative, so the patch records "into Music" on any
+machine, and a pick elsewhere is stored absolute. The **status bar names
+each take's full path** as it opens, or says why it couldn't
+(`NumpyBackend.recording_log()`). `PYSYNTHRACK_RECORDINGS_DIR` overrides
+the folder; the test suite points it at a temp dir.
 
 **Ports**
 
@@ -6144,8 +6159,9 @@ audible output glitch.
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|
-| `path` | `"recording.wav"` | filename | Where the WAV lands. Relative paths resolve against the process working directory; add `.wav` yourself. |
+| `path` | `"recording.wav"` | filename | Where the WAV lands. Relative → inside `<Music>/PySynthRack/`; absolute → as given. Browse... picks one; add `.wav` yourself when typing. |
 | `armed` | `True` | bool | Off = the writer sits in the patch inert, no file opened; lets you keep it wired without cutting a take every play. |
+| `timestamp` | `False` | bool | On = each take (every Start, re-arm or path change) writes a new file, `<stem>_YYYY-MM-DD_HH-MM-SS.wav`, stamped when the take opens; a second take in the same second gets `_2`. Off = one name, overwritten, as before. |
 
 See `examples/record_a_take.json`.
 
