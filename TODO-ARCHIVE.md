@@ -3356,3 +3356,30 @@ items they changed are in TODO.md (§ "Plan together first", the
       `tests/conftest.py` points the folder at a temp dir, since the
       examples sweep renders `record_a_take.json`: that is how
       `take_01.wav` got into the repo root. 30 disk_writer tests.
+- [x] **Real-GUI eyeball: governor patch** (meatthread0) — fill →
+      CVOffset(−0.5) → CVScale → ratio_cv against a second device; watch
+      fill hold ~50% and find the gain where it starts to warble.
+      *2026-10-10, first half (Matthew, on `ring_governor_monitor.json`,
+      device "Speakers 1 (Realtek HD Aud...)"):* "50% stays kind of
+      there sometimes 75 sometimes less than 50 ... it seems happy and
+      there is no distortion to the sound". *Second half, same session
+      (`scale` on "loop gain (NEGATIVE!)"):*
+      * **-4: steady**, "cycles happily between 50% buffer est to 66%",
+        which is tighter than the shipped -2 (50 to ~75%).
+      * **-8:** "seems to drops some but I didn't hear it". That's the
+        edge. Claude's full test suite was running on the same machine
+        throughout, so some of those drops may be CPU contention rather
+        than the loop.
+      * **Positive (+2.69, the wrong sign):** "starts breaking apart", as
+        expected, since positive gain is a runaway.
+      * **No audible warble** anywhere on the negative side. The 0.15 Hz
+        wobble first heard was the patch's own LFO filter sweep.
+      **The example now ships at -4** (Matthew: "ship at -4 please",
+      2026-10-10). Still open: whether that Realtek is also the main
+      output. If so, both share a clock and a second card is the real
+      test.
+      **PASSED 2026-10-10 on the shared-clock case.** Matthew: the
+      Realtek "is my main output", so both streams ran off one
+      clock and the governor was smoothing block-timing jitter, not
+      real drift. That proves the loop is stable and settled -4 as
+      the shipped gain. The two-clock run is a new, narrower item.

@@ -249,28 +249,14 @@ likeliest to sound different come first.
       take)**: each Start should leave its own dated file. Your old
       `recordingleft/right.wav` and `take_01.wav` in the repo root are
       from the old cwd rule. Keep or delete them, your call.
-- [ ] **Real-GUI eyeball: governor patch** (meatthread0) — fill →
-      CVOffset(−0.5) → CVScale → ratio_cv against a second device; watch
-      fill hold ~50% and find the gain where it starts to warble.
-      *2026-10-10, first half (Matthew, on `ring_governor_monitor.json`,
-      device "Speakers 1 (Realtek HD Aud...)"):* "50% stays kind of
-      there sometimes 75 sometimes less than 50 ... it seems happy and
-      there is no distortion to the sound". *Second half, same session
-      (`scale` on "loop gain (NEGATIVE!)"):*
-      * **-4: steady**, "cycles happily between 50% buffer est to 66%",
-        which is tighter than the shipped -2 (50 to ~75%).
-      * **-8:** "seems to drops some but I didn't hear it". That's the
-        edge. Claude's full test suite was running on the same machine
-        throughout, so some of those drops may be CPU contention rather
-        than the loop.
-      * **Positive (+2.69, the wrong sign):** "starts breaking apart", as
-        expected, since positive gain is a runaway.
-      * **No audible warble** anywhere on the negative side. The 0.15 Hz
-        wobble first heard was the patch's own LFO filter sweep.
-      **The example now ships at -4** (Matthew: "ship at -4 please",
-      2026-10-10). Still open: whether that Realtek is also the main
-      output. If so, both share a clock and a second card is the real
-      test.
+- [ ] **Governor on a second clock** (meatthread0) — re-run
+      `ring_governor_monitor.json` (ships at -4) with the buffered
+      out's `device` set to a card OTHER than the main Realtek (the
+      "HD Audio" device the warping-sink eyeball used on 2026-07-18,
+      often a monitor's HDMI audio). Does fill still hold around half
+      over a few minutes, and does -4 stay steady when the clocks
+      really drift? *Split 2026-10-10 from the governor eyeball, which
+      passed on the shared-clock case (archived).*
 - [ ] **Stream-health reading under load** (meatthread0, pending since
       2026-07-20) — run it under load (load some Chrome tabs) and report
       `DSP%` / `xrun` / `api` together; that reading decides between
