@@ -256,7 +256,10 @@ likeliest to sound different come first.
       often a monitor's HDMI audio). Does fill still hold around half
       over a few minutes, and does -4 stay steady when the clocks
       really drift? *Split 2026-10-10 from the governor eyeball, which
-      passed on the shared-clock case (archived).*
+      passed on the shared-clock case (archived).* Matthew has no second
+      card right now; the plan is an **HDMI display** (its audio shows
+      up as its own device: hit Refresh on the node). A display with no
+      speakers still answers the question through the `fill` readout.
 - [ ] **Stream-health reading under load** (meatthread0, pending since
       2026-07-20) — run it under load (load some Chrome tabs) and report
       `DSP%` / `xrun` / `api` together; that reading decides between
