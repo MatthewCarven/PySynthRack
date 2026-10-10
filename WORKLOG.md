@@ -237,6 +237,21 @@ worktrees, one file set each, cherry-picked onto main.
   pyo is parked, so it's filed as a decision. pyo's silent-stub notice
   misses `freeze` and `function_generator`, and MODULES.md's status note
   and "Adding a new module" have drifted. All three are in TODO.
+- **Matthew's calls, the same day:**
+  - `sequential_switch` dropped: it's patchable (selector → adsr → vca
+    → mixer).
+  - `looper` kept: nothing layers live audio.
+  - Subpatch containers and snapshot morph are off the module menu.
+    Subpatch goes to a new TODO § "Plan together first", alongside
+    off-thread rendering and host-API selection, which he wants to plan
+    in a session because his desktop's GUI lockups freeze the output.
+  - Scope afterglow revived as an opt-in, since the estimate says it's
+    cheap.
+  - `disk_writer` un-parked, with a timestamp-filename tickbox.
+  - `midi_output` is wanted for MIDI-based patches.
+  - The epoch-wrap item got a plain-English explanation and stays, low
+    priority.
+  - He's running the governor-patch eyeball now.
 
 ---
 

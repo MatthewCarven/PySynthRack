@@ -272,6 +272,20 @@ likeliest to sound different come first.
       its own float64 mean instead of `_finite_mean`. One-liners.
 - [ ] **No epoch wrap on the no-CV oscillator/organ phase** — precision
       erodes to ~−116 dB after 24 h of running. Low priority.
+      *Plain English (2026-10-10, for Matthew):* with no CV patched, the
+      oscillator's phase is "start + step × samples since the frequency
+      last changed" (the organ's scanner counts from Start). That count
+      just keeps growing. Nothing ends, overflows or reverses. But a
+      float64 has a fixed number of digits, so the bigger the count, the
+      fewer are left for the fraction the waveform actually uses. The
+      result is a faint noise floor that rises slowly, about −116 dB
+      after a day held unchanged, which reaches 16-bit's −96 dB after
+      roughly ten days. Touching the frequency resets the count. The fix
+      (the CV path already does it, `_OSC_EPOCH`) is to fold the count
+      back every 65,536 samples, like a clock hand going past 12; the
+      wave continues seamlessly. Cheap, but it touches the oscillator's
+      fast path, so it needs the reference-render recipe. Matthew: "we
+      might even keep this". Keep it low priority.
 - [ ] **`adsr`: the voice path lands its attack/decay crossing +-1 sample
       across block sizes** (one stage step); mono is bit-exact. Fixing it
       changes shipped renders, so it wants the reference-render recipe.
@@ -323,13 +337,29 @@ Calls, not bugs: each waits on a yes, a no or a which.
       numpy the default and pyo is parked. Flip to numpy-first (pyo by
       `PYSYNTHRACK_BACKEND=pyo` only), or keep it as is? *Surfaced
       2026-10-10 by the MODULE_IDEAS realignment.*
-- [ ] **MODULE_IDEAS menu calls** (recorded in
-      [docs/MODULE_IDEAS.md](docs/MODULE_IDEAS.md) under the quick hits,
-      2026-10-10): is an audio/CV `sequential_switch` still wanted beside
-      `possibility_selector`? An audio `looper` beside `cv_recorder`? Do
-      subpatch containers and snapshot morph belong on a *module* menu
-      or only here? Keep listing scope afterglow as "offered, not taken
-      up", or drop it?
+
+## Plan together first
+
+Matthew wants to scope and plan these with Claude in a planning
+session before anything is built. Don't build ahead.
+
+- [ ] **Off-thread audio rendering + host-API selection** (both below
+      under Later / wishlist, with their 2026-07-20 scoping). Matthew,
+      2026-10-10: "my desktop system has gui lockups that mean unless
+      rendering off thread it freezes the output". That's a stronger
+      reason than the old "only if the readout shows underflows". For
+      the session: what kind of lockup is it? A thread inside the same
+      process still needs Python's GIL, so if the lockup is Python code
+      holding it, a render thread starves too. It rides a lockup out only
+      as far as its ring is deep, and a separate audio process is the
+      full fix. If the lockup is native (window messages, the DPG frame),
+      a render thread plus a deep ring may be enough. The stream-health
+      reading under "Hands-on checks" is the first measurement to bring.
+- [ ] **Subpatch containers** (L) — group modules into a reusable
+      macro-module with exposed ports. Off the module menu 2026-10-10;
+      Matthew: "can take or leave this, again a planning scope and plan
+      if we take it". Spec one-liner in docs/MODULE_IDEAS.md § "The
+      2026-08-04 brainstorm".
 
 ## Follow-ons and small items
 
@@ -356,6 +386,39 @@ Calls, not bugs: each waits on a yes, a no or a which.
       + `_RENDERERS` row, pyo stub, the `ui/app.py` widget block and the
       shared `mode` branch, ASCII-only labels, the registry-wide
       tripwires). *Found 2026-10-10.*
+- [ ] **`disk_writer`: a real output path + a timestamp tickbox** —
+      un-parked 2026-10-10. Matthew: "this is one I'd like to add, but
+      also time and date based filename as a tickbox, on start timestamp
+      filename". Was: a relative `path` lands in the process's working
+      directory, which is how `recordingleft.wav`, `recordingright.wav`
+      and `take_01.wav` ended up in the repo root.
+      * **Where relative paths go:** a recordings folder (proposal:
+        `~/Music/PySynthRack/`, created on first use) rather than the
+        cwd. The patch's own folder would follow the media-path rule,
+        but recording while an example is open would then litter
+        `examples/`. Absolute paths are honoured as today. Matthew's pick.
+      * **`timestamp` tickbox, default OFF** (a bool that changes
+        shipped behaviour defaults off): when ticked, each Start opens a
+        new file `<stem>_YYYY-MM-DD_HH-MM-SS.wav`, stamped when Start
+        is pressed (ASCII, no colons, Windows-safe), so takes never
+        overwrite. Unticked = today's overwrite-the-same-name behaviour.
+      * **Say where it went:** the status bar names the full path of
+        each take when it opens (the media-path lesson: a subsystem
+        that fails soft needs something to say what happened).
+      * Open question: did "filename selector" also mean a Browse...
+        button for `path`? The app already has DPG file dialogs
+        (`_build_file_dialogs`).
+- [ ] **Scope afterglow, opt-in** — revived 2026-10-10 (Matthew: "I
+      love options but if it's too much CPU let's skip it"). An
+      `afterglow` tickbox, default OFF, plus a frame count: keep the
+      last N traces as extra polylines with fading alpha, so `chaos` in
+      xy draws the dense butterfly. Cost estimate: only the newest
+      polyline gets new points each frame (as now); the older N−1 just
+      get a cheaper colour change, and the GPU draws a few thousand
+      vertices for nothing. Off costs nothing. Measure the UI frame time
+      with it on before shipping, because until rendering moves
+      off-thread (see "Plan together first") UI time competes with
+      audio for the GIL.
 
 *Code health:*
 - [ ] **Split `ui/app.py`** (7.4k lines, one `App` class) -- the custom
@@ -401,6 +464,10 @@ Calls, not bugs: each waits on a yes, a no or a which.
       (#100) have shipped as well, so what is left on this list is
       `midi_output`, subpatch containers and snapshot morph. The §
       references above now point into TODO-ARCHIVE.md.*
+      *Matthew, 2026-10-10:* `midi_output` is wanted, "but only for midi
+      based patches" (the hardware-rig case). Subpatch containers moved
+      to § "Plan together first", snapshot morph to Later / wishlist.
+      Neither is easy, and both are off the module menu.
 - [ ] **Module ideas backlog** — see [docs/MODULE_IDEAS.md](docs/MODULE_IDEAS.md)
       (written 2026-07-04; realigned 2026-10-10, open items first). Open
       and spec'd: `pitch_detector` (M–L), `spectrum` (M). One-liners, spec
@@ -412,7 +479,9 @@ Calls, not bugs: each waits on a yes, a no or a which.
 ## Later / wishlist
 
 - [ ] **Off-thread audio rendering (render thread + ring buffer)** — SCOPED
-      2026-07-20, gated on the readout above. `_fill_output` currently renders
+      2026-07-20, gated on the readout above. *2026-10-10: wanted, and
+      for a planning session with Matthew first; see § "Plan together
+      first".* `_fill_output` currently renders
       the whole graph inside the PortAudio callback, so there is zero slack for
       a scheduling spike. Move `render_block_multi` onto a dedicated thread
       feeding a sample-counted ring; the callback becomes a memcpy.
@@ -435,10 +504,12 @@ Calls, not bugs: each waits on a yes, a no or a which.
       host-API picker (WASAPI, optionally `sd.WasapiSettings(exclusive=True)`)
       and a `latency` hint. Possibly a bigger win than the render rewrite for a
       fraction of the work — the new `api` readout says whether it's worth it.
-- [ ] **`disk_writer`'s output path is still cwd-relative** — deliberate
-      and documented (it is a *destination*, not a lookup: there is no
-      "search for where the user meant to write"), but worth revisiting
-      if anyone is ever surprised by where their recording landed.
+- [ ] **Snapshot morph** (M–L) — save knob scenes, interpolate between
+      them with one CV. Off the module menu 2026-10-10 (Matthew: "nah,
+      unless easy to implement", and it isn't): a morph CV drives every
+      numeric param of every module each block, through the single
+      param-write door (`App._set_module_param`, tripwired). Combos and
+      bools would snap at the midpoint. Kept here so the idea survives.
 
 ## Standing notes (not tasks)
 

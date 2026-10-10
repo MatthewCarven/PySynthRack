@@ -92,10 +92,12 @@ Paste the preamble below plus one module spec as the task.
 
 - **Open, spec'd (ready to pick):** `pitch_detector` (M–L) · `spectrum` (M).
 - **Open, one-liners (spec when picked):** from the keep-list,
-  `midi_output` (M), subpatch containers (L), snapshot morph (M–L); quick
-  hits `exciter` `gate_delay` `sequential_switch` `macro` `tuner`
+  `midi_output` (M); quick hits `exciter` `gate_delay` `macro` `tuner`
   `looper` (L), vocoder follow-ups.
-- **Offered, not taken up:** scope persistence/afterglow.
+- **Off the menu (Matthew, 2026-10-10):** `sequential_switch` (dropped:
+  patchable today); subpatch containers and snapshot morph (architecture,
+  not modules, so they're tracked in `TODO.md`); scope afterglow (revived
+  as an opt-in scope feature in `TODO.md`).
 - **Shipped from this menu** (47 types; specs in the appendix):
   Dynamics: `compressor` `limiter` `noise_gate` `transient_shaper` ·
   Pitch/frequency: `ring_mod` `freq_shifter` `bitcrusher` ·
@@ -189,9 +191,17 @@ the full specs mentioned above now live too. Three remain:
   them with one CV. A performance feature more than a module.
 
 *Note 2026-10-10:* there is no "I/O" CATEGORY; `midi_output` would most
-likely be filed under Outputs, decided when it is specced. The endgame
-pair are architecture, not modules, and are also carried by the keep-list
-entry in `TODO.md`.
+likely be filed under Outputs, decided when it is specced. Matthew on
+`midi_output`: wanted, "but only for midi based patches". It's the
+hardware-rig case, so spec it around a patch that already talks MIDI.
+
+*Off the module menu 2026-10-10 (Matthew: "nah, unless easy to
+implement").* Neither is easy. Subpatch containers (L) is now under
+`TODO.md` § "Plan together first": scope and plan it with Matthew if
+it's ever taken up. Snapshot morph (M–L) is in `TODO.md` § "Later /
+wishlist": it would drive every numeric param of every module from one
+CV each block, through the single param-write door. The two bullets
+above are kept as the record.
 
 ## Quick hits (S unless noted)
 
@@ -207,12 +217,20 @@ entry in `TODO.md`.
   knob, carrier normal to noise, per-band trims.
 
 *Notes 2026-10-10:*
-- `sequential_switch`: `possibility_selector` with every step decided is
-  already a clocked 1→4 router, but for gates only; this would switch
-  audio and CV, in both directions.
+- `sequential_switch`: **DROPPED 2026-10-10** (Matthew: "no unless we're
+  missing functionality somewhere"). Nothing's missing; it's just more
+  modules to patch. `possibility_selector` with every step decided
+  (`out1..4`, gates) → four `adsr` (sustain 1, attack and release at
+  their shortest: the gate → CV bridge, which de-clicks the switch too)
+  → four `vca.cv` → `mixer` switches audio on a clock. For CV, use
+  `cv_math` `mult` instead of the `vca` and a `cv_combiner` instead of
+  the `mixer`.
 - `tuner` needs `pitch_detector` first.
 - `looper`: `cv_recorder` (shipped 2026-09-19) is the CV half; this is
-  the audio one.
+  the audio one. **KEPT 2026-10-10** under Matthew's same rule, because
+  this IS missing: nothing records live audio in layers. `delay` freeze
+  holds at most 2 s, `granular` freeze at most its 10 s ring, and both
+  only hold one take: no overdub, no undo, no clocked length.
 - The vocoder follow-ups are also listed under the shipped Vocoder bullet
   in `TODO.md`.
 
@@ -222,7 +240,10 @@ entry in `TODO.md`.
   ones, so `chaos` in xy mode draws the dense butterfly. Offered
   2026-08-21; Matthew didn't take it up and it was deliberately kept off
   `TODO.md` (WORKLOG 2026-08-21, "the butterfly lands"). Here so it stays
-  findable, not as a pick.
+  findable, not as a pick. **Revived 2026-10-10** (Matthew: "I love
+  options but if it's too much CPU let's skip it"). The estimate says
+  it's cheap, so it's in `TODO.md` as an opt-in scope feature, off by
+  default.
 
 ---
 

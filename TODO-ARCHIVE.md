@@ -3280,3 +3280,33 @@ governor-patch eyeball).*
       "works flawlessly"). Drag/click seeks, the thumb follows the mouse
       mid-drag then resumes tracking the playhead, and paused scrubbing all
       confirmed in the real window.
+
+### Resolved later the same day (2026-10-10)
+
+Matthew's answers to the questions the consolidation raised. The live
+items they changed are in TODO.md (§ "Plan together first", the
+`disk_writer` and scope-afterglow follow-ons, the keep-list note).
+
+- [x] **MODULE_IDEAS menu calls** (recorded in
+      [docs/MODULE_IDEAS.md](docs/MODULE_IDEAS.md) under the quick hits,
+      2026-10-10): is an audio/CV `sequential_switch` still wanted beside
+      `possibility_selector`? An audio `looper` beside `cv_recorder`? Do
+      subpatch containers and snapshot morph belong on a *module* menu
+      or only here? Keep listing scope afterglow as "offered, not taken
+      up", or drop it?
+      **ANSWERED 2026-10-10.** `sequential_switch`: "no unless we're
+      missing functionality somewhere". Nothing is missing (selector →
+      adsr → vca → mixer patches it), so it's DROPPED. `looper`: "same as
+      above". Something is missing (nothing layers live audio), so it's
+      KEPT. Subpatch containers and snapshot morph: "nah, unless easy to
+      implement". Neither is, so both are off the menu: subpatch to "Plan
+      together first", snapshot morph to Later. Scope afterglow: "I love
+      options but if it's too much CPU let's skip it". The estimate says
+      cheap, so it's revived as an opt-in follow-on.
+- [x] **`disk_writer`'s output path is still cwd-relative** — deliberate
+      and documented (it is a *destination*, not a lookup: there is no
+      "search for where the user meant to write"), but worth revisiting
+      if anyone is ever surprised by where their recording landed.
+      **Un-parked 2026-10-10:** Matthew wants it, plus a timestamped
+      filename tickbox. Superseded by the live follow-on "`disk_writer`:
+      a real output path + a timestamp tickbox".
