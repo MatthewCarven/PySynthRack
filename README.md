@@ -38,7 +38,7 @@ Fixed the backspace key too
     are **?**), arpeggiator, euclidean / burst / bernoulli
     clockwork, gate logic, chaos, a shift-register random source, and a
     smooth wandering random (drift).
-  - **Routing & VCA (7)** — VCA, 4-in mixer, an 8×8 matrix mixer with
+  - **Routing & VCA (7)** — VCA, 4-in mixer, a 4×4 matrix mixer with
     feedback, mid/side, an autopanner (module #101), audio/CV combiners.
   - **CV & Utilities (14)** — audio↔CV bridges, Schmitt trigger, constant, CV
     scale/offset, CV math (min / max / avg / diff / mult / rect / inv), a CV
