@@ -392,11 +392,20 @@ session before anything is built. Don't build ahead.
       filename". Was: a relative `path` lands in the process's working
       directory, which is how `recordingleft.wav`, `recordingright.wav`
       and `take_01.wav` ended up in the repo root.
-      * **Where relative paths go:** a recordings folder (proposal:
-        `~/Music/PySynthRack/`, created on first use) rather than the
-        cwd. The patch's own folder would follow the media-path rule,
-        but recording while an example is open would then litter
-        `examples/`. Absolute paths are honoured as today. Matthew's pick.
+      * **Where relative paths go: the Music folder** (Matthew, 2026-10-10:
+        "Music folder please"). That's `<Music>/PySynthRack/`, created on
+        first use, instead of the cwd. Find `<Music>` with the Windows
+        known-folder lookup (FOLDERID_Music, so a OneDrive-redirected
+        Music folder is honoured), falling back to `~/Music`.
+        Absolute paths are honoured as today.
+      * **A Browse... button for `path`** (Matthew: "yes a browse button
+        too"). `file_player` / `convolver` / `sampler` already have the
+        pattern (`_add_param_widget` path field + button →
+        `wav_dialog` → `_on_wav_selected`), but that dialog picks an
+        existing file to OPEN. A recording is a destination, so it wants
+        a save-style dialog (type a new name, `.wav` filter) that starts
+        in the Music folder. The write goes through
+        `App._set_module_param`.
       * **`timestamp` tickbox, default OFF** (a bool that changes
         shipped behaviour defaults off): when ticked, each Start opens a
         new file `<stem>_YYYY-MM-DD_HH-MM-SS.wav`, stamped when Start
@@ -405,9 +414,11 @@ session before anything is built. Don't build ahead.
       * **Say where it went:** the status bar names the full path of
         each take when it opens (the media-path lesson: a subsystem
         that fails soft needs something to say what happened).
-      * Open question: did "filename selector" also mean a Browse...
-        button for `path`? The app already has DPG file dialogs
-        (`_build_file_dialogs`).
+      * Spec settled 2026-10-10; S, one session. Tests: relative → the
+        Music folder (monkeypatch the lookup), absolute untouched,
+        timestamp names unique per Start and ASCII, tickbox off =
+        today's filename byte-for-byte, the Browse button exists for
+        `disk_writer` only.
 - [ ] **Scope afterglow, opt-in** — revived 2026-10-10 (Matthew: "I
       love options but if it's too much CPU let's skip it"). An
       `afterglow` tickbox, default OFF, plus a frame count: keep the
