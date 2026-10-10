@@ -62,7 +62,7 @@
       "type": "cv_scale",
       "name": "loop gain (NEGATIVE!)",
       "params": {
-        "scale": -2.0
+        "scale": -4.0
       }
     }
   ],

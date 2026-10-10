@@ -267,10 +267,10 @@ likeliest to sound different come first.
         expected, since positive gain is a runaway.
       * **No audible warble** anywhere on the negative side. The 0.15 Hz
         wobble first heard was the patch's own LFO filter sweep.
-      Open: whether the example should ship at -4 instead of -2
-      (Matthew's call), and whether that Realtek is also the main
-      output (if so, both share a clock and a second card is the real
-      test).
+      **The example now ships at -4** (Matthew: "ship at -4 please",
+      2026-10-10). Still open: whether that Realtek is also the main
+      output. If so, both share a clock and a second card is the real
+      test.
 - [ ] **Stream-health reading under load** (meatthread0, pending since
       2026-07-20) — run it under load (load some Chrome tabs) and report
       `DSP%` / `xrun` / `api` together; that reading decides between

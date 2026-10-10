@@ -5985,7 +5985,10 @@ becomes `frames * (1 + cv * ratio_depth)`, clamped 0.5×..2× and smoothed
 the sink stretches time to hold its own ring at half — an
 adaptive-resampling clock governor built from patch cables. (The sign
 matters: a low ring needs positive cv to push more samples, so the loop
-inverts; positive gain runs away.) The stretch is **pitch-preserving**
+inverts; positive gain runs away.) `examples/ring_governor_monitor.json`
+ships at **scale −4**, from Matthew's 2026-10-10 real-GUI run: −4 held the
+ring between about 50 and 66% with nothing audible, −2 between 50 and 75%,
+−8 sat at the edge (drops, still inaudible), and positive broke apart. The stretch is **pitch-preserving**
 (streaming WSOLA cancelled by the length resample), so even large
 corrections hold pitch — at the cost of ~50 ms constant latency on the
 governed path and a one-grain warm-up (brief silence) when the cable
