@@ -5,6 +5,16 @@ work item. Not commitments — when one is picked, move a line into `TODO.md` an
 build from the spec here. Grep `TODO-ARCHIVE.md` before adding new ideas (some
 were shipped already).
 
+**Realigned 2026-10-10** against the module registry (101 types). Since
+the menu was written, 47 of those types shipped from it and 5 shipped that
+were never on it. What is still open comes first. Every shipped spec moved
+**verbatim** to the [appendix](#appendix-shipped-from-this-menu), under
+its original section heading, with one added line: the ship date, how the
+build differed from the spec (if it did), and its `docs/MODULES.md` entry,
+which is the record of what was actually built. Follow-ons and stretch
+lines of shipped modules are tracked in `TODO.md`, not here. The submit
+preamble was rewritten for the renderer-family split (2026-09-25..28).
+
 Effort scale: **S** ≈ one patch · **M** ≈ 1–2 sessions · **L** = slice it
 (multi-session, per working agreement).
 
@@ -12,34 +22,243 @@ Effort scale: **S** ≈ one patch · **M** ≈ 1–2 sessions · **L** = slice i
 
 Paste the preamble below plus one module spec as the task.
 
-> Add a new module to PySynthRack (numpy backend first, headless tests).
-> Follow docs/MODULES.md → "Adding a new module": module class in
-> `src/pysynthrack/modules/` with `@register_module_type` and a `CATEGORY`
-> ClassVar; renderer in `audio/numpy_backend.py` (multi-output renderers return
-> a dict); silent TYPE stub in `audio/pyo_backend.py`. House invariants:
-> single voice row bit-identical to mono; bit-exact passthrough at the neutral
-> setting (mix=0 bit-exact dry for effects); block-size independence where
-> feasible — if not exactly achievable, pin a tolerance and document why;
-> per-voice state on stateful modules; voice-aware reads via
-> `_input_buffer(..., collapse=False)`; pitch CV is 1V/oct with C4 = 0 V;
-> gates are 0/1. Every new `*_cv` input gets an explicit depth param with
-> units documented in the MODULES.md conventions table. Modules owning OS
-> resources go in backend `compile()`/`stop()` hooks. Update docs/MODULES.md,
-> WORKLOG.md and TODO.md in the same commit. Examples respect gain headroom.
+> Add a new module to PySynthRack (numpy backend, headless tests). The
+> spec is a hypothesis: prototype the DSP before building and say where
+> it is wrong. Read docs/MODULES.md → "Adding a new module" and
+> docs/architecture.md → "Renderer families". In a git worktree, run
+> python with `PYTHONPATH=src` (the editable install points at the main
+> checkout); set `OPENBLAS_NUM_THREADS=1` if numpy won't import.
+>
+> 1. **Class** in `src/pysynthrack/modules/<name>.py`: subclass `Module`,
+>    decorate with `@register_module_type`, declare `TYPE`, `CATEGORY`
+>    (one of `CATEGORY_ORDER` in `core/module.py`: Sources, Filters & EQ,
+>    Effects, Modulation, Routing & VCA, CV & Utilities, Outputs),
+>    `DEFAULT_PARAMS`, `INPUT_PORTS`, `OUTPUT_PORTS`. Pure data, no DSP.
+>    Import it in `modules/__init__.py` and add it to `__all__`.
+> 2. **Renderer**: a `_render_<type>(self, module, frames, buffers, patch)`
+>    method on the family mixin it belongs to in
+>    `src/pysynthrack/audio/renderers/` (`clockwork`, `colour`,
+>    `cv_routing`, `dynamics`, `eq_filter`, `io`, `mod_sources`, `modfx`,
+>    `oscillators`, `physical`, `pitch_time`, `reverb_delay`,
+>    `sequencing`, `spectral`), and a `"<type>": "_render_<type>"` row in
+>    the `NumpyBackend._RENDERERS` table in `audio/numpy_backend.py`.
+>    Return one array, or a dict keyed by output-port name. Note sources
+>    that render from their own state take `(module, frames)` and also go
+>    in `_FRAMES_ONLY`; speaker-family sinks are drained by the engine
+>    instead (`_SPEAKER_CHANNELS` / `_STEREO_SPEAKERS`). Helpers several
+>    families share live on the `_shared` mixin; a mixin that needs
+>    `NumpyBackend` by name imports it lazily inside the method. A new
+>    family is a new mixin, exported from `renderers/__init__.py` and
+>    added to `NumpyBackend`'s bases. A module owning OS resources (files,
+>    threads, devices) gets its lifecycle in `NumpyBackend.compile()` /
+>    `stop()` (the `file_player` / `convolver` / `sampler` / `midi_input`
+>    blocks are the pattern).
+> 3. **pyo** is parked: add the TYPE to the silent-stub tuple in
+>    `PyoBackend._build_module` (`audio/pyo_backend.py`).
+> 4. **UI**: without a block for your TYPE in `ui/app.py`
+>    `_add_param_widget`, a number gets a generic unbounded drag and a
+>    string a text box. Add one: bounded widgets, units in the label,
+>    combos for enum params. A `mode` param also needs an `elif` with the
+>    module's own list in the shared `mode` branch, which runs first and
+>    otherwise offers the filter's modes. Everything painted on screen is
+>    ASCII (DearPyGui's font draws anything else as `?`).
+>
+> House invariants: single voice row bit-identical to mono; bit-exact
+> passthrough at the neutral setting (mix=0 bit-exact dry for effects);
+> block-size independence (probe 64/128/512/1000; integer-count
+> schedules, not float phase accumulators) — if not exactly achievable,
+> pin a tolerance and document why; per-voice state on stateful modules;
+> voice-aware reads via `_input_buffer(patch, buffers, module.id, port,
+> collapse=False)`; collapse voices only through `_voice_sum` /
+> `_voice_mean`; read block-mean CVs through `_finite_mean` (float64,
+> NaN-scrubbed) and octave CVs through `_pow2_clipped`; pitch CV is
+> 1V/oct with C4 = 0 V; gates are 0/1 (high is > 0.5). Every new `*_cv`
+> input gets an explicit depth param with units documented in the
+> MODULES.md CV depth conventions table. Examples respect gain headroom.
+>
+> Done means: `tests/test_<name>.py`, including a widget sweep (every
+> param gets a bounded widget); an example in `examples/`; MODULES.md
+> updated (an index row ``[`<type>`](#<type>)``, a ``#### `<type>` ``
+> entry, conventions-table rows, an example-appendix line); README's module
+> counts; this spec moved to the appendix below with its ship line; the
+> registry-wide tripwires green (`test_render_dispatch`,
+> `test_docs_coverage`, `test_module_categories`, `test_mode_combos`,
+> `test_voice_collapse`, `test_ui_glyphs`, `test_examples`); and the full
+> suite green (`pytest -q`, ~5.4k tests). Update WORKLOG.md and TODO.md
+> in the same commit, unless you are one of several parallel agents, in
+> which case leave both to the coordinator.
 
 ## Index
 
-Dynamics: `compressor` `limiter` `noise_gate` `transient_shaper` ·
-Pitch/frequency: `ring_mod` `freq_shifter` `bitcrusher` ·
-Character/space: `tape` `convolver` `freeze` `autopan` ·
-CV tools: `cv_math` `cv_recorder` `quantizer` `slew` `pitch_detector` · Filters: `vowel` ·
-Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate` `burst` `arpeggiator` `chord` `chaos` `possibility_selector` `drift` ·
-Voices: `fm_op` `pluck` `bowed` `wind` `modal` `granular` `kick_drum`/`snare_drum`/`hat_drum` `sampler` `organ` ·
-Visual: `scope` `spectrum` ·
-Planned run (2026-08-03): `logic` `mid_side` `octaver` · `matrix_mixer`
-`vinyl` · `supersaw` `wavetable_morph` · plus quick hits at the end.
+- **Open, spec'd (ready to pick):** `pitch_detector` (M–L) · `spectrum` (M).
+- **Open, one-liners (spec when picked):** from the keep-list,
+  `midi_output` (M), subpatch containers (L), snapshot morph (M–L); quick
+  hits `exciter` `gate_delay` `sequential_switch` `macro` `tuner`
+  `looper` (L), vocoder follow-ups.
+- **Offered, not taken up:** scope persistence/afterglow.
+- **Shipped from this menu** (47 types; specs in the appendix):
+  Dynamics: `compressor` `limiter` `noise_gate` `transient_shaper` ·
+  Pitch/frequency: `ring_mod` `freq_shifter` `bitcrusher` ·
+  Character/space: `tape` `convolver` `freeze` `autopan` ·
+  CV tools: `cv_recorder` `cv_math` `vowel` `quantizer` `slew` ·
+  Generative: `shift_random` `euclidean` `clock_divider` `bernoulli_gate`
+  `burst` `arpeggiator` `chord` `possibility_selector` `drift` `chaos` ·
+  Voices: `fm_op` `pluck` `modal` `bowed` `wind` `granular`
+  `kick_drum`/`snare_drum`/`hat_drum` `sampler` `organ` ·
+  Visual: `scope` ·
+  The quick-hit run: `logic` `mid_side` `octaver` `matrix_mixer` `vinyl`
+  `supersaw` `wavetable_morph` ·
+  Keep-list one-liners: `function_generator` `rotary`.
+- **Shipped off-menu** (5, [listed in the appendix](#shipped-off-menu)):
+  `specific_stereo_speaker_output` `key_trigger`
+  `buffered_specific_speaker_output` `warping_buffered_speaker_output`
+  `possibility_seq`.
 
 ---
+
+## Open: spec'd, ready to pick
+
+Full specs, still unbuilt.
+
+### `pitch_detector` (M–L) — "CV & Utilities"
+
+> *Note 2026-10-10:* the in-house seed is the module-level `_detect_period`
+> in `audio/numpy_backend.py`, which the pitch_shifter's renderer (now in
+> `renderers/pitch_time.py`) imports. Everything the killer example needs
+> has shipped (`mic_input`, `quantizer`, `cv_to_frequency`, `vocoder`).
+> The `tuner` quick hit builds on this module.
+
+Audio → pitch bridge: sing/whistle into `mic_input`, play the rack.
+
+- Ports: `in` (audio); `pitch_cv` (out, 1V/oct); `gate` (voiced); `level`
+  (cv out, follower).
+- Params: `range_low`/`range_high` 60..2000 Hz bounds · `confidence` 0..1
+  (0.85) · `glide` ms on pitch out (10).
+- DSP: hop-based (512 hop / 2048 window) autocorrelation/NSDF —
+  `pitch_shifter._detect_period` is the in-house seed; parabolic peak interp
+  for sub-Hz accuracy; hold last pitch while unvoiced (gate low). Latency ≈
+  one window, documented.
+- Tests: sines + saws across range within ±3 cents; octave-error guard (strong
+  2nd harmonic case — the classic NSDF trap); noise → gate low, pitch held.
+- Killer example: mic → pitch_detector → quantizer → cv_to_frequency → osc
+  (+ vocoder on the voice itself) = autotune-adjacent instrument.
+
+### `spectrum` (M)
+
+> *Note 2026-10-10:* CATEGORY "CV & Utilities" (the section it was filed
+> under, beside `scope`). `scope` (shipped 2026-08-03) is the pattern to
+> copy: ring capture in the renderer, display maths in the dpg-free
+> `ui/scope_math.py`.
+
+FFT analyzer tap.
+
+- Params: `size` 1024|2048|4096|8192 (4096) · `avg` 1..8 (4, exponential) ·
+  `peak_hold` on|off + decay · `range_db` 60..120 (90); log-frequency axis.
+- Engine: Hann window → rfft → power dB → precomputed log-freq rebin to ~256
+  columns; snapshot ring as in meter/scope; pass-through bit-exact.
+- Tests: single sine → peak in the right column within 1 dB (window gain
+  compensated); two-tone resolution at 4096; averaging time constant; rebin
+  map monotone and gap-free.
+
+## The 2026-08-04 brainstorm (Matthew's keep-list — unspecced menu)
+
+From the "what's left" brainstorm (WORKLOG 2026-08-04); Matthew asked
+for all of these on the roadmap. One-liners only — promote to a full
+spec (ports/params/DSP/neutral/tests) when picked, same as ever.
+`sampler`, `organ` and `chaos` were picked first and already have
+full specs above.
+
+*Realigned 2026-10-10:* nine of the twelve items shipped (`bowed` and
+`wind`, `function_generator`, `drift`, `cv_math`, `cv_recorder`, `rotary`,
+`vowel`, `freeze`, `autopan`). Their bullets moved to the appendix, where
+the full specs mentioned above now live too. Three remain:
+
+**I/O**
+- `midi_output` (M) — the rack has `midi_input` but can't drive
+  external hardware. Gates + pitch CV → MIDI notes, CVs → CCs. A
+  whole new dimension: PySynthRack as the *brain* of a hardware
+  setup.
+
+**The endgame (architecture, not modules)**
+- **Subpatch containers** (L) — group a set of modules into a
+  reusable macro-module with exposed ports. At that point the rack
+  stops *adding* modules and starts *multiplying* them — every patch
+  ever built becomes a module. The feature that makes "running out of
+  options" structurally impossible.
+- **Snapshot morph** (M–L) — save knob scenes, interpolate between
+  them with one CV. A performance feature more than a module.
+
+*Note 2026-10-10:* there is no "I/O" CATEGORY; `midi_output` would most
+likely be filed under Outputs, decided when it is specced. The endgame
+pair are architecture, not modules, and are also carried by the keep-list
+entry in `TODO.md`.
+
+## Quick hits (S unless noted)
+
+- `exciter` — HP → soft nonlinearity (oversampling infra) → blend; adds air.
+- `gate_delay` — delay/stretch a gate by ms or clock division.
+- `sequential_switch` — clocked 1→4 router / 4→1 selector, reset in.
+- `macro` — one big knob → 4 scaled/offset cv outs; performance macro
+  (cv_scale ×4 in one panel).
+- `tuner` — pitch_detector core + a cents needle panel.
+- `looper` (L) — clock-synced record/overdub/undo layer on the transport
+  pattern (FilePlayer Play/Stop + resampler seam crossfades); slice it.
+- Vocoder follow-ups (from TODO): stereo decorrelated bands, `formant` shift
+  knob, carrier normal to noise, per-band trims.
+
+*Notes 2026-10-10:*
+- `sequential_switch`: `possibility_selector` with every step decided is
+  already a clocked 1→4 router, but for gates only; this would switch
+  audio and CV, in both directions.
+- `tuner` needs `pitch_detector` first.
+- `looper`: `cv_recorder` (shipped 2026-09-19) is the CV half; this is
+  the audio one.
+- The vocoder follow-ups are also listed under the shipped Vocoder bullet
+  in `TODO.md`.
+
+## Offered, not taken up
+
+- **Scope persistence/afterglow** — accumulate N frames and fade the old
+  ones, so `chaos` in xy mode draws the dense butterfly. Offered
+  2026-08-21; Matthew didn't take it up and it was deliberately kept off
+  `TODO.md` (WORKLOG 2026-08-21, "the butterfly lands"). Here so it stays
+  findable, not as a pick.
+
+---
+
+# Appendix: shipped from this menu
+
+The specs below are history, moved here verbatim on 2026-10-10 and kept
+under their original section headings. The one line added under each
+heading gives the ship date, how the build differed from the spec (if it
+did), and the `docs/MODULES.md` entry, which is the reference for what was
+built.
+
+## Shipped off-menu
+
+Built on a whim, never on this menu. There is no spec here; MODULES.md is
+the record.
+
+- `specific_stereo_speaker_output` (Outputs) — 2026-07-06 — the stereo
+  sink sent to a chosen output device (a monitor or cue bus). →
+  [MODULES.md](MODULES.md#specific_stereo_speaker_output)
+- `key_trigger` (Sources) — 2026-07-11 — one computer key as a gate,
+  trigger or latch. → [MODULES.md](MODULES.md#key_trigger)
+- `buffered_specific_speaker_output` (Outputs) — 2026-07-11 — the device
+  sink with its own buffer size; the ring governor (`fill` out,
+  `ratio_cv`, `auto_govern`) followed on 2026-07-16. →
+  [MODULES.md](MODULES.md#buffered_specific_speaker_output)
+- `warping_buffered_speaker_output` (Outputs) — 2026-07-18 — its
+  tape-warp sibling: the governor drives an audible varispeed. →
+  [MODULES.md](MODULES.md#warping_buffered_speaker_output)
+- `possibility_seq` (Modulation) — 2026-08-15 — a step sequencer whose
+  steps are 0, 1 or `?`. Its sibling `possibility_selector` was specced
+  here before it was built. → [MODULES.md](MODULES.md#possibility_seq)
+
+Also built from a keep-list one-liner, with no full spec here:
+`function_generator` (Modulation, 2026-08-23) and `rotary` (Effects,
+2026-09-14). Their bullets are under the keep-list heading at the end of
+this appendix.
 
 ## Dynamics — the biggest hole in the rack
 
@@ -49,6 +268,9 @@ follower — the same recurrence `audio_to_cv` vectorized with the monotone
 fixed-point solve, so the per-sample-loop problem is already solved in-house.
 
 ### `compressor` (M) — CATEGORY "Effects"
+
+> **Shipped 2026-07-04**, as specced; the stretch line was not built. →
+> MODULES.md: [`compressor`](MODULES.md#compressor)
 
 Feed-forward compressor with external sidechain.
 
@@ -73,6 +295,9 @@ Feed-forward compressor with external sidechain.
 
 ### `limiter` (M) — "Effects"
 
+> **Shipped 2026-07-04**, as specced; true-peak (the stretch) not built. →
+> MODULES.md: [`limiter`](MODULES.md#limiter)
+
 Brickwall lookahead limiter — the "demo can't clip" module.
 
 - Ports: `in`, `out`. Params: `ceiling` −20..0 dBFS (−1) · `release`
@@ -89,6 +314,9 @@ Brickwall lookahead limiter — the "demo can't clip" module.
 
 ### `noise_gate` (S–M) — "Effects"
 
+> **Shipped 2026-07-05**, as specced. → MODULES.md:
+> [`noise_gate`](MODULES.md#noise_gate)
+
 - Ports: `in`; `sidechain` (normal to `in`); `out`; `open` (cv out 0/1 — free
   gate-extractor for generative patching).
 - Params: `threshold` −80..0 dB (−45) · `hysteresis` 0..24 dB (4; close
@@ -102,6 +330,9 @@ Brickwall lookahead limiter — the "demo can't clip" module.
   audible gating; voice ≡ mono.
 
 ### `transient_shaper` (M) — "Effects"
+
+> **Shipped 2026-07-05**, as specced. → MODULES.md:
+> [`transient_shaper`](MODULES.md#transient_shaper)
 
 Attack/sustain rebalance, threshold-free (level-independent — the classic trick).
 
@@ -118,6 +349,9 @@ Attack/sustain rebalance, threshold-free (level-independent — the classic tric
 
 ### `ring_mod` (S) — "Effects"
 
+> **Shipped 2026-07-05**, as specced. → MODULES.md:
+> [`ring_mod`](MODULES.md#ring_mod)
+
 - Ports: `in`; `carrier` (audio, normal to an internal sine when unpatched);
   `freq_cv`; `out`.
 - Params: `freq` 1..5000 Hz (440, internal carrier) · `freq_cv_depth` oct/unit
@@ -127,6 +361,9 @@ Attack/sustain rebalance, threshold-free (level-independent — the classic tric
 - mix=0 bit-exact dry. One-afternoon module; pairs with `fm_op` and `modal`.
 
 ### `freq_shifter` (M) — "Effects"
+
+> **Shipped 2026-07-05**, as specced (the dry is latency-matched at 127
+> samples). → MODULES.md: [`freq_shifter`](MODULES.md#freq_shifter)
 
 Bode-style single-sideband shift: every partial moves by the same **Hz**
 (inharmonic clang, barberpole) — a different animal from `pitch_shifter`'s
@@ -146,6 +383,10 @@ ratio shift.
 
 ### `bitcrusher` (S) — "Effects"
 
+> **Shipped 2026-07-05**, as specced; `bits_cv` / `rate_cv` (each with a
+> depth) added 2026-07-17. → MODULES.md:
+> [`bitcrusher`](MODULES.md#bitcrusher)
+
 - Params: `bits` 1..24 (24) · `rate_div` 1..64 (1, sample-hold decimation) ·
   `jitter` 0..1 (0, random hold-length wobble, seeded) · `mix` · `dc_filter`
   on|off.
@@ -160,6 +401,11 @@ ratio shift.
 ## Character & space
 
 ### `tape` (M–L) — "Effects"
+
+> **Shipped 2026-07-06**, as specced; a `stop` gate (tape-stop,
+> `stop_time` / `start_time`) added 2026-09-19. Dropouts and azimuth not
+> built; the `vinyl` sibling shipped on its own (2026-08-04). →
+> MODULES.md: [`tape`](MODULES.md#tape)
 
 Wow/flutter/saturation/hiss in one "put it on tape" pass.
 
@@ -180,6 +426,9 @@ Wow/flutter/saturation/hiss in one "put it on tape" pass.
 
 ### `convolver` (L — slice it) — "Effects"
 
+> **Shipped 2026-07-06**, all three slices the same day. → MODULES.md:
+> [`convolver`](MODULES.md#convolver)
+
 IR loader + partitioned FFT convolution: real rooms, springs, plates, cabs.
 
 - Ports: `in`; `out_l`/`out_r` (stereo when the IR is). Params: `gain` ·
@@ -199,6 +448,11 @@ IR loader + partitioned FFT convolution: real rooms, springs, plates, cabs.
   matches IR.
 
 ### `freeze` (M) — "Effects" — **SHIPPED 2026-09-20** (see TODO.md / WORKLOG.md) — the spectral freeze — **module #100**
+
+> **Shipped 2026-09-20** (module #100). Since: `width` + `decay`
+> (2026-09-20), `width_cv` + `latch` + longer windows (2026-09-22; 65536
+> on the knob 2026-09-24). The `spread` follow-on was not built. →
+> MODULES.md: [`freeze`](MODULES.md#freeze)
 
 The keep-list's "spectral freeze: FFT a moment, hold it forever as a
 pad. A different animal from `granular`'s time-domain freeze." That one
@@ -311,6 +565,9 @@ passing.
 
 ### `autopan` (S) — "Routing & VCA" — **SHIPPED 2026-09-24** (see TODO.md / WORKLOG.md) — the stereo motion utility — **module #101**
 
+> **Shipped 2026-09-24** (module #101); the as-built paragraph closes the
+> spec. → MODULES.md: [`autopan`](MODULES.md#autopan)
+
 The keep-list's "there's no dedicated panner anywhere in the rack.
 Equal-power pan with CV in; fold tremolo into it". The stereo speaker
 sink can already be panned by a cable, but only at the very end of the
@@ -399,6 +656,10 @@ to the clock if you like. Two VCAs and a law, in other words.
 
 ### `cv_recorder` (M) — "CV & Utilities" — **SHIPPED 2026-09-19** (see TODO.md / WORKLOG.md) — the modulation looper
 
+> **Shipped 2026-09-19** (module #98). Since: a `speed` / `reverse` /
+> `play` transport (2026-09-20), `speed_cv` and the one-shot `play_mode`
+> (2026-09-22). → MODULES.md: [`cv_recorder`](MODULES.md#cv_recorder)
+
 The keep-list's "record a knob gesture or incoming CV for N clocked bars,
 loop, overdub" — nothing else in the rack captures *performance*. A
 fixed-length looper (the N-bars kind, not the free-length kind): the
@@ -461,6 +722,9 @@ moment it exists, `clear` wipes it.
 
 ### `cv_math` (S) — "CV & Utilities" — **SHIPPED 2026-09-19** (see TODO.md / WORKLOG.md) — `logic` for CVs
 
+> **Shipped 2026-09-19** (module #97), as specced. → MODULES.md:
+> [`cv_math`](MODULES.md#cv_math)
+
 The keep-list's "logic-for-CVs, zero params": two CV operands in, every
 two-operand function the rack lacks out at once, no mode combo — you
 swap cables, not settings, exactly like [`logic`](#logic). Filed under
@@ -490,6 +754,11 @@ not Modulation where the one-liner sat.
 - As built, verbatim. 13 tests. Example `cv_math_delayed_vibrato.json`.
 
 ### `vowel` (S–M) — "Filters & EQ" — **SHIPPED 2026-09-19** (see TODO.md / WORKLOG.md) — the formant filter
+
+> **Shipped 2026-09-19** (module #99); CATEGORY "Filters & EQ" although
+> filed here. Since: `formant` shift + `formant_cv` (2026-09-20),
+> per-sample `vowel_cv` (`cv_rate`) and a `custom` voice with its own
+> `f1`..`f5` (2026-09-22). → MODULES.md: [`vowel`](MODULES.md#vowel)
 
 The keep-list's "formant filter bank with an A–E–I–O–U morph knob — the
 vocoder's expressive little cousin; pairs beautifully with `supersaw`".
@@ -538,6 +807,9 @@ A E I O U, per voice type), and a knob that slides between the vowels.
 
 ### `quantizer` (M) — "CV & Utilities" — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
+> **Shipped 2026-08-03**, as specced. → MODULES.md:
+> [`quantizer`](MODULES.md#quantizer)
+
 CV in → nearest allowed pitch out. The missing link between
 random/LFO/sequencer and *melody*.
 
@@ -558,6 +830,12 @@ random/LFO/sequencer and *melody*.
 
 ### `slew` (S) — "CV & Utilities" — **SHIPPED 2026-07-18** (as built: shape linear|exponential, rise/fall in seconds; the `eoc` out and `link` didn't ship — see TODO for the v3 idea)
 
+> **Shipped 2026-07-18.** As built: `shape` linear|exponential and
+> `rise_time` / `fall_time` in seconds (not `rise` / `fall` ms/V and
+> `curve`); no `eoc`, no `link` (the `eoc` idea grew into
+> `function_generator`). v2 added `rise_cv` / `fall_cv` and `clock`
+> (2026-09-14). → MODULES.md: [`slew`](MODULES.md#slew)
+
 Slew limiter / portamento.
 
 - Ports: `in` (cv); `out`; `eoc` (gate out when target reached — makes it a
@@ -571,23 +849,6 @@ Slew limiter / portamento.
 - Tests: step input → exact ramp duration; expo tau; example patch
   cv_keyboard → slew → cv_to_frequency → osc (glide).
 
-### `pitch_detector` (M–L) — "CV & Utilities"
-
-Audio → pitch bridge: sing/whistle into `mic_input`, play the rack.
-
-- Ports: `in` (audio); `pitch_cv` (out, 1V/oct); `gate` (voiced); `level`
-  (cv out, follower).
-- Params: `range_low`/`range_high` 60..2000 Hz bounds · `confidence` 0..1
-  (0.85) · `glide` ms on pitch out (10).
-- DSP: hop-based (512 hop / 2048 window) autocorrelation/NSDF —
-  `pitch_shifter._detect_period` is the in-house seed; parabolic peak interp
-  for sub-Hz accuracy; hold last pitch while unvoiced (gate low). Latency ≈
-  one window, documented.
-- Tests: sines + saws across range within ±3 cents; octave-error guard (strong
-  2nd harmonic case — the classic NSDF trap); noise → gate low, pitch held.
-- Killer example: mic → pitch_detector → quantizer → cv_to_frequency → osc
-  (+ vocoder on the voice itself) = autotune-adjacent instrument.
-
 ## Generative & clockwork — "Modulation"
 
 The clock → sequencer chain plays itself; these make it *surprise* you.
@@ -596,6 +857,9 @@ sequencer pair, and all randomness takes a `seed` param (deterministic when
 seeded — testable, and patches recall their character).
 
 ### `shift_random` (S–M) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
+
+> **Shipped 2026-08-03**, as specced. → MODULES.md:
+> [`shift_random`](MODULES.md#shift_random)
 
 Looping shift-register random CV — the generative classic.
 
@@ -614,6 +878,9 @@ Looping shift-register random CV — the generative classic.
 
 ### `euclidean` (S) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
+> **Shipped 2026-08-03**, as specced; `fills_cv` added 2026-09-11. →
+> MODULES.md: [`euclidean`](MODULES.md#euclidean)
+
 - Ports: `clock` in; `reset` in; `gate` out; `accent` out (second layer).
 - Params: `steps` 1..32 (16) · `fills` 0..steps (4) · `rotate` 0..steps−1 (0)
   · `accent_fills` (0) · `gate_len` fraction of step (0.5).
@@ -623,6 +890,9 @@ Looping shift-register random CV — the generative classic.
   E(4,16)); rotation; reset phase; gate length across block joins.
 
 ### `clock_divider` (S) — **SHIPPED 2026-09-11** (see TODO.md / WORKLOG.md)
+
+> **Shipped 2026-09-11** (module #90), as specced. → MODULES.md:
+> [`clock_divider`](MODULES.md#clock_divider)
 
 - Ports: `clock` in; `reset` in; outs `div2` `div4` `div8` + `divn` (param n)
   + `mult` (×m, period-estimate based — document as approximate during tempo
@@ -636,6 +906,9 @@ Looping shift-register random CV — the generative classic.
 
 ### `bernoulli_gate` (S) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
+> **Shipped 2026-08-03**, as specced. → MODULES.md:
+> [`bernoulli_gate`](MODULES.md#bernoulli_gate)
+
 - Ports: `in` (gate); `p_cv`; `out_a`; `out_b`.
 - Params: `probability` 0..1 (0.5, chance of A) · `mode` independent|toggle ·
   `seed`.
@@ -645,6 +918,9 @@ Looping shift-register random CV — the generative classic.
   count(A) + count(B) = count(in) — nothing lost or doubled.
 
 ### `burst` (S) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
+
+> **Shipped 2026-08-03**, as specced; `count_cv` added 2026-09-11. →
+> MODULES.md: [`burst`](MODULES.md#burst)
 
 Ratchet generator: one trigger → N gates.
 
@@ -658,6 +934,10 @@ Ratchet generator: one trigger → N gates.
   (document); clocked division correct.
 
 ### `arpeggiator` (M) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
+
+> **Shipped 2026-08-03**, as specced; an internal clock (`bpm`,
+> `division`, used while `clock` is unpatched) added 2026-09-14. →
+> MODULES.md: [`arpeggiator`](MODULES.md#arpeggiator)
 
 Sits between a poly note source and a mono voice: collapses held notes into a
 clocked line. First "poly→mono collapser" — a nice exercise of the voice
@@ -674,6 +954,10 @@ architecture in reverse.
 
 ### `chord` (M) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
+> **Shipped 2026-08-03**; CATEGORY "CV & Utilities", not Modulation.
+> `inversion`, `retrig` and a `changed` out added 2026-09-14. →
+> MODULES.md: [`chord`](MODULES.md#chord)
+
 Mono pitch in → poly voices out; the 16-slot voice architecture as an
 instrument.
 
@@ -688,6 +972,9 @@ instrument.
   minds headroom at the mono sink (4-voice sum!).
 
 ### `possibility_selector` (M) — "Modulation" — **SHIPPED 2026-09-18** (see TODO.md / WORKLOG.md)
+
+> **Shipped 2026-09-18** (module #93), as specced. → MODULES.md:
+> [`possibility_selector`](MODULES.md#possibility_selector)
 
 The possibility bridge's second brick, the *meta* one: a register over
 WHICH module fires. Where `possibility_seq` holds bits with holes in them
@@ -728,6 +1015,9 @@ first module had been played, built to it the same day.
   four-string harp stepping on its own hits.
 
 ### `drift` (S) — "Modulation" — **SHIPPED 2026-09-19** (see TODO.md / WORKLOG.md) — the keep-list's smooth wandering random
+
+> **Shipped 2026-09-19** (module #96), as specced. → MODULES.md:
+> [`drift`](MODULES.md#drift)
 
 The LFO's `random` is stepped; `sample_hold` + `slew` can round the
 corners but the corners are still there; `chaos` orbits deterministically.
@@ -780,6 +1070,9 @@ a trigger on every new value so the same die can drive three things.
   deviation on the ±1 scale. 24 tests. Example `drift_wander.json`.
 
 ### `chaos` (S–M) — "Modulation" (added 2026-08-04)
+
+> **Shipped 2026-08-04**, as specced; the stretch line (morph knob, audio
+> rate, `rate_cv`) not built. → MODULES.md: [`chaos`](MODULES.md#chaos)
 
 Strange-attractor CV source — deterministic wandering with *structure*,
 the corner none of the existing random sources cover: `shift_random`
@@ -836,6 +1129,9 @@ loops, `lfo` random steps, the future `drift` smooths noise — chaos
 
 ### `fm_op` (M) — **SHIPPED 2026-07-11** (see TODO.md / WORKLOG.md)
 
+> **Shipped 2026-07-11**, as specced (an `index_cv` jack scaled by
+> `index_cv_depth`). → MODULES.md: [`fm_op`](MODULES.md#fm_op)
+
 One DX-style phase-modulation operator; two make a bell, three make nearly
 everything.
 
@@ -856,6 +1152,10 @@ everything.
 
 ### `pluck` (M–L) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
+> **Shipped 2026-08-03**, as specced. Since: `vel` (2026-09-19),
+> `vel_color` (2026-09-20), `vel_position` + `carry` (2026-09-22; `carry`
+> on by default 2026-09-24). → MODULES.md: [`pluck`](MODULES.md#pluck)
+
 Extended Karplus–Strong string. Polyphonic plucks from cv_keyboard — 16
 strings for free.
 
@@ -873,6 +1173,9 @@ strings for free.
   damping monotone; retrigger while ringing declicks; 8-voice example.
 
 ### `modal` (M–L) — **SHIPPED 2026-08-03**; love pass 2026-09-11 (`position` / `mallet` / `spread` + `out_l`/`out_r`) (see TODO.md / WORKLOG.md)
+
+> **Shipped 2026-08-03**, as specced; the 2026-09-11 love pass is in the
+> heading. → MODULES.md: [`modal`](MODULES.md#modal)
 
 Struck/blown resonator bank (bars, bells, membranes) — feed it `burst`,
 noise, or anything.
@@ -892,6 +1195,9 @@ noise, or anything.
 - Gorgeous with cv_gates (17 enveloped strikes) and `burst`.
 
 ### `bowed` (M) — "Sources" — **SHIPPED 2026-09-18** (see TODO.md / WORKLOG.md)
+
+> **Shipped 2026-09-18** (module #94), as specced. → MODULES.md:
+> [`bowed`](MODULES.md#bowed)
 
 The keep-list's "bowed or wind" — the bowed half. Sustained-excitation
 waveguide: the bow stays on the string while `gate` is high.
@@ -934,6 +1240,9 @@ waveguide: the bow stays on the string while `gate` is high.
 
 ### `wind` (M) — "Sources" — **SHIPPED 2026-09-18** (see TODO.md / WORKLOG.md) — the blown half of "bowed or wind"
 
+> **Shipped 2026-09-18** (module #95); the as-built paragraph is in the
+> spec. → MODULES.md: [`wind`](MODULES.md#wind)
+
 - Ports: `pitch_cv` (cv, voice-aware); `gate` (gate, voice-aware — breath
   on while high); `breath_cv` (cv, mono, per-sample, × `cv_depth`) →
   `out` (audio).
@@ -966,6 +1275,9 @@ waveguide: the bow stays on the string while `gate` is high.
   Example `wind_duet.json`.
 
 ### `granular` (L — slice it) — **ALL THREE SLICES SHIPPED** 2026-09-15/16 (Effects; capture + stream — `granular_cloud.json`; sprays + seed + stereo — `granular_haze.json`; freeze + position_cv — `granular_freeze.json`, `granular_beat_repeat.json`). Complete against this spec.
+
+> **Shipped 2026-09-15 / 09-16** (module #92), complete; slice notes in
+> the spec. → MODULES.md: [`granular`](MODULES.md#granular)
 
 Grain-cloud texture engine over a live-captured buffer.
 
@@ -1002,6 +1314,12 @@ Grain-cloud texture engine over a live-captured buffer.
 
 ### Drum voices: `kick_drum`, `snare_drum`, `hat_drum` — **ALL SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
+> **Shipped 2026-08-03**, as specced. Since 2026-09-11: `vel` on all
+> three, kick `pitch_cv`, hat `tone`. → MODULES.md:
+> [`kick_drum`](MODULES.md#kick_drum) ·
+> [`snare_drum`](MODULES.md#snare_drum) ·
+> [`hat_drum`](MODULES.md#hat_drum)
+
 Trigger-driven percussion sources; with clock/euclidean/burst the rack becomes
 a groovebox.
 
@@ -1019,6 +1337,10 @@ a groovebox.
   closed (document choke semantics); `decay_closed` / `decay_open`.
 
 ### `sampler` (M–L — slice it) — "Sources" (added 2026-08-04)
+
+> **Shipped** in three slices (2026-08-22, 08-30, 09-11), complete; the
+> status paragraph closes the spec. → MODULES.md:
+> [`sampler`](MODULES.md#sampler)
 
 Keyboard-tracked pitched sample playback — the gap `file_player` doesn't
 fill: FilePlayer is a *transport* (one playhead, no pitch), this is a
@@ -1106,6 +1428,11 @@ hard part is already shipped somewhere in the rack.
 
 ### `organ` (S–M) — "Sources" (added 2026-08-04)
 
+> **Shipped 2026-08-04**, as specced. The stretch line's scanner
+> "deliberately NOT built in" was built after all: `vibrato` (2026-09-19,
+> refined 2026-09-22). Foldback and leakage not built. → MODULES.md:
+> [`organ`](MODULES.md#organ)
+
 Additive drawbar organ — nine harmonic faders, per-voice sines, key
 click. The cheapest joy on the ideas list: the DSP is nine sines, the
 panel is the `fader_seq` fader-bank idiom, and the sound is immediate.
@@ -1171,6 +1498,10 @@ panel is the `fader_seq` fader-bank idiom, and the sound is immediate.
 
 ### `scope` (M) — **SHIPPED 2026-08-03** (see TODO.md / WORKLOG.md)
 
+> **Shipped 2026-08-03**, as specced, plus a `cv` trace jack (no bridge
+> needed) and an `out_r` pass-through. → MODULES.md:
+> [`scope`](MODULES.md#scope)
+
 Oscilloscope pass-through tap — the learn-by-building module par excellence,
 and it makes every later module easier to debug and demo.
 
@@ -1188,18 +1519,6 @@ and it makes every later module easier to debug and demo.
   columns for time_div; trigger phase-locks consecutive snapshots; min/max
   decimation never misses a one-sample spike.
 
-### `spectrum` (M)
-
-FFT analyzer tap.
-
-- Params: `size` 1024|2048|4096|8192 (4096) · `avg` 1..8 (4, exponential) ·
-  `peak_hold` on|off + decay · `range_db` 60..120 (90); log-frequency axis.
-- Engine: Hann window → rfft → power dB → precomputed log-freq rebin to ~256
-  columns; snapshot ring as in meter/scope; pass-through bit-exact.
-- Tests: single sine → peak in the right column within 1 dB (window gain
-  compensated); two-tone resolution at 4096; averaging time constant; rebin
-  map monotone and gap-free.
-
 ## The quick-hit run (planned 2026-08-03 — Matthew's pick, seven modules)
 
 Promoted from the quick-hit bullets to full specs at Matthew's request.
@@ -1216,7 +1535,15 @@ tripwires green):
 > `wavetable_morph` (M) — shared anti-aliasing/mipmap infra, and the
 > obvious demo patch is `chord` → both.
 
+From the quick-hits list (moved here 2026-10-10):
+
+- (octaver / vinyl / logic / matrix_mixer / mid_side / supersaw /
+  wavetable_morph promoted to the planned run above, 2026-08-03.)
+
 ### `logic` (S) — "Modulation" (Session A) — **SHIPPED 2026-08-03**
+
+> **Shipped 2026-08-03**; the deviation from the old bullet is in the
+> spec. → MODULES.md: [`logic`](MODULES.md#logic)
 
 2-in gate algebra; every jack live at once, no mode combo — swap cables,
 not settings.
@@ -1235,6 +1562,9 @@ not settings.
 
 ### `mid_side` (S) — "Routing & VCA" (Session A) — **SHIPPED 2026-08-03**
 
+> **Shipped 2026-08-03**, as specced; `side_hp` added 2026-09-19. →
+> MODULES.md: [`mid_side`](MODULES.md#mid_side)
+
 M/S encode/decode + width — completes the stereo utility story beside
 `stereo_speaker_output`. All four outs always computed, no mode combo.
 
@@ -1248,6 +1578,9 @@ M/S encode/decode + width — completes the stereo utility story beside
   hard-panned input land ±.
 
 ### `octaver` (S) — "Effects" (Session A) — **SHIPPED 2026-08-03**
+
+> **Shipped 2026-08-03**, as specced. → MODULES.md:
+> [`octaver`](MODULES.md#octaver)
 
 Zero-crossing flip-flop sub-octave — −1/−2 oct squares under the dry;
 dirty analog charm for bass.
@@ -1265,6 +1598,11 @@ dirty analog charm for bass.
   passthrough; block-size independence (flip-flop carried).
 
 ### `matrix_mixer` (M) — "Routing & VCA" (Session B)
+
+> **Shipped 2026-08-04**, as specced. On 2026-09-16 the late-read door was
+> generalized: cables into a matrix are still chosen first, then any other
+> cable that closes a loop reads a block late (MODULES.md § Cabling
+> rules). → MODULES.md: [`matrix_mixer`](MODULES.md#matrix_mixer)
 
 4×4 bipolar gain matrix — and the door to **feedback patching**, which
 is the actual work: the backend topo-sorts a DAG, so a cycle through
@@ -1294,6 +1632,9 @@ the matrix cannot compile today.
 
 ### `vinyl` (S) — "Effects" (Session B)
 
+> **Shipped 2026-08-04**, as specced. → MODULES.md:
+> [`vinyl`](MODULES.md#vinyl)
+
 `tape`'s scrappy sibling: surface noise + warp, all seeded.
 
 - Ports: `in` (audio) → `out` (audio).
@@ -1310,6 +1651,9 @@ the matrix cannot compile today.
   determinism; block-size independence.
 
 ### `supersaw` (S–M) — "Sources" (Session C)
+
+> **Shipped 2026-08-04**, as specced; `detune_cv` added 2026-09-19. →
+> MODULES.md: [`supersaw`](MODULES.md#supersaw)
 
 The trance chord machine: 7 detuned blep saws per voice.
 
@@ -1333,6 +1677,9 @@ The trance chord machine: 7 detuned blep saws per voice.
 
 ### `wavetable_morph` (M) — "Sources" (Session C)
 
+> **Shipped 2026-08-04**, as specced. → MODULES.md:
+> [`wavetable_morph`](MODULES.md#wavetable_morph)
+
 Scanning wavetable oscillator: the `*_wt` mipmap infra grown into an
 instrument.
 
@@ -1355,13 +1702,12 @@ instrument.
   machinery); WAV import round trip (write cycle → load → spectrum);
   per-voice independence; block-size independence.
 
-## The 2026-08-04 brainstorm (Matthew's keep-list — unspecced menu)
+## The 2026-08-04 keep-list: the shipped one-liners
 
-From the "what's left" brainstorm (WORKLOG 2026-08-04); Matthew asked
-for all of these on the roadmap. One-liners only — promote to a full
-spec (ports/params/DSP/neutral/tests) when picked, same as ever.
-`sampler`, `organ` and `chaos` were picked first and already have
-full specs above.
+Moved from the keep-list (still open above) on 2026-10-10, verbatim, with
+three additions: `function_generator` had never been marked shipped,
+`rotary` (no full spec) gets its MODULES.md pointer, and `freeze`'s date
+was a day early.
 
 **Sources**
 - ~~`bowed` or `wind` (M–L)~~ — sustained-excitation waveguide (bowed
@@ -1377,6 +1723,9 @@ full specs above.
   patches; one module is an LFO, envelope, slew and clock depending
   on cabling. Probably the highest patch-value-per-line-of-code item
   on this list.
+  **SHIPPED 2026-08-23** as `function_generator` (Modulation), built
+  from this one-liner; no full spec was written here. → MODULES.md:
+  [`function_generator`](MODULES.md#function_generator)
 - ~~`drift` (S)~~ — smooth random CV (interpolated sample-and-hold /
   random walk). The LFO's `random` is stepped; there's no wandering,
   Wogglebug-style source yet. (`chaos` orbits deterministically;
@@ -1396,6 +1745,7 @@ full specs above.
   LR4 crossover, per-rotor Doppler fractional delay + cos-of-angle AM,
   counter-rotating horn and drum with their own exponential spin-up /
   coast-down, two virtual mics, `fast` gate. `organ_leslie.json`.
+  → MODULES.md: [`rotary`](MODULES.md#rotary)
 - ~~`vowel` (S–M)~~ — formant filter bank with an A–E–I–O–U morph knob.
   The vocoder's expressive little cousin; pairs beautifully with
   `supersaw`. (Cousin of `wavetable_morph`'s vowel *stack* — that one
@@ -1405,40 +1755,11 @@ full specs above.
   pad. A different animal from `granular`'s time-domain freeze.
   **Picked and SHIPPED 2026-09-19 as module #100 — full spec under
   Character & space.**
+  *(Corrected 2026-10-10: `freeze` shipped 2026-09-20, in d557ea7.)*
 - ~~`autopan` (S)~~ — there's no dedicated panner anywhere in the rack.
   Equal-power pan with CV in; fold tremolo into it and it's the
   missing stereo motion utility. **Picked 2026-09-24 as module #101 —
   full spec under Character & space.**
-
-**I/O**
-- `midi_output` (M) — the rack has `midi_input` but can't drive
-  external hardware. Gates + pitch CV → MIDI notes, CVs → CCs. A
-  whole new dimension: PySynthRack as the *brain* of a hardware
-  setup.
-
-**The endgame (architecture, not modules)**
-- **Subpatch containers** (L) — group a set of modules into a
-  reusable macro-module with exposed ports. At that point the rack
-  stops *adding* modules and starts *multiplying* them — every patch
-  ever built becomes a module. The feature that makes "running out of
-  options" structurally impossible.
-- **Snapshot morph** (M–L) — save knob scenes, interpolate between
-  them with one CV. A performance feature more than a module.
-
-## Quick hits (S unless noted)
-
-- `exciter` — HP → soft nonlinearity (oversampling infra) → blend; adds air.
-- `gate_delay` — delay/stretch a gate by ms or clock division.
-- `sequential_switch` — clocked 1→4 router / 4→1 selector, reset in.
-- `macro` — one big knob → 4 scaled/offset cv outs; performance macro
-  (cv_scale ×4 in one panel).
-- `tuner` — pitch_detector core + a cents needle panel.
-- `looper` (L) — clock-synced record/overdub/undo layer on the transport
-  pattern (FilePlayer Play/Stop + resampler seam crossfades); slice it.
-- Vocoder follow-ups (from TODO): stereo decorrelated bands, `formant` shift
-  knob, carrier normal to noise, per-band trims.
-- (octaver / vinyl / logic / matrix_mixer / mid_side / supersaw /
-  wavetable_morph promoted to the planned run above, 2026-08-03.)
 
 ## If I had to pick five first
 
@@ -1451,3 +1772,6 @@ full specs above.
 4. **fm_op** — new synthesis territory with a small, well-testable surface.
 5. **convolver** — flagship-sized, but real spaces + cab sims lift everything
    already shipped.
+
+*All five shipped: compressor (2026-07-04), convolver (2026-07-06),
+fm_op (2026-07-11), scope, quantizer and shift_random (2026-08-03).*
