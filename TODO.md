@@ -315,6 +315,21 @@ Calls, not bugs: each waits on a yes, a no or a which.
       re-seeds** a seeded `random` LFO — decide whether that is wanted.
       *Hoisted 2026-10-10 from the archived "`lfo` — `seed`" entry
       (2026-09-20).*
+- [ ] **Backend preference: pyo still wins when installed.**
+      `audio/__init__.py` `_PREFERENCE = ("pyo", "numpy")`, so anyone who
+      takes the README's optional "also try pyo" install step gets a GUI
+      where most of the 101 modules are silent stubs. The README does say
+      so ("The app selects `pyo` when it's installed"), but it also calls
+      numpy the default and pyo is parked. Flip to numpy-first (pyo by
+      `PYSYNTHRACK_BACKEND=pyo` only), or keep it as is? *Surfaced
+      2026-10-10 by the MODULE_IDEAS realignment.*
+- [ ] **MODULE_IDEAS menu calls** (recorded in
+      [docs/MODULE_IDEAS.md](docs/MODULE_IDEAS.md) under the quick hits,
+      2026-10-10): is an audio/CV `sequential_switch` still wanted beside
+      `possibility_selector`? An audio `looper` beside `cv_recorder`? Do
+      subpatch containers and snapshot morph belong on a *module* menu
+      or only here? Keep listing scope afterglow as "offered, not taken
+      up", or drop it?
 
 ## Follow-ons and small items
 
@@ -330,6 +345,17 @@ Calls, not bugs: each waits on a yes, a no or a which.
       *performance* capture. *Hoisted 2026-10-10 from the archived
       `cv_recorder` entries (2026-09-19 / 09-20), where it was the one
       follow-on still open.*
+- [ ] **pyo's silent-stub notice is missing `freeze` and
+      `function_generator`** (`PyoBackend._build_module`). They are silent
+      under pyo either way; they just don't print the "will be silent"
+      line. One-liner. *Found 2026-10-10.*
+- [ ] **docs/MODULES.md drift:** the status note at the top still says
+      most entries are stubs marked _"to document"_ (none are any more),
+      and "Adding a new module" should match the submit preamble
+      rewritten into docs/MODULE_IDEAS.md on 2026-10-10 (renderer family
+      + `_RENDERERS` row, pyo stub, the `ui/app.py` widget block and the
+      shared `mode` branch, ASCII-only labels, the registry-wide
+      tripwires). *Found 2026-10-10.*
 
 *Code health:*
 - [ ] **Split `ui/app.py`** (7.4k lines, one `App` class) -- the custom
@@ -376,9 +402,12 @@ Calls, not bugs: each waits on a yes, a no or a which.
       `midi_output`, subpatch containers and snapshot morph. The §
       references above now point into TODO-ARCHIVE.md.*
 - [ ] **Module ideas backlog** — see [docs/MODULE_IDEAS.md](docs/MODULE_IDEAS.md)
-      (written 2026-07-04: ~26 paste-ready specs + quick hits across dynamics,
-      generative, new voices, character FX, visualization). Pick items into
-      this list as they're chosen; suggested first five at the bottom of the doc.
+      (written 2026-07-04; realigned 2026-10-10, open items first). Open
+      and spec'd: `pitch_detector` (M–L), `spectrum` (M). One-liners, spec
+      when picked: the keep-list's three above, plus the quick hits
+      `exciter`, `gate_delay`, `sequential_switch`, `macro`, `tuner`
+      (needs `pitch_detector`), `looper` (L). The 47 shipped specs are in
+      the doc's appendix. Pick items into this list as they're chosen.
 
 ## Later / wishlist
 

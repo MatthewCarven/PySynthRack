@@ -196,6 +196,50 @@ own session. Full menu in TODO.md and docs/MODULE_IDEAS.md.
 
 ---
 
+## 2026-10-10 — the plan and the TODO, brought back into line
+
+Matthew: "one to inspect the plan, or what's left of it after I've thrown
+around every whim … and one to consolidate the todo". Two agents in
+worktrees, one file set each, cherry-picked onto main.
+
+- **docs/MODULE_IDEAS.md realigned** (f90097b). Checked against the
+  registry (101 types): 47 shipped from the menu, 5 shipped off it (the
+  three speaker-output siblings, `key_trigger`, `possibility_seq`), and 49
+  predate it. Nothing on it was ever declined. Open items now lead:
+  `pitch_detector` and `spectrum` (spec'd), the keep-list's `midi_output`,
+  subpatch containers and snapshot morph, and the quick hits. The 47
+  shipped specs moved verbatim to an appendix, each with one added line
+  (date, how the build differed, MODULES.md link). The **submit preamble
+  was wrong** since the backend split: it sent renderers to
+  `numpy_backend.py`. It now names the family mixins, the `_RENDERERS`
+  row, the pyo stub, the `ui/app.py` widget block and its shared `mode`
+  branch, ASCII labels, the shared CV/voice helpers and the seven
+  registry-wide tripwires. I checked each name against the code.
+- **TODO.md consolidated** (f4185c0): 3,032 lines → ~440, 0 ticked items
+  left, 169 open. 168 items moved verbatim to TODO-ARCHIVE.md
+  § "Consolidation of 2026-10-10" under their old section headings. Of
+  those, 155 were already done, 11 were Matthew's 2026-10-05 inline
+  listening notes ("done love the marimbra" and others), now recorded
+  in his words as EARS PASSED, and 2 were duplicates. Nothing was
+  archived as "unwanted" on inference. The ones that look stale are
+  listed for his call in the session report, not moved. Six open
+  threads were lifted out of archived entries ("Hoisted 2026-10-10"). His
+  `granular_haze` question ("same as granular haze but different
+  samples?") stays open in the checklist, unanswered.
+- **Checked twice:** each agent ran its own line-multiset check, and I
+  re-ran an independent one on the TODO pair. Every non-blank line from
+  before is still present except the deliberate edits (open → ticked,
+  `##` → `###` under the archive section, the rewritten verdict lines,
+  one repointed intro line). The old archive survives intact and in order.
+- **Found on the way:** README said the matrix mixer is 8×8; it's 4×4
+  (0bd7a14). The backend still prefers pyo when it is installed. That's
+  documented in README's "Forcing a backend", but it's a trap now that
+  pyo is parked, so it's filed as a decision. pyo's silent-stub notice
+  misses `freeze` and `function_generator`, and MODULES.md's status note
+  and "Adding a new module" have drifted. All three are in TODO.
+
+---
+
 ## 2026-09-28 — the backend split's endgame: helpers and the dispatch table
 
 Matthew: "tie up the rest of the backend split". Every helper left on the
