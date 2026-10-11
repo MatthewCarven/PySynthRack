@@ -12,11 +12,15 @@ It has two halves:
 - **[Module catalogue](#module-catalogue)** — an at-a-glance index of every
   module, followed by detailed entries.
 
-> Status: this is a living document. Every module appears in the
-> [index table](#module-index), but full write-ups currently exist for a
-> representative set (Oscillator, Filter, ADSR, Crossover, FilePlayer,
-> MicInput). The remaining entries are stubbed under their category headings
-> and marked _“to document”_ — fill them in using the template set as a guide.
+> Status: every registered module type has a row in the
+> [index table](#module-index) and an entry in the catalogue, and
+> `tests/test_docs_coverage.py` fails if a type is missing either, or if an
+> entry names a type that no longer exists. Nearly every entry is a full
+> write-up: ports, parameters, what the DSP does and, for most, what was
+> measured when it shipped. A few of the oldest and simplest are still
+> one-paragraph stubs marked _To document._ (grep for it). The entries record what was
+> **built**; `docs/MODULE_IDEAS.md` holds the specs, which were the plan.
+> When a module changes, its entry changes in the same commit.
 
 ---
 
@@ -295,34 +299,120 @@ polyphony tax.
 
 ### Adding a new module
 
-The pattern, end to end:
+This is the full how-to. `docs/MODULE_IDEAS.md` → "How to submit an item"
+is the short version of the same list, written to be pasted into a task
+with a module spec; the two are kept in step, so change both together.
 
-1. **Write the class** in `src/pysynthrack/modules/<name>.py`: subclass
-   `Module`, decorate with `@register_module_type`, and declare `TYPE`,
-   `CATEGORY` (the Add-menu submenu — one of `CATEGORY_ORDER` in
-   `core/module.py`; forgetting it lands the module in a visible "Other"
-   submenu), `DEFAULT_PARAMS`, `INPUT_PORTS`, `OUTPUT_PORTS`. No DSP here —
-   it's pure data.
-2. **Register it** by importing the class in `src/pysynthrack/modules/__init__.py`
-   (and adding it to `__all__`).
-3. **Write the renderer** in the family mixin it belongs to under
-   `src/pysynthrack/audio/renderers/` (see docs/architecture.md, "Renderer
-   families"): add a `_render_<type>` method there, and add a
-   `"<type>": "_render_<type>"` entry to `NumpyBackend._RENDERERS` in
-   `numpy_backend.py`. `tests/test_render_dispatch.py` fails until you do. A
-   module with multiple outputs returns a dict like `{"low": ..., "high": ...}`;
-   a single-output module returns one array. Read inputs with
-   `_input_buffer(patch, buffers, module_id, port_name)`.
-4. **(Optional) pyo** — add a builder in `pyo_backend.py`. Unknown types are a
-   silent stub there, so this can wait.
-5. **Test it** headlessly in `tests/test_<name>.py` (render blocks, assert the
-   output) and ship an example patch in `examples/`.
-6. **Document it** — add a row to the [index](#module-index) and an entry to the
-   catalogue.
+The path, end to end:
 
-The UI needs no changes for most modules: it builds knobs from
-`DEFAULT_PARAMS` automatically (sliders for numbers, checkboxes for booleans,
-combos for known enum params, a text box otherwise) and draws a jack per port.
+1. **The class.** In `src/pysynthrack/modules/<name>.py`, subclass `Module`
+   and decorate it with `@register_module_type` (both from `core/module.py`).
+   Declare `TYPE`, `CATEGORY`, `DEFAULT_PARAMS`, `INPUT_PORTS` and
+   `OUTPUT_PORTS`, where a port is `Port(name, "in" | "out", "audio" | "cv" |
+   "gate")` from `core/port.py`. `CATEGORY` is the Add-menu submenu and must
+   be one of `CATEGORY_ORDER` in `core/module.py` (Sources, Filters & EQ,
+   Effects, Modulation, Routing & VCA, CV & Utilities, Outputs);
+   `tests/test_module_categories.py` fails on anything else. The class is
+   pure data, with no DSP. Constants the UI also needs, such as the list of
+   values a `mode` param takes, live beside it as module-level tuples
+   (`FILTER_MODES` in `modules/filter.py`, `DRIFT_MODES` in
+   `modules/drift.py`). Import the class in `modules/__init__.py` and add
+   it to `__all__`.
+2. **The renderer.** Add a `_render_<type>(self, module, frames, buffers,
+   patch)` method to the family mixin it belongs to in
+   `src/pysynthrack/audio/renderers/`: `clockwork`, `colour`, `cv_routing`,
+   `dynamics`, `eq_filter`, `io`, `mod_sources`, `modfx`, `oscillators`,
+   `physical`, `pitch_time`, `reverb_delay`, `sequencing` or `spectral`
+   (docs/architecture.md, "Renderer families"). Then add a
+   `"<type>": "_render_<type>"` row to `NumpyBackend._RENDERERS` in
+   `audio/numpy_backend.py`; `tests/test_render_dispatch.py` fails until you
+   do. Return one array, or a dict keyed by output-port name.
+   - Note sources that render from their own state take `(module, frames)`
+     and also go in `NumpyBackend._FRAMES_ONLY`.
+   - Speaker-family sinks have no row: the engine drains them itself
+     (`_SPEAKER_CHANNELS`, `_STEREO_SPEAKERS`).
+   - Helpers several families share live on the `_shared` mixin
+     (`SharedHelpers`, below). A mixin that needs `NumpyBackend` by name
+     imports it lazily inside the method, since `numpy_backend` imports the
+     mixins. A new family is a new mixin, exported from
+     `renderers/__init__.py` and added to `NumpyBackend`'s bases.
+   - A module that owns OS resources (files, threads, devices) gets its
+     lifecycle in `NumpyBackend.compile()` and `stop()`. The `file_player`,
+     `convolver`, `sampler` and `midi_input` blocks there are the pattern.
+3. **pyo.** The pyo backend is parked. Add the TYPE to the
+   `_SILENT_STUB_TYPES` tuple in `audio/pyo_backend.py`, so a patch that
+   goes quiet under pyo says why; `tests/test_pyo_stubs.py` fails until you
+   do.
+4. **The UI.** `App._add_param_widget` in `ui/app.py` builds one widget per
+   param. Without a block for your TYPE, a bool gets a checkbox, a number a
+   generic unbounded drag and a string a free-text box, which is rarely
+   right. Add an `if module.TYPE == "<type>":` block beside the others:
+   bounded sliders or drags, the unit in the label or the `format`
+   (`"%.1f ms"`, `"%.2f oct/unit"`), and combos fed from the module's own
+   tuples for enum params.
+   - **`mode` is shadowed.** A shared branch for `mode`/`mode_neg` sits in
+     the middle of `_add_param_widget` and runs before every TYPE block
+     below it, and its `else` hands out the *filter's* modes. Add an `elif`
+     with your module's own list to that branch, or handle `mode` in a TYPE
+     block placed above it (as `function_generator` does).
+     `tests/test_mode_combos.py` walks the registry and fails if a module's
+     dropdown doesn't offer its own default. `speed`, `waveform` and
+     `detector` have shared branches like it.
+   - **ASCII only.** Everything painted on screen is ASCII: labels, formats,
+     status messages and example patch names. DearPyGui's font draws
+     anything above U+00FF as `?`, and `tests/test_ui_glyphs.py` enforces
+     this.
+   - **Param writes** from any hand-written callback go through
+     `App._set_module_param(module_id, name, value)` (model first, backend
+     after), so an edit made before **Start audio** is not lost
+     (`tests/test_param_writes.py`).
+5. **Tests**, in `tests/test_<name>.py`, headless: drive `_render_<type>`
+   block by block and assert on the output. Include a widget sweep (every
+   param gets a bounded widget, `test_freeze.py`'s
+   `test_every_param_gets_a_bounded_widget` is the pattern, with `dpg`
+   mocked). A renderer that reads a block-mean CV belongs in the case lists
+   of `tests/test_cv_scrub.py` (linear reads) and `tests/test_cv_overflow.py`
+   (octave reads) too.
+6. **An example** in `examples/`, within gain headroom. `tests/test_examples.py`
+   loads, compiles and renders every one, and checks every cable lands on a
+   real port.
+7. **The docs**, in this file: an index row ``[`<type>`](#<type>)`` in the
+   [index table](#module-index), a ``#### `<type>` `` entry under its
+   signal-flow section, a row in the [CV depth conventions](#cv-depth-conventions)
+   table for every new `*_cv` input, and a line in the
+   [example appendix](#appendix-example-patches). Bump the module counts in
+   `README.md`, and move the spec to the appendix of `docs/MODULE_IDEAS.md`
+   with its ship line.
+
+**House invariants.** Every module holds these, or pins a tolerance and
+says why:
+
+- A single voice row renders bit-identical to the mono path.
+- The neutral setting is a bit-exact passthrough (an effect at `mix` 0 is
+  the dry input itself).
+- Block-size independence: probe 64/128/512/1000 over a render long enough
+  to matter. Count samples with integers from an absolute position; a
+  float phase accumulator drifts between block sizes.
+- Stateful modules keep per-voice state, and read voice-aware inputs with
+  `_input_buffer(patch, buffers, module.id, port, collapse=False)`.
+- The shared CV and voice helpers on `SharedHelpers` are the only doors:
+  collapse voices with `_voice_sum` / `_voice_mean` (float64, so the mix
+  doesn't depend on voice order); read a block-mean CV through
+  `_finite_mean` (float64, NaN read as "no modulation"), and an octave
+  exponent through `_pow2_clipped` (clipped before the power, so an absurd
+  CV can't raise `OverflowError` in the audio thread).
+  `test_voice_collapse.py` scans the renderers for bare collapses.
+- Pitch CV is 1 V/oct with C4 = 0 V. Gates are 0/1, high above `_GATE_HIGH`
+  (0.5).
+- Every new `*_cv` input gets an explicit depth param, in the target's
+  natural unit per CV unit (see [CV depth conventions](#cv-depth-conventions)).
+
+**Done** means the module's own tests, the example and the docs above, and
+the registry-wide tripwires green: `test_render_dispatch`,
+`test_docs_coverage`, `test_module_categories`, `test_mode_combos`,
+`test_voice_collapse`, `test_ui_glyphs`, `test_pyo_stubs` and
+`test_examples`. Then the full suite (`pytest -q`), and a WORKLOG.md /
+TODO.md entry for the change.
 
 ---
 
