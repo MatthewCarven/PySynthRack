@@ -9,6 +9,10 @@ The display is a classic 10-division scope face: the visible window is
 ``time_div`` (ms per division) × 10. Each pixel column shows the min and
 max of its slice of the window, so a one-sample spike can never fall
 between pixels — the industry decimation for waveform displays.
+
+The opt-in afterglow's slot bookkeeping (GlowRing, glow_alpha) lives
+here too: which polyline a repaint writes, and what colour the rest
+fade to.
 """
 from __future__ import annotations
 
@@ -211,3 +215,84 @@ def xy_polyline(
     px = half_w + np.clip(x[:n] * g, -1.0, 1.0) * (half_w - 1.0)
     py = half_h - np.clip(y[:n] * g, -1.0, 1.0) * (half_h - 1.0)
     return [(float(a), float(b)) for a, b in zip(px, py)]
+
+
+# ----- afterglow ------------------------------------------------------------
+#
+# Opt-in phosphor persistence: the face keeps its last ``glow_frames``
+# repaints as that many polylines per trace, the newest at full alpha and
+# each older one fainter. The cost model is the whole design: a repaint
+# writes its points into ONE polyline (the slot holding the oldest
+# trace, which it replaces) and the others only change colour, because
+# pushing points into DearPyGui costs ~0.3 us per point while a colour
+# change is a flat few us. Nothing here touches dearpygui; the face asks
+# a GlowRing which slot to write and what colour every slot is.
+
+GLOW_FRAMES_MIN = 2
+GLOW_FRAMES_MAX = 16
+GLOW_FRAMES_DEFAULT = 8
+
+
+def clamp_glow_frames(value) -> int:
+    """``glow_frames`` → an int in GLOW_FRAMES_MIN..GLOW_FRAMES_MAX.
+
+    A typed-in or hand-edited value (float, string, junk) never reaches
+    the face unbounded: junk means the default."""
+    try:
+        n = int(round(float(value)))
+    except (TypeError, ValueError, OverflowError):
+        n = GLOW_FRAMES_DEFAULT
+    return max(GLOW_FRAMES_MIN, min(GLOW_FRAMES_MAX, n))
+
+
+def glow_alpha(age: int, frames: int) -> int:
+    """Alpha (0..255) of a trace ``age`` repaints old, ``frames`` kept.
+
+    Age 0 (the live trace) is 255; the fade is linear down to
+    255/frames for the oldest kept (age frames-1), so the last ghost is
+    faint but never invisible and a longer glow fades more gently.
+    """
+    frames = max(1, int(frames))
+    age = min(max(0, int(age)), frames - 1)
+    return int(round(255.0 * (frames - age) / frames))
+
+
+class GlowRing:
+    """Slot bookkeeping for one trace's afterglow (dpg-free).
+
+    ``frames`` slots hold the last ``frames`` traces. :meth:`advance`
+    names the slot the next trace goes into — the one holding the
+    oldest (or a never-used one while the ring fills) — so the slots
+    rotate rather than every trace shifting along each repaint.
+    :meth:`colours` gives every slot's RGBA for its age, ``None`` for a
+    slot not written yet (it stays hidden).
+    """
+
+    def __init__(self, frames) -> None:
+        self.frames = clamp_glow_frames(frames)
+        self.head = -1  # slot holding the newest trace
+        self.filled = 0  # slots written so far (<= frames)
+
+    def advance(self) -> int:
+        """Take the next slot for a new trace; returns its index."""
+        self.head = (self.head + 1) % self.frames
+        self.filled = min(self.frames, self.filled + 1)
+        return self.head
+
+    def age(self, slot: int) -> int | None:
+        """Repaints since ``slot`` was written (0 = newest), or None."""
+        if self.head < 0:
+            return None
+        a = (self.head - int(slot)) % self.frames
+        return a if a < self.filled else None
+
+    def colours(
+        self, rgb: tuple[int, int, int]
+    ) -> list[tuple[int, int, int, int] | None]:
+        """Per-slot RGBA: the trace colour at each slot's age alpha."""
+        r, g, b = (int(c) for c in rgb[:3])
+        out: list[tuple[int, int, int, int] | None] = []
+        for s in range(self.frames):
+            a = self.age(s)
+            out.append(None if a is None else (r, g, b, glow_alpha(a, self.frames)))
+        return out

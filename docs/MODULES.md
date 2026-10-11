@@ -5803,12 +5803,11 @@ needed (`in` wins when both are patched; `cv` has no pass-through).
 `in_r` is the second trace: `mode` `dual` stacks both in one face, `xy`
 plots `in` against `in_r` — the goniometer (mono = diagonal line, stereo
 width opens a cloud, quadrature LFOs draw circles). In `xy` the trace is
-decimated to ~200 points per frame and there is **no persistence** — it
-is the live window, not an accumulating image — so a shape built from
-many slow passes (a [`chaos`](#chaos) attractor, say) wants `time_div`
-wide enough to hold several passes at once rather than a fast repaint;
-past roughly twenty passes per window the point budget starts to show as
-straight edges. `trigger`
+decimated to ~200 points per frame, so a shape built from many slow
+passes (a [`chaos`](#chaos) attractor, say) wants `time_div` wide enough
+to hold several passes at once; past roughly twenty passes per window the
+point budget starts to show as straight edges — which is what
+**afterglow** fills in. `trigger`
 `rising`/`falling` align the sweep to the last `level` crossing that
 fits a full window so periodic signals hold still; `free` shows the
 newest window (envelopes, one-shots); a patched `trig` gate overrides
@@ -5817,6 +5816,24 @@ sweeps). Voice-aware sources pass through shape-intact; the display sums
 voices (what a mono consumer hears). Display maths lives in
 `ui/scope_math.py` (dpg-free, tested headless); the audio thread only
 copies into a capture ring. Numpy backend only; silent stub under pyo.
+
+**Afterglow** (opt-in, off by default) is phosphor persistence: tick
+`afterglow` and the face keeps its last `glow_frames` repaints (2–16,
+default 8, the live one included), the newest at full brightness and
+each older one fainter. In `xy` with `trigger` **free**, every repaint
+samples a slightly later window at a fresh phase, so the ghosts
+interleave rather than overlap — eight frames land about six times as
+many distinct points on a chaos butterfly as one frame does. In `mono`
+and `dual` it shows jitter and drift as a smear (`dual` glows both
+traces). While a level trigger is locked it repaints the same window,
+so its ghosts coincide; **free** is the setting for the butterfly. Each
+repaint writes points into ONE polyline per trace and only recolours
+the others. On a real DearPyGui context (no viewport) that measured
+about +0.05 ms per trace per frame at 8 frames and +0.1 ms at 16,
+against a scope repaint of ~1.5–4 ms. Untick it and the extra polylines
+hide and cost nothing. Changing `mode` or `glow_frames` starts the glow
+afresh, and `freeze` holds it with the rest of the picture. It is
+display only: the audio path never reads either param.
 
 **Ports**
 
@@ -5838,6 +5855,8 @@ copies into a capture ring. Numpy backend only; silent stub under pyo.
 | `level` | `0.0` | −1 … 1 | Trigger level. |
 | `freeze` | `False` | bool | Hold the current picture. |
 | `mode` | `mono` | mono · dual · xy | One trace, two stacked, or goniometer. |
+| `afterglow` | `False` | bool | Keep the last repaints on the face, fading (display only). |
+| `glow_frames` | `8` | 2 … 16 | Repaints the afterglow keeps, the live one included. |
 
 #### `meter`
 

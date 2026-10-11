@@ -10,10 +10,21 @@ helpers (envelope zig-zag, xy mapping).
 
 Display maths comes from the dpg-free ui/scope_math.py, so the whole
 pipeline runs headless: renderer → scope_window → build_snapshot.
+
+The afterglow (2026-10-12) adds the face's own contract: opt-in, never
+in the audio path, bounded ``glow_frames``, ONE points push per trace
+per repaint into a rotating slot with the rest only recoloured, and a
+tick-off that hides every slot and returns the face to its old cost —
+pinned on a mocked dpg AND once against a real (viewport-less)
+DearPyGui context, since a MagicMock accepts any kwarg.
 """
 from __future__ import annotations
 
+import itertools
+from unittest import mock
+
 import numpy as np
+import pytest
 
 from pysynthrack.audio.numpy_backend import NumpyBackend
 from pysynthrack.core.module import all_module_types, get_module_type
@@ -303,3 +314,368 @@ def test_window_samples_math():
     assert sm.window_samples(10.0, 1000) == 100   # 10 ms × 10 div at 1 kHz
     assert sm.window_samples(500.0, 44100) == 220500
     assert sm.window_samples(0.0, 1000) >= 2      # floor, never zero
+
+
+# ----- afterglow: params and the audio path ---------------------------------
+
+
+def test_afterglow_defaults_off_and_round_trips():
+    cls = all_module_types()["scope"]
+    m = cls(1)
+    assert m.params["afterglow"] is False
+    assert m.params["glow_frames"] == sm.GLOW_FRAMES_DEFAULT == 8
+    m2 = cls.from_dict(
+        cls(3, params={"afterglow": True, "glow_frames": 16}).to_dict()
+    )
+    assert m2.params["afterglow"] is True
+    assert m2.params["glow_frames"] == 16
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {"afterglow": True},
+        {"afterglow": True, "glow_frames": 16},
+        {"afterglow": True, "glow_frames": 2, "mode": "xy"},
+    ],
+)
+def test_afterglow_never_touches_the_pass_through(params):
+    step = _driver(params, wire=("in", "in_r"))
+    rng = np.random.default_rng(7)
+    x = rng.uniform(-1, 1, 64).astype(np.float32)
+    y = rng.uniform(-1, 1, (3, 64)).astype(np.float32)
+    out = step(**{"in": x, "in_r": y})
+    assert out["out"] is x and out["out_r"] is y  # the very same arrays
+
+
+def _render_through_scope(scope_params, flips=()):
+    """saw -> scope -> speaker, 12 blocks of 128 at 44.1 kHz; ``flips`` are
+    (block, param, value) writes through the backend mid-run."""
+    patch = Patch()
+    osc = patch.add_module(
+        "oscillator", params={"waveform": "saw_blep", "freq": 220.0}
+    )
+    sc = patch.add_module("scope", params=scope_params)
+    spk = patch.add_module("speaker_output")
+    patch.connect(osc.id, "out", sc.id, "in")
+    patch.connect(sc.id, "out", spk.id, "in")
+    b = NumpyBackend(sample_rate=44100, block_size=128)
+    b.compile(patch)
+    outs = []
+    for k in range(12):
+        for blk, name, value in flips:
+            if blk == k:
+                b.set_param(sc.id, name, value)
+        out, _devices = b.render_block_multi(128)
+        outs.append(np.asarray(out).copy())
+    return outs
+
+
+def test_afterglow_leaves_the_render_bit_exact():
+    ref = _render_through_scope({})
+    assert max(float(np.abs(o).max()) for o in ref) > 0.1  # not vacuous
+    for params, flips in (
+        ({"afterglow": True}, ()),
+        ({"afterglow": True, "glow_frames": 16, "mode": "xy"}, ()),
+        ({}, ((3, "afterglow", True), (6, "glow_frames", 2),
+              (9, "afterglow", False))),
+    ):
+        got = _render_through_scope(params, flips)
+        assert len(got) == len(ref)
+        assert all(np.array_equal(a, b) for a, b in zip(ref, got)), params
+
+
+# ----- afterglow: scope_math ------------------------------------------------
+
+
+def test_clamp_glow_frames_bounds_and_junk():
+    assert sm.clamp_glow_frames(8) == 8
+    assert sm.clamp_glow_frames(1) == sm.GLOW_FRAMES_MIN == 2
+    assert sm.clamp_glow_frames(99) == sm.GLOW_FRAMES_MAX == 16
+    assert sm.clamp_glow_frames(8.6) == 9
+    assert sm.clamp_glow_frames("12") == 12
+    for junk in (None, "lots", float("nan"), float("inf")):
+        assert sm.clamp_glow_frames(junk) == sm.GLOW_FRAMES_DEFAULT
+
+
+@pytest.mark.parametrize("frames", [2, 8, 16])
+def test_glow_alpha_fades_from_full_to_faint(frames):
+    alphas = [sm.glow_alpha(a, frames) for a in range(frames)]
+    assert alphas[0] == 255                                  # the live trace
+    assert all(b < a for a, b in zip(alphas, alphas[1:]))    # fainter with age
+    assert alphas[-1] == round(255 / frames) > 0             # oldest still shows
+
+
+def test_glow_ring_rotates_one_slot_per_repaint():
+    ring = sm.GlowRing(4)
+    assert [ring.age(s) for s in range(4)] == [None] * 4
+    assert ring.colours((1, 2, 3)) == [None] * 4
+    written = [ring.advance() for _ in range(9)]
+    assert written == [0, 1, 2, 3, 0, 1, 2, 3, 0]
+    assert [ring.age(s) for s in range(4)] == [0, 3, 2, 1]
+    assert sm.GlowRing(99).frames == 16 and sm.GlowRing(0).frames == 2
+
+
+def test_glow_ring_takes_the_oldest_slot_and_hides_unwritten_ones():
+    ring = sm.GlowRing(5)
+    ring.advance()
+    ring.advance()
+    cols = ring.colours((10, 20, 30))
+    assert cols[0] == (10, 20, 30, sm.glow_alpha(1, 5))
+    assert cols[1] == (10, 20, 30, 255)
+    assert cols[2:] == [None, None, None]
+    for _ in range(3):
+        ring.advance()
+    for _ in range(7):  # full ring: each new trace replaces the oldest
+        ages = [ring.age(s) for s in range(5)]
+        assert sorted(ages) == [0, 1, 2, 3, 4]
+        assert ring.advance() == ages.index(4)
+
+
+# ----- afterglow: the face (mocked dpg) -------------------------------------
+
+
+class _FakeScopeBackend:
+    """Just what _update_scopes reads: a sample rate, and a scope_window
+    whose content slides on every call (a signal that is running)."""
+
+    sample_rate = 1000
+
+    def __init__(self):
+        self.calls = 0
+
+    def scope_window(self, module_id, n):
+        self.calls += 1
+        t = (np.arange(n) + 13 * self.calls) * 0.07
+        return {
+            "t1": np.sin(t).astype(np.float32),
+            "t2": np.cos(1.3 * t).astype(np.float32),
+            "tg": None,
+        }
+
+
+def _face(monkeypatch, **params):
+    """A scope node on a mocked dpg, a fake running backend, and
+    ``frame()`` -> that repaint's configure_item calls as (tag, kwargs).
+
+    The polylines get DISTINCT ids: a bare MagicMock hands every call the
+    same return value, and then every slot would look like every other.
+    """
+    pytest.importorskip("dearpygui.dearpygui")
+    import pysynthrack.ui.app as app_mod
+
+    monkeypatch.setenv("PYSYNTHRACK_BACKEND", "numpy")
+    dpg = mock.MagicMock()
+    ids = itertools.count(50_000)
+    dpg.draw_polyline.side_effect = lambda *a, **k: next(ids)
+    monkeypatch.setattr(app_mod, "dpg", dpg)
+    app = app_mod.App()
+    app.patch = Patch()
+    module = app.patch.add_module("scope", params={"trigger": "free", **params})
+    app._create_node_for_module(module)
+    app.backend = _FakeScopeBackend()
+    bundle = app._scope_displays[module.id]
+
+    def frame():
+        dpg.configure_item.reset_mock()
+        app._update_scopes()
+        return [(c.args[0], dict(c.kwargs)) for c in dpg.configure_item.call_args_list]
+
+    return app, module, bundle, frame
+
+
+def _pushed(calls):
+    return [t for t, kw in calls if "points" in kw]
+
+
+def test_face_builds_hidden_glow_slots_for_both_traces(monkeypatch):
+    _app, _m, bundle, _frame = _face(monkeypatch)
+    g1, g2 = bundle["g1"], bundle["g2"]
+    assert len(g1) == len(g2) == sm.GLOW_FRAMES_MAX
+    tags = set(g1) | set(g2) | {bundle["p1"], bundle["p2"]}
+    assert len(tags) == 2 * sm.GLOW_FRAMES_MAX + 2   # every one distinct
+
+
+@pytest.mark.parametrize("mode", ["xy", "mono", "dual"])
+def test_afterglow_off_never_touches_a_slot(monkeypatch, mode):
+    _app, _m, bundle, frame = _face(monkeypatch, mode=mode)
+    slots = set(bundle["g1"]) | set(bundle["g2"])
+    want = [bundle["p1"]] + ([bundle["p2"]] if mode == "dual" else [])
+    for _ in range(3):
+        calls = frame()
+        assert _pushed(calls) == want
+        assert not [t for t, _kw in calls if t in slots]
+
+
+@pytest.mark.parametrize("mode", ["xy", "mono"])
+def test_afterglow_pushes_one_trace_per_repaint_into_a_rotating_slot(
+    monkeypatch, mode
+):
+    n = 4
+    _app, _m, bundle, frame = _face(
+        monkeypatch, mode=mode, afterglow=True, glow_frames=n
+    )
+    g1 = bundle["g1"]
+    first = frame()
+    assert (bundle["p1"], {"show": False}) in first  # the ring draws it now
+    pushed = [_pushed(first)] + [_pushed(frame()) for _ in range(2 * n)]
+    assert pushed == [[g1[k % n]] for k in range(2 * n + 1)]
+
+
+def test_afterglow_fills_up_one_slot_at_a_time(monkeypatch):
+    n = 3
+    _app, _m, bundle, frame = _face(
+        monkeypatch, mode="xy", afterglow=True, glow_frames=n
+    )
+    g1 = bundle["g1"]
+    for k in range(n):
+        calls = frame()
+        assert {t for t, _kw in calls if t in g1} == set(g1[: k + 1])
+        assert [t for t, kw in calls if kw.get("show") is True] == [g1[k]]
+
+
+def test_afterglow_recolours_the_rest_by_age(monkeypatch):
+    n = 4
+    app, _m, bundle, frame = _face(
+        monkeypatch, mode="xy", afterglow=True, glow_frames=n
+    )
+    g1 = bundle["g1"]
+    for _ in range(n + 2):  # past fill-up: repaint 6 wrote slot (6-1) % 4
+        calls = frame()
+    newest = (n + 2 - 1) % n
+    by_tag = dict(calls)
+    assert set(by_tag) == set(g1[:n])  # nothing else on the face touched
+    for s in range(n):
+        kw = by_tag[g1[s]]
+        age = (newest - s) % n
+        assert kw["color"] == (*app._SCOPE_RGB1, sm.glow_alpha(age, n))
+        assert ("points" in kw) == (s == newest)  # the rest: colour only
+        assert "show" not in kw                   # shown once, at fill-up
+
+
+def test_tick_off_hides_the_glow_and_the_face_costs_what_it_did(monkeypatch):
+    _app, module, bundle, frame = _face(
+        monkeypatch, mode="xy", afterglow=True, glow_frames=5
+    )
+    for _ in range(7):
+        frame()
+    module.params["afterglow"] = False
+    calls = frame()
+    assert {t for t, kw in calls if kw == {"show": False}} == set(bundle["g1"][:5])
+    assert (bundle["p1"], {"show": True}) in calls
+    assert _pushed(calls) == [bundle["p1"]]
+    # From the next repaint on: exactly the afterglow-off face, one call.
+    assert frame() == [(bundle["p1"], {"points": mock.ANY})]
+
+
+def test_dual_glows_both_traces_and_a_change_starts_afresh(monkeypatch):
+    n = 3
+    app, module, bundle, frame = _face(
+        monkeypatch, mode="dual", afterglow=True, glow_frames=n
+    )
+    g1, g2 = bundle["g1"], bundle["g2"]
+    for _ in range(n + 1):
+        calls = frame()
+    assert _pushed(calls) == [g1[0], g2[0]]
+    by_tag = dict(calls)
+    assert by_tag[g2[0]]["color"] == (*app._SCOPE_RGB2, 255)
+    assert by_tag[g2[1]]["color"] == (*app._SCOPE_RGB2, sm.glow_alpha(2, n))
+    # mode -> xy: every ghost hides (wrong shape), ring 1 restarts at slot
+    # 0, and trace 2 has no ring (xy draws one polyline from both).
+    module.params["mode"] = "xy"
+    calls = frame()
+    assert {t for t, kw in calls if kw == {"show": False}} == set(g1[:n]) | set(g2[:n])
+    assert _pushed(calls) == [g1[0]]
+    # glow_frames change: same again, the new count from slot 0
+    frame()
+    module.params["glow_frames"] = 6
+    calls = frame()
+    assert {t for t, kw in calls if kw == {"show": False}} == {g1[0], g1[1]}
+    assert _pushed(calls) == [g1[0]]
+
+
+def test_freeze_holds_the_glow_too(monkeypatch):
+    _app, module, _bundle, frame = _face(
+        monkeypatch, mode="xy", afterglow=True, glow_frames=4
+    )
+    frame()
+    frame()
+    module.params["freeze"] = True
+    assert frame() == []
+
+
+def test_every_param_gets_a_bounded_widget(monkeypatch):
+    pytest.importorskip("dearpygui.dearpygui")
+    import pysynthrack.ui.app as app_mod
+
+    monkeypatch.setenv("PYSYNTHRACK_BACKEND", "numpy")
+    monkeypatch.setattr(app_mod, "dpg", mock.MagicMock())
+    app = app_mod.App()
+    app.patch = Patch()
+    module = app.patch.add_module("scope")
+    kinds = ("add_combo", "add_drag_float", "add_slider_float", "add_input_text",
+             "add_input_float", "add_checkbox", "add_drag_int", "add_slider_int")
+    before = {k: len(getattr(app_mod.dpg, k).call_args_list) for k in kinds}
+    app._create_node_for_module(module)
+    widgets = {}
+    for k in kinds:
+        for call in getattr(app_mod.dpg, k).call_args_list[before[k]:]:
+            widgets[str(call.kwargs.get("label"))] = (k, call.kwargs)
+    for name in get_module_type("scope").DEFAULT_PARAMS:
+        assert name in widgets, (name, list(widgets))
+        assert widgets[name][0] != "add_input_text", name
+    assert widgets["afterglow"][0] == "add_checkbox"
+    kind, kw = widgets["glow_frames"]
+    assert kind == "add_drag_int"
+    assert (kw["min_value"], kw["max_value"]) == (2, 16) and kw["clamped"] is True
+    assert kw["default_value"] == 8 and kw["format"] == "%d frames"
+    assert kw["callback"] == app._on_param_changed  # -> _set_module_param
+    assert all(ord(ch) < 128 for lb in widgets for ch in lb)
+    assert all(ord(ch) < 128 for _k, kw in widgets.values()
+               for ch in str(kw.get("format", "")))
+
+
+# ----- afterglow: the face against a real DearPyGui ------------------------
+
+
+def test_afterglow_against_a_real_dearpygui_context(monkeypatch):
+    """A MagicMock accepts any kwarg; this proves real DearPyGui takes the
+    face's calls and ends up holding what the ring says. No viewport is
+    created, so nothing is shown."""
+    dpg = pytest.importorskip("dearpygui.dearpygui")
+    import pysynthrack.ui.app as app_mod
+
+    monkeypatch.setenv("PYSYNTHRACK_BACKEND", "numpy")
+    monkeypatch.setattr(app_mod, "dpg", dpg)
+    dpg.create_context()
+    try:
+        app = app_mod.App()
+        app._build_ui()
+        app.patch = Patch()
+        module = app.patch.add_module(
+            "scope",
+            params={"trigger": "free", "mode": "xy", "afterglow": True,
+                    "glow_frames": 4},
+        )
+        app._create_node_for_module(module)
+        app.backend = _FakeScopeBackend()
+        bundle = app._scope_displays[module.id]
+        for _ in range(6):
+            app._update_scopes()
+        cfg = [dpg.get_item_configuration(t) for t in bundle["g1"]]
+        assert [c["show"] for c in cfg] == [True] * 4 + [False] * 12
+        assert dpg.get_item_configuration(bundle["p1"])["show"] is False
+        newest = (6 - 1) % 4
+        for s in range(4):
+            alpha = round(cfg[s]["color"][3] * 255)
+            assert alpha == sm.glow_alpha((newest - s) % 4, 4)
+        assert len(cfg[newest]["points"]) >= 2
+        module.params["afterglow"] = False
+        app._update_scopes()
+        assert not any(
+            dpg.get_item_configuration(t)["show"] for t in bundle["g1"]
+        )
+        assert dpg.get_item_configuration(bundle["p1"])["show"] is True
+    finally:
+        dpg.destroy_context()

@@ -30,6 +30,14 @@ Modes. ``mono`` draws the main trace; ``dual`` stacks ``in`` and
 goniometer: a mono signal on both = a diagonal line, stereo width opens
 it into a cloud, quadrature LFOs draw circles.
 
+Afterglow (opt-in, display only). ``afterglow`` keeps the last
+``glow_frames`` repaints on the face, the newest at full brightness and
+each older one fainter (phosphor persistence) — in ``xy`` the frames
+interleave, so a slow attractor fills in densely. Works in every mode
+(``dual`` glows both traces). Each repaint writes ONE polyline per trace
+and only recolours the rest; off, the extra polylines hide and cost
+nothing. The audio path never reads these params.
+
 Voice-aware sources pass through shape-intact; the display sums voices
 (what a downstream mono consumer hears). Numpy backend only; under pyo
 the node is a silent stub like the other display taps.
@@ -49,6 +57,9 @@ Params:
   * ``level``: trigger level, −1..1. Default 0.
   * ``freeze``: hold the current picture. Default off.
   * ``mode``: ``mono`` | ``dual`` | ``xy``. Default ``mono``.
+  * ``afterglow``: keep the last few repaints, fading. Default off.
+  * ``glow_frames``: how many repaints (live one included), 2..16.
+    Default 8.
 """
 from __future__ import annotations
 
@@ -70,6 +81,8 @@ class Scope(Module):
         level: Trigger level, −1..1. Default 0.
         freeze: Hold the current picture. Default False.
         mode: ``mono`` | ``dual`` | ``xy``. Default ``mono``.
+        afterglow: Keep the last repaints on the face, fading. Default False.
+        glow_frames: Repaints kept (live one included), 2..16. Default 8.
 
     Ports:
         in (in, audio): main trace; passed through on ``out`` bit-exact.
@@ -89,6 +102,8 @@ class Scope(Module):
         "level": 0.0,
         "freeze": False,
         "mode": "mono",
+        "afterglow": False,
+        "glow_frames": 8,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),

@@ -960,7 +960,9 @@ class App:
             # centre gridlines, and two polylines (main + second trace)
             # repainted each frame by _update_scopes from the backend's
             # capture rings. Both polylines exist up front; trace 2 shows
-            # only in dual/xy with in_r patched.
+            # only in dual/xy with in_r patched. The afterglow slots (one
+            # ring per trace, GLOW_FRAMES_MAX each) are made hidden here
+            # too, so ticking `afterglow` only ever shows and recolours.
             if module.TYPE == "scope":
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                     w, h = self._SCOPE_W, self._SCOPE_H
@@ -977,17 +979,31 @@ class App:
                             (w / 2, 0), (w / 2, h - 1),
                             color=(50, 60, 50, 255),
                         )
+                        glow = {
+                            trace: [
+                                dpg.draw_polyline(
+                                    [(0, h / 2), (w - 1, h / 2)],
+                                    color=(*rgb, 255), thickness=1,
+                                    show=False,
+                                )
+                                for _ in range(scope_math.GLOW_FRAMES_MAX)
+                            ]
+                            for trace, rgb in (
+                                (1, self._SCOPE_RGB1), (2, self._SCOPE_RGB2),
+                            )
+                        }
                         p1 = dpg.draw_polyline(
                             [(0, h / 2), (w - 1, h / 2)],
-                            color=(120, 230, 130, 255), thickness=1,
+                            color=(*self._SCOPE_RGB1, 255), thickness=1,
                         )
                         p2 = dpg.draw_polyline(
                             [(0, h / 2), (w - 1, h / 2)],
-                            color=(230, 190, 90, 255), thickness=1,
+                            color=(*self._SCOPE_RGB2, 255), thickness=1,
                             show=False,
                         )
                     self._scope_displays[module.id] = {
                         "dl": dl, "p1": p1, "p2": p2, "p2_shown": False,
+                        "g1": glow[1], "g2": glow[2],
                     }
 
             # Sampler: the waveform face -- the loaded file's min/max
@@ -3892,7 +3908,20 @@ class App:
             # divisions across the face); ``gain`` scales vertically
             # (±1 fills at 1.0); ``trigger``/``level`` align the sweep;
             # ``mode`` (mono/dual/xy) hits the shared mode-combo branch
-            # below; ``freeze`` rides the generic checkbox.
+            # below; ``freeze`` and ``afterglow`` ride the generic
+            # checkbox; ``glow_frames`` is how many repaints the
+            # afterglow keeps (live one included), a clamped 2..16 int.
+            if param_name == "glow_frames":
+                dpg.add_drag_int(
+                    label=param_name,
+                    default_value=scope_math.clamp_glow_frames(current),
+                    speed=0.1,
+                    min_value=scope_math.GLOW_FRAMES_MIN,
+                    max_value=scope_math.GLOW_FRAMES_MAX,
+                    clamped=True, format="%d frames",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
             if param_name == "time_div":
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current), speed=0.5,
@@ -7170,6 +7199,10 @@ class App:
     _SCOPE_W = 220
     _SCOPE_H = 110
     _SCOPE_COLS = 200
+    # Trace colours (RGB): the main trace green, the second amber. The
+    # afterglow draws each trace's ghosts in its own colour, faded.
+    _SCOPE_RGB1 = (120, 230, 130)
+    _SCOPE_RGB2 = (230, 190, 90)
 
     # Sampler face geometry: the loaded file's min/max envelope with the
     # region (start/end) and loop (loop_start/loop_end) markers over it.
@@ -7305,8 +7338,11 @@ class App:
         Per frame and per scope: ask the backend for the recent window
         (scope_window hook, numpy backend only), run the display maths in
         ui/scope_math (trigger alignment + min/max columns, or xy
-        decimation), and reconfigure the node's polylines. A frozen scope
-        skips the repaint entirely — the picture simply stops. Wrapped
+        decimation), and reconfigure the node's polylines -- or, with
+        ``afterglow`` ticked, hand the points to _paint_scope_glow, which
+        writes one rotating slot per trace and recolours the rest. A
+        frozen scope skips the repaint entirely — the picture simply
+        stops (afterglow included). Wrapped
         per-scope in try/except so a torn frame or a mid-delete widget
         self-heals next frame (CV-meter precedent).
         """
@@ -7353,6 +7389,13 @@ class App:
                         if snap["cols2"] is not None
                         else None
                     )
+                if bool(module.params.get("afterglow", False)) and "g1" in bundle:
+                    self._paint_scope_glow(
+                        bundle, module.params, snap["mode"], pts1, pts2
+                    )
+                    continue
+                if bundle.get("glow") is not None:
+                    self._end_scope_glow(bundle)
                 if pts1 and len(pts1) >= 2:
                     dpg.configure_item(bundle["p1"], points=pts1)
                 want2 = bool(pts2 and len(pts2) >= 2)
@@ -7363,6 +7406,80 @@ class App:
                     bundle["p2_shown"] = want2
             except Exception:
                 continue  # self-heal next frame
+
+    def _paint_scope_glow(self, bundle, params, mode, pts1, pts2) -> None:
+        """One afterglow repaint of a Scope face (scope_math's afterglow).
+
+        While the glow is on the live polylines p1/p2 hide and each
+        trace draws from its ring of slots instead: the newest points go
+        into ONE slot (the one holding that trace's oldest), and every
+        other written slot only gets recoloured for its new age -- a
+        colour change is a flat few us where a points push is ~0.3 us
+        per point. A change of ``glow_frames`` or ``mode`` starts the
+        rings afresh (the old ghosts would be the wrong count or the
+        wrong shape); a trace that goes away takes its ghosts with it.
+        """
+        frames = scope_math.clamp_glow_frames(
+            params.get("glow_frames", scope_math.GLOW_FRAMES_DEFAULT)
+        )
+        key = (mode, frames)
+        st = bundle.get("glow")
+        if st is None:
+            dpg.configure_item(bundle["p1"], show=False)
+            if bundle.get("p2_shown", False):
+                dpg.configure_item(bundle["p2"], show=False)
+                bundle["p2_shown"] = False
+        elif st["key"] != key:
+            self._hide_scope_glow_slots(bundle)
+            st = None
+        if st is None:
+            st = bundle["glow"] = {"key": key, "rings": {}, "shown": set()}
+        shown = st["shown"]
+        for trace, pts, rgb in (
+            (1, pts1, self._SCOPE_RGB1), (2, pts2, self._SCOPE_RGB2),
+        ):
+            slots = bundle[f"g{trace}"]
+            if not (pts and len(pts) >= 2):
+                if st["rings"].pop(trace, None) is not None:
+                    for tag in slots:
+                        if tag in shown:
+                            dpg.configure_item(tag, show=False)
+                            shown.discard(tag)
+                continue
+            ring = st["rings"].get(trace)
+            if ring is None:
+                ring = st["rings"][trace] = scope_math.GlowRing(frames)
+            newest = ring.advance()
+            for slot, colour in enumerate(ring.colours(rgb)):
+                if colour is None:
+                    continue  # not written yet: stays hidden
+                tag = slots[slot]
+                kw = {"color": colour}
+                if slot == newest:
+                    kw["points"] = pts
+                if tag not in shown:
+                    kw["show"] = True
+                    shown.add(tag)
+                dpg.configure_item(tag, **kw)
+
+    def _hide_scope_glow_slots(self, bundle) -> None:
+        """Hide every afterglow slot a Scope face is showing."""
+        st = bundle.get("glow")
+        if not st:
+            return
+        for tag in list(st["shown"]):
+            dpg.configure_item(tag, show=False)
+        st["shown"].clear()
+
+    def _end_scope_glow(self, bundle) -> None:
+        """Afterglow ticked off: hide the slots, the live trace returns.
+
+        Runs once, on the first repaint after the tickbox goes off; from
+        then on the face costs exactly what it did before the glow (the
+        hidden slots are skipped by the draw)."""
+        self._hide_scope_glow_slots(bundle)
+        bundle["glow"] = None
+        dpg.configure_item(bundle["p1"], show=True)
 
     def _update_sampler_faces(self) -> None:
         """Repaint a Sampler node's waveform face when something moved.
