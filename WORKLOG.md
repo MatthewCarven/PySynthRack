@@ -46,6 +46,80 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-10-12 — the seventh batch: eight agents, and three things found sideways
+
+Matthew: "Pick tasks that you can run subagents in worktrees todo please
+Claude". He pushed first ("git push / Everything up-to-date"), so every
+worktree started at df7b46c. Eight agents, each on different files, all
+landed by cherry-pick in arrival order, with no conflicts. Each landing ran
+its own tests on main. The full suite and a before/after render audit
+ran on the combined result.
+
+- **Worklog tidy** (c0e6603, 62522ac): July and August moved verbatim to
+  WORKLOG-ARCHIVE.md (8,487 → 2,650 lines) under a fresh snapshot;
+  `error_handler_*.md` moved to docs/ (nothing referenced them).
+- **`adsr` voice path** (f1e0fbd): exact across block sizes, and a voice
+  row now IS mono. It used to fold the attack's last sample into decay,
+  running one sample ahead. The new tests fail 26 ways on the old code.
+- **Buffered sink, Phase 1** (78c8ab9): a refused block size steps down to
+  blocksize 0 and says so on the node and in the status bar. A device
+  that opens at no size says so in red instead of `idle`. The fake
+  `sounddevice` tests caught 20 of 20 mutations. Phase 2 is Matthew's call.
+- **Small fixes** (014b3bc, 303f90e, 844aa92, 4c10453, c79dd76):
+  - pyo's stub list is now a constant with a registry tripwire.
+  - pluck's float32 mean is fixed, and so is its overflow (beyond the
+    brief: `2.0 ** 1e6` raised in the audio thread).
+  - freeze `width_cv` now goes through `_finite_mean`.
+  - MODULES.md's "Adding a new module" is the full how-to.
+- **Keyboard / MIDI / cv_to_frequency phase** (ceaa100, 572eee6): the
+  oscillator's engines became shared helpers. Beyond the brief, the
+  voices' float-carried envelope ramp now counts from each slope.
+- **Scope afterglow** (680fe6d, 90dd189): cheap, measured on a real
+  headless DPG context (+0.05 ms per frame at 8 frames).
+- **`chorus_lush`** (95f13ab, 0b49cb9): the cause was the CLOCK's float
+  phase, re-wrapped per block, not the chorus. Then the LFO had the same
+  fault, and the random LFO never re-rolled on a wrap at a block's first
+  sample.
+- **Rings + modfx rate_cv** (5c84a0f, 35e64cb): chorus and organ-scanner
+  rings now keep their history (`_ring_regrow`), and flanger/phaser read
+  `rate_cv` per sample. The agent corrected the brief: the buffer slider
+  is disabled while running, so the reset happened on Stop → slider →
+  Start.
+
+**Found sideways, and fixed by Claude:**
+1. **render_audit wrote into Matthew's real Music folder** (ae84db3).
+   Yesterday's disk_writer change sends relative takes there, and the
+   audit renders `record_a_take` / `mic_karaoke_recorder`. The conftest
+   redirect covered the suite, not the tool. Now `render()` points the
+   folder at `<out>/_recordings` for the run and restores it afterwards,
+   with a test. Three junk takes from the agents' audits are in
+   `~/Music/PySynthRack` (created 2026-10-12 00:02) awaiting Matthew's OK
+   to delete. Lesson: **a redirect for the test suite is not a redirect
+   for every tool that renders examples.**
+2. **The scope's repaint cost ~100 ms per trace per frame** at 500 ms/div
+   (`np.minimum.at` over 220,500 samples), on the UI thread, holding the
+   GIL that the audio callback needs. `reduceat` does the same job in
+   ~0.1 ms, bit-identical: pinned against the old algorithm over 8 sizes
+   × 3 column counts, with NaN and ±inf (20e123a). Found by the afterglow
+   agent's profiling. It may be part of Matthew's GUI-lockup audio
+   freezes, which is now a hands-on check.
+3. Eight agents at once drove Windows' commit memory down to 0.6 GB
+   free. One agent's test run hit a `MemoryError` and passed on rerun,
+   and one audit file came out corrupt. Eight is about the ceiling for
+   this machine.
+
+**Suite on the combined batch: 5759 passed, 1 skipped** (5469 before;
+9.5 min).
+
+**Render audit vs df7b46c:** 72 of 165 moved, 93 bit-identical, 1 new.
+The listening block at the top of TODO.md groups them by cause, loudest
+first, using `render_audit bisect` over the batch's audio commits.
+Decisions for Matthew are filed in TODO: ADSR exact stage times, sink
+Phase 2, the A440 edge flip, the clock's short first period, and the
+afterglow fade.
+
+---
+
 ## 2026-10-10 — disk_writer: recordings go to Music, takes can be timestamped
 
 Matthew: "go ahead and build the disk_writer please". Spec settled the same

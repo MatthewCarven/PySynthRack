@@ -49,6 +49,99 @@ Test the exe too (it's the windowed build).
 - [ ] `keyboard_play.json` / `midi_lead.json`: notes play; in the MIDI one, the velocity-calibration dialog opens.
 - [ ] **Dead-cable report.** Copy any example and hand-edit one cable's `dst_port` to `nope`, then open the copy. The status line reads "1 dead cable dropped (list in ...load_<time>_<name>.txt)". That file under `~/.pysynthrack/crashes/` names the cable and warns that saving drops it for good. In the exe this is the only place the list appears.
 
+*The seventh batch (2026-10-12). Every example that changed.*
+Audited like the sixth: every example rendered offline (8 s, block 512)
+at the commit before the batch (df7b46c) and after it, and `render_audit
+bisect` pinned each move to the commit that made it. **72 moved, 93 are
+bit-identical (not listed), 1 is new.** Grouped by cause, loudest first;
+the dB is the biggest difference relative to the example's own peak.
+Anything that sounds wrong: one line here and Claude takes it from there.
+
+**1. Genuinely different: the random LFO no longer skips a roll (2).**
+The old render missed one sample-and-hold roll where a cycle ended
+exactly on a block boundary, so every note after it played one value
+late. Same sequence of values now, with nothing skipped (0b49cb9).
+- [ ] `random_arp.json` (+6 dB)
+- [ ] `sample_hold_arp.json` (+6 dB)
+
+**2. Clock edges one sample EARLIER (38).** The clock's float phase
+used to decide which side of an exact edge a sample landed on; it is an
+integer count now (95f13ab). Every moved edge is exactly one sample
+(about 23 µs) earlier, with no edge added or lost. The numbers are big
+because an attack starts a sample sooner, but it should sound
+**identical**. Flag any that don't.
+- [ ] `sequencer_melody.json` (+6 dB)
+- [ ] `chord_arp_factory.json` (+5 dB)
+- [ ] `bitcrusher_lofi.json` (+4 dB)
+- [ ] `delay_dub_echo.json` (+4 dB)
+- [ ] `chorus_lush.json` (+2 dB)
+- [ ] `resampler_tape_stop.json` (+2 dB)
+- [ ] `autopan_pluck_bounce.json` (+1 dB)
+- [ ] `clock_swing_breathe.json` (+1 dB)
+- [ ] `cv_recorder_layers.json` (+1 dB)
+- [ ] `sequencer_reverse_bars.json` (+1 dB)
+- [ ] `clock_transport.json` (0 dB)
+- [ ] `freeze_wide_wash.json` (0 dB)
+- [ ] `granular_haze.json` (0 dB)
+- [ ] `flanger_jet_sweep.json` (-3 dB)
+- [ ] `granular_freeze.json` (-4 dB)
+- [ ] `pluck_touch.json` (-4 dB)
+- [ ] `distortion_drive.json` (-6 dB)
+- [ ] `drum_machine.json` (-6 dB)
+- [ ] `reverb_freeze_pad.json` (-6 dB)
+- [ ] `granular_beat_repeat.json` (-7 dB)
+- [ ] `freeze_chord_pad.json` (-8 dB)
+- [ ] `matrix_feedback_echo.json` (-8 dB)
+- [ ] `wind_duet.json` (-11 dB)
+- [ ] `lfo_random_replay.json` (-19 dB)
+- [ ] `fm_op_bell.json` (-21 dB)
+- [ ] `wavetable_vowel_talk.json` (-21 dB)
+- [ ] `fm_op_epiano.json` (-27 dB)
+- [ ] `vowel_giant_child.json` (-31 dB)
+- [ ] `vowel_robot_talk.json` (-31 dB)
+- [ ] `vowel_talk.json` (-32 dB)
+- [ ] `reverb_space.json` (-32 dB)
+- [ ] `stereo_field_pluck.json` (-37 dB)
+- [ ] `vinyl_dust.json` (-38 dB)
+- [ ] `ring_mod_bells.json` (-39 dB)
+- [ ] `adsr_velocity.json` (-41 dB)
+- [ ] `flanger_jet.json` (-44 dB)
+- [ ] `convolver_reverb.json` (-45 dB)
+- [ ] `delay_freeze_stutter.json` (-58 dB)
+
+**3. Random-LFO rolls one sample earlier (2).** Same values, the roll
+lands on its exact period now (0b49cb9). Should sound identical.
+- [ ] `krell_feedback.json` (-56 dB)
+- [ ] `krell_machine.json` (-57 dB)
+
+**4. Below hearing (30).** Expected identical; a quick play of one or
+two per line is plenty.
+- [ ] flanger/phaser `rate_cv` read per sample (35e64cb):
+      `flanger_through_zero.json` (-74 dB), `phaser_sweep.json` (-97 dB).
+- [ ] ADSR voices exact (f1e0fbd): `chord_legato_inversions.json`
+      (-87 dB), `supersaw_chord_wall.json` (-92), `supersaw_detune_rise.json`
+      (-97).
+- [ ] pluck's float64 pitch mean (844aa92), -95 to -99 dB:
+      `fg_eor_swell_strike`, `freeze_drone_breathe`, `granular_cloud`,
+      `pluck_velocity`, `pluck_velocity_color`, `possibility_selector_kit`,
+      `sequencer_pendulum`.
+- [ ] Rounding only, -128 dB and quieter: the note sources' exact phase
+      (572eee6): `cv_utility_demo`, `cvtofreq_bipolar_pendulum`,
+      `file_crossover_split`, `mic_beatbox_crossover`,
+      `mod_wheel_pitch_drone`, `police_siren`; the LFO's integer phase
+      (0b49cb9): `ambient_bloom`, `bowed_cello`, `crossover_sweep`,
+      `lfo_oscillator`, `mod_matrix`, `motion_eq_animated`,
+      `motion_eq_breathe`, `ring_governor_auto`, `ring_governor_monitor`,
+      `tilt_eq_seesaw`, `vibrato`, `warping_buffer_tape`.
+
+**5. Played live, can't be heard offline.** Keyboard / MIDI voices now
+use the oscillator's exact phase, and their envelopes count from each
+slope (572eee6). A scripted performance over 28 of them measured
+-138.5 dB at worst. ADSR voices start their decay 1-2 samples later
+(f1e0fbd). Nothing to listen for, beyond the sixth batch's group 7.
+
+**6. New** (see the hands-on checks): `scope_chaos_afterglow.json`.
+
 *The sixth batch (2026-09-24). Every example that changed.*
 Re-audited after the NaN fix: every example rendered offline (8 s, block
 512) at the commit before the batch and at HEAD, plus a second pre-batch
@@ -241,6 +334,25 @@ likeliest to sound different come first.
       (`sampler_mellotron` and `sampler_scrub` heard 2026-10-05.)
 
 *Hands-on checks outside the examples:*
+- [ ] **HANDS + EYES: the buffered sink's fallback** (new 2026-10-12)
+      — `ring_governor_monitor.json`, `buffer_size` 8192, Start: if the
+      Realtek refuses 8192 the node's second line reads `device block
+      N - 8192 would not open` and the status bar says so once; back
+      to 1024 while running and the line goes. Save a copy with
+      `"device": "NoSuchDevice"`: the node should read `buffer:
+      could not open the device` in red while the rest plays. Later,
+      the same at 8192 on the HDMI display.
+- [ ] **EYES: scope afterglow** (new 2026-10-12) —
+      `scope_chaos_afterglow.json` (silent on purpose), Start: the
+      Lorenz butterfly, both wings, glowing. Untick `afterglow` (snaps
+      to one sparse trace), tick again; drag `glow_frames` 2..16; try
+      `mode` mono and dual; the DSP / xrun readouts shouldn't move.
+- [ ] **Does the GUI-lockup audio freeze still happen?** (2026-10-12)
+      The scope's repaint took ~100 ms per trace per frame on a slow
+      sweep (mono/dual at 500 ms/div), holding the GIL the audio
+      callback needs; it's ~0.1 ms now (20e123a). If a scope was open
+      when the freezes happened, this was a suspect. Worth noticing
+      before the off-thread planning session.
 - [ ] **HANDS + EYES: `disk_writer`** (new 2026-10-10) — load
       `record_a_take.json`, play, Stop: the status bar should read
       `Recording -> ...Music\PySynthRack\take_01.wav` and the file
@@ -273,19 +385,6 @@ likeliest to sound different come first.
 ## Open defects
 
 *Block-size exactness (the recurring defect class):*
-- [ ] **`cv_to_frequency` / `keyboard` / `midi_input` still carry the
-      per-block phase accumulator** (they share `_waveshape_wt`, so they
-      got the per-sample band). `_osc_carried_phase` is reusable.
-- [ ] **`chorus_lush`'s saw pad differs by up to 1.0 between block
-      sizes** — upstream of the chorus (clock/sequencer edge timing?).
-      Probe it.
-- [ ] **Rings that reset on a block-size change:** the chorus's (length
-      depends on `frames`) and the organ scanner's (only for a block
-      larger than any before, > 4096). `_rotary_grow` shows how to keep
-      the history.
-- [ ] **pluck's float32 time mean** at
-      `set_coeffs(v, float(np.mean(p_row)))`; freeze's `width_cv` does
-      its own float64 mean instead of `_finite_mean`. One-liners.
 - [ ] **No epoch wrap on the no-CV oscillator/organ phase** — precision
       erodes to ~−116 dB after 24 h of running. Low priority.
       *Plain English (2026-10-10, for Matthew):* with no CV patched, the
@@ -302,28 +401,53 @@ likeliest to sound different come first.
       wave continues seamlessly. Cheap, but it touches the oscillator's
       fast path, so it needs the reference-render recipe. Matthew: "we
       might even keep this". Keep it low priority.
-- [ ] **`adsr`: the voice path lands its attack/decay crossing +-1 sample
-      across block sizes** (one stage step); mono is bit-exact. Fixing it
-      changes shipped renders, so it wants the reference-render recipe.
-      *Hoisted 2026-10-10 from the archived "`adsr` — `vel` input" entry
-      (2026-09-19), where it was noted as pre-existing.*
+      *2026-10-12:* the no-CV phase now lives in `_osc_mono_phase`,
+      shared by the oscillator, cv_to_frequency, keyboard and
+      midi_input, so one fix covers all four. The clock, LFO and
+      chorus counts (integer since the seventh batch) also grow
+      without bound; harmless at LFO rates.
 
 *Examples:*
 - [ ] **Example health (pre-existing, from the audit):** `organ_leslie`,
       `noise_hat` and `clock_divider_swing` hit full scale in their
       first 8 s; `resampler_tape_stop` carries a 0.083 DC offset.
+      *2026-10-12 audit:* `resampler_tape_stop`'s DC reads 0.101 now
+      (the clock fix moved its edges a sample); the full-scale three
+      are unchanged.
 
 *Audio I/O:*
-- [ ] **Buffered sink: decouple cushion from device blocksize** — buffer_size
-      8192 on the HD Audio box fails open() and the sink goes silently
-      `buffer: idle` (screenshot-confirmed 2026-07-16). Fall back
-      (blocksize=0 or step down) instead of silence, surface the fallback in
-      the readout, and let buffer_size size the RING (the cushion) rather
-      than the PortAudio callback block.
 
 ## Decisions waiting on Matthew
 
 Calls, not bugs: each waits on a yes, a no or a which.
+
+*From the seventh batch (2026-10-12):*
+- [ ] **`adsr`: exact stage TIMES?** Both paths end a stage when the
+      per-sample sum reaches its target, so a 20 ms attack can take
+      883 samples, not 882 (exact and block-size-proof, just not an
+      integer count). Counting stages by integer sample number (as
+      `_gate_ramp_env` does) would make times exact but move EVERY
+      ADSR example, mono included. A later pass, or leave it?
+- [ ] **Buffered sink, Phase 2:** should `buffer_size` 2048-8192
+      always mean a big ring with a modest device chunk, even when the
+      device accepts the big chunk? (a) cap the device block at 1024
+      (default untouched; less PortAudio-side buffering, which
+      Bluetooth may want); (b) a separate `device_block` param (auto /
+      64..8192, default = buffer_size); (c) leave Phase 1 as is. The
+      agent leans (c) or (b).
+- [ ] **The A440 edge flip:** keyboard / MIDI / cv_to_frequency now
+      land every 4410th sample exactly on the waveform's edge at
+      440 Hz, so a plain (non-blep) saw or square flips a full step
+      there. Same as the oscillator since 2026-09-24. Acceptable?
+- [ ] **Clock: the first period is one sample short.** The clock
+      reads samples 1..n, so 120 BPM quarters land at 22049, 44099...
+      Reading 0..n-1 puts every edge on the period exactly, but moves
+      every edge in all 78 clock examples one sample LATER. Do it, or
+      leave it?
+- [ ] **Scope afterglow:** linear fade (now) or a phosphor-style
+      exponential one? Is a silent example right, and does
+      `glow_frames` counting the live trace read naturally (default 8,
+      the example uses 16)?
 
 - [ ] **EARS DECISION: `_wt` band follows the HIGHEST voice**, so a low
       voice in a chord loses harmonics. Per-voice bands are more correct
@@ -371,6 +495,9 @@ session before anything is built. Don't build ahead.
       full fix. If the lockup is native (window messages, the DPG frame),
       a render thread plus a deep ring may be enough. The stream-health
       reading under "Hands-on checks" is the first measurement to bring.
+      *2026-10-12:* one suspect found and fixed on the way -- the
+      scope's repaint held the GIL ~100 ms per trace per frame on a
+      slow sweep (20e123a). See the hands-on check.
 - [ ] **Subpatch containers** (L) — group modules into a reusable
       macro-module with exposed ports. Off the module menu 2026-10-10;
       Matthew: "can take or leave this, again a planning scope and plan
@@ -379,8 +506,36 @@ session before anything is built. Don't build ahead.
 
 ## Follow-ons and small items
 
-- [ ] **`flanger` / `phaser` `rate_cv` per sample** — the chorus's int64
-      integrator is the pattern.
+*From the seventh batch (2026-10-12):*
+- [ ] **Sink open ladder runs on every reconcile** while a device is
+      broken (up to 7 attempts per graph edit while running): could
+      stutter the GUI. Retry only when that sink's device or
+      buffer_size changes, or on Start.
+- [ ] **More state that resets on a block-size change:** `tape`
+      (the whole tape incl. the stop transport and its RNGs; also on
+      unpatching `stop` / raising `stop_time`; the ring length is
+      pinned in a tape test), `bowed` / `wind` (string/bore cleared),
+      `granular` (grains in flight dropped), `convolver` (tail lost).
+      `_ring_regrow` is the pattern. Tape is the strongest candidate.
+- [ ] **`autopan` `rate_cv` is still a block average** — the shared
+      `_mod_rate_cv_phase` applies.
+- [ ] **`ring_mod`'s internal carrier re-wraps its phase per block**
+      (`_render_ring_mod`, colour.py) — `_osc_carried_phase` fixes it.
+- [ ] **LFO period grid:** `k * rate/sr` is block-size exact but not
+      always ON the grid at whole-sample periods; the clock's integer
+      form would put it there. Minor.
+- [ ] **pluck's silence gate is per block**, so at block 64 a block
+      shorter than a pitch period can cut the tail early (~-92 dBFS,
+      inaudible). Judge silence over >= one period, or by energy.
+- [ ] **MODULES.md: 10 `_To document._` stubs** — keyboard,
+      cv_to_frequency, vca, cv_to_audio, schmitt, combiner,
+      cv_combiner, speaker_output, left/right_speaker_output. And the
+      `sequencer` `reverse` note still calls same-sample edges "a race
+      between two float phases" (deterministic since the clock fix).
+      A docs agent's job.
+- [ ] **`render_audit` could verify each file it writes** (one corrupt
+      .npz seen once under eight agents' memory pressure).
+
 - [ ] **`autopan` follow-ons:** smooth-random shape, a clocked phase
       offset, a separate tremolo rate, `width` for a stereo pair, a
       `pan_cv` depth knob.
@@ -391,28 +546,6 @@ session before anything is built. Don't build ahead.
       *performance* capture. *Hoisted 2026-10-10 from the archived
       `cv_recorder` entries (2026-09-19 / 09-20), where it was the one
       follow-on still open.*
-- [ ] **pyo's silent-stub notice is missing `freeze` and
-      `function_generator`** (`PyoBackend._build_module`). They are silent
-      under pyo either way; they just don't print the "will be silent"
-      line. One-liner. *Found 2026-10-10.*
-- [ ] **docs/MODULES.md drift:** the status note at the top still says
-      most entries are stubs marked _"to document"_ (none are any more),
-      and "Adding a new module" should match the submit preamble
-      rewritten into docs/MODULE_IDEAS.md on 2026-10-10 (renderer family
-      + `_RENDERERS` row, pyo stub, the `ui/app.py` widget block and the
-      shared `mode` branch, ASCII-only labels, the registry-wide
-      tripwires). *Found 2026-10-10.*
-- [ ] **Scope afterglow, opt-in** — revived 2026-10-10 (Matthew: "I
-      love options but if it's too much CPU let's skip it"). An
-      `afterglow` tickbox, default OFF, plus a frame count: keep the
-      last N traces as extra polylines with fading alpha, so `chaos` in
-      xy draws the dense butterfly. Cost estimate: only the newest
-      polyline gets new points each frame (as now); the older N−1 just
-      get a cheaper colour change, and the GPU draws a few thousand
-      vertices for nothing. Off costs nothing. Measure the UI frame time
-      with it on before shipping, because until rendering moves
-      off-thread (see "Plan together first") UI time competes with
-      audio for the GIL.
 
 *Code health:*
 - [ ] **Split `ui/app.py`** (7.4k lines, one `App` class) -- the custom
@@ -423,11 +556,6 @@ session before anything is built. Don't build ahead.
       name, so that needs a re-export shim. *Hoisted 2026-10-10 from the
       finished backend-split plan (archived), where it was the one thing
       left.*
-- [ ] **Compact TODO.md / WORKLOG.md** again (2.9k / 8.2k lines) the
-      2026-07 way; move `error_handler_*.md` into `docs/`.
-      *2026-10-10: the TODO.md half is done (the second consolidation;
-      see the note at the top). WORKLOG.md and the `error_handler_*.md`
-      move are still to do.*
 
 ## Build queue — the keep-list and the ideas backlog
 

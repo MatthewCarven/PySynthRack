@@ -3383,3 +3383,72 @@ items they changed are in TODO.md (§ "Plan together first", the
       clock and the governor was smoothing block-timing jitter, not
       real drift. That proves the loop is stable and settled -4 as
       the shipped gain. The two-clock run is a new, narrower item.
+
+### The seventh batch (2026-10-11/12)
+
+Eight agents in worktrees, all landed; records in WORKLOG.md 2026-10-12.
+
+- [x] **`cv_to_frequency` / `keyboard` / `midi_input` still carry the
+      per-block phase accumulator** (they share `_waveshape_wt`, so they
+      got the per-sample band). `_osc_carried_phase` is reusable.
+      **SHIPPED 2026-10-12** (ceaa100 + 572eee6): the oscillator's phase engines became shared helpers (`_osc_mono_phase` / `_osc_voice_phase`); all three note sources are bit-identical at 64/128/512/1000, mono and per voice, note-on behaviour unchanged to the bit. Beyond the brief: the voices' attack/release ramp carried a float level across blocks; `_note_env_ramp` counts from each slope's start. 8 cv_to_frequency examples moved, worst -128 dB. At exactly 440 Hz a plain saw/square now flips a full step every 4410th sample (the oscillator's 2026-09-24 effect); a call for Matthew.
+- [x] **`chorus_lush`'s saw pad differs by up to 1.0 between block
+      sizes** — upstream of the chorus (clock/sequencer edge timing?).
+      Probe it.
+      **SHIPPED 2026-10-12** (95f13ab clock, 0b49cb9 lfo). Not the chorus: the CLOCK carried a float phase re-wrapped per block, so an edge on an exact sample landed either side of it by block size (67 samples off at 512 over 12 s); now an integer count since an anchor. Second cause: the LFO, same disease, 3e-8. Third: the random LFO never re-rolled on a wrap at a block's first sample. chorus_lush is bit-identical at 64/128/512/1000 over 20 s at every node. 38 clock examples move (every moved edge one sample EARLIER, none added or lost); random_arp + sample_hold_arp genuinely change (one skipped roll restored).
+- [x] **Rings that reset on a block-size change:** the chorus's (length
+      depends on `frames`) and the organ scanner's (only for a block
+      larger than any before, > 4096). `_rotary_grow` shows how to keep
+      the history.
+      **SHIPPED 2026-10-12** (5c84a0f): chorus and organ-scanner rings grow and keep their history (`_ring_regrow`, from the rotary). Correction to the premise: the buffer slider is disabled while audio runs, so the chorus reset happened on Stop -> slider -> Start (state survives recompile), or on any short/zero-length block; the organ's needed a block > 4096, so that one is protective. Renders unchanged. Other renderers with the same shape are a new follow-on.
+- [x] **pluck's float32 time mean** at
+      `set_coeffs(v, float(np.mean(p_row)))`; freeze's `width_cv` does
+      its own float64 mean instead of `_finite_mean`. One-liners.
+      **SHIPPED 2026-10-12** (844aa92 pluck `_finite_mean`; 4c10453 freeze `width_cv`, bit-exact). Plus 303f90e, beyond the brief: pluck's bare `2.0 ** cv` raised OverflowError in the audio thread at 1e6 V; now `_pow2_clipped` like bowed/wind/modal (bit-exact for |cv| <= 64; a non-finite pitch now reads C4, was 20 Hz). 16 pluck examples moved, worst -89 dB.
+- [x] **`adsr`: the voice path lands its attack/decay crossing +-1 sample
+      across block sizes** (one stage step); mono is bit-exact. Fixing it
+      changes shipped renders, so it wants the reference-render recipe.
+      *Hoisted 2026-10-10 from the archived "`adsr` — `vel` input" entry
+      (2026-09-19), where it was noted as pre-existing.*
+      **SHIPPED 2026-10-12** (f1e0fbd): the voice path runs mono's state machine stage by stage (`_adsr_ramp`, a seeded cumsum = mono's per-sample adds), bit-identical at every block size, and a voice row now IS mono (it used to fold the attack's last sample into decay, one sample ahead). 3 examples moved, worst -87 dB.
+- [x] **Buffered sink: decouple cushion from device blocksize** — buffer_size
+      8192 on the HD Audio box fails open() and the sink goes silently
+      `buffer: idle` (screenshot-confirmed 2026-07-16). Fall back
+      (blocksize=0 or step down) instead of silence, surface the fallback in
+      the readout, and let buffer_size size the RING (the cushion) rather
+      than the PortAudio callback block.
+      **Phase 1 SHIPPED 2026-10-12** (78c8ab9): a refused block size walks 8192 -> 4096 -> ... -> 256 -> blocksize 0, the ring stays sized by `buffer_size`, the node says `device block N - 8192 would not open`, and a device that opens at no size says `could not open the device` in red (status bar too). 0 renders moved. Phase 2 (whether 2048+ should always mean a big cushion with a small device chunk) is a decision for Matthew, filed under Decisions.
+- [x] **`flanger` / `phaser` `rate_cv` per sample** — the chorus's int64
+      integrator is the pattern.
+      **SHIPPED 2026-10-12** (35e64cb): the chorus's integer integrator, shared as `_mod_rate_cv_phase`; unpatched / zero CV bit-exact; clock lock resets the CV share. 3 examples moved (flanger_jet_sweep -66 dB, flanger_through_zero -74, phaser_sweep -97).
+- [x] **pyo's silent-stub notice is missing `freeze` and
+      `function_generator`** (`PyoBackend._build_module`). They are silent
+      under pyo either way; they just don't print the "will be silent"
+      line. One-liner. *Found 2026-10-10.*
+      **SHIPPED 2026-10-12** (014b3bc): four were missing (also `file_player`, `mic_input`); the list is `_SILENT_STUB_TYPES` and a registry tripwire (`tests/test_pyo_stubs.py`) keeps it whole.
+- [x] **docs/MODULES.md drift:** the status note at the top still says
+      most entries are stubs marked _"to document"_ (none are any more),
+      and "Adding a new module" should match the submit preamble
+      rewritten into docs/MODULE_IDEAS.md on 2026-10-10 (renderer family
+      + `_RENDERERS` row, pyo stub, the `ui/app.py` widget block and the
+      shared `mode` branch, ASCII-only labels, the registry-wide
+      tripwires). *Found 2026-10-10.*
+      **SHIPPED 2026-10-12** (c79dd76): the status note says what the doc is; "Adding a new module" is the full how-to, in step with MODULE_IDEAS' preamble. Premise wrong in one detail: 10 entries are still `_To document._` (new item).
+- [x] **Scope afterglow, opt-in** — revived 2026-10-10 (Matthew: "I
+      love options but if it's too much CPU let's skip it"). An
+      `afterglow` tickbox, default OFF, plus a frame count: keep the
+      last N traces as extra polylines with fading alpha, so `chaos` in
+      xy draws the dense butterfly. Cost estimate: only the newest
+      polyline gets new points each frame (as now); the older N−1 just
+      get a cheaper colour change, and the GPU draws a few thousand
+      vertices for nothing. Off costs nothing. Measure the UI frame time
+      with it on before shipping, because until rendering moves
+      off-thread (see "Plan together first") UI time competes with
+      audio for the GIL.
+      **SHIPPED 2026-10-12** (680fe6d, example 90dd189): `afterglow` + `glow_frames` 2..16, one polyline written per trace per repaint, the rest recoloured; measured +0.05 ms/frame at 8, +0.1 at 16 on a real headless DPG context -- cheap. Renders untouched. Its profiling found the scope's OWN repaint at ~100 ms per trace per frame on a 500 ms/div window (`np.minimum.at`); fixed by Claude in 20e123a (reduceat, ~0.1 ms, bit-identical).
+- [x] **Compact TODO.md / WORKLOG.md** again (2.9k / 8.2k lines) the
+      2026-07 way; move `error_handler_*.md` into `docs/`.
+      *2026-10-10: the TODO.md half is done (the second consolidation;
+      see the note at the top). WORKLOG.md and the `error_handler_*.md`
+      move are still to do.*
+      **SHIPPED 2026-10-12** (62522ac, c0e6603): WORKLOG.md 8,487 -> 2,650 lines (July and August verbatim to the archive, a fresh snapshot on top); `error_handler_*.md` moved to docs/ (nothing referenced them, the exe doesn't bundle them).
