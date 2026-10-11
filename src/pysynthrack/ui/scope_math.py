@@ -69,12 +69,28 @@ def minmax_columns(x: np.ndarray, columns: int) -> np.ndarray:
     # Column index of every sample: floor(i * columns / n) — monotone,
     # gap-free, exact for both n >= columns and n < columns.
     n = x.size
-    idx = (np.arange(n, dtype=np.int64) * columns) // n
     out = np.empty((columns, 2), dtype=np.float32)
-    mins = np.full(columns, np.inf, dtype=np.float64)
-    maxs = np.full(columns, -np.inf, dtype=np.float64)
-    np.minimum.at(mins, idx, x)
-    np.maximum.at(maxs, idx, x)
+    if n >= columns:
+        # Every column owns a contiguous, non-empty run of samples (the
+        # step columns/n is <= 1, so no column is skipped), starting at
+        # the first i with floor(i * columns / n) == k, i.e.
+        # ceil(k * n / columns). ``reduceat`` reduces those runs in one
+        # pass. It replaced ``np.minimum.at`` / ``np.maximum.at``
+        # (2026-10-12), which are unbuffered and cost ~100 ms per trace
+        # per frame on a 220,500-sample window (500 ms/div at 44.1 kHz)
+        # -- on the UI thread, holding the GIL the audio callback needs.
+        # Same values bit for bit: a min or max is one of its inputs,
+        # and the hold-left fill below still runs for non-finite columns.
+        k = np.arange(columns, dtype=np.int64)
+        starts = (k * n + columns - 1) // columns
+        mins = np.minimum.reduceat(x, starts).astype(np.float64)
+        maxs = np.maximum.reduceat(x, starts).astype(np.float64)
+    else:
+        idx = (np.arange(n, dtype=np.int64) * columns) // n
+        mins = np.full(columns, np.inf, dtype=np.float64)
+        maxs = np.full(columns, -np.inf, dtype=np.float64)
+        np.minimum.at(mins, idx, x)
+        np.maximum.at(maxs, idx, x)
     # Columns that received no sample (n < columns) inherit their left
     # neighbour (zero-order hold).
     hit = np.flatnonzero(np.isfinite(mins))

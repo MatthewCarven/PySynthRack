@@ -190,6 +190,47 @@ def test_minmax_empty_input_is_zeros():
     assert np.all(cols == 0.0)
 
 
+def _minmax_columns_ufunc_at(x, columns):
+    """The pre-2026-10-12 decimation (np.minimum.at / np.maximum.at), kept
+    as the reference the fast reduceat path must match bit for bit."""
+    x = np.asarray(x, dtype=np.float32)
+    n = x.size
+    idx = (np.arange(n, dtype=np.int64) * columns) // n
+    out = np.empty((columns, 2), dtype=np.float32)
+    mins = np.full(columns, np.inf, dtype=np.float64)
+    maxs = np.full(columns, -np.inf, dtype=np.float64)
+    np.minimum.at(mins, idx, x)
+    np.maximum.at(maxs, idx, x)
+    hit = np.flatnonzero(np.isfinite(mins))
+    if len(hit) < columns:
+        fill = np.zeros(columns, dtype=np.int64)
+        fill[hit] = hit
+        np.maximum.accumulate(fill, out=fill)
+        mins, maxs = mins[fill], maxs[fill]
+    out[:, 0] = mins
+    out[:, 1] = maxs
+    return out
+
+
+@pytest.mark.parametrize("n", [3, 199, 200, 201, 441, 1_000, 22_050, 220_500])
+def test_minmax_fast_path_matches_the_ufunc_at_reference(n):
+    """minmax_columns runs on the UI thread every frame; np.*.at cost
+    ~100 ms per trace on a 500 ms/div window, so n >= columns now uses
+    reduceat. Same pixels: equal arrays, NaN in the same places, and the
+    hold-left fill for non-finite columns still applies."""
+    rng = np.random.default_rng(n)
+    x = rng.standard_normal(n).astype(np.float32)
+    if n > 50:
+        x[rng.integers(0, n, 5)] = np.nan
+        x[rng.integers(0, n, 3)] = np.inf
+        x[rng.integers(0, n, 3)] = -np.inf
+    for columns in (200, 160, 7):
+        got = sm.minmax_columns(x, columns)
+        want = _minmax_columns_ufunc_at(x, columns)
+        assert got.dtype == want.dtype and got.shape == want.shape
+        np.testing.assert_array_equal(got, want)
+
+
 def test_decimate_points_short_input_passthrough():
     x = np.arange(5, dtype=np.float32)
     assert np.array_equal(sm.decimate_points(x, 10), x)
