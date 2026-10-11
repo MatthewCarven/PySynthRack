@@ -335,10 +335,9 @@ class TestADSRVelocity:
         gate[2, 1500:4000] = 1.0
         out = _run_vel(p, g, v, env, gate, np.full(_N, 0.5, np.float32))
         assert out.shape == (4, _N)
-        # The voice path cascades the attack crossing into decay (a
-        # documented, pre-existing divergence from the mono path), so the
-        # peak sits one decay step below the latched scale.
-        assert np.allclose(out[:3].max(axis=1), 0.5, atol=_DECAY_STEP * 0.5 * 1.01)
+        # The attack's crossing sample is the bare peak, as on the mono
+        # path (the voice path used to cascade it into decay).
+        assert np.all(out[:3].max(axis=1) == np.float32(0.5))
         assert np.all(out[3] == 0.0)
 
     def test_voice_vel_latches_per_voice_from_its_own_row(self):
@@ -353,29 +352,25 @@ class TestADSRVelocity:
         vel[2] = 0.6
         out = _run_vel(p, g, v, env, gate, vel)
         for row, s, last in ((0, 0.25, 4999), (1, 1.0, 4999), (2, 0.6, 5999)):
-            assert float(out[row].max()) == pytest.approx(s, abs=_DECAY_STEP * s * 1.01)
+            assert out[row].max() == np.float32(s)
             assert float(out[row, last]) == pytest.approx(_P["sustain"] * s, abs=1e-6)
         assert np.all(out[3] == 0.0)
 
     def test_single_voice_row_matches_mono(self):
-        """A one-voice (V, F) render is the mono render, up to the voice
-        path's documented crossing-sample cascade (its decay ramp runs one
-        sample ahead of mono's, so the two differ by one decay step for
-        the length of the decay) -- which vel scales but does not add to:
-        the differing stretch is the decay, and its size is decay_step*vel."""
+        """A one-voice (V, F) render IS the mono render, at any vel.
+
+        (Until 2026-10-12 the voice path cascaded the attack's crossing
+        sample into decay, so its decay ran one sample ahead of mono's.)
+        The many-voice, every-block-size version is in
+        TestADSRVoicePathExactness below."""
         p, g, v, env = _vel_patch(**_P)
         gate = _gate(_N, [(1000, 5000)])
-        decay_samples = int(_P["decay"] * SR)
         for s in (0.4, 1.0):
             vel = np.full(_N, s, np.float32)
             mono = _run_vel(p, g, v, env, gate, vel)
             voice = _run_vel(p, g, v, env, gate[None, :], vel[None, :])[0]
-            diff = np.abs(voice.astype(np.float64) - mono)
-            assert int((diff > 0).sum()) <= decay_samples + 2
-            assert float(diff.max()) <= _DECAY_STEP * s * 1.01
-            # Outside the decay ramp the two paths agree to the bit.
-            assert np.array_equal(voice[:1000 + 400], mono[:1000 + 400])
-            assert np.array_equal(voice[4000:], mono[4000:])
+            assert np.array_equal(voice, mono)
+            assert voice.max() == np.float32(s)
 
     def test_voice_vel_on_a_mono_gate_collapses_to_the_loudest_voice(self):
         """The drums' rule: a (V, F) velocity bus on a mono gate reads the
@@ -392,12 +387,11 @@ class TestADSRVelocity:
         )
 
     def test_block_size_independence_with_the_edge_mid_stream(self):
-        """Mono path: 64 vs 512 bit-exact (edges at 500/2990/3000 land
-        mid-block for both sizes). Voice path: within one stage step --
-        its analytic crossing can land a sample apart when a block
-        boundary re-reads a rounded level, a pre-existing property that
-        vel neither adds to nor fixes; the latched scale itself is the
-        same either way."""
+        """Both paths, 64 vs 512 bit-exact, with a softer re-strike (edges
+        at 500/2990/3000 land mid-block for both sizes). The voice path's
+        crossings used to land a sample apart when a block boundary
+        re-read a rounded level; the full probe is
+        TestADSRVoicePathExactness."""
         p, g, v, env = _vel_patch(**_P)
         gate = _gate(_N, [(500, 2990), (3000, 6000)])
         vel = np.ones(_N, np.float32)
@@ -413,15 +407,133 @@ class TestADSRVelocity:
         vel_v[1] = 0.6
         a = _run_vel(p, g, v, env, gate_v, vel_v, 64)
         b = _run_vel(p, g, v, env, gate_v, vel_v, 512)
-        assert np.allclose(a, b, atol=max(_ATTACK_STEP, _DECAY_STEP) * 1.01)
-        # The plateaus (sustain * latched vel) agree exactly; the peaks to
-        # within the crossing cascade (a boundary ON the crossing emits
-        # the bare peak, a crossing inside a run emits one decay step
-        # below it -- again pre-existing).
-        assert float(a[0, 5900]) == float(b[0, 5900]) == pytest.approx(0.15, abs=1e-6)
-        assert float(a[1, 4999]) == float(b[1, 4999]) == pytest.approx(0.3, abs=1e-6)
-        assert np.allclose(a.max(axis=1), [1.0, 0.6], atol=_DECAY_STEP * 1.01)
-        assert np.allclose(b.max(axis=1), [1.0, 0.6], atol=_DECAY_STEP * 1.01)
+        assert np.array_equal(a, b)
+        assert float(a[0, 5900]) == pytest.approx(0.15, abs=1e-6)
+        assert float(a[1, 4999]) == pytest.approx(0.3, abs=1e-6)
+        assert np.array_equal(a.max(axis=1), np.float32([1.0, 0.6]))
+
+
+# ----- the voice path: exact across block sizes, a row IS the mono render -----
+#
+# 2026-10-12. The voice path ran each gate-free stretch as ``L0 + k*step``
+# (multiply from the run's entry level) with an analytic ``ceil`` for each
+# stage's length; a block boundary starts a new run from a rounded level,
+# so with the attack on a float knife-edge (441 steps of 1/441 -- _P's
+# attack) the crossing landed a sample either side of it depending on the
+# block size, and the decay/release ramps re-rounded at every boundary. It
+# also cascaded the attack's crossing sample into decay, one sample ahead
+# of mono. It now accumulates the step per sample (a cumsum) exactly as
+# the scalar loop does, and these pin the result.
+
+_BLOCKS = (64, 128, 512, 1000)
+_PROBE_N = 3 * SR
+_PROBE_PARAMS = (
+    _P,  # the knife-edge attack: 441 samples of 1/441
+    dict(attack=0.01, decay=0.1, sustain=0.7, release=0.3),  # the defaults
+    dict(attack=0.0371, decay=0.0123, sustain=0.81, release=0.0567),
+    dict(attack=0.0, decay=0.002, sustain=1.0, release=0.05),  # 1-sample attack, no decay
+)
+
+
+def _probe_gates(seed, voices=5, n=_PROBE_N):
+    """Voice gate rows that put edges, crossings and block boundaries
+    everywhere: random notes of 30..12000 samples (released mid-attack up
+    to well into sustain) with gaps of 1..9000 (re-struck mid-release up to
+    fully idle), plus a row held from sample 0 and a row that never plays."""
+    rng = np.random.default_rng(seed)
+    gate = np.zeros((voices, n), np.float32)
+    for row in range(voices - 2):
+        t = int(rng.integers(0, 3000))
+        while t < n:
+            on = int(rng.integers(30, 12000))
+            gate[row, t:t + on] = 1.0
+            t += on + int(rng.integers(1, 9000))
+    gate[voices - 2] = 1.0
+    return gate
+
+
+def _probe_vel(kind, seed, voices=5, n=_PROBE_N):
+    """None (unpatched), a mono bus, or a per-voice bus. Values span
+    -0.2..1.3: silent notes, quieter and louder re-strikes, peaks above 1."""
+    if kind is None:
+        return None
+    rng = np.random.default_rng(seed)
+    shape = (n,) if kind == "mono" else (voices, n)
+    return rng.uniform(-0.2, 1.3, size=shape).astype(np.float32)
+
+
+def _ramp_boundaries(out, gate, block):
+    """How many block boundaries fall INSIDE a moving attack, decay and
+    release, over every row -- the exposure the pin needs (a boundary that
+    only ever lands on a plateau can't catch a re-rounded ramp)."""
+    b = np.arange(block, out.shape[-1], block)
+    up = out[:, b] > out[:, b - 1]
+    down = out[:, b] < out[:, b - 1]
+    held = gate[:, b] > 0.5
+    return (
+        int((up & held).sum()),
+        int((down & held).sum()),
+        int((down & ~held).sum()),
+    )
+
+
+class TestADSRVoicePathExactness:
+    @pytest.mark.parametrize("vel_kind", [None, "mono", "voice"])
+    @pytest.mark.parametrize("pi", range(len(_PROBE_PARAMS)))
+    def test_voice_path_is_bit_exact_across_block_sizes(self, pi, vel_kind):
+        """The 64/128/512/1000 probe: three seconds, five voices, every
+        stage split by boundaries at every block size."""
+        params = _PROBE_PARAMS[pi]
+        p, g, v, env = _vel_patch(**params)
+        gate = _probe_gates(seed=100 + pi)
+        vel = _probe_vel(vel_kind, seed=200 + pi)
+        ref = _run_vel(p, g, v, env, gate, vel, _BLOCKS[0])
+        assert ref.shape == gate.shape and np.all(np.isfinite(ref))
+        assert np.all(ref[-1] == 0.0)  # the row that never plays
+        for block in _BLOCKS:
+            out = ref if block == _BLOCKS[0] else _run_vel(p, g, v, env, gate, vel, block)
+            assert np.array_equal(out, ref), (block, params, vel_kind)
+            # Exposure: boundaries cut through moving ramps of every stage
+            # (a 1-sample attack has none to cut; sustain 1.0 no decay).
+            attack, decay, release = _ramp_boundaries(ref, gate, block)
+            # (Measured minimum 2026-10-12: 9, the defaults' attacks at
+            # block 1000.)
+            assert release >= 5, (block, release)
+            if params["attack"] > 0.0:
+                assert attack >= 5, (block, attack)
+            if params["sustain"] < 1.0:
+                assert decay >= 5, (block, decay)
+
+    @pytest.mark.parametrize("vel_kind", [None, "mono", "voice"])
+    @pytest.mark.parametrize("pi", range(len(_PROBE_PARAMS)))
+    def test_every_voice_row_is_the_mono_render_of_its_gate(self, pi, vel_kind):
+        """The house invariant: a voice row is bit-identical to the mono
+        render of the same gate (and the same vel row) -- the AD envelope's
+        rule, now the ADSR's too."""
+        params = _PROBE_PARAMS[pi]
+        p, g, v, env = _vel_patch(**params)
+        n = SR  # the scalar loop is the slow side; one second of it per row
+        gate = _probe_gates(seed=300 + pi, voices=4, n=n)
+        vel = _probe_vel(vel_kind, seed=400 + pi, voices=4, n=n)
+        poly = _run_vel(p, g, v, env, gate, vel, 512)
+        for row in range(gate.shape[0]):
+            vrow = None if vel is None else (vel if vel.ndim == 1 else vel[row])
+            mono = _run_vel(p, g, v, env, gate[row], vrow, 512)
+            assert mono.ndim == 1
+            assert np.array_equal(poly[row], mono), (row, params, vel_kind)
+
+    def test_the_crossing_sample_is_the_bare_peak(self):
+        """The cascade is gone: attack's last sample emits exactly the
+        peak and decay starts on the next one, as on the mono path."""
+        p, g, v, env = _vel_patch(**_P)
+        gate = np.zeros((2, _N), np.float32)
+        gate[:, 1000:5000] = 1.0
+        out = _run_vel(p, g, v, env, gate, None, 512).astype(np.float64)
+        top = int(np.argmax(out[0]))
+        assert out[0, top] == 1.0
+        assert 1000 + 439 <= top <= 1000 + 441  # 441 steps of 1/441, +-1 rounding
+        assert out[0, top + 1] == pytest.approx(1.0 - _DECAY_STEP, abs=1e-6)
+        assert np.array_equal(out[0], out[1])
 
 
 # ----- UI ----------------------------------------------------------------------

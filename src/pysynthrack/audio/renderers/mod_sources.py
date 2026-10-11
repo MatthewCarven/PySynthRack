@@ -564,19 +564,20 @@ class ModSourceRenderers:
         deterministic piecewise-linear chain (attack→decay→sustain or
         release→idle) that numpy emits in a handful of array ops.
 
-        Per-sample semantics preserved exactly:
+        It is :meth:`_render_adsr_mono`'s state machine to the bit, so a
+        voice row IS the mono render of the same gate, and the render is
+        the same whatever the block size (tests/test_adsr.py pins both):
         - edge transitions apply before that sample's level advance (a
           rising edge's sample already moves up by ``attack_step``);
+        - each stage accumulates its step per sample, as the scalar loop
+          does (a ``cumsum``, see :meth:`_adsr_ramp`), so a run resumed
+          from a carried level continues the same additions;
         - stage crossings clamp on the crossing sample (attack's last
-          sample outputs exactly 1.0, decay's outputs ``sustain``,
-          release's 0.0); the next stage starts the following sample;
+          sample outputs exactly the peak, decay's ``sustain``, release's
+          0.0); the next stage starts the following sample;
         - retrigger continues from the current level (no click);
         - falling edges set ``release_step`` from the level at the edge
           so the tail takes the full release window.
-
-        Only divergence: a run computes ``L0 + k*step`` by multiply
-        where the loop accumulated additions — float64 drift orders of
-        magnitude below the float32 resolution that leaves this method.
 
         Velocity (2026-09-19): each voice latches its own ``scale`` at
         its rising edges -- from its own row of a ``(V, F)`` ``vel``
@@ -675,6 +676,40 @@ class ModSourceRenderers:
 
         return out.astype(np.float32)
 
+    @staticmethod
+    def _adsr_ramp(seg, pos, end, lvl, step, target, rising):
+        """One stage of the mono state machine, run as a block op.
+
+        Emits ``seg[pos:]`` as the per-sample ``level += step`` of
+        :meth:`_render_adsr_mono` from ``lvl``, up to and including the
+        first sample that reaches ``target`` (``>=`` when ``rising``,
+        ``<=`` otherwise), which is clamped to ``target`` -- or to ``end``
+        if no sample does. Returns ``(pos, lvl, crossed)``.
+
+        The ramp is ``cumsum([lvl, step, step, ...])``: ``add.accumulate``
+        adds left to right, one rounding per sample, so every value is
+        the float64 the scalar loop would hold at that sample (a falling
+        step is passed negated; ``x + (-d)`` IS ``x - d`` in IEEE 754).
+        That is what makes the voice path exact across block sizes: the
+        ramp a run starts from a carried level is the ramp the loop would
+        have continued, where the old ``L0 + k*step`` was a different
+        rounding from every entry point, and a crossing on a knife-edge
+        (441 steps of 1/441) landed a sample either side of it.
+        """
+        n = end - pos
+        ramp = np.full(n + 1, step, dtype=np.float64)
+        ramp[0] = lvl
+        np.cumsum(ramp, out=ramp)
+        ramp = ramp[1:]
+        hit = (ramp >= target) if rising else (ramp <= target)
+        i = int(np.argmax(hit))
+        if hit[i]:
+            seg[pos:pos + i] = ramp[:i]
+            seg[pos + i] = target
+            return pos + i + 1, target, True
+        seg[pos:end] = ramp
+        return end, float(ramp[-1]), False
+
     def _adsr_fill_run(
         self, seg, pos, end, ph, lvl, rs,
         attack_step, decay_step, sustain, scale=1.0,
@@ -683,111 +718,60 @@ class ModSourceRenderers:
         state ``(ph, lvl)``, following the natural stage chain. Returns
         the exit ``(ph, lvl)``.
 
-        Mirrors the per-sample mask cascade exactly. In the mask
-        implementation a stage *crossing* cascades within the same
-        sample: the sample where attack reaches 1.0 immediately applies
-        the decay update too, so the emitted value is
-        ``max(1.0 - decay_step, sustain)`` — never a bare 1.0. (This is
-        a deliberate divergence from the mono scalar path, which emits
-        the clamped 1.0 and starts decay the *next* sample; the voice
-        path has always cascaded and downstream tests encode it.)
-        Likewise decay's crossing sample emits ``sustain`` and release's
-        emits 0.0. Attack therefore contributes only its strictly-
-        below-1.0 ramp samples; the crossing sample belongs to decay.
+        The run is :meth:`_render_adsr_mono`'s per-sample loop with no
+        gate edge inside it, stage by stage (:meth:`_adsr_ramp`): each
+        stage accumulates its step sample by sample exactly as the
+        scalar loop does, clamps its crossing sample to the target
+        (attack emits the bare peak, decay ``sustain``, release 0.0),
+        and the next stage starts on the following sample. So a voice
+        row is bit-identical to the mono render of the same gate, and
+        where a block boundary falls changes nothing.
 
-        Stage lengths are analytic (smallest k >= 1 crossing the
-        target), so each stage is one ``arange`` + one clamp.
+        (2026-10-12. Before this the run computed ``L0 + k*step`` by
+        multiply from each run's entry level, with an analytic
+        ``ceil`` for each stage's length, and cascaded the attack's
+        crossing sample straight into decay -- emitting
+        ``max(peak - decay_step, sustain)`` where mono emits the peak.
+        The multiply rounded differently from every entry point, so a
+        block boundary could move a crossing by one sample; the cascade
+        ran the voice path's decay one sample ahead of mono's.)
 
         ``scale`` is the note's latched velocity: the stages run in
         output space (peak ``scale``, plateau ``sustain * scale``,
-        attack/decay steps ``* scale``). At 1.0 every product is exact
-        and this is the pre-vel arithmetic to the bit. A run entered in
-        attack ABOVE its peak (re-struck softer than it rings) falls to
-        the peak at the full-velocity ``attack_step`` -- same shape as
-        the rise, mirrored -- and cascades into decay on the crossing
-        sample just as the rise does.
+        attack/decay steps ``* scale``) -- the mono path's products, so
+        at 1.0 every one is exact. A run entered in attack ABOVE its
+        peak (re-struck softer than it rings) falls to the peak at the
+        full-velocity ``attack_step``, as mono's does.
         """
         peak = scale
         sus = sustain * scale
-        a_step = attack_step * scale
-        d_step = decay_step * scale
         if ph == self._ADSR_ATTACK and pos < end:
             if lvl > peak:
-                kf = max(1, int(np.ceil((lvl - peak) / attack_step)))
-                k = min(kf - 1, end - pos)
-                if k > 0:
-                    seg[pos:pos + k] = np.maximum(
-                        lvl - np.arange(1, k + 1, dtype=np.float64) * attack_step,
-                        peak,
-                    )
-                    lvl = float(seg[pos + k - 1])
-                    pos += k
+                pos, lvl, crossed = self._adsr_ramp(
+                    seg, pos, end, lvl, -attack_step, peak, False
+                )
             else:
-                if lvl >= peak or a_step <= 0.0:
-                    # Already at the peak (a retrigger at the top, or
-                    # scale 0 where the peak IS 0): the crossing is this
-                    # sample. The guard also keeps 0/0 out of the ceil.
-                    ka = 1
-                else:
-                    ka = max(1, int(np.ceil((peak - lvl) / a_step)))
-                k = min(ka - 1, end - pos)
-                if k > 0:
-                    seg[pos:pos + k] = np.minimum(
-                        lvl + np.arange(1, k + 1, dtype=np.float64) * a_step,
-                        peak,
-                    )
-                    lvl = float(seg[pos + k - 1])
-                    pos += k
-            if pos < end:
-                # Crossing falls inside this run: cascade into decay,
-                # which emits the crossing sample below.
+                pos, lvl, crossed = self._adsr_ramp(
+                    seg, pos, end, lvl, attack_step * scale, peak, True
+                )
+            if crossed:
                 ph = self._ADSR_DECAY
-                lvl = peak
         if ph == self._ADSR_DECAY and pos < end:
-            if lvl <= sus or d_step <= 0.0:
-                # Includes the mid-flight "sustain raised above current
-                # level" case: the mask cascade clamps up to sustain on
-                # the first sample; maximum() reproduces that.
-                kd = 1
-            else:
-                kd = max(1, int(np.ceil((lvl - sus) / d_step)))
-            k = min(kd, end - pos)
-            seg[pos:pos + k] = np.maximum(
-                lvl - np.arange(1, k + 1, dtype=np.float64) * d_step,
-                sus,
+            pos, lvl, crossed = self._adsr_ramp(
+                seg, pos, end, lvl, -(decay_step * scale), sus, False
             )
-            lvl = float(seg[pos + k - 1])
-            pos += k
-            if k == kd:
+            if crossed:
                 ph = self._ADSR_SUSTAIN
-                lvl = sus
         if ph == self._ADSR_SUSTAIN and pos < end:
             seg[pos:end] = sus
             lvl = sus
             pos = end
         if ph == self._ADSR_RELEASE and pos < end:
-            if rs > 0.0:
-                kr = max(1, int(np.ceil(lvl / rs)))
-                k = min(kr, end - pos)
-                seg[pos:pos + k] = np.maximum(
-                    lvl - np.arange(1, k + 1, dtype=np.float64) * rs,
-                    0.0,
-                )
-                lvl = float(seg[pos + k - 1])
-                pos += k
-                if k == kr:
-                    ph = self._ADSR_IDLE
-                    lvl = 0.0
-            elif lvl <= 0.0:
-                seg[pos] = 0.0
-                lvl = 0.0
-                pos += 1
+            pos, lvl, crossed = self._adsr_ramp(
+                seg, pos, end, lvl, -rs, 0.0, False
+            )
+            if crossed:
                 ph = self._ADSR_IDLE
-            else:
-                # Degenerate zero-step release with positive level: the
-                # per-sample cascade would hold here forever. Preserve.
-                seg[pos:end] = lvl
-                pos = end
         if ph == self._ADSR_IDLE and pos < end:
             seg[pos:end] = lvl
             pos = end

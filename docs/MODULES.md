@@ -4214,6 +4214,14 @@ voice from its own row, a mono `vel` is shared by every voice, and a
 as the drums do. Unpatched it is exactly 1.0 and the envelope is
 bit-for-bit what it was before the input existed.
 
+**Timing.** Sample-accurate and the same at every buffer size: a stage ends
+on the sample its ramp reaches the target (attack's last sample is exactly
+the peak; decay starts on the next one), wherever the block boundaries fall.
+Polyphonic it is one envelope per voice, and each voice's contour is
+bit-for-bit the mono envelope of the same gate. (Until 2026-10-12 the
+voice path could land a stage's end one sample apart between buffer sizes,
+and ran its decay one sample ahead of the mono envelope's.)
+
 **Patching.** `keyboard.gate → adsr.gate`, then `adsr.cv → vca.cv`. See
 `examples/keyboard_adsr.json`, `examples/filter_envelope.json`. For
 velocity: `midi_input.gate → adsr.gate` + `midi_input.velocity_cv →
