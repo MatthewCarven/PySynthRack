@@ -1773,7 +1773,11 @@ fraction, both functions of the delay alone (2026-09-24), so the read is
 as fine after a day's running as in the first second (it used to round
 at the module clock's magnitude); every setting V1–C3, with clicks,
 percussion and three voices, is pinned bit-exact at 64 / 128 / 512 /
-1000 over four seconds at 48 kHz.
+1000 over four seconds at 48 kHz — and across a block size that
+**changes** mid-stream (2026-10-12): the ring is sized for 4096-sample
+blocks and a longer one grows it keeping its history, where it used to
+start a fresh zeroed ring resting at dry (a hole, and a 40 ms fade back
+in).
 
 **Ports**: `pitch_cv` (cv, 1 V/oct, C4 = 0 V; unpatched → C4), `gate`
 (gate; unpatched → silence) → `out` (audio). **Params**: `bar1`..`bar9`
@@ -3450,7 +3454,7 @@ chorus is **block-size independent** — bit for bit at 64, 128, 512 or
 1000 over four seconds. No feedback, so the whole render vectorizes; the
 read splits the delay into whole samples and a fraction rather than
 forming `absidx − delay` (**a ring index rounds at its own magnitude**,
-and the ring is `max_ms + frames` long, so it wraps at a different
+and the ring was `max_ms + frames` long, so it wrapped at a different
 absolute sample per block size); and the sweep counts samples since the
 last rate change rather than carrying a float phase, re-anchoring on a
 change so the sweep stays continuous. `rate_cv` is read **per sample**
@@ -3464,7 +3468,13 @@ exact too (a wrapped *float* running sum is not: the wrap lands on the
 block boundaries, which are the partition). A modulated chorus is
 therefore bit-exact at 64 / 128 / 512 / 1000 over six seconds, within a
 float32 ulp of an ideal float64 integral of the rate, and a zero CV adds
-exactly nothing. See
+exactly nothing. A block size that **changes** mid-stream (the buffer
+slider, an offline render's short last block) renders bit for bit what
+a steady one does (2026-10-12): the ring is indexed by an absolute sample
+clock, sized for 4096-sample blocks up front, and only ever grows,
+keeping its history — it used to be cleared, line and sweep, by any block
+of a new length, a 12–24 ms hole in the wet and a sweep restarted from
+phase 0. See
 `examples/chorus_lush.json` (a self-playing saw pad widened into a four-
 voice ensemble, with a slow LFO drifting the chorus rate through
 `rate_cv`).

@@ -1116,7 +1116,9 @@ class OscillatorRenderers:
         (2026-09-24). There is no feedback, so every read lands on a
         sample already written, the whole read vectorises over (V, F),
         and the render is block-size exact (every setting pinned at 64 /
-        128 / 512 / 1000 over 4 s at 48 kHz). The
+        128 / 512 / 1000 over 4 s at 48 kHz) -- and across a block size
+        that CHANGES mid-stream: the ring only ever grows, keeping its
+        history (``_ring_regrow``, 2026-10-12). The
         scanner phase is an integer sample counter (``n0``, the caller's
         module clock, which is also the write index) -- ``phase = (n * f
         / sr) % 1`` depends only on ``n``, so it is bit-exact across any
@@ -1172,12 +1174,19 @@ class OscillatorRenderers:
             target = None
 
         buf = st.get("scan_buf")
-        if buf is None or buf.shape[1] < span + frames:
+        if buf is not None and buf.shape[1] < span + frames:
+            # A block LONGER than any before (an offline render's; the
+            # toolbar slider stops at 1024): grow the ring, keeping its
+            # history and the crossfade where
+            # it was -- slots are the module clock mod the ring length, so
+            # that is a straight re-home (``_ring_regrow``). It used to
+            # start a fresh zeroed ring here, resting at dry: a hole in
+            # the wet and a 40 ms fade back in (2026-10-12).
+            buf = self._ring_regrow(buf, n0, span, span + frames)
+            st["scan_buf"] = buf
+        if buf is None:
             # Sized for the deepest setting and a generous block, so
-            # neither a depth change nor a short last block reallocates;
-            # only a block LONGER than any before grows it (zeroed ring,
-            # a one-off hole -- the app never changes block size
-            # mid-run).
+            # neither a depth change nor a short last block reallocates.
             L = span + max(frames, self._ORGAN_SCAN_MIN_BLOCK)
             buf = np.zeros((V, L), dtype=np.float64)
             rest = np.array(

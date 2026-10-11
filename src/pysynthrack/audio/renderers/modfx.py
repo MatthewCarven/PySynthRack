@@ -38,7 +38,12 @@ class ModFXRenderers:
         integer phase grid (:meth:`_chorus_rate_cv_phase`), which is
         associative, so a modulated sweep is bit-exact across block
         sizes too, and a zero CV adds exactly nothing.
-        A polyphonic input is summed to mono first.
+        The ring is indexed by an absolute sample clock and only ever
+        grows, keeping its history (``_ring_regrow``), so a block size
+        that CHANGES mid-stream renders bit for bit what a steady one
+        does (2026-10-12; the ring used to be ``max_ms + frames`` long
+        and was cleared -- line and sweep -- by any block of a new
+        length). A polyphonic input is summed to mono first.
         """
         src = self._input_buffer(patch, buffers, module.id, "in")
         if src is None:
@@ -65,14 +70,26 @@ class ModFXRenderers:
         rate_knob = rate
         rate = min(max(rate, 0.01), 20.0)
 
-        max_ms = self._CHORUS_MAX_MS
-        L = int(max_ms * sr / 1000.0) + frames + 4
+        # How far back a read can reach: the longest delay, the
+        # interpolator's second tap and a margin. A function of the sample
+        # rate alone -- never of the block.
+        hist = int(self._CHORUS_MAX_MS * sr / 1000.0) + 4
 
         state = self._state.setdefault(module.id, {})
-        if "buf" not in state or state["buf"].shape != (L,):
+        if state.get("hist") != hist:
             state.clear()
-            state["buf"] = np.zeros(L, dtype=np.float64)
-            state["write_idx"] = 0
+            state["hist"] = hist
+            # Sized for a generous block up front, so a short block never
+            # reallocates. It only ever grows, and keeps its history when
+            # it does (``_ring_regrow``): the ring used to be ``max_ms +
+            # frames`` long and was CLEARED -- line, sweep and all --
+            # whenever a block of a new length arrived (the buffer-size
+            # slider, an offline render's short last block, even a
+            # zero-length block). Slots are an ABSOLUTE sample clock
+            # ``n`` mod the ring length, so growing is a straight re-home.
+            state["buf"] = np.zeros(hist + max(frames, self._CHORUS_MIN_BLOCK),
+                                    dtype=np.float64)
+            state["n"] = 0
             # The LFO's phase is an ANCHOR plus an integer sample count
             # since the last rate change, not a float carried block by
             # block (see below). ``inc`` starts impossible so the first
@@ -81,12 +98,15 @@ class ModFXRenderers:
             state["ph_n"] = 0
             state["inc"] = -1.0
 
-        buf = state["buf"]
-        wp = int(state["write_idx"])
-
         if frames == 0:
             e = np.empty(0, dtype=np.float32)
             return {"out_l": e, "out_r": e.copy()}
+        if state["buf"].shape[0] < hist + frames:
+            state["buf"] = self._ring_regrow(
+                state["buf"], state["n"], hist, hist + frames)
+        buf = state["buf"]
+        L = buf.shape[0]
+        n0 = int(state["n"])
 
         x = src.astype(np.float64)                        # (F,)
 
@@ -133,20 +153,23 @@ class ModFXRenderers:
         lfo = np.sin(2.0 * np.pi * ph)                                # (V, F)
 
         delay = base_samp[:, None] + sweep_samp * lfo                 # (V, F)
-        np.clip(delay, 2.0, float(L - 2), out=delay)
+        # (the longest sweep, 24 + 8 ms, is far inside ``hist``: the rail
+        # never binds, and it no longer moves with the block size)
+        np.clip(delay, 2.0, float(hist - 2), out=delay)
 
         # Write the whole block, then read the taps. With no feedback a tap
         # that lands inside this block just reads an input sample already
         # written -- correct, and identical at any block size.
-        absidx = wp + np.arange(frames)
+        absidx = n0 + np.arange(frames, dtype=np.int64)
         buf[absidx % L] = x
         # THE TRAP: a ring index rounds at its own magnitude. ``absidx -
-        # delay`` looks exact and is not -- the ring is ``max_ms + frames``
-        # long, so it wraps at a different absolute sample for every block
-        # size, and the fraction that falls out of the subtraction is a
-        # float64 ulp apart. So never form ``index - delay``: split the
-        # delay into WHOLE SAMPLES and a FRACTION, both functions of the
-        # (small) delay alone and so identical at any block size.
+        # delay`` looks exact and is not -- the index is as large as the
+        # stream is long, and back when the ring was ``max_ms + frames``
+        # long and wrapped at a different sample for every block size it
+        # handed back a fraction a float64 ulp apart. So never form
+        # ``index - delay``: split the delay into WHOLE SAMPLES and a
+        # FRACTION, both functions of the (small) delay alone and so
+        # identical at any block size and any clock.
         back = np.ceil(delay)                                        # (V, F)
         frac = back - delay                # forward weight, in [0, 1)
         i0 = absidx[None, :] - back.astype(np.int64)                 # (V, F)
@@ -163,7 +186,7 @@ class ModFXRenderers:
         wet_l = (gl @ tap) * nl                                      # (F,)
         wet_r = (gr @ tap) * nr
 
-        state["write_idx"] = int((wp + frames) % L)
+        state["n"] = n0 + frames
         state["ph_n"] += frames
 
         dry = (1.0 - mix) * x
@@ -178,6 +201,7 @@ class ModFXRenderers:
     # minutes of modulation, far under anything a delay line can show.
     _CHORUS_PH_BITS = 48
     _CHORUS_MAX_MS = 40.0  # longest chorus delay (ms); sizes the ring
+    _CHORUS_MIN_BLOCK = 4096  # ring headroom: a short block never resizes it
 
     def _chorus_rate_cv_phase(self, state, rate_cv, rate_knob: float,
                               inc: float, cv_depth: float, frames: int):
@@ -484,23 +508,19 @@ class ModFXRenderers:
         out_r = wet_r.astype(np.float32)
         return {"out_l": out_l, "out_r": out_r, "out": 0.5 * (out_l + out_r)}
 
-    @staticmethod
-    def _rotary_grow(state, L_new: int) -> None:
+    def _rotary_grow(self, state, L_new: int) -> None:
         """Lengthen the rotary's rings to ``L_new``, keeping their history.
 
         Slots are absolute sample index mod ``L``, so a new length moves
         every sample's slot: the last ``hist`` samples written (all a
-        read can reach) are re-homed at their new slots. Only a block
-        longer than any before gets here -- the app never changes block
-        size mid-run -- and the render carries on as if nothing happened.
+        read can reach) are re-homed at their new slots
+        (:meth:`_ring_regrow`). Only a block longer than any before gets
+        here, and the render carries on as if nothing happened.
         """
-        L_old = int(state["L"])
         n = int(state["n"])
-        idx = np.arange(max(0, n - int(state["hist"])), n, dtype=np.int64)
+        hist = int(state["hist"])
         for key in ("horn_buf", "drum_buf", "dry_buf"):
-            new = np.zeros(L_new, dtype=np.float64)
-            new[idx % L_new] = state[key][idx % L_old]
-            state[key] = new
+            state[key] = self._ring_regrow(state[key], n, hist, L_new)
         state["L"] = L_new
 
     # ----- Modulation-effect clock sync ------------------------------------

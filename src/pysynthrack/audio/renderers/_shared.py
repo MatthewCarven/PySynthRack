@@ -414,6 +414,29 @@ class SharedHelpers:
             c = np.pad(c, ((0, 0), (0, frames - c.shape[1])))
         return c
 
+    @staticmethod
+    def _ring_regrow(buf, n: int, hist: int, L_new: int):
+        """``buf`` re-homed into a ring ``L_new`` long, its history kept.
+
+        For a delay ring indexed by an ABSOLUTE sample clock -- sample
+        ``k`` lives at slot ``k % L`` along the last axis -- with ``n``
+        samples written so far. A new length moves every sample's slot,
+        so the last ``hist`` samples written (all a read can reach) are
+        copied to their new slots; the rest of the new ring is zero.
+        Exact: the samples are moved, not resampled, so a render that
+        grows its ring mid-stream reads the same numbers it would have
+        read had the ring been that long from the start. The rotary, the
+        chorus and the organ scanner use it, so a block size that changes
+        (Stop, the buffer slider, Start -- module state survives the
+        recompile -- or an offline render's odd block) never punches a
+        hole in the line or restarts the sweep (2026-10-12).
+        """
+        L_old = int(buf.shape[-1])
+        idx = np.arange(max(0, int(n) - int(hist)), int(n), dtype=np.int64)
+        new = np.zeros(buf.shape[:-1] + (int(L_new),), dtype=buf.dtype)
+        new[..., idx % L_new] = buf[..., idx % L_old]
+        return new
+
     # ----- gate ramps, CV maths, voice collapse ---------------------------
 
     @staticmethod
