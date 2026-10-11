@@ -669,17 +669,19 @@ class TestLFOSeed:
 
     def test_block_size_at_an_integer_period(self):
         # 100 Hz is exactly 441 samples a cycle, so a wrap sits ON a
-        # float rounding boundary and the phase accumulator (64 adds
-        # of 64*inc vs 8 of 512*inc) can land it one sample apart --
-        # a trait of every LFO waveform's float phase, not of the seed.
-        # What the seed guarantees is the DRAW SEQUENCE: identical
-        # values, in order, at most one sample adrift.
+        # float rounding boundary. The old phase, re-wrapped at every
+        # block end (64 adds of 64*inc vs 8 of 512*inc), landed it one
+        # sample apart; and a wrap ON a block's first sample was never
+        # rolled at all, so the 64 render lost a value the 512 one kept.
+        # The phase is an integer count from an anchor now and the first
+        # sample is compared with the previous block's last: bit-exact.
         o512, o64 = self._two_sizes(100.0)
+        assert np.array_equal(o512, o64)
         v1, i1 = _steps(o512)
-        v2, i2 = _steps(o64)
         assert v1.size >= 20
-        assert np.array_equal(v1, v2)
-        assert int(np.abs(i1 - i2).max()) <= 1
+        # Every roll after the reset at 6666 lands 441 samples apart.
+        tail = i1[i1 >= 6666]
+        assert tail[0] == 6666 and set(np.diff(tail).tolist()) == {441}
 
     def test_a_reset_replays_the_phrase_from_the_top(self):
         # The musical point: the value sequence after a reset edge IS
@@ -817,6 +819,79 @@ class TestLFOSeed:
         neg = _Rig(waveform="random", rate=1.0, bipolar=True, seed=-5)
         neg.render()
         assert neg.state["seed"] == 0
+
+
+# ----- block-size exactness (2026-10-12) ---------------------------------------
+
+BLOCKS = (64, 128, 512, 1000)
+
+
+def _free(block, total, **params):
+    """A free-running mono LFO rendered ``total`` samples in ``block`` steps."""
+    p = Patch()
+    lfo = p.add_module("lfo", params=params)
+    b = NumpyBackend(sample_rate=SR, block_size=block)
+    b.compile(p)
+    out = [b._render_lfo(lfo, block) for _ in range(-(-total // block))]
+    return np.concatenate(out)[:total]
+
+
+class TestLFOBlockSize:
+    """The ``chorus_lush`` follow-on: with the clock fixed, the last
+    difference between its 64- and 512-sample renders was the rate LFO's
+    float phase (a float32 ulp, from ~3 s), re-wrapped at every block
+    end. The phase is an anchor plus an integer sample count now."""
+
+    @pytest.mark.parametrize("rate", [0.05, 4.0, 100.0, 97.0])
+    def test_a_free_running_sine_is_bit_exact_at_four_block_sizes(self, rate):
+        # 0.05 Hz is chorus_lush's; 4 and 100 Hz are whole-sample periods
+        # (11025, 441); 97 Hz is not. Ten seconds: the old phase moved an
+        # ulp within the first few.
+        total = 10 * SR
+        ref = _free(512, total, waveform="sine", rate=rate, bipolar=True)
+        for bs in (64, 128, 1000):
+            assert np.array_equal(_free(bs, total, waveform="sine", rate=rate,
+                                        bipolar=True), ref), (rate, bs)
+
+    def test_a_random_lfo_rolls_on_a_wrap_at_a_blocks_first_sample(self):
+        # SR / 1024 Hz: a 1024-sample period, so at 512-sample blocks
+        # EVERY wrap lands on a block's first sample. That sample used to
+        # be compared with itself (the carried phase IS the block's first
+        # phase), so no wrap was ever seen: the S&H held its first value
+        # forever at 64, 128 and 512 and rolled 171 times at 1000. Now it
+        # rolls on every period at every block size, identically.
+        total = 4 * SR
+        outs = {bs: _free(bs, total, waveform="random", rate=SR / 1024.0,
+                          bipolar=True, seed=7) for bs in BLOCKS}
+        for bs in (64, 128, 1000):
+            assert np.array_equal(outs[bs], outs[512]), bs
+        _vals, idx = _steps(outs[512])
+        assert idx[1:].tolist() == list(range(1024, total, 1024))
+
+    def test_the_voice_path_is_bit_exact_at_a_steady_per_voice_rate(self):
+        # Three voices at three steady rates (a held chord's rate_cv):
+        # each voice counts from its own anchor, so 64 and 512 agree.
+        total = 4 * SR
+        cv = np.array([[0.0], [1.0], [-0.5]], np.float32)
+        outs = {}
+        for bs in (64, 512):
+            rig = _Rig(block=bs, voice=True, waveform="sine", rate=3.0, bipolar=True)
+            rows = [rig.render(rate_cv=np.repeat(cv, bs, axis=1))
+                    for _ in range(-(-total // bs))]
+            outs[bs] = np.concatenate(rows, axis=1)[:, :total]
+        assert np.array_equal(outs[64], outs[512])
+
+    def test_a_rate_change_re_anchors_without_a_step(self):
+        # The knob moves between blocks: the new block starts from the
+        # phase the old rate reached (state["phase"]), then counts anew.
+        rig = _Rig(waveform="sine", rate=3.0, bipolar=True)
+        for _ in range(5):
+            rig.render(reset=np.zeros(512))
+        reached = rig.state["phase"]
+        rig.lfo.params["rate"] = 7.0
+        out = rig.render(reset=np.zeros(512))
+        assert out[0] == np.float32(np.sin(2 * np.pi * reached))
+        assert rig.state["count"] == 512 and rig.state["anchor"] == reached
 
 
 # ----- UI ---------------------------------------------------------------------

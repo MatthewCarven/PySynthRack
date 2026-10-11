@@ -5069,6 +5069,23 @@ voice alone, and a single voice row is bit-identical to the mono path.
 Independent voices under a seed are what `seed` 0 is for. Non-random
 waveforms never touch the generator.
 
+**Block-size exact** (2026-10-12). The phase is an *anchor* plus an
+integer sample count since it — sample *k* is `(anchor + k · rate/sr) mod
+1` — never a phase re-wrapped at every block end, so a free-running LFO
+(or a voice at a steady rate) is bit-identical at 64, 128, 512 or 1000
+samples a block (pinned over 10 s at 0.05, 4, 97 and 100 Hz). A rate
+change — the knob, or `rate_cv`'s block mean — re-anchors where the phase
+has reached, so it stays continuous; a moving `rate_cv` is block-rate and
+so still depends on the block size, as it always has. Found on the
+[`chorus`](#chorus) trail: once the clock was fixed, `chorus_lush`'s last
+difference between block sizes was its rate LFO, a float32 ulp from a few
+seconds in. Fixed with it: the `random` waveform compared each block's
+first sample with *itself*, so a wrap landing exactly on a block's first
+sample never rolled — at a period that is a multiple of the block size
+(SR/1024 Hz at 512) the S&H **never changed value**, and at other rates a
+roll went missing or not depending on the block size. Each block's first
+sample is compared with the previous block's last now.
+
 **Ports**
 
 | Port | Dir | Kind | Description |

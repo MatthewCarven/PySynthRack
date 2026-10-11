@@ -1029,7 +1029,7 @@ def _tapped_render(path, block, seconds):
     return taps
 
 
-def test_the_chorus_lush_saw_pad_is_block_size_exact():
+def test_the_chorus_lush_example_is_block_size_exact():
     """``chorus_lush.json`` (TODO, 2026-09-24: "the saw pad differs by up
     to 1.0 between block sizes"). Its clock runs at 84 BPM x 2 -- a
     15750-sample period, pw 0.5 = 7875 -- so every edge sits ON a
@@ -1038,16 +1038,21 @@ def test_the_chorus_lush_saw_pad_is_block_size_exact():
     64/128/1000 vs 512, so the sequencer changed note a sample apart and
     the saw, envelope and VCA all followed (|diff| up to 0.999 on the
     oscillator). Bisected node by node: the clock was the FIRST output
-    to differ. Now every node of the saw pad, from the clock to the
-    VCA, is bit-identical at 64/128/512/1000 over six seconds (17
-    periods; the old code split at 0.18 s)."""
+    to differ. The second mechanism was the rate LFO's own float phase
+    (a float32 ulp from 3.3 s at 64 and 6.7 s at 128 and 1000, into the
+    chorus's ``rate_cv``). Now every node -- clock to VCA, the LFO, both
+    chorus outputs and the master -- is bit-identical at 64/128/512/1000
+    over eight seconds (22 periods, long enough for both mechanisms to
+    show at every size; the clock split at 0.18 s)."""
     path = Path(__file__).resolve().parent.parent / "examples" / "chorus_lush.json"
     chain = [("clock", "out"), ("sequencer", "gate"), ("sequencer", "cv"),
-             ("oscillator", "out"), ("adsr", "cv"), ("vca", "out")]
-    ref = _tapped_render(path, 512, 6.0)
+             ("oscillator", "out"), ("adsr", "cv"), ("vca", "out"),
+             ("lfo", "cv"), ("chorus", "out_l"), ("chorus", "out_r"),
+             ("master", "out")]
+    ref = _tapped_render(path, 512, 8.0)
     edges = _rising(ref["clock", "out"])
     assert edges[:3].tolist() == [0, 15749, 31499]  # exact, the 1..n phase
     for bs in (64, 128, 1000):
-        got = _tapped_render(path, bs, 6.0)
+        got = _tapped_render(path, bs, 8.0)
         for key in chain:
             assert np.array_equal(got[key], ref[key]), (bs, key)

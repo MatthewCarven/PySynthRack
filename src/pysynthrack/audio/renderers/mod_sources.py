@@ -1346,30 +1346,36 @@ class ModSourceRenderers:
         return self._render_lfo_mono(module, frames, rate_cv, reset)
 
     @staticmethod
-    def _lfo_phase_segments(start, phase0, edges, frames, phase_inc):
+    def _lfo_phase_segments(anchor, count, phase0, edges, frames, phase_inc):
         """Phase ramp for one block, restarted at ``phase0`` on each edge.
 
-        ``edges`` are the sample indices (ascending) where a reset
-        lands; the ramp before the first edge continues from ``start``.
-        Returns ``(phases, end_phase)`` where ``end_phase`` is the phase
-        the NEXT block continues from. With no edges this is exactly the
-        one-segment expression the LFO always used --
-        ``(start + arange(frames) * inc) % 1`` and
-        ``(start + frames * inc) % 1`` -- which is what keeps the
-        unpatched render bit-exact.
+        The phase is an ANCHOR plus an integer sample COUNT since it
+        (2026-10-12, the chorus LFO's idiom): sample ``k`` of a run is
+        ``(anchor + k * inc) % 1`` from the exact integer ``k``, never a
+        phase re-wrapped at every block end -- ``start + frames * inc``
+        rounds once per block, so the same stream cut into 64s and into
+        512s accumulated a different phase (a float32 ulp of output
+        within seconds, the ``chorus_lush`` rate drift) and a wrap that
+        sits ON a sample landed a sample apart. ``edges`` are the sample
+        indices (ascending) where a reset lands; the ramp before the
+        first edge continues the running ``(anchor, count)``, and every
+        segment after an edge is a new anchor at ``phase0``, count 0 --
+        ``(phase0 + arange(n) * inc) % 1``, the old restart ramp
+        exactly. Returns ``(phases, anchor, count)``: the anchor in
+        force at the block's end and its count there, for the next
+        block.
         """
         ramp = np.arange(frames, dtype=np.float64)
         phases = np.empty(frames, dtype=np.float64)
         bounds = [0, *(int(e) for e in edges), frames]
-        seg_start = start
-        end_phase = start
-        for a, b in zip(bounds[:-1], bounds[1:]):
+        for i, (a, b) in enumerate(zip(bounds[:-1], bounds[1:])):
+            if i:
+                # Every segment after the first begins at a reset edge.
+                anchor, count = phase0, 0
             n = b - a
-            phases[a:b] = (seg_start + ramp[:n] * phase_inc) % 1.0
-            end_phase = (seg_start + n * phase_inc) % 1.0
-            # Every segment after the first begins at a reset edge.
-            seg_start = phase0
-        return phases, float(end_phase)
+            phases[a:b] = (anchor + (float(count) + ramp[:n]) * phase_inc) % 1.0
+            count += n
+        return phases, float(anchor), int(count)
 
     def _lfo_reset_edges(self, reset_row, prev_high, frames):
         """Rising-edge sample indices of one gate row, carried across blocks.
@@ -1407,10 +1413,10 @@ class ModSourceRenderers:
     def _render_lfo_mono(self, module, frames, rate_cv, reset=None):
         """Mono fast path -- scalar phase, vectorized phase ramp.
 
-        The scalar ramp + waveshape is the pre-slice-3b.2 code; the
-        reset gate only splits the ramp into segments (see
-        ``_lfo_phase_segments``), so with ``reset`` unpatched every
-        existing LFO test passes bit-for-bit identically.
+        The waveshape is the pre-slice-3b.2 code; the ramp is counted
+        from a running anchor (2026-10-12, block-size exact -- see
+        ``_lfo_phase_segments``) and the reset gate only splits it into
+        segments, each a fresh anchor at ``phase``.
         """
         # ``phase`` wraps (1.0 is 0.0 again; -0.25 is 0.75) so a
         # hand-edited patch can't park the ramp outside a cycle.
@@ -1478,6 +1484,16 @@ class ModSourceRenderers:
 
         phase_inc = rate / sr
         start_phase = state["phase"]
+        # The running anchor (see _lfo_phase_segments). State from before
+        # the anchor existed adopts its carried phase. A rate change --
+        # the knob, or rate_cv's block mean -- re-anchors where the phase
+        # has reached (``state["phase"]``, the next sample's phase) and
+        # restarts the count: continuous, and with a CV moving every
+        # block that is the old per-block ramp, operation for operation.
+        if "anchor" not in state or state["inc"] != phase_inc:
+            state["anchor"] = float(start_phase)
+            state["count"] = 0
+            state["inc"] = phase_inc
 
         # Reset edges this block. A (V, F) gate on the mono path sums
         # to any-voice-high, exactly as _input_buffer would collapse it.
@@ -1495,9 +1511,13 @@ class ModSourceRenderers:
             if edges.size == 0 or edges[0] != 0:
                 edges = np.concatenate([[0], edges]).astype(np.intp)
 
-        phases, new_phase = self._lfo_phase_segments(
-            start_phase, phase0, edges, frames, phase_inc
+        phases, anchor, count = self._lfo_phase_segments(
+            state["anchor"], state["count"], phase0, edges, frames, phase_inc
         )
+        state["anchor"], state["count"] = anchor, count
+        # The next block's first phase, from the same anchor and count it
+        # will use (kept for readers and for the re-anchor above).
+        new_phase = float((anchor + float(count) * phase_inc) % 1.0)
 
         if waveform == "sine":
             wave = np.sin(2.0 * np.pi * phases)
@@ -1510,9 +1530,20 @@ class ModSourceRenderers:
         elif waveform == "random":
             # Sample-and-hold: detect each phase wrap and re-roll. A
             # reset edge rolls too (once, even when the jump to
-            # ``phase0`` also reads as a wrap).
+            # ``phase0`` also reads as a wrap). The first sample is
+            # compared with the PREVIOUS block's last one, so a wrap that
+            # lands exactly on a block's first sample rolls too (it used
+            # to be compared with itself -- ``state["phase"]`` IS this
+            # block's first phase -- so that roll was skipped: a random
+            # LFO whose period was a multiple of the block size never
+            # changed value, and at other rates a roll went missing or
+            # not depending on the block size). A fresh LFO has no
+            # previous sample: no wrap at 0 (its first roll is the fresh
+            # one).
             if frames > 0:
-                diffs = np.diff(np.concatenate([[start_phase], phases]))
+                prev = state.get("last_phase")
+                prev = phases[0] if prev is None else prev
+                diffs = np.diff(np.concatenate([[prev], phases]))
                 is_reset = np.zeros(frames, dtype=bool)
                 is_reset[edges] = True
                 wave = np.empty(frames, dtype=np.float64)
@@ -1538,6 +1569,10 @@ class ModSourceRenderers:
             wave = np.zeros(frames, dtype=np.float64)
 
         state["phase"] = new_phase
+        if frames > 0:
+            # Every waveform keeps it, so a live switch to ``random``
+            # finds the right previous sample.
+            state["last_phase"] = float(phases[-1])
 
         if not bipolar:
             # Map [-1, 1] -> [0, 1] (so a sine-LFO into a VCA gives a smooth
@@ -1635,15 +1670,34 @@ class ModSourceRenderers:
         phase_inc_per_voice = rate_per_voice / sr  # (V,)
         start_phase = state["phase_arr"]  # (V,)
 
-        # Per-voice phase ramps via broadcast: (V, 1) + (1, F) * (V, 1)
-        # -> (V, F). Each row is a phase ramp clocked at that voice's
-        # rate.
+        # One running anchor + integer count per voice (the mono path's
+        # idiom, see _lfo_phase_segments): a voice whose rate changed
+        # this block -- its own rate_cv mean moved -- re-anchors where
+        # its phase has reached and restarts its count; a voice at a
+        # steady rate keeps counting from the same anchor, so its phase
+        # is the same at any block size.
+        if "anchor_arr" not in state or state["anchor_arr"].shape[0] != V:
+            state["anchor_arr"] = np.array(start_phase, dtype=np.float64)
+            state["count_arr"] = np.zeros(V, dtype=np.int64)
+            state["inc_arr"] = phase_inc_per_voice.copy()
+        moved = state["inc_arr"] != phase_inc_per_voice
+        if np.any(moved):
+            state["anchor_arr"][moved] = start_phase[moved]
+            state["count_arr"][moved] = 0
+            state["inc_arr"] = phase_inc_per_voice.copy()
+        anchor = state["anchor_arr"]  # (V,)
+        count = state["count_arr"]    # (V,) int64
+
+        # Per-voice phase ramps via broadcast: (V, 1) + ((V, 1) + (1, F))
+        # * (V, 1) -> (V, F). Each row is a phase ramp clocked at that
+        # voice's rate, counted from its anchor.
         step = np.arange(frames, dtype=np.float64)  # (F,)
         phases = (
-            start_phase[:, None]
-            + step[None, :] * phase_inc_per_voice[:, None]
+            anchor[:, None]
+            + (count.astype(np.float64)[:, None] + step[None, :])
+            * phase_inc_per_voice[:, None]
         ) % 1.0  # (V, F)
-        new_phase = (start_phase + frames * phase_inc_per_voice) % 1.0
+        new_count = count + frames
 
         # Reset edges, per voice. A mono gate is broadcast to every row;
         # a (V, F) gate resets each voice from its own row (a foreign
@@ -1674,10 +1728,16 @@ class ModSourceRenderers:
             ]
         reset_rows = [v for v in range(V) if edges_per_voice[v].size]
         for v in reset_rows:
-            phases[v], new_phase[v] = self._lfo_phase_segments(
-                float(start_phase[v]), phase0, edges_per_voice[v],
+            phases[v], anchor[v], new_count[v] = self._lfo_phase_segments(
+                float(anchor[v]), int(count[v]), phase0, edges_per_voice[v],
                 frames, float(phase_inc_per_voice[v]),
             )
+        state["count_arr"] = new_count
+        # The next block's first phase per voice (kept for readers and the
+        # re-anchor above), from the anchor and count that block will use.
+        new_phase = (
+            anchor + new_count.astype(np.float64) * phase_inc_per_voice
+        ) % 1.0
 
         if waveform == "sine":
             wave = np.sin(2.0 * np.pi * phases)
@@ -1692,13 +1752,20 @@ class ModSourceRenderers:
             # detects its own phase wrap and re-rolls. Serial across
             # voices (S&H isn't vectorizable -- each row's output
             # depends on its own prior value on the wrap edges).
+            # As on the mono path, each row's first sample is compared
+            # with that voice's PREVIOUS sample, so a wrap on a block's
+            # first sample rolls (a fresh voice: no wrap at 0).
             wave = np.empty((V, frames), dtype=np.float64)
             random_arr = state["random_arr"]
             fresh_arr = state["random_fresh_arr"]
             rng_arr = state["rng_arr"]
+            last_arr = state.get("last_arr")
             for v in range(V):
                 row_phases = phases[v]
-                row_start = float(start_phase[v])
+                row_start = (
+                    float(row_phases[0]) if last_arr is None or frames == 0
+                    else float(last_arr[v])
+                )
                 current = float(random_arr[v])
                 rng = rng_arr[v]
                 if frames > 0:
@@ -1722,6 +1789,8 @@ class ModSourceRenderers:
             wave = np.zeros((V, frames), dtype=np.float64)
 
         state["phase_arr"] = new_phase
+        if frames > 0:
+            state["last_arr"] = phases[:, -1].copy()
 
         if not bipolar:
             wave = (wave + 1.0) * 0.5
