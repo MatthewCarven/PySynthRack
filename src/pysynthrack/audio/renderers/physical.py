@@ -846,8 +846,11 @@ class PhysicalRenderers:
                 continue  # silent string: free
 
             if st["active"][v] and not edges:
-                # Follow the block-mean pitch (glide/vibrato, block rate).
-                set_coeffs(v, float(np.mean(p_row)) if p_row is not None else 0.0)
+                # Follow the block-mean pitch (glide/vibrato, block rate),
+                # averaged in float64: a float32 mean of a held voltage is
+                # off by an ulp in a way that depends on the block size,
+                # and is not the exact value the hit read at its edge.
+                set_coeffs(v, self._finite_mean(p_row) if p_row is not None else 0.0)
 
             # Segment the block at trigger edges: advance up to each edge
             # with the old state, then pluck and continue.

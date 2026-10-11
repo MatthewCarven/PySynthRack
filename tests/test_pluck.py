@@ -368,6 +368,53 @@ def test_block_size_independent_at_constant_pitch():
     assert np.array_equal(out_big, np.concatenate(outs))
 
 
+def _held_pitch_render(cv, block, sr=44100, seconds=1.5, hit=777):
+    """One hit at sample ``hit`` (off every block grid), ``cv`` held for
+    ``seconds``, rendered at ``block``; a 10 s decay keeps the string far
+    above the silence early-out (decided per block) for the whole window."""
+    step = _driver({"decay": 10.0}, sr=sr, block=block)
+    n = int(seconds * sr)
+    out = []
+    pos = 0
+    while pos < n:
+        f = min(block, n - pos)
+        trig = np.zeros(f, dtype=np.float32)
+        if pos <= hit < pos + f:
+            trig[hit - pos] = 1.0
+        out.append(step(np.full(f, cv, dtype=np.float32), trig))
+        pos += f
+    return np.concatenate(out)
+
+
+@pytest.mark.parametrize("cv", [-1.3, 0.3, 7.0 / 12.0])
+def test_block_size_independent_at_a_held_non_dyadic_pitch(cv):
+    """The pitch the ringing string follows between hits is the block
+    mean, read through ``_finite_mean`` (float64): the mean of a held
+    float32 voltage is that voltage at every block size, and it is the
+    same float the hit itself read at its edge. 1.5 s at 44.1 kHz across
+    64/128/512/1000 -- the old float32 mean moved -1.3 V at block 64 from
+    sample 832 on (5e-5), which the 512-sample pin above, at a dyadic
+    0 V, could never see."""
+    ref = _held_pitch_render(cv, 512)
+    assert np.abs(ref).max() > 0.05, "the string never sounded"
+    for block in (64, 128, 1000):
+        got = _held_pitch_render(cv, block)
+        assert np.array_equal(ref, got), (
+            f"cv {cv}: block {block} vs 512 max diff "
+            f"{np.abs(ref.astype(np.float64) - got).max():.3e}")
+
+
+def test_the_float32_mean_fails_the_held_pitch_pin(monkeypatch):
+    """Self-test: put the old reduction back and the pin above must fail,
+    or it has stopped proving anything."""
+    monkeypatch.setattr(
+        NumpyBackend, "_finite_mean",
+        staticmethod(lambda cv, default=0.0, axis=None: float(np.mean(cv))),
+    )
+    assert not np.array_equal(
+        _held_pitch_render(-1.3, 512), _held_pitch_render(-1.3, 64))
+
+
 def test_silent_voice_early_outs_to_exact_zeros():
     step = _driver({"decay": 0.15}, sr=1000, block=64)
     trig = np.zeros(64, dtype=np.float32)

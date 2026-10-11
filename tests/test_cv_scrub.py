@@ -214,6 +214,9 @@ CASES = [
     _Case("bowed", "bowed", ["pitch_cv"], {"gate": _gate()}, repaired=True),
     _Case("wind", "wind", ["pitch_cv"], {"gate": _gate()}, repaired=True),
     _Case("modal", "modal", ["pitch_cv"], {"excite": _impulse()}),
+    # The ringing string follows the block-mean pitch between hits; the
+    # hit itself reads the exact sample at its edge (sample 0 here).
+    _Case("pluck", "pluck", ["pitch_cv"], {"trigger": _gate()}, repaired=True),
     # ``fast`` is a LEVEL, read as the block's majority: 0.3 is just
     # "slow", the un-cabled state, so this case is fed a held gate.
     _Case("rotary", "rotary", ["fast"], {"in": _sine()}, const=1.0),
@@ -413,6 +416,7 @@ ROUTED_SOURCES = {
     "_render_wind": ["pitch_cv"],
     "_render_drift": ["rate_cv"],
     "_render_modal": ["pitch_cv"],
+    "_render_pluck": ["pitch_cv"],
 }
 
 
