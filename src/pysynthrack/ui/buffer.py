@@ -106,13 +106,26 @@ def coerce_sink_buffer_size(raw: object, default: int = BUFFER_DEFAULT) -> int:
         return default
 
 
-def format_sink_buffer(entry: tuple[int, int, int, int] | None) -> str:
-    """One-line ring readout for the buffered sink's node.
+def format_sink_buffer(
+    entry: tuple[int, int, int, int] | None,
+    stream: tuple[int, int | None, str] | None = None,
+) -> str:
+    """Ring readout for the buffered sink's node.
 
     ``entry`` is the backend's ``(queued, capacity, underruns, drops)``
     telemetry for the sink's secondary-stream hand-off ring, or ``None``
     when the sink has no live stream (transport stopped, ``device`` empty
-    so it drains to master, or the device failed to open). The percentage
+    so it drains to master, or the device failed to open). ``stream`` is
+    the backend's ``(asked, opened, error)`` for that stream (see
+    ``NumpyBackend.snapshot_sink_streams``), or ``None``. It changes the
+    text in two cases, so neither can pass for a healthy or an idle sink:
+    ``opened`` is ``None`` -- the device would not open at any block size --
+    and the line reads ``buffer: could not open the device``; or ``opened``
+    differs from ``asked`` -- the device refused the asked block and the
+    stream runs on a smaller one (``0`` = PortAudio's own size, shown
+    ``auto``) -- and a second line says so, e.g. ``device block 2048 - 8192
+    would not open``. The ring itself stays sized by the asked buffer. The
+    percentage
     is how full the ring is — the cushion between the render clock and the
     device clock; ``under`` counts device callbacks that ran dry (gap /
     zero-pad) after the ring had first filled to one device block, and
@@ -120,11 +133,17 @@ def format_sink_buffer(entry: tuple[int, int, int, int] | None) -> str:
     exceeded the whole ring), both cumulative since the stream opened.
     ASCII only: the node font has no wider glyph coverage.
     """
+    if stream is not None and stream[1] is None:
+        return "buffer: could not open the device"
     if entry is None:
         return "buffer: idle"
     queued, capacity, underruns, drops = entry
     pct = 0 if capacity <= 0 else round(100.0 * queued / capacity)
-    return (
+    line = (
         f"buffer {pct:d}% ({queued}/{capacity})  "
         f"under {underruns}  drop {drops}"
     )
+    if stream is not None and stream[1] != stream[0]:
+        got = "auto" if stream[1] == 0 else str(stream[1])
+        line += f"\ndevice block {got} - {stream[0]} would not open"
+    return line

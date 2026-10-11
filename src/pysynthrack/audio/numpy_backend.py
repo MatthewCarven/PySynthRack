@@ -87,6 +87,47 @@ except Exception:  # pragma: no cover - environment-dependent
 _MIN_SINK_BLOCK = 16
 _MAX_SINK_BLOCK = 8192
 
+# A device that refuses the asked block size (2026-07-16: buffer_size 8192 on
+# an HD Audio device made open() throw, and the sink sat at "buffer: idle"
+# with nothing to say why) is retried at half the size, and half again, down
+# to this floor; then with blocksize 0, which lets PortAudio pick its own
+# (variable) callback size. Below ~256 a Python callback runs hundreds of
+# times a second for no gain: a device that won't take 256 won't be rescued
+# by 128.
+_MIN_FALLBACK_BLOCK = 256
+# The ring of a stream that only opened at PortAudio's own block size is never
+# smaller than this many samples (the default 1024 sink's ring): the callback
+# size is the host's choice and unknown in advance, and a tiny buffer_size's
+# 8 x 64 ring could be smaller than one host callback.
+_AUTO_RING_MIN = 8 * 1024
+
+
+def _open_ladder(asked: int) -> list[int]:
+    """The PortAudio blocksizes a device stream asked to run at ``asked``
+    tries, in order: the asked size, then halvings while they stay at or
+    above :data:`_MIN_FALLBACK_BLOCK`, then ``0`` (PortAudio picks).
+    ``8192 -> [8192, 4096, 2048, 1024, 512, 256, 0]``; ``128 -> [128, 0]``.
+    """
+    asked = int(asked)
+    sizes = [asked]
+    b = asked // 2
+    while b >= _MIN_FALLBACK_BLOCK:
+        sizes.append(b)
+        b //= 2
+    if asked != 0:
+        sizes.append(0)
+    return sizes
+
+
+def _close_quietly(stream: Any) -> None:
+    """Close a stream that failed part-way through opening; never raises."""
+    if stream is None:
+        return
+    try:
+        stream.close()
+    except Exception:
+        pass
+
 
 class _DeviceOutput:
     """A secondary stereo OutputStream feeding one device-routed speaker
@@ -102,12 +143,16 @@ class _DeviceOutput:
     Crucially the ring is counted in **samples, not blocks**, so the
     secondary stream's block size may differ from the main stream's -- that
     is the whole point of the buffered sink, whose ``buffer_size`` opens this
-    stream at its own PortAudio blocksize independent of the global one. A
+    stream at its own PortAudio blocksize independent of the global one.
+    That size is a request: a device that refuses it is reopened at a
+    smaller one (see :meth:`open`), and the ring stays sized by the request,
+    so the cushion the sink asked for survives the fallback. A
     device that ran ahead (empty ring) has its block zero-padded; a device
     that fell behind (full ring) has its oldest samples overwritten
-    (drop-oldest). Capacity is ``max_blocks`` *device* blocks, so the ring
-    always holds at least one full device block however large it is relative
-    to the main push size.
+    (drop-oldest). Capacity is ``max_blocks`` *asked* blocks -- at least that
+    many device blocks, since a fallback only ever lowers the device block --
+    so the ring always holds at least one full device block however large it
+    is relative to the main push size.
 
     Producer (main audio thread, :meth:`push`) and consumer (this device's
     PortAudio thread, :meth:`_callback`) share the read cursor and fill
@@ -123,11 +168,21 @@ class _DeviceOutput:
     ) -> None:
         self.device = device
         self._sample_rate = sample_rate
+        # ``block_size`` is what the sink ASKED for: it sizes the ring and is
+        # the first blocksize open() tries. ``_block_size`` is the PortAudio
+        # callback block actually in use and ``opened_block`` reports it;
+        # both drop below the request only when the device refuses it (0 =
+        # PortAudio picks). Until open() runs they read as the request, so a
+        # stubbed open never looks like a fallback.
+        self.requested_block = int(block_size)
         self._block_size = block_size
+        self.opened_block = int(block_size)
+        self._max_blocks = max(1, max_blocks)
         # Ring counted in samples so the push size (main block) and the pop
         # size (this device's block) may differ. Sized to hold max_blocks of
-        # THIS device's block, so even a secondary buffer larger than the main
-        # block always has room to fill one full pop.
+        # the ASKED block, so even a secondary buffer larger than the main
+        # block always has room to fill one full pop -- and a fallback to a
+        # smaller device block keeps the cushion that was asked for.
         self._capacity = max(1, max_blocks) * max(1, int(block_size))
         self._ring = np.zeros((self._capacity, 2), dtype=np.float32)
         self._read = 0        # index of the oldest queued sample
@@ -139,7 +194,9 @@ class _DeviceOutput:
         # or was itself bigger than the whole ring (its head truncated away).
         # Guarded by the same lock as the cursors. Underruns only count once
         # _primed flips, which happens when the fill FIRST reaches one device
-        # block: PortAudio fires callbacks to prime the stream before the
+        # block (or, for a stream on PortAudio's own block size, whose
+        # callback size isn't known up front, when a callback is FIRST served
+        # whole): PortAudio fires callbacks to prime the stream before the
         # first render lands, and a device block larger than the main block
         # (the 2048/4096/8192 stops) needs many pushes before it can serve
         # one callback at all — both are startup fill-up, not a cushion
@@ -151,16 +208,52 @@ class _DeviceOutput:
         self._stream: Any = None
 
     def open(self) -> None:
-        """Open and start the PortAudio stream on the named device."""
-        self._stream = sd.OutputStream(
-            samplerate=self._sample_rate,
-            channels=2,
-            blocksize=self._block_size,
-            dtype="float32",
-            device=self.device,
-            callback=self._callback,
-        )
-        self._stream.start()
+        """Open and start the PortAudio stream on the named device.
+
+        Tries the asked block size first and, if the device refuses it (the
+        stream won't construct, or won't start), walks :func:`_open_ladder`
+        down -- halving to :data:`_MIN_FALLBACK_BLOCK`, then blocksize 0 --
+        and keeps the first that runs. ``opened_block`` says which; the ring
+        keeps the size the request gave it, grown to :data:`_AUTO_RING_MIN`
+        on the blocksize-0 rung. A ``ValueError`` is raised at once:
+        sounddevice raises it when the device name matches no device (or
+        several), which no block size can fix. If every rung fails the last
+        error is raised, and the caller reports the sink as unable to open.
+        """
+        last: Exception | None = None
+        for bs in _open_ladder(self.requested_block):
+            if bs == 0 and self._capacity < _AUTO_RING_MIN:
+                # Not yet published (the caller swaps it in after open()
+                # returns), so nothing else can be touching the ring.
+                with self._lock:
+                    self._capacity = _AUTO_RING_MIN
+                    self._ring = np.zeros((self._capacity, 2), dtype=np.float32)
+            stream = None
+            try:
+                stream = sd.OutputStream(
+                    samplerate=self._sample_rate,
+                    channels=2,
+                    blocksize=bs,
+                    dtype="float32",
+                    device=self.device,
+                    callback=self._callback,
+                )
+                self._block_size = bs  # before start(): callbacks may fire at once
+                stream.start()
+            except ValueError:
+                _close_quietly(stream)
+                self._block_size = self.requested_block
+                raise
+            except Exception as e:  # PortAudioError and kin: try a smaller block
+                _close_quietly(stream)
+                last = e
+                continue
+            self._stream = stream
+            self.opened_block = int(bs)
+            return
+        self._block_size = self.requested_block
+        assert last is not None  # the ladder is never empty
+        raise last
 
     def push(self, block: np.ndarray) -> None:
         """Enqueue one rendered ``(frames, 2)`` block (main audio thread).
@@ -199,15 +292,26 @@ class _DeviceOutput:
             # from here on a short callback is genuine starvation. (cap is
             # >= one device block by construction; the min is a rail against
             # a degenerate hand-constructed ring.)
-            if not self._primed and new_avail >= min(self._block_size, cap):
+            if (
+                not self._primed
+                and self._block_size > 0
+                and new_avail >= min(self._block_size, cap)
+            ):
                 self._primed = True
 
     def _callback(self, outdata, frames, time_info, status) -> None:
         cap = self._capacity
         with self._lock:
             n = min(self._avail, frames)
-            if n < frames and self._primed:
-                self._underruns += 1
+            if n < frames:
+                if self._primed:
+                    self._underruns += 1
+            elif frames > 0:
+                # Served whole: from here a short callback is starvation. With
+                # a fixed device block push() has already armed this; it is
+                # what arms a blocksize-0 stream, whose callback size open()
+                # couldn't know in advance.
+                self._primed = True
             if n > 0:
                 r = self._read
                 end = r + n
@@ -1213,6 +1317,11 @@ class NumpyBackend(
         # (snapshotting each sink's selection), fed by the main callback,
         # closed in stop(). Empty in the common (no routed) case.
         self._device_outputs: dict[tuple[str, int], Any] = {}
+        # Stream keys that would not open at ANY block size on the last
+        # reconcile, with the reason -- so the readout and the status bar can
+        # say "could not open" instead of letting the sink pass for idle.
+        # Rebuilt by every reconcile, cleared by stop().
+        self._device_open_failures: dict[tuple[str, int], str] = {}
         # Per-sink smoothed governor ratio (see _governed_ratio). Keyed by
         # module id; an entry exists only while that sink's ratio_cv is
         # cabled, so the unpatched path carries no state at all.
@@ -1767,6 +1876,7 @@ class NumpyBackend(
         for _dev_out in list(self._device_outputs.values()):
             _dev_out.close()
         self._device_outputs = {}
+        self._device_open_failures = {}
         # Governor state is per-run: drop the smoothing memory and stretch
         # engines so the next Start begins at unity ratio with fresh grains.
         self._sink_ratio.clear()
@@ -1820,14 +1930,25 @@ class NumpyBackend(
         that reference, so it sees the old or the new map whole, never a
         half-updated one (the meters' no-lock discipline). A removed stream is
         closed only AFTER the swap, so the audio thread has stopped iterating
-        to it; a late push lands in an unread ring, which is harmless. A stream
-        that fails to open is logged and skipped (its sink stays silent) and
+        to it; a late push lands in an unread ring, which is harmless.
+
+        A device that refuses the asked block size is reopened at a smaller
+        one (:meth:`_DeviceOutput.open`); the stream keeps its ``(device,
+        asked)`` key, so routing and the governor never notice, and
+        :meth:`snapshot_sink_streams` reports what actually opened. A stream
+        that opens at NO size is logged, remembered in
+        ``_device_open_failures`` (its sink stays silent, and says so) and
         retried on the next change."""
         wanted = self._wanted_streams()
         current = self._device_outputs
         if wanted == set(current):
+            # Every wanted stream is open, so nothing is failing.
+            self._device_open_failures = {}
             return
+        import logging
+        log = logging.getLogger(__name__)
         new: dict[tuple[str, int], Any] = {}
+        failures: dict[tuple[str, int], str] = {}
         for key in wanted:
             existing = current.get(key)
             if existing is not None:
@@ -1837,15 +1958,25 @@ class NumpyBackend(
             try:
                 dev_out = _DeviceOutput(dev, self.sample_rate, block_size)
                 dev_out.open()
-                new[key] = dev_out
             except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning(
+                failures[key] = str(e) or type(e).__name__
+                log.warning(
                     'device-routed speaker: could not open output device %r '
-                    'at buffer %d (%s); that sink will be silent.',
+                    '(asked buffer %d, smaller sizes tried too) (%s); that '
+                    'sink will be silent.',
                     dev, block_size, e,
                 )
+                continue
+            new[key] = dev_out
+            if dev_out.opened_block != block_size:
+                log.warning(
+                    'device-routed speaker: output device %r would not open at '
+                    'buffer %d; running at %s instead.',
+                    dev, block_size,
+                    dev_out.opened_block or "PortAudio's own block size",
+                )
         to_close = [d for key, d in current.items() if key not in new]
+        self._device_open_failures = failures
         self._device_outputs = new             # atomic swap for the audio thread
         for d in to_close:
             d.close()
@@ -2121,11 +2252,13 @@ class NumpyBackend(
     _AUTO_GOVERN_GAIN = 0.5
 
     def _sink_block_size(self, module) -> int:
-        """PortAudio block size for a device-routed sink's own stream.
+        """The block size a device-routed sink asks its own stream for.
 
         The buffered sink carries its own ``buffer_size`` (clamped to a sane
         range against a corrupt patch value); every other routed sink uses the
-        global block size.
+        global block size. It keys the stream, sizes its ring and is the first
+        PortAudio blocksize tried; a device that refuses it runs the stream on
+        a smaller one (see :meth:`_DeviceOutput.open`) under the same key.
         """
         if module.TYPE in self._BUFFERED_SPEAKERS:
             try:
@@ -2687,7 +2820,9 @@ class NumpyBackend(
         underruns, drops)`` (see :meth:`_DeviceOutput.telemetry`). A sink
         with no live stream — transport stopped, ``device`` empty (master
         bus), or the open failed — simply has no entry, which the UI shows
-        as idle. Sinks sharing one ``(device, block_size)`` stream report
+        as idle, unless :meth:`snapshot_sink_streams` marks the open as
+        failed (then it reads "could not open"). Sinks sharing one
+        ``(device, block_size)`` stream report
         the *same* tuple, sampled once, so their readouts always agree.
 
         GUI-thread safe: ``_device_outputs`` is read as one reference (the
@@ -2710,6 +2845,37 @@ class NumpyBackend(
                     continue                    # stream failed to open
                 per_key[key] = dev_out.telemetry()
             result[m.id] = per_key[key]
+        return result
+
+    def snapshot_sink_streams(self) -> dict[int, tuple[int, int | None, str]]:
+        """GUI hook: how each device-routed speaker sink's stream opened,
+        keyed by module id, as ``(asked, opened, error)``.
+
+        ``asked`` is the block size the sink asked for (its stream key's).
+        ``opened`` is the PortAudio callback block it got: equal to ``asked``
+        normally, smaller when the device refused it and the stream stepped
+        down, ``0`` when only PortAudio's own block size would open, and
+        ``None`` when NO size opened -- then ``error`` says why and the sink
+        is silent. A sink with no stream wanted (transport stopped, ``device``
+        empty) has no entry. The ring readout and the status bar read this,
+        so a fallback or a failed open is said out loud rather than passing
+        for an idle sink. GUI-thread safe for the same reasons as
+        :meth:`snapshot_sink_buffers`.
+        """
+        outs = self._device_outputs
+        fails = self._device_open_failures
+        if self._patch is None or not (outs or fails):
+            return {}
+        result: dict[int, tuple[int, int | None, str]] = {}
+        for m in self._patch.modules.values():
+            key = self._stream_key(m)
+            if key is None:
+                continue
+            dev_out = outs.get(key)
+            if dev_out is not None:
+                result[m.id] = (key[1], int(dev_out.opened_block), "")
+            elif key in fails:
+                result[m.id] = (key[1], None, fails[key])
         return result
 
     # ----- per-module rendering -------------------------------------------

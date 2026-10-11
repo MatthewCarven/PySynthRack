@@ -416,6 +416,12 @@ class App:
         self._sink_buffer_labels: dict[int, int] = {}
         self._sink_buffer_last: dict[int, tuple[int, int]] = {}
         self._sink_buffer_flash: dict[int, float] = {}
+        # Routed speaker sinks whose stream fell back to a smaller block, or
+        # would not open at all, already named in the status bar: module_id
+        # -> the backend's (asked, opened, error) as it was said. Said once
+        # per state; a sink that loses its stream (Stop, re-routed to
+        # master) is forgotten, so the next Start says it again.
+        self._sink_streams_reported: dict[int, tuple] = {}
         # FilePlayer queue ("file list"). ``_playlist_listboxes`` maps
         # module_id -> the dpg listbox tag showing the upcoming tracks;
         # ``_fileplayer_advanced_gen`` remembers the backend decode
@@ -478,6 +484,7 @@ class App:
                 self._update_file_positions()
                 self._advance_file_playlists()
                 self._report_media_failures()
+                self._report_sink_streams()
                 self._update_velocity_capture()
                 dpg.render_dearpygui_frame()
                 if _crash_test_after is not None:
@@ -5008,6 +5015,60 @@ class App:
                 f"the folder you launched from)"
             )
 
+    def _report_sink_streams(self) -> None:
+        """Say so when a device-routed speaker's stream did not open as asked.
+
+        The backend never lets a refused block size silence a sink: it
+        reopens the stream at a smaller one, and only a device that opens at
+        no size at all stays silent. Both used to be invisible -- on
+        2026-07-16 a buffer_size of 8192 on an HD Audio device read
+        ``buffer: idle``, exactly like a sink with nothing to do. This names
+        the fallback (or the failure, with its reason) in the status bar,
+        once per state, for every routed sink -- the plain
+        specific_stereo_speaker_output too, which has no readout of its own.
+        """
+        getter = getattr(self.backend, "snapshot_sink_streams", None)
+        if getter is None:
+            return
+        try:
+            streams = getter()
+        except Exception:
+            return
+        if not isinstance(streams, dict):
+            return
+        for mid in list(self._sink_streams_reported):
+            if mid not in streams:
+                del self._sink_streams_reported[mid]
+        for mid, state in streams.items():
+            asked, opened, error = state
+            if opened == asked:
+                self._sink_streams_reported.pop(mid, None)
+                continue
+            if self._sink_streams_reported.get(mid) == state:
+                continue
+            self._sink_streams_reported[mid] = state
+            module = self.patch.modules.get(mid)
+            name = "speaker"
+            device = ""
+            if module is not None:
+                name = module.name or module.TYPE
+                device = str(module.params.get("device", ""))
+            if opened is None:
+                self._set_status(
+                    f"{name}: could not open '{device}' at any buffer size "
+                    f"({error}) - this sink is silent"
+                )
+            else:
+                got = (
+                    "PortAudio's own block size" if opened == 0
+                    else f"{opened}-sample blocks"
+                )
+                self._set_status(
+                    f"{name}: '{device}' would not open with {asked}-sample "
+                    f"blocks - playing on {got} instead (the ring is still "
+                    f"sized for {asked})"
+                )
+
     def _advance_playlist(self, module_id: int, skipped_bad: bool = False) -> None:
         """Pop the next queued file into a FilePlayer and let it play.
 
@@ -6676,6 +6737,7 @@ class App:
         self._sink_buffer_labels.clear()
         self._sink_buffer_last.clear()
         self._sink_buffer_flash.clear()
+        self._sink_streams_reported.clear()
         self._pseq_cells.clear()
         self._pseq_count_labels.clear()
         # KeyTrigger UI state: stale text-input tags and any pending Learn
@@ -6978,6 +7040,9 @@ class App:
     _SINK_BUF_IDLE_RGBA = (170, 170, 170)
     _SINK_BUF_OK_RGBA = (150, 205, 160)
     _SINK_BUF_TROUBLE_RGBA = (240, 190, 90)
+    # A device that would not open at any block size: not idle, not quiet --
+    # broken, and the readout must not look like either.
+    _SINK_BUF_FAILED_RGBA = (235, 120, 110)
     _SINK_BUF_FLASH_S = 1.5
 
     def _update_sink_buffers(self) -> None:
@@ -6986,7 +7051,11 @@ class App:
 
         Once per frame; backends without the hook (the pyo stub) show a
         permanent idle line. A sink absent from the snapshot (stopped, no
-        device, failed open) reads idle and its flash baseline is dropped;
+        device, failed open) reads idle and its flash baseline is dropped --
+        except a failed open, which the stream snapshot
+        (``snapshot_sink_streams``) marks: that reads "could not open" in
+        red. A stream that opened on a smaller device block than asked gets
+        a second line saying so (see format_sink_buffer);
         a LIVE stream switch (device / buffer_size edit) keeps the sink in
         consecutive snapshots, so its callbacks reset the baseline instead
         (see _on_param_changed / _on_buffer_size_changed) — either way the
@@ -6999,12 +7068,23 @@ class App:
             return
         snapshot = getattr(self.backend, "snapshot_sink_buffers", None)
         entries = snapshot() if snapshot is not None else {}
+        streams_hook = getattr(self.backend, "snapshot_sink_streams", None)
+        try:
+            streams = streams_hook() if streams_hook is not None else {}
+        except Exception:
+            streams = {}
+        if not isinstance(streams, dict):
+            streams = {}
         now = time.monotonic()
         stale: list[int] = []
         for mid, label in self._sink_buffer_labels.items():
             entry = entries.get(mid)
+            stream = streams.get(mid)
             if entry is None:
-                color = self._SINK_BUF_IDLE_RGBA
+                if stream is not None and stream[1] is None:
+                    color = self._SINK_BUF_FAILED_RGBA
+                else:
+                    color = self._SINK_BUF_IDLE_RGBA
                 self._sink_buffer_last.pop(mid, None)
                 self._sink_buffer_flash.pop(mid, None)
             else:
@@ -7020,7 +7100,7 @@ class App:
                 else:
                     color = self._SINK_BUF_OK_RGBA
             try:
-                dpg.set_value(label, format_sink_buffer(entry))
+                dpg.set_value(label, format_sink_buffer(entry, stream))
                 dpg.configure_item(label, color=color)
             except Exception:
                 stale.append(mid)

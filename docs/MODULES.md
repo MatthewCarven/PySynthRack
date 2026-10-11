@@ -5939,8 +5939,12 @@ effect live** — the engine reconciles the open streams on the fly,
 rebuilding only the one that changed (opening the new device, closing
 the old if nothing else uses it) with no Stop/Start; adding or removing
 a routed sink reconciles the same way on the next graph edit. A device
-that fails to open is logged and that sink stays silent while the rest
-of the patch plays on.
+that refuses the stream's block size is reopened at a smaller one
+(halving down to 256, then PortAudio's own block size) and the status
+bar says so once; only a device that opens at **no** size stays silent,
+and the status bar names it with the reason (a name that matches no
+device is not retried at other sizes), while the rest of the patch plays
+on.
 
 **Caveat — drift.** The two (or more) `OutputStream`s share samplerate
 and blocksize but run on independent PortAudio clocks, so a second
@@ -6031,8 +6035,9 @@ exactly as changing `device` does. Secondary streams are keyed by
 streams at different buffer sizes, and a buffered sink shares a plain
 `specific_stereo_speaker_output`'s stream only when their sizes match.
 Everything else — the `""`-drains-to-master equivalence, the per-device
-summing, the independent-clock **drift** caveat, a failed open logging
-and silencing just that sink — is identical to
+summing, the independent-clock **drift** caveat, the block-size fallback
+and a failed open silencing just that sink (both named in the status
+bar) — is identical to
 [`specific_stereo_speaker_output`](#specific_stereo_speaker_output).
 Only the numpy backend routes it; under pyo it is a silent stub, like
 the other stereo speakers.
@@ -6061,11 +6066,30 @@ moment means the ring itself (8× `buffer_size`) is smaller than one
 main-stream block (e.g. `buffer_size` 64 under a 1024 global buffer) —
 raise `buffer_size` or lower the global buffer. The text sits grey at
 `buffer: idle` while the sink has
-no stream of its own (transport stopped, `device` empty so it drains to
-master, or the device failed to open), green while the ring is healthy,
-and flashes amber for a moment whenever either counter ticks. Sinks
-sharing one `(device, buffer_size)` stream show identical numbers, by
-design. (numpy backend only, like the routing itself.)
+no stream of its own (transport stopped, or `device` empty so it drains
+to master), green while the ring is healthy, and flashes amber for a
+moment whenever either counter ticks. Sinks sharing one
+`(device, buffer_size)` stream show identical numbers, by design.
+(numpy backend only, like the routing itself.)
+
+**When the device refuses the buffer size.** `buffer_size` is a request.
+A device that won't open a stream at it (an HD Audio device refused 8192
+on 2026-07-16, and the sink used to sit at `buffer: idle` with nothing to
+say why) is reopened at half the size, then half again down to 256, then
+at PortAudio's own block size, and the first that runs is kept. The ring
+stays sized by `buffer_size`, so the cushion you asked for (and what the
+governor's `fill` is a fraction of) is unchanged; only the device's
+callback chunk is smaller. The readout grows a second line naming it,
+
+```
+buffer 50% (32768/65536)  under 0  drop 0
+device block 2048 - 8192 would not open
+```
+
+(`auto` for PortAudio's own size), and the status bar says it once per
+Start. A device that opens at no size at all reads
+`buffer: could not open the device` in red, and the status bar gives the
+reason; that sink is silent and the rest of the patch plays on.
 
 **Ports**
 
@@ -6085,7 +6109,7 @@ design. (numpy backend only, like the routing itself.)
 | `width` | `1.0` | 0 … 2 | Mid/side width; pairs only. |
 | `cv_depth` | `1.0` | 0 … 2 | Knob units per CV unit, shared by `pan_cv` and `width_cv`. |
 | `device` | `""` | device name | Target output device; `""` = system default (drains to master). A named device routes the sink to its own OutputStream; changing it re-routes **live**. |
-| `buffer_size` | `512` | 64 … 8192 | Block size of this sink's own output stream, independent of the global buffer (whose slider tops out at 1024 — the 2048/4096/8192 stops are sink-only). Read at stream open; a live change rebuilds only this stream. Out-of-range values are clamped. |
+| `buffer_size` | `512` | 64 … 8192 | Block size of this sink's own output stream, independent of the global buffer (whose slider tops out at 1024 — the 2048/4096/8192 stops are sink-only); the ring holds 8× it. Read at stream open; a live change rebuilds only this stream. A device that refuses it runs the stream on a smaller block with the ring unchanged, and says so (see *When the device refuses the buffer size*). Out-of-range values are clamped. |
 
 ---
 
