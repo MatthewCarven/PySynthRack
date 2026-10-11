@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "next_id": 5,
+  "modules": [
+    {
+      "id": 1,
+      "type": "chaos",
+      "name": "lorenz - rate ~2.5 shows both wings",
+      "params": {
+        "system": "lorenz",
+        "rate": 2.5,
+        "range": 1.0,
+        "bipolar": true,
+        "seed": 1
+      }
+    },
+    {
+      "id": 2,
+      "type": "cv_to_audio",
+      "name": "x bridge (cv -> audio)",
+      "params": {
+        "gain": 1.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "cv_to_audio",
+      "name": "y bridge (cv -> audio)",
+      "params": {
+        "gain": 1.0
+      }
+    },
+    {
+      "id": 4,
+      "type": "scope",
+      "name": "SCOPE - xy butterfly, afterglow on (silent: Start audio and watch)",
+      "params": {
+        "time_div": 500.0,
+        "gain": 1.0,
+        "trigger": "free",
+        "level": 0.0,
+        "freeze": false,
+        "mode": "xy",
+        "afterglow": true,
+        "glow_frames": 16
+      }
+    }
+  ],
+  "cables": [
+    { "src_module_id": 1, "src_port": "x", "dst_module_id": 2, "dst_port": "cv" },
+    { "src_module_id": 1, "src_port": "y", "dst_module_id": 3, "dst_port": "cv" },
+    { "src_module_id": 2, "src_port": "out", "dst_module_id": 4, "dst_port": "in" },
+    { "src_module_id": 3, "src_port": "out", "dst_module_id": 4, "dst_port": "in_r" }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [40, 200],
+      "2": [320, 120],
+      "3": [320, 320],
+      "4": [600, 200]
+    }
+  }
+}

@@ -636,6 +636,55 @@ def test_every_param_gets_a_bounded_widget(monkeypatch):
                for ch in str(kw.get("format", "")))
 
 
+# ----- afterglow: the banked example ----------------------------------------
+
+
+def test_the_butterfly_example_glows_and_its_ghosts_interleave():
+    """examples/scope_chaos_afterglow.json: chaos x/y through two bridges
+    into an xy scope at 500 ms/div, trigger free, afterglow 16. Measured:
+    the window holds both wings, and eight consecutive 60 fps repaints
+    land at least three times the distinct face pixels one repaint does
+    (the ghosts interleave rather than overlap -- the MODULES claim)."""
+    from pathlib import Path
+
+    from pysynthrack.io_patch import load_patch
+
+    path = Path(__file__).resolve().parent.parent / "examples" / "scope_chaos_afterglow.json"
+    patch = load_patch(path)
+    sc = next(m for m in patch if m.TYPE == "scope")
+    assert sc.params["afterglow"] is True and sc.params["glow_frames"] == 16
+    assert sc.params["mode"] == "xy" and sc.params["trigger"] == "free"
+    assert {c.dst_port for c in patch.cables if c.dst_module_id == sc.id} == {"in", "in_r"}
+
+    sr, block = 8000, 256
+    b = NumpyBackend(sample_rate=sr, block_size=block)
+    b.compile(patch)
+    for _ in range(int(6.2 * sr / block)):  # fill the 6 s capture ring
+        b.render_block_multi(block)
+    frames, carry = [], 0
+    for _ in range(8):
+        carry += sr // 60
+        while carry >= block:
+            b.render_block_multi(block)
+            carry -= block
+        snap = sm.build_snapshot(
+            b.scope_window(sc.id, sm.request_samples(sc.params["time_div"], sr)),
+            sc.params, sr, 200,
+        )
+        frames.append(snap)
+    last = frames[-1]
+    assert last["xy1"].min() < -0.3 and last["xy1"].max() > 0.3  # both wings
+
+    def cells(snaps):
+        return len({
+            (int(x), int(y))
+            for s in snaps
+            for x, y in sm.xy_polyline(s["xy1"], s["xy2"], 220.0, 110.0, 1.0)
+        })
+
+    assert cells(frames) >= 3 * cells(frames[-1:])
+
+
 # ----- afterglow: the face against a real DearPyGui ------------------------
 
 

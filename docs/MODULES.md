@@ -5826,7 +5826,8 @@ interleave rather than overlap — eight frames land about six times as
 many distinct points on a chaos butterfly as one frame does. In `mono`
 and `dual` it shows jitter and drift as a smear (`dual` glows both
 traces). While a level trigger is locked it repaints the same window,
-so its ghosts coincide; **free** is the setting for the butterfly. Each
+so its ghosts coincide; **free** is the setting for the butterfly (the
+banked `examples/scope_chaos_afterglow.json` is set up that way). Each
 repaint writes points into ONE polyline per trace and only recolours
 the others. On a real DearPyGui context (no viewport) that measured
 about +0.05 ms per trace per frame at 8 frames and +0.1 ms at 16,
