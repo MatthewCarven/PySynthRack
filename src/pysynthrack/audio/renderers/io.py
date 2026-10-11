@@ -13,7 +13,9 @@ engine's ``start`` / ``compile`` / ``stop`` call through ``self``, and
 ``_disk_writer_worker``.
 
 Shared helpers are reached through ``self``: ``_osc_waveshape``
-(keyboard / MIDI voices; the ``_waveshapes`` mixin), the meter's
+(keyboard / MIDI voices; the ``_waveshapes`` mixin) and
+``_osc_mono_phase`` (each voice slot's phase, the oscillator's own
+constant-frequency engine; the ``oscillators`` mixin), the meter's
 ``_loud_shelf`` / ``_filter_coeffs`` biquads and ``_voice_sum`` (the
 ``_shared`` mixin), and ``_resolve_media_path`` / ``_load_wav`` (the
 ``_media`` mixin). ``_resolve_mic_input`` reads the backend's optional
@@ -44,6 +46,71 @@ class IORenderers:
     _KB_ATTACK_S = 0.005
     _KB_RELEASE_S = 0.020
 
+    def _note_voice_state(self, module_id):
+        """The per-slot state of a keyboard / MIDI voice bank, made on
+        first use: ``voice`` (one :meth:`_note_voice_fresh` dict per
+        slot), ``last_note`` and ``releasing``."""
+        state = self._state.get(module_id)
+        if state is None or "voice" not in state:
+            state = self._state[module_id] = {
+                "voice": [
+                    self._note_voice_fresh() for _ in range(self._MAX_VOICES)
+                ],
+                "last_note": np.full(self._MAX_VOICES, -1, dtype=np.int32),
+                "releasing": np.zeros(self._MAX_VOICES, dtype=bool),
+            }
+        return state
+
+    @staticmethod
+    def _note_voice_fresh():
+        """One voice slot at note-on: phase 0, level 0.
+
+        ``phase`` is :meth:`_osc_mono_phase`'s state (the oscillator's
+        constant-frequency engine adds ``origin`` / ``count`` / ``inc`` /
+        ``n`` on first use; fresh, it starts the ramp at phase 0.0 on the
+        first sample, as the note sources always have). ``env_*`` is
+        :meth:`_note_env_ramp`'s.
+        """
+        return {"phase": 0.0, "env_origin": 0.0, "env_delta": 0.0,
+                "env_count": 0}
+
+    @staticmethod
+    def _note_env_ramp(vs, frames, releasing, attack_samples, release_samples):
+        """One block of a keyboard / MIDI voice's attack / release ramp.
+
+        The shape is the one the note sources always had: from the level
+        at the block's first sample, rise at ``1/attack_samples`` per
+        sample while the key is down and the level is below 1, fall at
+        ``1/release_samples`` while releasing, hold at 1 once there,
+        clipped to [0, 1]; the slope is chosen once per block (key events
+        land on block boundaries). Only the arithmetic changed
+        (2026-10-12): a slope's ramp is ``origin + delta * k`` over the
+        integer count ``k`` since that slope began, re-anchored at the
+        current level only when the slope changes. It used to carry the
+        level block to block (``env + frames * delta``), which rounded
+        differently under a different partition through every attack and
+        every release. A finished attack sits on the clip's exact 1.0
+        wherever the next block boundary falls, so where it re-anchors to
+        the flat slope cannot show.
+        """
+        level = min(1.0, max(
+            0.0, vs["env_origin"] + vs["env_delta"] * float(vs["env_count"])))
+        if releasing:
+            delta = -1.0 / release_samples
+        elif level < 1.0:
+            delta = 1.0 / attack_samples
+        else:
+            delta = 0.0
+        if delta != vs["env_delta"]:
+            vs["env_origin"] = level
+            vs["env_delta"] = delta
+            vs["env_count"] = 0
+        k = float(vs["env_count"]) + np.arange(frames, dtype=np.float64)
+        env = vs["env_origin"] + delta * k
+        np.clip(env, 0.0, 1.0, out=env)
+        vs["env_count"] += frames
+        return env
+
     def _render_keyboard(self, module, frames: int) -> dict[str, np.ndarray]:
         """Voice-aware keyboard renderer.
 
@@ -67,11 +134,15 @@ class IORenderers:
           * No mod wheel, no aftertouch, no sustain pedal. Keyboard's
             port set stays at ``out`` + ``gate`` only.
 
-        Per-slot state lives in ``self._state[module.id]`` as numpy
-        arrays indexed by slot, same shape as MIDIInput's:
+        Per-slot state lives in ``self._state[module.id]``, indexed by
+        slot, same layout as MIDIInput's:
 
-          * ``phase``     -- oscillator phase, [0, 1).
-          * ``env``       -- per-slot attack/release ramp level, [0, 1].
+          * ``voice``     -- per-slot dicts: the phase (the oscillator's
+                            constant-frequency engine,
+                            :meth:`_osc_mono_phase`) and the attack /
+                            release ramp (:meth:`_note_env_ramp`), both
+                            integer counts, so a voice renders the same
+                            sample at any block size.
           * ``last_note`` -- the MIDI note this slot was rendering on
                             the previous block; resets phase + env on
                             slot reassignment so the new voice starts
@@ -95,15 +166,7 @@ class IORenderers:
         envelope per note rather than retriggering on every chord
         change.
         """
-        state = self._state.setdefault(
-            module.id,
-            {
-                "phase": np.zeros(self._MAX_VOICES, dtype=np.float64),
-                "env": np.zeros(self._MAX_VOICES, dtype=np.float64),
-                "last_note": np.full(self._MAX_VOICES, -1, dtype=np.int32),
-                "releasing": np.zeros(self._MAX_VOICES, dtype=bool),
-            },
-        )
+        state = self._note_voice_state(module.id)
 
         sr = self.sample_rate
         waveform = str(module.params.get("waveform", "sine"))
@@ -122,8 +185,7 @@ class IORenderers:
             if note == -1:
                 # Slot empty -- reset state so the next allocation gets
                 # a clean phase/env, and emit silence for this voice.
-                state["phase"][i] = 0.0
-                state["env"][i] = 0.0
+                state["voice"][i] = self._note_voice_fresh()
                 state["last_note"][i] = -1
                 state["releasing"][i] = False
                 continue
@@ -133,8 +195,7 @@ class IORenderers:
             # new voice starts cleanly rather than picking up the
             # previous voice's phase mid-cycle.
             if int(state["last_note"][i]) != note:
-                state["phase"][i] = 0.0
-                state["env"][i] = 0.0
+                state["voice"][i] = self._note_voice_fresh()
                 state["releasing"][i] = False
                 state["last_note"][i] = note
 
@@ -153,11 +214,10 @@ class IORenderers:
             # Phase ramp for this voice.
             freq = midi_to_freq(note)
             phase_inc = freq / sr
-            start_phase = float(state["phase"][i])
-            phases = (
-                start_phase + np.arange(frames, dtype=np.float64) * phase_inc
-            ) % 1.0
-            state["phase"][i] = (start_phase + frames * phase_inc) % 1.0
+            # The oscillator's constant-frequency engine: origin + the
+            # integer count since it, re-anchored only on a pitch change
+            # (a bend), so the phase is exact at any block size.
+            phases = self._osc_mono_phase(state["voice"][i], frames, phase_inc)
 
             # Waveform. Routed through the shared shaper so the note
             # sources get the same naive / PolyBLEP / wavetable shapes as
@@ -167,17 +227,9 @@ class IORenderers:
 
             # Envelope ramp -- same short attack/release as the old
             # mono renderer, just per-slot now.
-            env_start = float(state["env"][i])
-            if bool(state["releasing"][i]):
-                delta = -1.0 / release_samples
-            elif env_start < 1.0:
-                delta = 1.0 / attack_samples
-            else:
-                delta = 0.0
-            env_ramp = env_start + np.arange(frames, dtype=np.float64) * delta
-            np.clip(env_ramp, 0.0, 1.0, out=env_ramp)
-            state["env"][i] = float(
-                max(0.0, min(1.0, env_start + frames * delta))
+            env_ramp = self._note_env_ramp(
+                state["voice"][i], frames, bool(state["releasing"][i]),
+                attack_samples, release_samples,
             )
 
             audio[i] = (wave * env_ramp).astype(np.float32)
@@ -408,11 +460,16 @@ class IORenderers:
         (one value per channel, applied identically to every voice),
         so they don't need a voice axis.
 
-        Per-slot state lives in ``self._state[module.id]`` as numpy
-        arrays indexed by slot:
+        Per-slot state lives in ``self._state[module.id]``, indexed by
+        slot:
 
-          * ``phase``    -- oscillator phase, [0, 1).
-          * ``env``      -- envelope ramp level, [0, 1].
+          * ``voice``    -- per-slot dicts: the phase (the oscillator's
+                            constant-frequency engine,
+                            :meth:`_osc_mono_phase`; a pitch-bend move
+                            re-anchors it where the old ramp was
+                            heading) and the attack / release ramp
+                            (:meth:`_note_env_ramp`), both integer
+                            counts, exact at any block size.
           * ``last_note`` -- the MIDI note this slot was rendering on
                             the previous block; used to detect "slot
                             reassigned to a new note" and reset phase
@@ -435,15 +492,7 @@ class IORenderers:
         A voice-aware consumer (slice 3+) passes ``collapse=False`` and
         grows its own per-slot state.
         """
-        state = self._state.setdefault(
-            module.id,
-            {
-                "phase": np.zeros(self._MAX_VOICES, dtype=np.float64),
-                "env": np.zeros(self._MAX_VOICES, dtype=np.float64),
-                "last_note": np.full(self._MAX_VOICES, -1, dtype=np.int32),
-                "releasing": np.zeros(self._MAX_VOICES, dtype=bool),
-            },
-        )
+        state = self._note_voice_state(module.id)
 
         sr = self.sample_rate
         waveform = str(module.params.get("waveform", "sine"))
@@ -490,8 +539,7 @@ class IORenderers:
             if note == -1:
                 # Slot empty -- reset state so the next allocation gets
                 # a clean phase/env, and emit silence for this voice.
-                state["phase"][i] = 0.0
-                state["env"][i] = 0.0
+                state["voice"][i] = self._note_voice_fresh()
                 state["last_note"][i] = -1
                 state["releasing"][i] = False
                 # gate[i] and audio[i] are already zero from np.zeros.
@@ -502,8 +550,7 @@ class IORenderers:
             # new voice starts cleanly rather than picking up the
             # previous voice's phase mid-cycle.
             if int(state["last_note"][i]) != note:
-                state["phase"][i] = 0.0
-                state["env"][i] = 0.0
+                state["voice"][i] = self._note_voice_fresh()
                 state["releasing"][i] = False
                 state["last_note"][i] = note
 
@@ -523,11 +570,10 @@ class IORenderers:
             # Phase ramp for this voice.
             freq = midi_to_freq(note) * freq_multiplier
             phase_inc = freq / sr
-            start_phase = float(state["phase"][i])
-            phases = (
-                start_phase + np.arange(frames, dtype=np.float64) * phase_inc
-            ) % 1.0
-            state["phase"][i] = (start_phase + frames * phase_inc) % 1.0
+            # The oscillator's constant-frequency engine: origin + the
+            # integer count since it, re-anchored only on a pitch change
+            # (a bend), so the phase is exact at any block size.
+            phases = self._osc_mono_phase(state["voice"][i], frames, phase_inc)
 
             # Waveform. Routed through the shared shaper so the note
             # sources get the same naive / PolyBLEP / wavetable shapes as
@@ -537,17 +583,9 @@ class IORenderers:
 
             # Envelope ramp -- same short attack/release as the old
             # mono renderer, just per-slot now.
-            env_start = float(state["env"][i])
-            if bool(state["releasing"][i]):
-                delta = -1.0 / release_samples
-            elif env_start < 1.0:
-                delta = 1.0 / attack_samples
-            else:
-                delta = 0.0
-            env_ramp = env_start + np.arange(frames, dtype=np.float64) * delta
-            np.clip(env_ramp, 0.0, 1.0, out=env_ramp)
-            state["env"][i] = float(
-                max(0.0, min(1.0, env_start + frames * delta))
+            env_ramp = self._note_env_ramp(
+                state["voice"][i], frames, bool(state["releasing"][i]),
+                attack_samples, release_samples,
             )
 
             # Velocity gain. Always present in slot state; the

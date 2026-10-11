@@ -9,7 +9,9 @@ so they live in the ``_shared`` mixin: the audio_to_cv envelope-follower engine
 (``_ATC_*``, ``_audio_to_cv_block`` / ``_solve`` / ``_loop_mono`` /
 ``_loop_voice`` -- also used by the dynamics mixin, octaver and vocoder),
 the oscillator waveshaper ``cv_to_frequency`` drives
-(``_osc_waveshape``, in ``_waveshapes``), ``_vocoder_hp_coeffs`` (mid_side's bass-mono
+(``_osc_waveshape``, in ``_waveshapes``) and the oscillator's phase
+engines it runs on (``_osc_mono_phase`` / ``_osc_voice_phase``, in
+``oscillators``), ``_vocoder_hp_coeffs`` (mid_side's bass-mono
 highpass), and the generic ``_finite_mean`` / ``_pow2_clipped`` /
 ``_voice_mean`` / ``_GATE_HIGH``; autopan's clock sync comes from the
 modfx mixin. The static ``_cv_to_hz_mapped`` calls
@@ -370,9 +372,11 @@ class CVRoutingRenderers:
         ``f1`` at CV=1.0. The ``mode`` param picks log-Hz interpolation
         (equal-octave splits, musical default) or linear-Hz (equal-Hz
         splits, deliberately bent). Phase is integrated from that
-        instantaneous frequency via cumsum -- the same trick the
-        Oscillator's freq_cv path uses, just applied to a different
-        CV→Hz function.
+        instantaneous frequency by the Oscillator's own engines --
+        the same numbers its freq_cv path computes, just from a
+        different CV→Hz function -- so it renders the identical
+        sample at any block size (2026-10-12; it used to carry its
+        own per-block accumulator).
 
         Shape-polymorphic on the CV input:
           * No CV cable or 1D ``(F,)`` CV -> mono path, single phase
@@ -485,12 +489,17 @@ class CVRoutingRenderers:
     def _render_cv_to_frequency_mono(
         self, module, frames, cv_in, pos, neg, freq_fallback, waveform
     ):
-        """Mono path -- single phase accumulator, output ``(F,)``.
+        """Mono path -- single phase, output ``(F,)``.
 
-        With no CV patched, the static ``freq`` param drives a vector-
-        ized phase ramp (constant inc, arange). With CV patched, the
-        per-sample CV is mapped to instantaneous Hz and phase is
-        integrated via cumsum.
+        The Oscillator's mono engines (:meth:`_osc_mono_phase`): with no
+        CV patched, the static ``freq`` param drives the constant-
+        frequency engine (origin + the integer sample count since it);
+        with CV patched, the per-sample CV is mapped to instantaneous Hz
+        and integrated by the carried running sum, wrapped only at
+        absolute epoch boundaries. Both are exact across block sizes,
+        and patching or unpatching ``cv`` hands the phase straight
+        across (the old pair skipped a sample one way and repeated one
+        the other).
         """
         state = self._state.setdefault(module.id, {"phase": 0.0})
         # Discard voice-shaped state if it leaked over from a previous
@@ -500,22 +509,13 @@ class CVRoutingRenderers:
             state["phase"] = 0.0
 
         sr = self.sample_rate
-        start_phase = state["phase"]
-
         if cv_in is None:
-            # No CV cable -> static fallback frequency, vectorized ramp.
-            phase_inc = freq_fallback / sr
-            phases = (
-                start_phase + np.arange(frames, dtype=np.float64) * phase_inc
-            ) % 1.0
-            state["phase"] = (start_phase + frames * phase_inc) % 1.0
-            dt = phase_inc
+            # No CV cable -> static fallback frequency.
+            dt = freq_fallback / sr
         else:
             inst_freq = self._cv_to_hz_mapped(cv_in, pos, neg)  # (F,)
-            inst_inc = inst_freq / sr
-            phases = (start_phase + np.cumsum(inst_inc)) % 1.0
-            state["phase"] = float(phases[-1])
-            dt = inst_inc
+            dt = inst_freq / sr
+        phases = self._osc_mono_phase(state, frames, dt)
 
         wave = self._osc_waveshape(phases, waveform, dt=dt)
         return wave.astype(np.float32)
@@ -523,38 +523,29 @@ class CVRoutingRenderers:
     def _render_cv_to_frequency_voice(
         self, module, frames, cv_in, pos, neg, waveform
     ):
-        """Voice-aware path -- V independent phase accumulators.
+        """Voice-aware path -- V independent phases.
 
         ``cv_in`` is ``(V, F)``. Each voice slot integrates its own
-        phase via per-row cumsum. Output is ``(V, F)``. Per-voice
-        phase state persists across blocks so a slot that briefly
-        goes silent (CV=0 -> f0) and comes back doesn't restart from
-        zero phase mid-cycle.
+        phase through the Oscillator's voice engine
+        (:meth:`_osc_voice_phase`: a sequential running sum per row,
+        carried unwrapped across blocks and wrapped only at absolute
+        epoch boundaries), so every voice renders the identical sample
+        at any block size, and a single-voice row is bit-identical to
+        the mono path. Output is ``(V, F)``. Per-voice phase state
+        persists across blocks so a slot that briefly goes silent
+        (CV=0 -> f0) and comes back doesn't restart from zero phase
+        mid-cycle.
 
         Silent slots advance at f0 (since cv=0 maps to f0); downstream
         VCA/ADSR gating silences those voices in practice. Same
         harmless behaviour as the Oscillator's voice path.
         """
-        V = cv_in.shape[0]
         state = self._state.setdefault(module.id, {})
-
-        needs_reinit = (
-            "phase_arr" not in state
-            or state["phase_arr"].shape[0] != V
-        )
-        if needs_reinit:
-            state.clear()
-            state["phase_arr"] = np.zeros(V, dtype=np.float64)
-
-        sr = self.sample_rate
-        start_phase = state["phase_arr"]  # (V,)
-
         inst_freq = self._cv_to_hz_mapped(cv_in, pos, neg)  # (V, F)
-        inst_inc = inst_freq / sr
-        phases = (
-            start_phase[:, None] + np.cumsum(inst_inc, axis=1)
-        ) % 1.0  # (V, F)
-        state["phase_arr"] = phases[:, -1].copy()
+        inst_inc = inst_freq / self.sample_rate
+        # Reinits (state.clear()) if the state is the mono path's or the
+        # voice count changed.
+        phases = self._osc_voice_phase(state, inst_inc)  # (V, F)
 
         wave = self._osc_waveshape(phases, waveform, dt=inst_inc)  # (V, F)
         return wave.astype(np.float32)
