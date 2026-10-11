@@ -417,6 +417,10 @@ ROUTED_SOURCES = {
     "_render_drift": ["rate_cv"],
     "_render_modal": ["pitch_cv"],
     "_render_pluck": ["pitch_cv"],
+    # freeze's pitch_cv went through the door from the start; width_cv
+    # carried its own float64 mean + scrub until 2026-10-11 (the same
+    # arithmetic, so the switch was bit-exact).
+    "_render_freeze": ["pitch_cv", "width_cv"],
 }
 
 

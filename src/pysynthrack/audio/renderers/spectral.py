@@ -890,15 +890,14 @@ class SpectralRenderers:
         lim = self._FREEZE_PITCH_OCT_LIMIT
         ratio = float(2.0 ** min(max(pitch / 12.0 + depth * cv_mean, -lim), lim))
 
-        # --- the stereo field's scale (block mean in float64 -- a float32
-        # mean of a constant CV moves with the block size at the ulp).
-        # Unpatched the mean is 0.0 and ``width`` is the knob, exactly.
+        # --- the stereo field's scale: the block mean through the shared
+        # door (float64 -- a float32 mean of a constant CV moves with the
+        # block size at the ulp -- and non-finite read as 0.0 before the
+        # clamp, since min/max pass NaN). Unpatched the mean is 0.0 and
+        # ``width`` is the knob, exactly.
         wcv = self._input_buffer(patch, buffers, module.id, "width_cv", collapse=False)
         if wcv is not None and wcv.size:
-            wcv_mean = float(np.mean(wcv, dtype=np.float64))
-            if not np.isfinite(wcv_mean):
-                wcv_mean = 0.0        # scrub before the clamp: min/max pass NaN
-            width = min(max(width + w_depth * wcv_mean, 0.0), 1.0)
+            width = min(max(width + w_depth * self._finite_mean(wcv), 0.0), 1.0)
 
         # --- staged captures: each is finished (its first frames made)
         # by its birth, the work spread evenly over the ``delay`` samples
