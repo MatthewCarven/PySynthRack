@@ -8,9 +8,13 @@ keyboard, MIDI input and CV-to-frequency (``_osc_waveshape``,
 ``_waveshape_blep`` / ``_waveshape_wt`` / ``_get_wavetable``, the
 ``WT_*`` mipmap constants) lives in the ``_waveshapes`` mixin and is
 reached through ``self``, as are ``_input_buffer``,
-``_ring_match_voices`` and ``_pow2_clipped`` (``_shared``). The
-oscillator-only ``_osc_carried_phase`` / ``_OSC_EPOCH`` /
-``_osc_pw_increment`` joined this mixin in the endgame. The pulse-width bounds and the FM ratio snap are
+``_ring_match_voices`` and ``_pow2_clipped`` (``_shared``). The phase
+engines ``_osc_mono_phase`` / ``_osc_voice_phase`` /
+``_osc_carried_phase`` / ``_OSC_EPOCH`` live here, and since 2026-10-12
+they are shared: cv_to_frequency (``cv_routing``) and every keyboard /
+MIDI voice (``io``) reach them through ``self``, so the four note
+sources run one set of numbers. ``_osc_pw_increment`` is
+oscillator-only. The pulse-width bounds and the FM ratio snap are
 imported from their ``modules`` source, as the backend did.
 """
 from __future__ import annotations
@@ -507,7 +511,9 @@ class OscillatorRenderers:
         """Mono fast path -- scalar phase, vectorized phase ramp.
 
         Two phase engines, both exact across block sizes (2026-09-24;
-        the organ's 2026-09-22 fix was the model):
+        the organ's 2026-09-22 fix was the model). They live in
+        :meth:`_osc_mono_phase`, shared since 2026-10-12 with
+        cv_to_frequency and every keyboard / MIDI voice:
 
           * no ``freq_cv`` -- constant frequency. The ramp is a phase
             ORIGIN plus the INTEGER count of samples since it,
@@ -551,54 +557,15 @@ class OscillatorRenderers:
             state["phase"] = 0.0
 
         sr = self.sample_rate
-        n_abs = int(state.get("n", 0))
         if freq_cv is None:
             # Fast path: constant frequency, origin + integer count.
-            phase_inc = freq / sr
-            prev_inc = state.get("inc")
-            if prev_inc != phase_inc:
-                # Re-anchor so the origin is the NEXT sample's phase.
-                if "carry" in state:
-                    # Arriving from the CV engine: one step on from the
-                    # last sample it rendered.
-                    origin = (float(state["phase"]) + phase_inc) % 1.0
-                elif prev_inc is None:
-                    origin = 0.0  # fresh state
-                else:
-                    # A new frequency: where the old ramp was heading
-                    # (the organ's re-anchor, expression for expression).
-                    origin = (
-                        state["origin"] + prev_inc * float(state["count"])
-                    ) % 1.0
-                state["origin"] = origin
-                state["count"] = 0
-                state["inc"] = phase_inc
-            state.pop("carry", None)
-            origin = state["origin"]
-            k = float(state["count"]) + np.arange(frames, dtype=np.float64)
-            phases = (origin + phase_inc * k) % 1.0
-            state["count"] += frames
-            if frames:
-                state["phase"] = float(phases[-1])  # the last sample's phase
-            dt = phase_inc
+            dt = freq / sr
         else:
             # Per-sample frequency from CV, integrated sample by sample
             # (a carried sequential sum -- see _osc_carried_phase).
             inst_freq = freq * np.power(2.0, freq_cv.astype(np.float64))
-            inst_inc = inst_freq / sr
-            carry = state.get("carry")
-            if carry is None:
-                # Fresh (0.0) or arriving from the fast engine: carry on
-                # from the last sample it rendered, click-free.
-                carry = float(state["phase"])
-            phases, carry = self._osc_carried_phase(
-                carry, n_abs, inst_inc, self._OSC_EPOCH
-            )
-            state["carry"] = float(carry)
-            state["phase"] = float(phases[-1])
-            state["inc"] = None  # the fast engine re-anchors on return
-            dt = inst_inc
-        state["n"] = n_abs + frames
+            dt = inst_freq / sr
+        phases = self._osc_mono_phase(state, frames, dt)
 
         dpw = None
         if isinstance(pw, np.ndarray):
@@ -644,38 +611,24 @@ class OscillatorRenderers:
         base frequency -- harmless because the per-voice ADSR/VCA
         downstream silences those slots.
 
-        Each voice integrates through :meth:`_osc_carried_phase` (a
+        Each voice integrates through :meth:`_osc_carried_phase` (via
+        :meth:`_osc_voice_phase`, shared with cv_to_frequency) -- a
         sequential running sum carried unwrapped across blocks, wrapped
-        only at absolute epoch boundaries), so every voice renders the
+        only at absolute epoch boundaries -- so every voice renders the
         identical sample at any block size -- held chord, sequence or
         vibrato (2026-09-24; the per-block ``start + cumsum`` wrapped at
         every block end drifted a float32 ulp within ~0.1 s).
         """
         V = freq_cv.shape[0]
         state = self._state.setdefault(module.id, {})
-
-        # Reinit if state belongs to the mono branch or the voice
-        # count changed.
-        needs_reinit = (
-            "phase_arr" not in state
-            or state["phase_arr"].shape[0] != V
-        )
-        if needs_reinit:
-            state.clear()
-            state["phase_arr"] = np.zeros(V, dtype=np.float64)
-            state["carry_arr"] = np.zeros(V, dtype=np.float64)
-            state["n"] = 0
-
         sr = self.sample_rate
 
         # Per-sample per-voice instantaneous frequency from CV.
         inst_freq = freq * np.power(2.0, freq_cv.astype(np.float64))  # (V, F)
         inst_inc = inst_freq / sr  # (V, F)
-        phases, state["carry_arr"] = self._osc_carried_phase(
-            state["carry_arr"], state["n"], inst_inc, self._OSC_EPOCH
-        )  # (V, F)
-        state["phase_arr"] = phases[:, -1].copy()
-        state["n"] += frames
+        # Reinits (state.clear()) if the state is the mono branch's or
+        # the voice count changed.
+        phases = self._osc_voice_phase(state, inst_inc)  # (V, F)
 
         dpw = None
         if isinstance(pw, np.ndarray):
@@ -1367,6 +1320,102 @@ class OscillatorRenderers:
                 carry = carry - np.floor(carry)  # the epoch wrap
             pos = end
         return cum % 1.0, carry
+
+    def _osc_mono_phase(self, state, frames, inc):
+        """One block of a single phase, by the oscillator's two engines.
+
+        The mono oscillator, cv_to_frequency's mono path and every
+        keyboard / MIDI voice slot (one ``state`` dict per slot) run
+        their phase through here, so they share one set of numbers and
+        one block-size-exactness argument. ``inc`` (cycles per sample)
+        picks the engine:
+
+          * a scalar -- constant frequency. ``(origin + inc * k) % 1``
+            over the INTEGER count ``k`` of samples since the origin,
+            re-anchored only when the increment changes (a knob move, a
+            pitch-bend step) at the phase the old ramp was heading for,
+            so a held note never accumulates and a pitch change is
+            continuous. Fresh state's first sample is phase 0.0.
+          * an ``(F,)`` array -- per-sample frequency, integrated by
+            :meth:`_osc_carried_phase` (a sequential running sum carried
+            unwrapped across blocks, wrapped only at absolute epoch
+            boundaries). Fresh state's first sample is ``inc[0]``.
+
+        ``state["phase"]`` is the phase of the last sample rendered
+        (what a switch between the engines, or a reader, picks up);
+        beside it live the engines' own ``origin`` / ``count`` / ``inc``
+        and ``carry`` + ``n`` (the absolute sample count the epochs are
+        keyed to). Switching engine carries on one step from that last
+        sample, so it is seamless. Returns the ``(F,)`` wrapped phases.
+        """
+        n_abs = int(state.get("n", 0))
+        if np.ndim(inc) == 0:
+            phase_inc = inc
+            prev_inc = state.get("inc")
+            if prev_inc != phase_inc:
+                # Re-anchor so the origin is the NEXT sample's phase.
+                if "carry" in state:
+                    # Arriving from the CV engine: one step on from the
+                    # last sample it rendered.
+                    origin = (float(state["phase"]) + phase_inc) % 1.0
+                elif prev_inc is None:
+                    origin = 0.0  # fresh state
+                else:
+                    # A new frequency: where the old ramp was heading
+                    # (the organ's re-anchor, expression for expression).
+                    origin = (
+                        state["origin"] + prev_inc * float(state["count"])
+                    ) % 1.0
+                state["origin"] = origin
+                state["count"] = 0
+                state["inc"] = phase_inc
+            state.pop("carry", None)
+            origin = state["origin"]
+            k = float(state["count"]) + np.arange(frames, dtype=np.float64)
+            phases = (origin + phase_inc * k) % 1.0
+            state["count"] += frames
+            if frames:
+                state["phase"] = float(phases[-1])  # the last sample's phase
+        else:
+            carry = state.get("carry")
+            if carry is None:
+                # Fresh (0.0) or arriving from the constant engine: carry
+                # on from the last sample it rendered, click-free.
+                carry = float(state.get("phase", 0.0))
+            phases, carry = self._osc_carried_phase(
+                carry, n_abs, inc, self._OSC_EPOCH
+            )
+            state["carry"] = float(carry)
+            state["phase"] = float(phases[-1])
+            state["inc"] = None  # the constant engine re-anchors on return
+        state["n"] = n_abs + frames
+        return phases
+
+    def _osc_voice_phase(self, state, inc):
+        """One block of V independent phases: the oscillator's voice engine.
+
+        ``inc`` is ``(V, F)`` per-sample increments; each row integrates
+        through :meth:`_osc_carried_phase`, carried unwrapped across
+        blocks. A state that is not this shape (fresh, the mono path's,
+        or another voice count) is cleared and every voice restarts at
+        phase 0, so a fresh voice's first sample is ``inc[v, 0]`` --
+        exactly the mono CV engine's, which keeps a single voice row
+        bit-identical to mono. Shared by the oscillator's and
+        cv_to_frequency's voice paths. Returns the ``(V, F)`` wrapped
+        phases; ``state["phase_arr"]`` is each voice's last sample.
+        """
+        V = inc.shape[0]
+        if "phase_arr" not in state or state["phase_arr"].shape[0] != V:
+            state.clear()
+            state["phase_arr"] = np.zeros(V, dtype=np.float64)
+            state["carry_arr"] = np.zeros(V, dtype=np.float64)
+            state["n"] = 0
+        phases, state["carry_arr"] = self._osc_carried_phase(
+            state["carry_arr"], state["n"], inc, self._OSC_EPOCH
+        )
+        state["phase_arr"] = phases[:, -1].copy()
+        state["n"] += inc.shape[-1]
+        return phases
 
     @staticmethod
     def _osc_pw_increment(state, pw):
