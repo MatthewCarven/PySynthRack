@@ -57,3 +57,23 @@ def test_a_new_example_is_reported_as_new(tmp_path):
     (tmp_path / "a").mkdir()
     _render(tmp_path / "b")
     assert "| hello_sine | NEW |" in ra.compare(tmp_path / "a", tmp_path / "b")
+
+
+def test_an_audit_never_records_into_the_music_folder(tmp_path, monkeypatch):
+    """record_a_take is armed with a relative name, which records into
+    <Music>/PySynthRack. The 2026-10-11 batch's audits put three takes
+    there before render() learnt to redirect them next to the renders,
+    and to put the caller's setting back afterwards."""
+    import os
+    import time
+
+    elsewhere = tmp_path / "callers_recordings"
+    monkeypatch.setenv(ra._RECORDINGS_ENV, str(elsewhere))
+    _render(tmp_path / "out", stem="record_a_take")
+    take = tmp_path / "out" / "_recordings" / "take_01.wav"
+    deadline = time.time() + 5.0  # the writer thread closes it on its own
+    while not take.exists() and time.time() < deadline:
+        time.sleep(0.05)
+    assert take.exists()
+    assert not elsewhere.exists()
+    assert os.environ[ra._RECORDINGS_ENV] == str(elsewhere)  # restored

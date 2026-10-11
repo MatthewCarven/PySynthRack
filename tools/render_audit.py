@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -56,6 +57,8 @@ import numpy as np
 
 SR = 44100
 SEED = 12345
+# audio/recordings.py's override; see render().
+_RECORDINGS_ENV = "PYSYNTHRACK_RECORDINGS_DIR"
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -76,6 +79,27 @@ def render(repo: Path, out_dir: Path, seconds: float = 8.0, block: int = 512,
     from pysynthrack.io_patch import load_patch
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    # The disk_writer examples (record_a_take, mic_karaoke_recorder) are
+    # armed with relative names, which since 2026-10-10 record into the
+    # user's <Music>/PySynthRack. An audit must never write there: send
+    # the takes next to the renders (tests/conftest.py does the same for
+    # the suite). The name is spelled out rather than imported, because
+    # ``repo`` may be an older checkout that predates audio/recordings.py.
+    previous = os.environ.get(_RECORDINGS_ENV)
+    os.environ[_RECORDINGS_ENV] = str(out_dir / "_recordings")
+    try:
+        return _render_examples(repo, out_dir, seconds, block, only, quiet,
+                                NumpyBackend, load_patch)
+    finally:
+        if previous is None:
+            os.environ.pop(_RECORDINGS_ENV, None)
+        else:
+            os.environ[_RECORDINGS_ENV] = previous
+
+
+def _render_examples(repo, out_dir, seconds, block, only, quiet,
+                     NumpyBackend, load_patch) -> int:
+    """:func:`render`'s loop, run with the recordings folder redirected."""
     n_blocks = max(1, int(seconds * SR / block))
     errors = 0
     t_all = time.time()
