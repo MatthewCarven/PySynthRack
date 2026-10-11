@@ -197,6 +197,9 @@ CASES = [
     _Case("drift", "drift", ["rate_cv"], {}),
     _Case("organ", "organ", ["pitch_cv"], {"gate": _gate()}),
     _Case("modal", "modal", ["pitch_cv"], {"excite": _impulse()}),
+    # The pitch is read twice: AT the trigger edge (the hit's own pitch)
+    # and as the block mean while it rings. Both meet the one power.
+    _Case("pluck", "pluck", ["pitch_cv"], {"trigger": _pulse()}),
     _Case("function_generator_mono", "function_generator",
           ["rate_cv", "rise_cv", "fall_cv"], {"trig": _pulse()},
           params={"rise": 0.02, "fall": 0.05}),

@@ -797,7 +797,11 @@ class PhysicalRenderers:
         a1 = damping / 2.0
 
         def set_coeffs(v: int, cv_value: float) -> None:
-            f0 = self._PLUCK_C4 * (2.0 ** float(cv_value))
+            # The octave door: clipped before the power, so an absurd
+            # pitch CV (a constant at 1e6) can't raise OverflowError out
+            # of the audio thread, and a non-finite one reads as C4 (no
+            # modulation). Bit-exact with the bare power for |cv| <= 64.
+            f0 = self._PLUCK_C4 * self._pow2_clipped(cv_value)
             f0 = min(sr / 4.0, max(self._PLUCK_MIN_F0, f0))
             n_target = sr / f0
             n_eff = n_target - damping / 2.0  # compensate the filter delay
