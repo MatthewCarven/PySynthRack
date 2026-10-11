@@ -31,6 +31,110 @@ _LFO_TYPE = {
     "ramp": 0,       # alias for saw_down — not exposed in v0.1
 }
 
+# The sinks pyo builds -- in ``_finalize_speaker_output``, once their input
+# is known -- rather than in ``_build_module``.
+_SPEAKER_TYPES = ("speaker_output", "left_speaker_output", "right_speaker_output")
+
+# Every type pyo does not build and announces as silent with the generic
+# line (keyboard, filter, adsr, vca, lfo, mixer and midi_input print their
+# own). The numpy backend is the real implementation of all of them.
+# tests/test_pyo_stubs.py walks the registry: a new module type that is
+# neither built nor listed here fails it, because returning None without a
+# word is a patch that goes quiet under pyo and never says why.
+_SILENT_STUB_TYPES = (
+    "combiner",
+    "cv_combiner",
+    "cv_keyboard",
+    "crossover",
+    "disk_writer",
+    "audio_to_cv",
+    "cv_to_audio",
+    "cv_to_frequency",
+    "fm_op",
+    "schmitt",
+    "constant",
+    "cv_scale",
+    "cv_offset",
+    "sample_hold",
+    "noise",
+    "parametric_eq",
+    "sweep_eq",
+    "motion_eq",
+    "tilt_eq",
+    "meter",
+    "ad_envelope",
+    "chorus",
+    "flanger",
+    "phaser",
+    "compressor",
+    "limiter",
+    "noise_gate",
+    "transient_shaper",
+    "delay",
+    "reverb",
+    "ring_mod",
+    "freq_shifter",
+    "bitcrusher",
+    "tape",
+    "convolver",
+    "loudness",
+    "distortion",
+    "waveshaper",
+    "stereo_speaker_output",
+    "specific_stereo_speaker_output",
+    "buffered_specific_speaker_output",
+    "warping_buffered_speaker_output",
+    "resampler",
+    "pitch_shifter",
+    "cv_gates",
+    "clock",
+    "sequencer",
+    "fader_seq",
+    "vocoder",
+    "key_trigger",
+    "slew",
+    "quantizer",
+    "shift_random",
+    "scope",
+    "pluck",
+    "modal",
+    "kick_drum",
+    "snare_drum",
+    "hat_drum",
+    "euclidean",
+    "burst",
+    "bernoulli_gate",
+    "clock_divider",
+    "possibility_seq",
+    "possibility_selector",
+    "arpeggiator",
+    "chord",
+    "logic",
+    "mid_side",
+    "octaver",
+    "organ",
+    "chaos",
+    "matrix_mixer",
+    "vinyl",
+    "supersaw",
+    "wavetable_morph",
+    "sampler",
+    "rotary",
+    "granular",
+    "bowed",
+    "wind",
+    "drift",
+    "cv_math",
+    "cv_recorder",
+    "vowel",
+    "autopan",
+    # caught by the registry walk on 2026-10-11: silent, but unannounced
+    "freeze",
+    "function_generator",
+    "file_player",
+    "mic_input",
+)
+
 
 class PyoBackend(AudioBackend):
     """pyo-backed engine. Preferred when pyo imports cleanly."""
@@ -142,9 +246,7 @@ class PyoBackend(AudioBackend):
 
         # Third pass — speaker outputs need a final ``.out()`` call.
         for module in patch.modules.values():
-            if module.TYPE in (
-                "speaker_output", "left_speaker_output", "right_speaker_output"
-            ):
+            if module.TYPE in _SPEAKER_TYPES:
                 self._finalize_speaker_output(module, patch)
 
         if was_running:
@@ -155,9 +257,7 @@ class PyoBackend(AudioBackend):
     def _build_module(self, module) -> Any | None:
         if module.TYPE == "oscillator":
             return self._build_oscillator(module)
-        if module.TYPE in (
-            "speaker_output", "left_speaker_output", "right_speaker_output"
-        ):
+        if module.TYPE in _SPEAKER_TYPES:
             # Built in ``_finalize_speaker_output`` after its input is known.
             return None
         if module.TYPE == "keyboard":
@@ -219,94 +319,7 @@ class PyoBackend(AudioBackend):
                 "PYSYNTHRACK_BACKEND=numpy.",
             )
             return None
-        if module.TYPE in (
-            "combiner",
-            "cv_combiner",
-            "cv_keyboard",
-            "crossover",
-            "disk_writer",
-            "audio_to_cv",
-            "cv_to_audio",
-            "cv_to_frequency",
-            "fm_op",
-            "schmitt",
-            "constant",
-            "cv_scale",
-            "cv_offset",
-            "sample_hold",
-            "noise",
-            "parametric_eq",
-            "sweep_eq",
-            "motion_eq",
-            "tilt_eq",
-            "meter",
-            "ad_envelope",
-            "chorus",
-            "flanger",
-            "phaser",
-            "compressor",
-            "limiter",
-            "noise_gate",
-            "transient_shaper",
-            "delay",
-            "reverb",
-            "ring_mod",
-            "freq_shifter",
-            "bitcrusher",
-            "tape",
-            "convolver",
-            "loudness",
-            "distortion",
-            "waveshaper",
-            "stereo_speaker_output",
-            "specific_stereo_speaker_output",
-            "buffered_specific_speaker_output",
-            "warping_buffered_speaker_output",
-            "resampler",
-            "pitch_shifter",
-            "cv_gates",
-            "clock",
-            "sequencer",
-            "fader_seq",
-            "vocoder",
-            "key_trigger",
-            "slew",
-            "quantizer",
-            "shift_random",
-            "scope",
-            "pluck",
-            "modal",
-            "kick_drum",
-            "snare_drum",
-            "hat_drum",
-            "euclidean",
-            "burst",
-            "bernoulli_gate",
-            "clock_divider",
-            "possibility_seq",
-            "possibility_selector",
-            "arpeggiator",
-            "chord",
-            "logic",
-            "mid_side",
-            "octaver",
-            "organ",
-            "chaos",
-            "matrix_mixer",
-            "vinyl",
-            "supersaw",
-            "wavetable_morph",
-            "sampler",
-            "rotary",
-            "granular",
-            "bowed",
-            "wind",
-            "drift",
-            "cv_math",
-            "cv_recorder",
-            "vowel",
-            "autopan",
-        ):
+        if module.TYPE in _SILENT_STUB_TYPES:
             # v0.3+ routing / bridge / CV-oscillator modules. The numpy
             # backend is the real implementation; pyo support arrives
             # when the rest of the v0.2/v0.3/v0.4 graph does. Silent
@@ -351,9 +364,7 @@ class PyoBackend(AudioBackend):
         dst_module = patch.modules.get(cable.dst_module_id)
         if dst_module is None:
             return
-        if dst_module.TYPE in (
-            "speaker_output", "left_speaker_output", "right_speaker_output"
-        ):
+        if dst_module.TYPE in _SPEAKER_TYPES:
             # Wiring for speakers happens in ``_finalize_speaker_output``.
             return
         # Future module types (filter, mixer) will set their pyo input here.
@@ -411,9 +422,7 @@ class PyoBackend(AudioBackend):
             elif name == "waveform":
                 # Swapping waveform changes the pyo class — rebuild.
                 self.compile(self._patch)
-        elif module.TYPE in (
-            "speaker_output", "left_speaker_output", "right_speaker_output"
-        ):
+        elif module.TYPE in _SPEAKER_TYPES:
             if name == "gain":
                 if hasattr(obj, "setMul"):
                     obj.setMul(float(value))

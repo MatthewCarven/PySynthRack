@@ -53,8 +53,8 @@ Paste the preamble below plus one module spec as the task.
 >    threads, devices) gets its lifecycle in `NumpyBackend.compile()` /
 >    `stop()` (the `file_player` / `convolver` / `sampler` / `midi_input`
 >    blocks are the pattern).
-> 3. **pyo** is parked: add the TYPE to the silent-stub tuple in
->    `PyoBackend._build_module` (`audio/pyo_backend.py`).
+> 3. **pyo** is parked: add the TYPE to the `_SILENT_STUB_TYPES` tuple in
+>    `audio/pyo_backend.py` (`test_pyo_stubs` fails until you do).
 > 4. **UI**: without a block for your TYPE in `ui/app.py`
 >    `_add_param_widget`, a number gets a generic unbounded drag and a
 >    string a text box. Add one: bounded widgets, units in the label,
@@ -83,10 +83,10 @@ Paste the preamble below plus one module spec as the task.
 > counts; this spec moved to the appendix below with its ship line; the
 > registry-wide tripwires green (`test_render_dispatch`,
 > `test_docs_coverage`, `test_module_categories`, `test_mode_combos`,
-> `test_voice_collapse`, `test_ui_glyphs`, `test_examples`); and the full
-> suite green (`pytest -q`, ~5.4k tests). Update WORKLOG.md and TODO.md
-> in the same commit, unless you are one of several parallel agents, in
-> which case leave both to the coordinator.
+> `test_voice_collapse`, `test_ui_glyphs`, `test_pyo_stubs`,
+> `test_examples`); and the full suite green (`pytest -q`, ~5.4k tests).
+> Update WORKLOG.md and TODO.md in the same commit, unless you are one of
+> several parallel agents, in which case leave both to the coordinator.
 
 ## Index
 
