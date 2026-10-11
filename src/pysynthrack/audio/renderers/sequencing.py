@@ -57,11 +57,15 @@ class SequencingRenderers:
     def _render_clock(self, module, frames: int, buffers=None, patch=None) -> np.ndarray:
         """Tempo-driven gate pulse train, fully vectorized.
 
-        Pulse frequency is ``bpm / 60 * division`` Hz. A float64 phase
-        accumulator carries across blocks so pulses stay phase-continuous
-        (no drift, no seam at block boundaries); the gate is high for the
-        first ``pulse_width`` fraction of each unit phase period. Returns a
-        mono ``(frames,)`` gate buffer.
+        Pulse frequency is ``bpm / 60 * division`` Hz. The phase is an
+        anchor plus an integer sample count, held as a numerator over
+        ``60 * sample_rate`` (see the comment at ``num``/``den`` below):
+        phase-continuous, no drift, no seam at block boundaries, and the
+        same arithmetic at every block size (2026-10-12; it was a float
+        carried block to block, which moved whole-sample-period edges by
+        one sample between block sizes -- the ``chorus_lush`` finding).
+        The gate is high for the first ``pulse_width`` fraction of each
+        unit phase period. Returns a mono ``(frames,)`` gate buffer.
 
         The phase is evaluated at samples 1..frames of each segment, so a
         fresh clock at phase 0 emits a rising edge on its very first
@@ -104,17 +108,16 @@ class SequencingRenderers:
         ``swing`` of a period -- the clock_divider's convention (a
         fraction of the period, the pulse keeps its width). It is a phase
         offset on the ODD periods: the parity of each sample's period is
-        ``floor(unwrapped phase)`` plus a carried parity (the integer part
-        is lost when the phase wraps at the block end, so the parity is
-        state of its own, reset to 0 with every restart edge -- the pulse
-        on a reset sample is an even one), and on an odd period the gate
+        the laps since the anchor plus the parity the anchor sits in
+        (state, reset to 0 with every restart edge -- the pulse on a
+        reset sample is an even one), and on an odd period the gate
         is ``swing <= frac < swing + pw`` instead of ``frac < pw``. Even
         periods use the very same ``frac`` values as the straight clock,
         so the even pulses are bit-identical to it, sample for sample; a
         fraction of the phase is a fraction of the CURRENT period, so
         ``bpm_cv`` swings with the tempo for free. The ceiling: a sample
         is the last of its period when the next one's ``frac`` wraps
-        (the next block's first sample is ``mod(end_phase + inc, 1)``,
+        (the next block's first sample is the same anchor's next count,
         computed here exactly as that block will), and an odd pulse is
         forced low there -- cut one sample before the next even edge --
         so a late pulse can never swallow the downbeat; past ``swing + pw
@@ -142,11 +145,11 @@ class SequencingRenderers:
         even period start, so a reset latches the current value too.
 
         Bit-exactness at default is by construction: with no edges the
-        block is one segment, ``np.mod(phase0 + inc * arange(1, F + 1),
-        1)`` and ``np.mod(phase0 + inc * F, 1)`` -- the pre-love-pass
-        code, operation for operation. A ``run`` cable that is high from
-        sample 0 is one edge there, and phase 0 from sample 0 IS the fresh
-        clock, so that too is bit-exact (both pinned in tests/test_clock.py).
+        block is one segment of the running anchor's count, and a
+        ``run`` cable that is high from sample 0 is one edge there --
+        phase 0 from sample 0 IS the fresh clock, the same anchor and
+        the same counts, so that too is bit-exact (both pinned in
+        tests/test_clock.py).
         At ``swing`` 0 with ``swing_cv`` unpatched the odd-period branch
         is never built and the gate is the same ``frac < pw`` -- the
         parity bookkeeping is one floor per segment on the way to state
@@ -202,12 +205,52 @@ class SequencingRenderers:
             expo = max(-self._BPM_CV_EXP_LIMIT, min(self._BPM_CV_EXP_LIMIT, expo))
             bpm = bpm * 2.0 ** expo
 
-        freq = bpm / 60.0 * division  # pulses per second
-        inc = freq / self.sample_rate
+        # The phase as a fraction: ``num`` / ``den`` cycles per sample
+        # (``bpm / 60 * division / sample_rate`` with the divisions
+        # deferred), held as a NUMERATOR keyed to an integer sample count
+        # since an anchor -- never a float carried block by block. The old
+        # ``phase0 + inc * (1..F)``, re-wrapped at every block end, took a
+        # different rounding path per partition, and wherever the period
+        # is a whole number of samples (84 BPM x 2 = 15750, 120 x 1 =
+        # 22050, every second edge at 120 x 4) the crossing sits exactly
+        # ON a sample, so that rounding decided which side: the same
+        # patch's edges moved by one sample between block sizes, and a
+        # sequencer downstream changed note a sample apart (the
+        # ``chorus_lush`` finding). Now sample ``k`` of a run is
+        # ``num0 + k * num`` from the exact integer ``k``, split by
+        # ``np.divmod`` against ``den`` (the remainder is exact): the same
+        # arithmetic at any block size, and at an integer tempo
+        # (``bpm * division`` a whole number, the common case) every term
+        # is an exact integer, so each edge lands on the sample the tempo
+        # puts it on. A tempo change (the knob, or ``bpm_cv``'s block
+        # mean) re-anchors: the position reached is folded into ``num0``
+        # (the remainder, in [0, den)) and the parity, and the count
+        # restarts -- continuous, as before; a constant tempo never
+        # re-anchors. The chorus LFO's anchor idiom, in integer units.
+        num = bpm * division
+        den = 60.0 * float(self.sample_rate)
 
         st = self._state.setdefault(module.id, {"phase": 0.0})
-        phase0 = float(st.get("phase", 0.0))
-        parity0 = int(st.get("parity", 0)) & 1
+        if "num0" not in st:
+            # A fresh clock (phase 0, an even period), or state written
+            # before the anchor existed: adopt its carried phase.
+            st["num0"] = float(st.get("phase", 0.0)) * den
+            st["count"] = 0
+            st["par0"] = int(st.get("parity", 0)) & 1
+            st["num"] = num
+        if st["num"] != num:
+            lap, rem = np.divmod(st["num0"] + float(st["count"]) * st["num"], den)
+            if not np.isfinite(rem):
+                # An absurd tempo (inf from a hand-edited patch) left no
+                # position to continue from: restart rather than stay NaN.
+                lap, rem = 0.0, 0.0
+            st["num0"] = float(rem)
+            st["par0"] = (int(st["par0"]) + int(lap)) & 1
+            st["count"] = 0
+            st["num"] = num
+        num0 = float(st["num0"])
+        count = int(st["count"])
+        par0 = int(st["par0"])
         # The swing in force at the block's first sample. A fresh clock
         # has no history, so it starts already holding this block's
         # value (nothing to interpolate from, and the very first period
@@ -248,52 +291,60 @@ class SequencingRenderers:
             # block's swing value.
             even_start = np.zeros(frames, dtype=bool)
         bounds = [0, *(int(e) for e in edges), frames]
-        seg_start = phase0
-        parity = parity0
-        end_phase = phase0
-        end_parity = parity0
         for seg_i, (a, b) in enumerate(zip(bounds[:-1], bounds[1:])):
+            if seg_i:
+                # Every segment after the first begins at a restart edge:
+                # a fresh clock -- a new anchor at phase 0, count 0, and
+                # the pulse there is an even one.
+                num0, count, par0 = 0.0, 0, 0
             n = b - a
             if running is None:
                 cnt = ramp[:n]
                 adv = n
             else:
                 cnt = np.cumsum(running[a:b], dtype=np.float64)
-                adv = float(cnt[-1]) if n else 0.0
-            unwrapped = seg_start + inc * cnt
-            frac[a:b] = np.mod(unwrapped, 1.0)
-            end_unwrapped = seg_start + inc * adv
-            end_phase = np.mod(end_unwrapped, 1.0)
-            # The period's parity: laps completed since the segment
-            # start, plus the parity the segment started in. ``frac`` is
-            # ``unwrapped - floor(unwrapped)`` exactly, so this floor and
-            # that mod agree on which side of the crossing a sample sits.
-            end_parity = (parity + int(np.floor(end_unwrapped))) & 1
+                adv = int(cnt[-1]) if n else 0
+            # Laps since the anchor and the remainder, from the exact
+            # integer count (``count + cnt`` is integer-valued float64).
+            lap, rem = np.divmod(num0 + (float(count) + cnt) * num, den)
+            frac[a:b] = rem / den
             if swung and n:
-                lap = np.floor(unwrapped).astype(np.int64)
-                odd[a:b] = ((lap + parity) & 1).astype(bool)
+                lap_i = lap.astype(np.int64)
+                # The period's parity: laps since the anchor plus the
+                # parity the anchor sits in. ``lap`` and ``rem`` come
+                # from one divmod, so they agree on which side of the
+                # crossing a sample sits.
+                odd[a:b] = ((lap_i + par0) & 1).astype(bool)
                 # Last-of-period: the next sample's frac wraps below this
                 # one's. For the segment's final sample that next frac is
-                # what the following block computes first (``end_phase +
-                # inc * 1``), evaluated here the same way. A held sample
-                # repeats its predecessor's frac, so it is never a wrap.
-                nxt = np.mod(end_phase + inc, 1.0)
+                # what the following block computes first (sample
+                # ``count + adv + 1`` of this same anchor), evaluated
+                # here the same way. A held sample repeats its
+                # predecessor's frac, so it is never a wrap.
+                _nl, nrem = np.divmod(num0 + float(count + adv + 1) * num, den)
                 last[a:b - 1] = frac[a + 1:b] < frac[a:b - 1]
-                last[b - 1] = nxt < frac[b - 1]
+                last[b - 1] = (nrem / den) < frac[b - 1]
                 # Period starts: a lap the previous sample had not yet
                 # completed. The segment's own first sample starts one
-                # when the lap is already past 0 (the phase wrapped
-                # right at the seam) -- or, in a restart segment, by
-                # decree: a reset IS a fresh even period.
+                # when its lap is past the previous sample's (the phase
+                # wrapped right at the seam) -- or, in a restart segment,
+                # by decree: a reset IS a fresh even period.
                 starts = np.empty(n, dtype=bool)
-                starts[0] = True if seg_i else bool(lap[0] > 0)
+                if seg_i:
+                    starts[0] = True
+                else:
+                    plap, _pr = np.divmod(num0 + float(count) * num, den)
+                    starts[0] = bool(lap_i[0] != int(plap))
                 if n > 1:
-                    starts[1:] = lap[1:] != lap[:-1]
+                    starts[1:] = lap_i[1:] != lap_i[:-1]
                 even_start[a:b] = starts & ~odd[a:b]
-            # Every segment after the first begins at a restart edge: a
-            # fresh clock, phase 0, and the pulse there is an even one.
-            seg_start = 0.0
-            parity = 0
+            count += adv
+        # Where the block ends: the remainder and parity at the last
+        # anchor's final count (the old carried ``phase``/``parity``,
+        # kept in state for readers; the anchor is the source of truth).
+        end_lap, end_rem = np.divmod(num0 + float(count) * num, den)
+        end_phase = float(end_rem) / den
+        end_parity = (par0 + int(end_lap)) & 1
 
         gate = frac < pw
         held_end = swing
@@ -316,6 +367,9 @@ class SequencingRenderers:
             gate = np.where(odd, late, gate)
         if running is not None:
             gate &= running
+        st["num0"] = float(num0)
+        st["count"] = int(count)
+        st["par0"] = int(par0)
         st["phase"] = float(end_phase)
         st["parity"] = int(end_parity)
         st["swing_held"] = float(held_end)
