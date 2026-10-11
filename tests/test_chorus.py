@@ -459,7 +459,7 @@ class TestRateCVPerSample:
         b = NumpyBackend(sample_rate=SR, block_size=F)
         st = {}
         inc = 0.6 / SR
-        d = b._chorus_rate_cv_phase(st, np.zeros(F, np.float32), 0.6, inc, 1.0, F)
+        d = b._mod_rate_cv_phase(st, np.zeros(F, np.float32), 0.6, inc, 1.0, F)
         assert d.dtype == np.float64
         assert np.array_equal(d, np.zeros(F))
         assert st["rc_acc"] == 0
@@ -468,14 +468,14 @@ class TestRateCVPerSample:
         # Sample n sees the sum of the deviations BEFORE it, on a grid of
         # 2**48 per cycle, wrapped by a mask -- including a negative sum.
         b = NumpyBackend(sample_rate=SR, block_size=F)
-        bits = NumpyBackend._CHORUS_PH_BITS
+        bits = NumpyBackend._MOD_PH_BITS
         mask = (1 << bits) - 1
         for cv_value in (3.0, -3.0):
             st = {}
             knob = 2.0
             inc = knob / SR
             cv = np.full(F, cv_value, dtype=np.float32)
-            outs = [b._chorus_rate_cv_phase(st, cv, knob, inc, 1.0, F)
+            outs = [b._mod_rate_cv_phase(st, cv, knob, inc, 1.0, F)
                     for _ in range(200)]
             d = np.concatenate(outs)
             q = int(np.rint((knob * 2.0 ** cv_value / SR - inc) * float(1 << bits)))

@@ -44,8 +44,9 @@ is. While the lock holds, ``rate`` and ``rate_cv`` step aside entirely —
 the sweep length is the cable's, and the phase is keyed to the absolute
 sample count rather than accumulated, so a synced sweep renders
 bit-identically at any block size. So, since 2026-09-24, does a
-free-running one (a sample count since the last rate change); only a
-MOVING ``rate_cv``, read once per block by design, depends on it.
+free-running one (a sample count since the last rate change), and since
+2026-10-12 a modulated one too: ``rate_cv`` is read per sample, no
+longer once per block.
 
 Controls:
   * ``rate`` — LFO sweep speed in Hz. Slow (~0.3 Hz) is a long, breathing
@@ -70,7 +71,10 @@ Controls:
 
 A ``rate_cv`` input modulates the LFO rate (1 V/oct, scaled by
 ``cv_depth`` in octaves per unit), so an envelope or a second LFO can
-drive the sweep — an auto-phaser that speeds up and slows down.
+drive the sweep — an auto-phaser that speeds up and slows down. It is
+read per sample and integrated into the sweep, so the rate glides rather
+than stepping once per block, and the render is the same at any block
+size (since 2026-10-12; the chorus's since 2026-09-24).
 
 **The manual jack.** ``center`` is the phaser's manual knob — where the
 notches sit before the LFO moves them — and ``manual_cv`` is that knob as

@@ -112,9 +112,9 @@ The full map:
 | `motion_eq.band{i}_gain_cv` | `6.0` (shared, `gain_cv_depth`) | dB | `gain_i + d·mean cv` (clamped ±24) |
 | `motion_eq.band{i}_q_cv` | `1.0` (shared, `q_cv_depth`) | Q doublings | `q_i · 2^(d·mean cv)` (clipped 0.1…20) |
 | `chorus.rate_cv` | `1.0` | octaves | `rate · 2^(d·cv[n])`, **per sample** (since 2026-09-24; it was a block mean), clamped 0.01…20 Hz and integrated into the sweep's phase, so a modulated rate is continuous and bit-exact across block sizes; a zero CV is bit-identical to an unpatched jack; a non-finite sample reads as 0; mono (a `(V, F)` source is summed) |
-| `flanger.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
+| `flanger.rate_cv` | `1.0` | octaves | `rate · 2^(d·cv[n])`, **per sample** (since 2026-10-12; it was a block mean), clamped 0.01…20 Hz and integrated into the sweep's phase the chorus's way, so a modulated rate is continuous and bit-exact across block sizes; a zero CV is bit-identical to an unpatched jack; a non-finite sample reads as 0; steps aside while the `clock` lock holds; mono (a `(V, F)` source is summed) |
 | `flanger.manual_cv` | `1.0` (`manual_depth`) | octaves | `manual · 2^(d·cv[n])`, **per sample**, clamped 0.1…10 ms; in through-zero mode it moves the reference tap too, so the crossing travels; mono (a `(V, F)` source is summed) |
-| `phaser.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)` |
+| `phaser.rate_cv` | `1.0` | octaves | `rate · 2^(d·cv[n])`, **per sample** (since 2026-10-12; it was a block mean), clamped 0.01…20 Hz and integrated into the sweep's phase the chorus's way, so a modulated rate is continuous and bit-exact across block sizes; a zero CV is bit-identical to an unpatched jack; a non-finite sample reads as 0; steps aside while the `clock` lock holds; mono (a `(V, F)` source is summed) |
 | `autopan.rate_cv` | `1.0` | octaves | `rate · 2^(d·mean cv)`, re-read per block; steps aside while the `clock` lock holds |
 | `autopan.pan_cv` | — (1:1) | pan units | `pan + cv[n] + depth·lfo`, **per sample**, clamped ±1; a `(V, F)` source is averaged; a non-finite sample reads 0 |
 | `phaser.manual_cv` | `1.0` (`manual_depth`) | octaves | `center · 2^(d·cv[n])`, **per sample**, clamped 100…6000 Hz; mono (a `(V, F)` source is summed) |
@@ -4016,7 +4016,7 @@ offset.
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to flange (voice sources summed to mono). Unpatched → silence. |
-| `rate_cv` | in | cv | Modulates the LFO rate (1 V/oct × `cv_depth`). Optional. |
+| `rate_cv` | in | cv | Modulates the LFO rate **per sample** (1 V/oct × `cv_depth`), integrated into the sweep. Optional. |
 | `manual_cv` | in | cv | Moves the centre delay **per sample** (1 V/oct × `manual_depth`), clamped to the knob's 0.1…10 ms. Voice sources summed to mono. Optional. |
 | `clock` | in | gate | Tempo-syncs the sweep: one full sweep every `division` ticks. Optional — unpatched, `rate` rules. |
 | `out_l` | out | audio | Left channel (dry + swept comb). |
@@ -4044,7 +4044,7 @@ flanger's feedback makes each output sample depend on one just written, so
 the comb runs **per-sample** (the delay's short-time path) — but the LFO
 phase and ring state carry across blocks, so the render is still exactly
 **block-size independent**: bit-identical at 64 / 128 / 512 / 1000 over
-four seconds with feedback, `spread`, `manual_cv`, a steady `rate_cv` and
+four seconds with feedback, `spread`, `manual_cv`, a moving `rate_cv` and
 through-zero all live (2026-09-24 — before that it was only nearly so: the
 taps formed `index − delay`, which rounds at the index's magnitude, the
 sweep carried a float phase, and the line was `12 ms + block` long, so at
@@ -4078,9 +4078,16 @@ accumulator, which makes a *synced* sweep **exactly** bit-identical at 64
 and 512. Since 2026-09-24 the free-running sweep is exact too: it counts
 samples since the last rate change instead of carrying a float phase (the
 accumulator used to drift about 1e-10 (phaser) / 3e-8 (flanger) over
-three seconds), re-anchoring only when the rate moves — so a moving
-`rate_cv`, which is read once per block by design, is the one input that
-still depends on the block size; a steady one does not.
+three seconds), re-anchoring only when the knob moves. And since
+2026-10-12 a **modulated** sweep is exact too: `rate_cv` is read **per
+sample** (it was a block mean, which stepped the rate once a block and
+was the one input that still depended on the block size). The knob's
+sweep runs exactly as above and the CV's share — the instantaneous rate
+minus the knob's — is summed on the chorus's integer phase grid, so it
+is the same number however the stream is cut; a zero CV adds exactly
+nothing, and against an ideal float64 integral of the rate the render is
+within half a float32 ulp (the block mean was 0.04 off at 512, 0.15 at
+1000).
 
 **Stereo (`spread`).** The L and R combs have always run from one LFO with
 their phases offset; `spread` is that offset, and `0.5` is exactly the
@@ -4132,7 +4139,7 @@ for a wide, rotating image — `spread` is that phase offset.
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to phase (voice sources summed to mono). Unpatched → silence. |
-| `rate_cv` | in | cv | Modulates the LFO rate (1 V/oct × `cv_depth`). Optional. |
+| `rate_cv` | in | cv | Modulates the LFO rate **per sample** (1 V/oct × `cv_depth`), integrated into the sweep. Optional. |
 | `manual_cv` | in | cv | Moves the sweep centre **per sample** (1 V/oct × `manual_depth` on `center`), clamped to the knob's 100…6000 Hz. Voice sources summed to mono. Optional. |
 | `clock` | in | gate | Tempo-syncs the sweep: one full sweep every `division` ticks. Optional — unpatched, `rate` rules. |
 | `out_l` | out | audio | Left channel (dry + swept notch chain). |
@@ -4160,8 +4167,10 @@ the allpass cascade runs **per-sample** — but the LFO phase, the allpass
 state and the feedback memory carry across blocks, so the render is still
 exactly **block-size independent**: bit-identical at 64 / 128 / 512 / 1000
 over four seconds with feedback, eight stages, `spread`, `manual_cv` and a
-steady `rate_cv` live (2026-09-24 — the sweep's phase is a sample count
-since the last rate change, not a float carried block to block). See
+moving `rate_cv` live (2026-09-24 — the sweep's phase is a sample count
+since the last rate change, not a float carried block to block; since
+2026-10-12 `rate_cv` is read **per sample** and integrated on the
+chorus's integer grid, where it was a block mean). See
 `examples/phaser_sweep.json` (a self-playing chord swept by the phaser, with
 a slow LFO drifting the sweep rate through `rate_cv`).
 
@@ -4181,9 +4190,11 @@ accumulator, which makes a *synced* sweep **exactly** bit-identical at 64
 and 512. Since 2026-09-24 the free-running sweep is exact too: it counts
 samples since the last rate change instead of carrying a float phase (the
 accumulator used to drift about 1e-10 (phaser) / 3e-8 (flanger) over
-three seconds), re-anchoring only when the rate moves — so a moving
-`rate_cv`, which is read once per block by design, is the one input that
-still depends on the block size; a steady one does not.
+three seconds), re-anchoring only when the knob moves. And since
+2026-10-12 a **modulated** sweep is exact too: `rate_cv` is read **per
+sample**, the flanger's way (it was a block mean, which stepped the rate
+once a block and was the one input that still depended on the block
+size).
 
 **Stereo (`spread`).** The L and R allpass chains have always run from one
 LFO with their phases offset; `spread` is that offset, and `0.5` is exactly

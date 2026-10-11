@@ -35,7 +35,7 @@ class ModFXRenderers:
         block-sized steps and re-anchored every block): the knob's sweep
         above is kept exactly as it was, and what the CV adds -- the
         instantaneous rate minus the knob's -- is integrated on an
-        integer phase grid (:meth:`_chorus_rate_cv_phase`), which is
+        integer phase grid (:meth:`_mod_rate_cv_phase`), which is
         associative, so a modulated sweep is bit-exact across block
         sizes too, and a zero CV adds exactly nothing.
         The ring is indexed by an absolute sample clock and only ever
@@ -147,7 +147,7 @@ class ModFXRenderers:
         ph = phase0 + offs[:, None] + k[None, :] * inc                 # (V, F)
         if rate_cv is not None:
             # + exactly 0.0 per sample for a zero CV: bit-exact unpatched
-            ph = ph + self._chorus_rate_cv_phase(
+            ph = ph + self._mod_rate_cv_phase(
                 state, rate_cv, rate_knob, inc, cv_depth, frames)[None, :]
         ph %= 1.0
         lfo = np.sin(2.0 * np.pi * ph)                                # (V, F)
@@ -199,21 +199,24 @@ class ModFXRenderers:
     # million samples still sums far inside int64, and one step is
     # 3.6e-15 of a cycle -- the grid's rounding is ~1e-12 cycles after
     # minutes of modulation, far under anything a delay line can show.
-    _CHORUS_PH_BITS = 48
+    _MOD_PH_BITS = 48
     _CHORUS_MAX_MS = 40.0  # longest chorus delay (ms); sizes the ring
     _CHORUS_MIN_BLOCK = 4096  # ring headroom: a short block never resizes it
 
-    def _chorus_rate_cv_phase(self, state, rate_cv, rate_knob: float,
-                              inc: float, cv_depth: float, frames: int):
-        """The chorus sweep's rate_cv share, per sample, in cycles [0, 1).
+    def _mod_rate_cv_phase(self, state, rate_cv, rate_knob: float,
+                           inc: float, cv_depth: float, frames: int):
+        """A modulation sweep's rate_cv share, per sample, in cycles [0, 1).
 
-        The instantaneous rate is ``knob * 2 ** (cv_depth * cv[n])``,
-        clamped to the knob's 0.01..20 Hz, per sample. The knob's own
-        sweep (``inc`` per sample) is already counted by the caller's
-        absolute-sample phase, so what is integrated here is only the
-        DEVIATION ``rate[n] / sr - inc`` -- exactly 0.0 at a zero CV,
-        which is what keeps a patched-but-silent jack bit-identical to an
-        unpatched one.
+        The chorus's (2026-09-24), and the flanger's and phaser's since
+        2026-10-12. The instantaneous rate is ``knob * 2 ** (cv_depth *
+        cv[n])``, clamped to the knob's 0.01..20 Hz, per sample. The
+        knob's own sweep (``inc`` per sample) is already counted by the
+        caller's absolute-sample phase, so what is integrated here is
+        only the DEVIATION ``rate[n] / sr - inc`` -- exactly 0.0 at a
+        zero CV, which is what keeps a patched-but-silent jack
+        bit-identical to an unpatched one. The running sum lives in
+        ``state["rc_acc"]``; a caller that re-anchors its whole phase
+        elsewhere (the clock lock) zeroes it.
 
         THE TRAP this dodges: a float running sum is not partition-
         independent once it is wrapped. ``carry + cumsum(inc)`` rounds
@@ -230,7 +233,7 @@ class ModFXRenderers:
         of the deviations BEFORE it, the same convention as the knob's
         ``k * inc``.
         """
-        bits = self._CHORUS_PH_BITS
+        bits = self._MOD_PH_BITS
         mask = (1 << bits) - 1
         cv = np.asarray(rate_cv, dtype=np.float64)
         # _pow2_clipped scrubs a non-finite exponent to 0 (no modulation)
@@ -547,13 +550,15 @@ class ModFXRenderers:
         (~1e-8 over a second on the flanger, audible to nobody, but not the
         same bits). ``k * inc`` from an exact integer ``k`` rounds once, the
         same way, at every block size -- the chorus's fix (3f161fa). A rate
-        change (the knob, or ``rate_cv``) re-anchors instead: the phase
-        reached so far is frozen into ``phase`` and the count restarts, so
-        the sweep stays continuous and each constant-rate run is exact.
-        ``rate_cv`` is a per-BLOCK mean by design, so a MOVING cv
-        re-anchors every block and is the one input that does depend on
-        the block size; a steady one reads the same float64 at every block
-        size (``_finite_mean``), so it never re-anchors.
+        change (the knob) re-anchors instead: the phase reached so far is
+        frozen into ``phase`` and the count restarts, so the sweep stays
+        continuous and each constant-rate run is exact. ``rate`` is the
+        KNOB's: ``rate_cv`` never reaches here -- since 2026-10-12 (the
+        chorus since 2026-09-24) it is read per sample and its share is
+        added on top from an integer accumulator
+        (:meth:`_mod_rate_cv_phase`), so it never re-anchors either. (It
+        was a per-block mean, which re-anchored every block under a
+        moving cv and was the one input that depended on the block size.)
 
         State: ``phase`` (the anchor), ``ph_n`` (samples since it) and
         ``inc`` (the increment in force; start it impossible, -1.0, so the
@@ -725,6 +730,13 @@ class ModFXRenderers:
         an envelope can sweep the comb with ``depth`` at 0 -- in
         through-zero mode it moves the reference tap too, so the crossing
         itself travels.
+
+        ``rate_cv`` is read PER SAMPLE (2026-10-12; it was a block mean):
+        the knob's sweep runs exactly as before, and the CV's share is
+        integrated on top on the chorus's integer grid
+        (:meth:`_mod_rate_cv_phase`), so a modulated sweep glides instead
+        of stepping once a block, is bit-exact across block sizes, and an
+        unpatched jack or a zero CV adds exactly nothing.
         """
         src = self._input_buffer(patch, buffers, module.id, "in")
         if src is None:
@@ -785,12 +797,18 @@ class ModFXRenderers:
             e = np.empty(0, dtype=np.float32)
             return {"out_l": e, "out_r": e.copy()}
 
-        # rate_cv: 1 V/oct on the LFO rate, block-mean -- a sub-audio LFO,
-        # so one rate per block is the right cost/quality trade-off (the
-        # same cadence the chorus and LFO modules use for their rate_cv).
+        # rate_cv: 1 V/oct on the LFO rate, read PER SAMPLE (since
+        # 2026-10-12; it was a block mean, so a moving CV stepped the rate
+        # once a block and re-anchored the sweep every block -- the one
+        # input that rendered differently at every block size). ``rate``
+        # stays the KNOB's rate and drives the free-running sweep exactly
+        # as before; the CV's share is integrated on top, on the chorus's
+        # integer grid (:meth:`_mod_rate_cv_phase`), so an unpatched jack
+        # or a zero CV leaves the sweep bit-for-bit as it was.
         rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
-        if rate_cv is not None and rate_cv.size > 0:
-            rate = rate * self._pow2_clipped(cv_depth * self._finite_mean(rate_cv))
+        if rate_cv is not None and rate_cv.size == 0:
+            rate_cv = None
+        rate_knob = rate
         rate = min(max(rate, 0.01), 20.0)
 
         x = src.astype(np.float64)                        # (F,)
@@ -817,10 +835,13 @@ class ModFXRenderers:
         # ``clock`` patched and locked replaces the free-running phase line
         # with an absolute-sample one (one sweep per ``division`` ticks).
         # Free-running, the phase is an integer sample count since the last
-        # rate change (``_mod_free_phase``), so it is the same bits at any
-        # block size.
+        # rate change (``_mod_free_phase``) plus ``rate_cv``'s integer-grid
+        # share, so it is the same bits at any block size.
         offs = np.array([0.0, 0.5 * spread])      # L / R LFO phase offset
         free = self._mod_free_phase(state, frames, rate)          # (F,)
+        if rate_cv is not None:
+            free = (free + self._mod_rate_cv_phase(
+                state, rate_cv, rate_knob, state["inc"], cv_depth, frames)) % 1.0
         sync = self._mod_clock_sync(
             module, frames, buffers, patch, state, division, free
         )
@@ -915,8 +936,11 @@ class ModFXRenderers:
         else:
             # The locked sweep drove this block: re-anchor the free-running
             # line at its end, so pulling the cable carries on from there.
+            # The anchor holds the WHOLE phase now, so rate_cv's running
+            # share restarts from zero (it would otherwise jump the sweep).
             state["phase"] = sync[1]
             state["ph_n"] = 0
+            state["rc_acc"] = 0
 
         out_l = out[0].astype(np.float32)
         out_r = out[1].astype(np.float32)
@@ -960,6 +984,11 @@ class ModFXRenderers:
         and ``manual_cv``, a per-sample octave jack on ``center`` so an
         envelope or a pedal can sweep the notches with ``depth`` at 0 --
         the classic envelope phaser.
+
+        ``rate_cv`` is read PER SAMPLE (2026-10-12; it was a block mean),
+        exactly as the flanger's: the knob's sweep untouched, the CV's
+        share integrated on top on an integer grid
+        (:meth:`_mod_rate_cv_phase`), bit-exact across block sizes.
         """
         src = self._input_buffer(patch, buffers, module.id, "in")
         if src is None:
@@ -1006,12 +1035,15 @@ class ModFXRenderers:
             e = np.empty(0, dtype=np.float32)
             return {"out_l": e, "out_r": e.copy()}
 
-        # rate_cv: 1 V/oct on the LFO rate, block-mean -- a sub-audio LFO,
-        # so one rate per block is the right cost/quality trade-off (the
-        # same cadence the chorus and flanger use for their rate_cv).
+        # rate_cv: 1 V/oct on the LFO rate, read PER SAMPLE (since
+        # 2026-10-12; it was a block mean -- see the flanger). ``rate``
+        # stays the KNOB's rate; the CV's share is integrated on top, on
+        # the integer grid (:meth:`_mod_rate_cv_phase`), so an unpatched
+        # jack or a zero CV leaves the sweep bit-for-bit as it was.
         rate_cv = self._input_buffer(patch, buffers, module.id, "rate_cv")
-        if rate_cv is not None and rate_cv.size > 0:
-            rate = rate * self._pow2_clipped(cv_depth * self._finite_mean(rate_cv))
+        if rate_cv is not None and rate_cv.size == 0:
+            rate_cv = None
+        rate_knob = rate
         rate = min(max(rate, 0.01), 20.0)
 
         x = src.astype(np.float64)                        # (F,)
@@ -1022,10 +1054,14 @@ class ModFXRenderers:
         # step. ``clock`` patched and locked replaces the free-running
         # phase line with an absolute-sample one (one sweep per
         # ``division`` ticks). Free-running, the phase is an integer
-        # sample count since the last rate change (``_mod_free_phase``),
-        # so it is the same bits at any block size.
+        # sample count since the last rate change (``_mod_free_phase``)
+        # plus ``rate_cv``'s integer-grid share, so it is the same bits at
+        # any block size.
         offs = np.array([0.0, 0.5 * spread])      # L / R LFO phase offset
         free = self._mod_free_phase(state, frames, rate)          # (F,)
+        if rate_cv is not None:
+            free = (free + self._mod_rate_cv_phase(
+                state, rate_cv, rate_knob, state["inc"], cv_depth, frames)) % 1.0
         sync = self._mod_clock_sync(
             module, frames, buffers, patch, state, division, free
         )
@@ -1081,8 +1117,11 @@ class ModFXRenderers:
         else:
             # The locked sweep drove this block: re-anchor the free-running
             # line at its end, so pulling the cable carries on from there.
+            # The anchor holds the WHOLE phase now, so rate_cv's running
+            # share restarts from zero (it would otherwise jump the sweep).
             state["phase"] = sync[1]
             state["ph_n"] = 0
+            state["rc_acc"] = 0
 
         dry = (1.0 - mix) * x
         out_l = (dry + mix * wet[0]).astype(np.float32)

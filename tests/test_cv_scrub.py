@@ -184,8 +184,11 @@ CASES = [
           params={"ratio": 4.0}, repaired=True),
     _Case("reverb", "reverb", ["decay_cv", "damping_cv", "mix_cv"],
           {"in": _impulse()}, repaired=True),
-    _Case("flanger", "flanger", ["rate_cv"], {"in": _sine()}, repaired=True),
-    _Case("phaser", "phaser", ["rate_cv"], {"in": _sine()}, repaired=True),
+    # rate_cv is read PER SAMPLE since 2026-10-12 (it was a block mean): no
+    # mean left to swap back, so these are no longer witnesses for the fix
+    # -- the constant-CV pin and the scrub still hold them.
+    _Case("flanger", "flanger", ["rate_cv"], {"in": _sine()}),
+    _Case("phaser", "phaser", ["rate_cv"], {"in": _sine()}),
     _Case("lfo_mono", "lfo", ["rate_cv"], {}, repaired=True),
     _Case("lfo_voice", "lfo", ["rate_cv"], {}, voices=V),
     _Case("slew_mono", "slew", ["rise_cv", "fall_cv"], {"in": _sine()},
@@ -407,8 +410,9 @@ ROUTED_SOURCES = {
     "_render_compressor": ["threshold_cv"],
     "_render_reverb": ["decay_cv", "damping_cv", "mix_cv"],
     "_render_rotary": ["fast"],
-    "_render_flanger": ["rate_cv"],
-    "_render_phaser": ["rate_cv"],
+    # (_render_flanger / _render_phaser left this list on 2026-10-12: their
+    # rate_cv is read per sample, not as a block mean -- the door they go
+    # through now is _mod_rate_cv_phase, pinned in test_modfx_rate_cv.py.)
     "_pitch_shifter_core": ["pitch_cv"],
     "_render_bitcrusher": ["bits_cv", "rate_cv"],
     "_render_sampler": ["pitch_cv"],
