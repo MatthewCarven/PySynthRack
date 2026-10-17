@@ -415,6 +415,23 @@ likeliest to sound different come first.
       (the clock fix moved its edges a sample); the full-scale three
       are unchanged.
 
+*UI:*
+- [ ] **Zoom feeds back through the widgets it scales** — reported by Matthew
+      2026-10-18, in his words: "when you adjust the zoom you adjust the widget
+      size and that then adjusts the zoom again". `_apply_zoom` works by
+      `set_global_font_scale`, which resizes *every* widget — the toolbar's
+      zoom slider and the canvas included — so the control you zoom with
+      changes size under the pointer. Hypotheses, in the order to check with
+      eyes on the window: (a) the slider is rescaled mid-drag, so the same
+      pointer position maps to a new percent and the drag re-fires;
+      (b) Ctrl+wheel over the canvas — after one step a grown widget lands
+      under the pointer and the next notch is read as a param wheel, or the
+      other way round; (c) something on the resize path. Fix shape: keep the
+      toolbar at a fixed font (bind it its own font, or scale only the node
+      editor's font), and/or apply the slider on release; add a re-entrancy
+      guard either way. The midiseq grid takes the lesson as a rule: zoom
+      scales the drawing, never the widgets.
+
 *Audio I/O:*
 
 ## Decisions waiting on Matthew
