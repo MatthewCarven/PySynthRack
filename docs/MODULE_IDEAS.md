@@ -223,19 +223,26 @@ last-two-edges rule, because that rule fails on an echo.** The real clock's
 interval alternates at any tempo that isn't a whole number of samples, and a
 swung clock alternates by design, so the delay would retarget nearly every
 tick. The fix is `clock_divider`'s `avg` (half the span of the last three
-edges) plus a deadband and a stopped-clock rule:
+edges) plus a deadband, and one more rule: an interval that breaks the
+two-tick pattern restarts the measurement from that edge, so no span is ever
+measured across a break, and the echo holds its time meanwhile:
 
 ```python
 # per rising edge, with `now` an absolute sample
-if e1 >= 0 and span > 0 and not rearm and 4 * (now - e1) > 5 * span:
-    rearm = True; e1, e2 = now, -1      # the clock stopped, it did not slow
+dead = max(2, span // 1024)
+if span > 0 and e3 >= 0 and not rearm and abs((now - e1) - (e2 - e3)) > dead:
+    rearm = True; e1, e2, e3 = now, -1, -1    # a break: measure afresh from here
     continue
 if e2 >= 0:
     s = now - e2; rearm = False
-    if span == 0 or abs(s - span) > max(2, span // 1024):
-        span = s                        # a real change: retarget at this sample
-e2, e1 = e1, now
+    if span == 0 or abs(s - span) > dead:
+        span = s                              # a real change: retarget here
+e3, e2, e1 = e2, e1, now
 ```
+
+The interval is compared with the one two ticks back, not the last one, so a
+swung clock stays on pattern. `rearm` switches the test off until the next span
+is taken, so a tempo that keeps moving still gets measured.
 
 | Real `clock`, 30 s | Intervals seen (samples) | Retargets, last two edges | Retargets, this rule |
 |---|---|---|---|
@@ -245,10 +252,45 @@ e2, e1 = e1, now
 | 120 ×4, swing 0.33 | 3693, 7332 | 240 | 1 |
 | 97 ×2, swing 0.5 | 6820, 20459 | 96 | 1 |
 
-`run` held low for 3 s then released causes no retarget, straight or swung. A
-real ×4 slowdown relocks on the third slow tick. A ×3 speed-up takes two
-retargets 0.17 s apart. A rhythm on the jack (a `euclidean` gate) will retarget
-on most ticks: clean but busy, and unmeasured. Document it as not a tempo.
+The break rule earns its place on `reset` and short stops. Measuring across
+either one gives a wrong span for two ticks, and two needless fades. Requiring
+two matching spans doesn't help, because the two spans straddling a reset are
+equal. Retargets after the first lock, real clock unless noted, the first
+column being the three-edge span with a stop test at 2.5 periods in place of
+the break rule:
+
+| 120 ×4 | Spans + stop test | Three matching spans | This rule |
+|---|---|---|---|
+| One `reset` off the grid, at 0.25, 0.5 or 0.75 of a tick | 2 | 0 | 0 |
+| `reset` off the grid every 2.03 s, 21 s | 20 | 0 | 0 |
+| One `reset` off the grid, swing 0.33 | 3 | 0 | 0 |
+| `reset` on the grid, every 4, 8 or 16 ticks | 0 | 0 | 0 |
+| `run` low, next tick after 1.5, 2.0 or 2.4 ticks | 2 | 0 | 0 |
+| `run` low, next tick after 2.6, 4 or 24 ticks | 0 | 0 | 0 |
+| Real tempo step, ×1.25 or ×2 either way (edge list) | 2, ticks 1 and 2 | 1, tick 4 | 1, tick 3 |
+| 3-3-2 rhythm on the jack (edge list) | 78 | 0 | 0 |
+| Worst `T` error, 120 → 180 BPM in 4 s (edge list) | 0 ms | 40.7 ms | 3.2 ms |
+| Worst `T` error, tempo ±3% at 0.2 Hz (edge list) | 0.12 ms | 7.5 ms | 1.2 ms |
+
+Rendered, with ticks through the echo against an echo that never moved, over
+3 s: on all 20 resets and short stops tried (16th and quarter-note clocks,
+echoes of 1 to 3 ticks), this rule is the same bits. Measuring across the break
+deviates by −9.7 to −0.7 dB (3 ms envelope), worst on the quarter-note clock,
+where two wrong ticks last 1 s at 120.
+
+The price is a real step. It lands on tick 3 where measuring across it would
+finish on tick 2, though with one fade, and it never visits a mixed span. Against
+an echo that moved at once, 8 → 10 ticks/s deviates −10.0 dB (echo of 1 tick)
+and −7.3 dB (3 ticks), where measuring across it gives −12.2 and −13.1 dB. Three
+matching spans also clears the resets, but it stops following a tempo that keeps
+moving, which is why it loses.
+
+What remains, to document rather than fix: three ticks is 1.5 s on a quarter-note
+clock at 120. A ±10% wobble at 1 Hz leaves `T` up to 16 ms behind, times
+`division`. Two breaks inside three ticks (a doubled tick, two quick resets) can
+get a wrong span through, costing two fades and correcting within four ticks, as
+does a `reset` among the first three edges. A rhythm on the jack isn't a tempo: it
+holds whichever span it locked to.
 
 **When the time changes: a 10 ms crossfade between two reads**
 
@@ -312,6 +354,18 @@ out_l = x * (1 - mix) + wet_l * mix     # out_r likewise; the dry stays centred
   `state.clear()` re-init. `_render_delay` still returns a bare array when
   neither is cabled, and a dict otherwise: `tests/test_delay.py` calls it
   directly eight times and the core three times, expecting arrays.
+- Uncabling both jacks drops `buf_s` and `lp_s`, and the first cabled block
+  allocates them zeroed. They can't simply wait: the side line stops but
+  `write_idx` doesn't, so a re-cable would read and feed back audio from the
+  earlier cabled period (measured: a ghost peaking at −4.0 dB with the mid line
+  at −86.6 dB; dropped, −92.7 dB). One jack left cabled keeps the line running.
+  `state.clear()` removes both keys and the same allocation refills them, so a
+  voice-count change lands in the same clean state.
+- After a re-cable the side read is 0 for `T` samples. Echoes already in the mid
+  line play centred at half level on each side, so L + R still equals the mid,
+  and they decay at the usual rate without ever bouncing. Notes played after it
+  bounce at full level (measured). A re-cable during a hold leaves the hold
+  centred and exact: the side line stays all zeros and L is exactly `out / 2`.
 - The identity needs a linear loop. A future drive inside the loop would need
   the cross-coupled form, so say that in a code comment.
 
@@ -367,15 +421,15 @@ and the side line never runs uncabled. All six examples: 0 of 705,536 samples
 differ over 8 s against HEAD. Pinned below.
 
 **Block-size exactness.** Nothing carries a float. Edges are integer sample
-positions, `span` is an integer, `T` is a pure function of integers and two
-params, and the fade weight is an integer count over `R`. Both reads split
+positions, `span` and the break test are integers, `T` is a pure function of
+integers and two params, and the fade weight is an integer count over `R`. Both reads split
 whole samples and fraction, and the blend `old * (1 - c) + new * c` is spelled
 the same on both paths, because which path a block takes depends on its size.
 The block path needs both reads at least `hop` back. Five scenarios (tempo
 change + swing + `feel` + cv + freeze + stereo; whole-sample reads; fold;
 unpatch; three voices with the paths flipping) differ in 0 samples of output and
 float64 state at 64/128/1000 against 512. A float-carried fade weight, planted to
-test the probe, moved ~200,000 output and ~29,000 line samples. Param moves are
+test the probe, moved ~145,000 output and ~20,000 line samples. Param moves are
 exact only on a shared block head, so pin them at multiples of 64000. Inject gate
 rows: a moving `bpm_cv` upstream is a block mean and isn't exact.
 
@@ -388,8 +442,15 @@ rows: a moving `bpm_cv` upstream is a block mean and isn't exact.
   with freeze, cv and a fade. Raise-if-called on the rows and side line.
 - Clock: `T` for each `division` and `feel`; an impulse lands on `T`; `time`
   inert and `time_cv` live while locked; a locked echo equals `time`; one event
-  per render on the table's clocks; `run` stop/restart; ×4 and ×3 tempo steps;
-  fold stays on the grid; `in` unpatched keeps measuring.
+  per render on the table's clocks; fold stays on the grid; `in` unpatched keeps
+  measuring.
+- Breaks, through the real clock's `reset` and `run` jacks: off-grid resets (one,
+  repeated, swung), on-grid resets and `run` low for 1.5 to 24 ticks all give no
+  event, and the render equals an echo that never moved, bit for bit. Real tempo
+  steps give one event, on tick 3, at the right span. A sweep stays within a bound
+  of the true `T` (measured 3.2 ms, three matching spans 40.7 ms). A doubled tick
+  and a `reset` during the lock correct themselves. Self-test: the break test
+  removed, the off-grid reset case fails.
 - Fade: click tripwire against the jump, not a magic number, on the bass, sine
   and pad at many positions (`fade <= jump / 10`, measured 60× to 400×), with a
   self-test that `R = 1` trips it. Loop peak in the fade never exceeds the peak
@@ -397,6 +458,11 @@ rows: a moving `bpm_cv` upstream is a block mean and isn't exact.
 - Stereo: impulse pattern and exact far side; the far-side law; `spread` 0 is
   `out`; the textbook-pair comparison; `mix` 0 is dry on all three; `(V, F)`
   shapes, a single row equals mono, voices stay separate.
+- Re-cable: uncabling both jacks drops `buf_s` and `lp_s`; no ghost after a
+  re-cable, with a kept side line planted as the self-test (−4.0 dB against
+  −92.7 dB); old echoes centred at half level with L + R equal to the mid; a later
+  note bounces; one jack left cabled keeps the line; a re-cable during a hold; a
+  voice-count change.
 - Freeze: anti-periodic side line and periodic mid, bit for bit over 10 s;
   sides swap per lap; a locked hold is `T` with no slide; edges during a hold
   don't move the read; the retarget lands after release; a rise inside a fade.
