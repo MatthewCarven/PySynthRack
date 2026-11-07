@@ -90,7 +90,8 @@ Paste the preamble below plus one module spec as the task.
 
 ## Index
 
-- **Open, spec'd (ready to pick):** `pitch_detector` (M–L) · `spectrum` (M).
+- **Open, spec'd (ready to pick):** `pitch_detector` (M–L) · `spectrum` (M) ·
+  `delay` clock sync + stereo echo (M, a love pass on a shipped module).
 - **Open, one-liners (spec when picked):** from the keep-list,
   `midi_output` (M); quick hits `exciter` `gate_delay` `macro` `tuner`
   `looper` (L), vocoder follow-ups.
@@ -161,6 +162,291 @@ FFT analyzer tap.
 - Tests: single sine → peak in the right column within 1 dB (window gain
   compensated); two-tone resolution at 4096; averaging time constant; rebin
   map monotone and gap-free.
+
+### `delay`: clock sync + stereo echo (M) — love pass on a shipped module, "Effects"
+
+> *Specced 2026-11-07: scope approved by Matthew, not built, and five calls
+> are still his (listed at the end).* This is a love pass, so the submit
+> preamble changes: no class, `_RENDERERS` row, `modules/__init__` export or
+> README count. pyo needs nothing: `delay` is already in
+> `_SILENT_STUB_TYPES`, so it stays a silent stub whatever ports it grows.
+> The house invariants and "done means" still apply.
+
+`time` is milliseconds only and the docs say to match a clock "by ear", and
+every clocked delay example is a hand-set dotted value: `delay_dub_echo` and
+`sequencer_reverse_bars` at 375 ms on 250 ms ticks, `delay_freeze_stutter` at
+187.5 ms on 125 ms ticks. `out` is mono, so a bouncing echo takes two delays
+and a hand-built cross-feed.
+
+**The design.** A patched clock sets the echo to a whole number of samples
+and moves between times with a 10 ms crossfade. Ping-pong runs as a second
+"side" line beside the existing one, which never changes, so `out` is
+bit-exact at every setting. The numbers below come from a prototype on the
+real backend; anything unmeasured says so.
+
+- Ports: `clock` (in, gate) after `freeze`; `out_l`, `out_r` (out, audio)
+  after `out`. `out` stays first: the engine files a bare-array return under
+  the first output port.
+- Params: `division` 0.25..64 (1.0), clock ticks per echo, with the name, rail
+  (`_MOD_DIV_MIN/MAX`) and widget of `flanger`/`phaser`/`autopan` ·
+  `feel` `straight`|`dotted`|`triplet` (`straight`), a multiplier of 1, 3/2
+  or 2/3 · `spread` 0..1 (1.0), where the far side's level is `1 - spread`.
+  No `mode` param, so the shadowed shared branch never comes into it.
+
+**Clock sync**
+
+- Locked time: `T = round(span * division * num / (2 * den))`, whole samples,
+  floor 2, where `span` is the measured two-tick span and `num/den` is `feel`.
+- `time` steps aside while locked, as `rate` does on the siblings. `time_cv`
+  does not: it still adds `cv_depth` on top, because wow and dub throws on a
+  synced echo are the point (this differs from the siblings' `rate_cv`). With
+  no cv the read is whole samples, so `frac` is 0 and a locked echo skips the
+  two-tap low-pass. A locked 4410-sample echo equals `time` 100 ms bit for bit
+  (0 of 176,400 samples differ).
+- Before the lock `time` rules, bit-exact with unpatched. The lock takes three
+  rising edges (250 ms at 120 BPM ×4, 1 s on a quarter-note clock), then fades
+  in. A clock that stops keeps its last time. Unpatching fades home to `time`.
+- `feel` earns its place on triplets. Dotted is reachable with `division` 1.5,
+  but a triplet needs 4/3 and a drag lands on 1.33, about 18 samples short per
+  repeat at 120 ×4. Note names (1/8T and so on) would lie, because what a tick
+  is depends on `clock.division`. Dotted and triplet are ratios, so they stay
+  true on any clock.
+- A target past the 2 s line folds down by octaves, so it stays on the grid:
+  `while t > line: t *= 0.5`. A 100 BPM quarter clock at `division` 4 asks for
+  2.4 s and folds to 1.2 s, on the beat. A clamp would give 2.0 s, 3.33 beats,
+  and drift off the grid at every repeat.
+
+Measuring borrows `_render_slew`'s edge walk (lagged compare, absolute sample
+counter, `prev_clock` carried). `_mod_clock_sync` is the wrong precedent: its
+job is a phase, and an echo has none. **This departs from the rack's
+last-two-edges rule, because that rule fails on an echo.** The real clock's
+interval alternates at any tempo that isn't a whole number of samples, and a
+swung clock alternates by design, so the delay would retarget nearly every
+tick. The fix is `clock_divider`'s `avg` (half the span of the last three
+edges) plus a deadband and a stopped-clock rule:
+
+```python
+# per rising edge, with `now` an absolute sample
+if e1 >= 0 and span > 0 and not rearm and 4 * (now - e1) > 5 * span:
+    rearm = True; e1, e2 = now, -1      # the clock stopped, it did not slow
+    continue
+if e2 >= 0:
+    s = now - e2; rearm = False
+    if span == 0 or abs(s - span) > max(2, span // 1024):
+        span = s                        # a real change: retarget at this sample
+e2, e1 = e1, now
+```
+
+| Real `clock`, 30 s | Intervals seen (samples) | Retargets, last two edges | Retargets, this rule |
+|---|---|---|---|
+| 120 BPM ×4 (default) | 5512, 5513 | 239 | 1 |
+| 97 ×4 | 6819, 6820 | 161 | 1 |
+| 133.7 ×2 | 9895, 9896 | 77 | 1 |
+| 120 ×4, swing 0.33 | 3693, 7332 | 240 | 1 |
+| 97 ×2, swing 0.5 | 6820, 20459 | 96 | 1 |
+
+`run` held low for 3 s then released causes no retarget, straight or swung. A
+real ×4 slowdown relocks on the third slow tick. A ×3 speed-up takes two
+retargets 0.17 s apart. A rhythm on the jack (a `euclidean` gate) will retarget
+on most ticks: clean but busy, and unmeasured. Document it as not a tempo.
+
+**When the time changes: a 10 ms crossfade between two reads**
+
+The old and new reads run together for `R` samples, weighted `k / R` from an
+integer count, and `R` is the freeze's own `ramp_n`. It starts on the edge
+sample that measured the change, or at the block head for a `division` or
+`feel` move. It also covers the first lock and the unpatch. One fade runs at a
+time and a new target waits its turn, so a dragged knob moves in 10 ms steps.
+The unpatched `time` knob still jumps, as it does today.
+
+Worst high band (> 3 kHz) over 14 switch positions, `division` 1 → 2:
+
+| Material | No switch | Jump (today's knob) | Fade 5 ms | 10 ms | 30 ms | Glide, slope 0.25 |
+|---|---|---|---|---|---|---|
+| 55 Hz bass | 0.00051 | 0.18728 | 0.00085 | 0.00043 | 0.00025 | 0.00035 |
+| 330 Hz sine | 0.00311 | 0.10777 | 0.00153 | 0.00153 | 0.00153 | 0.00161 |
+| Four-note pad | 0.00299 | 0.09023 | 0.00146 | 0.00146 | 0.00146 | 0.00161 |
+
+- From 10 ms up a fade is 60 to 400 times under a jump, and on the sine and
+  pad it never rises above the no-switch render. A saw or noise swamps this
+  measure with its own highs, so test on tones.
+- The fade length is set by its one weakness. On a sustained tone whose two
+  reads are exactly out of phase, a crossfade must pass near silence: 3.0 ms
+  below −12 dB at 10 ms, 7.6 ms at 30 ms. Shorter is better, and 10 ms is
+  already clean.
+- The blend is linear, not equal-power, so the loop gain never exceeds 1: at
+  `feedback` 0.98 the peak was 1.197 before, 0.446 during, 1.090 after.
+- A pitch-bending glide is the alternative, and the tape sound. It settles
+  slowly and leaves the grid meanwhile: 1.0 s for 250 → 500 ms, 4 s for 1 → 2 s,
+  at −3.9 st lengthening and +5 st shortening. See the decisions below.
+- A tempo swept ±3%, retargeting most ticks, is as clean faded as glided (high
+  band 0.00091 against 0.00094).
+
+**Stereo: a mid line and a side line**
+
+A hard ping-pong is two lines feeding each other: `L[n] = x + fb * R@T`,
+`R[n] = fb * L@T`. Add and subtract those and the sum obeys the delay's existing
+loop, while the difference obeys the same loop with the feedback negated. So
+the existing line is the mid, untouched, and the new line is the side:
+
+```python
+buf_s[wp] = x - feedback * damped_s     # one sign away from the existing write
+wet_l = d * (1 - spread / 2) + ds * (spread / 2)
+wet_r = d * (1 - spread / 2) - ds * (spread / 2)
+out_l = x * (1 - mix) + wet_l * mix     # out_r likewise; the dry stays centred
+```
+
+- `out` differs from an uncabled render in 0 samples at `spread` 0, 0.4 and 1,
+  on both paths. At `spread` 0, `out_l == out_r == out`.
+- It matches a textbook cross-coupled pair to float32 rounding (under 6e-8, up
+  to `feedback` 0.98, fractional times included). An impulse lands L, R, L, R
+  with the far side reading 0.000000. Swap the cables to start right.
+- `spread` is the far side's fade, the rule `pitch_shifter`'s `spread` already
+  uses, and it acts only at the output. A switch or mode isn't needed: cabling
+  the jacks turns it on. A loop-side morph can't replace it, because no
+  orthonormal 2×2 path runs from identity (det +1) to swap (det −1), so one
+  would leak during a hold.
+- The side line runs only while `out_l` or `out_r` is cabled
+  (`patch.cables_out_of`), whatever `spread` is, so a `spread` move is
+  immediate. `buf_s` and `lp_s` are separate state, so cabling doesn't trip the
+  `state.clear()` re-init. `_render_delay` still returns a bare array when
+  neither is cabled, and a dict otherwise: `tests/test_delay.py` calls it
+  directly eight times and the core three times, expecting arrays.
+- The identity needs a linear loop. A future drive inside the loop would need
+  the cross-coupled form, so say that in a code comment.
+
+**Voices.** `out_l`/`out_r` take `out`'s shape: `(V, F)` in gives `(V, F)` out,
+each voice with its own mid and side line, like `granular` and `sampler`.
+Nothing sums, because `reverb`'s collapse would take the per-voice signal away
+from anything downstream. The stereo sinks already `_voice_sum`. A single voice
+row stays bit-identical to mono. `clock` and `spread` are shared by every voice;
+`time_cv` stays per voice. Sixteen voices cost a second 11.3 MB ring.
+
+**Freeze**
+
+- The side line holds with gain −1: `buf_s[n] = -buf_s[n - D]`, and negation is
+  exact. At 10 s of hold, one lap of each line matched the lap before in 0
+  samples, with L and R steady at −12.415 dB. L on one lap equals R on the next
+  (correlation 1.000000), so a held ping-pong keeps bouncing. Release decays both.
+- `round(time)` needs no change: `np.round(dly)` latches as now, a locked `T` is
+  already whole so the read slides 0 samples, and with `time_cv` it rounds as
+  today.
+- A clock edge during a hold is measured and does not move the read. Any
+  retarget waits until the gate is low and the ramp has run out, then fades
+  normally (measured: the new time lands after release). Without the wait, the
+  10 ms release slide would be a 6× chirp on a 2205-sample move (computed).
+- A fade in flight at a rise finishes, and the latch takes the new read. `R`
+  equals the ramp, so it ends before the hold reaches unity. Both lines measured
+  exact.
+- Order in the core: freeze envelope first (the clock rows need to know they are
+  paused), then rows, then `dly`, then the latch.
+
+**Prep commit: hops.** The per-sample path is a Python loop costing 7.9 ms of a
+512-sample block's 11.6 ms. A side line takes it to 18.2 ms, **157% of the
+budget at any delay shorter than a block.** The reverb's idiom fixes that and
+moves no bits: run the block path in hops no longer than the shortest delay
+this block.
+
+| 512-block, µs | Per-sample | Hops |
+|---|---|---|
+| 5 ms | 8277 | 147 (stereo 259) |
+| 1 ms | 7900 | 408 |
+| 5 ms ± 3 ms cv | 8291 | 165 |
+| 12 samples (busier run) | 11000 | 1940 |
+| 4 samples (busier run) | 12174 | 7871 |
+| 3 samples (busier run) | 10519 | 13727 |
+
+Every row differs in 0 output samples and 0 line samples. Hops pay from 4
+samples up, so `_DELAY_HOP_FLOOR = 4` and the per-sample path survives only for
+delays of 2 and 3 samples. Elsewhere, with one voice: 75 µs now, about 120
+clocked, about 175 stereo. Sixteen voices: about 410 now, about 1000 stereo.
+
+**Neutral.** Two doors keep it by construction: the clock rows return None when
+`clock` is unpatched and no fade is live, so today's `dly` lines run verbatim,
+and the side line never runs uncabled. All six examples: 0 of 705,536 samples
+differ over 8 s against HEAD. Pinned below.
+
+**Block-size exactness.** Nothing carries a float. Edges are integer sample
+positions, `span` is an integer, `T` is a pure function of integers and two
+params, and the fade weight is an integer count over `R`. Both reads split
+whole samples and fraction, and the blend `old * (1 - c) + new * c` is spelled
+the same on both paths, because which path a block takes depends on its size.
+The block path needs both reads at least `hop` back. Five scenarios (tempo
+change + swing + `feel` + cv + freeze + stereo; whole-sample reads; fold;
+unpatch; three voices with the paths flipping) differ in 0 samples of output and
+float64 state at 64/128/1000 against 512. A float-carried fade weight, planted to
+test the probe, moved ~200,000 output and ~29,000 line samples. Param moves are
+exact only on a shared block head, so pin them at multiples of 64000. Inject gate
+rows: a moving `bpm_cv` upstream is a block mean and isn't exact.
+
+**Tests** (`tests/test_delay_sync.py`; `tests/test_delay.py` keeps its asserts)
+
+- Neutral: reference renders first, `render_audit` before and after on the six
+  stems, expecting `moved: 0`. SHA pins captured from HEAD before editing (the
+  `test_clock`/`test_pluck` idiom). A silent clock, then one edge, then two,
+  match unpatched. `out` cabled matches uncabled across `spread`, both paths,
+  with freeze, cv and a fade. Raise-if-called on the rows and side line.
+- Clock: `T` for each `division` and `feel`; an impulse lands on `T`; `time`
+  inert and `time_cv` live while locked; a locked echo equals `time`; one event
+  per render on the table's clocks; `run` stop/restart; ×4 and ×3 tempo steps;
+  fold stays on the grid; `in` unpatched keeps measuring.
+- Fade: click tripwire against the jump, not a magic number, on the bass, sine
+  and pad at many positions (`fade <= jump / 10`, measured 60× to 400×), with a
+  self-test that `R = 1` trips it. Loop peak in the fade never exceeds the peak
+  before it. Retargets queue. Unpatch fades home and closes the door.
+- Stereo: impulse pattern and exact far side; the far-side law; `spread` 0 is
+  `out`; the textbook-pair comparison; `mix` 0 is dry on all three; `(V, F)`
+  shapes, a single row equals mono, voices stay separate.
+- Freeze: anti-periodic side line and periodic mid, bit for bit over 10 s;
+  sides swap per lap; a locked hold is `T` with no slide; edges during a hold
+  don't move the read; the retarget lands after release; a rise inside a fade.
+- Block size: the five scenarios at 4–8 s, output and state, with the planted
+  fade weight as a self-test. Hops: forced per-sample (`_DELAY_HOP_FLOOR` raised)
+  equals hops, and a pin crossing the 4-sample floor (0.1 ms ± 0.05 ms), because
+  `test_modfx_block_exact`'s 5 ms case and `test_delay.py`'s 200-sample cases no
+  longer reach the per-sample path. Correct those comments.
+- Panel: the widget sweep covers the new params. Check `feel`'s combo contents
+  are `DELAY_FEELS` (matching a label is not matching the widget).
+- Example: it locks to 16537 ± 1, and repeats alternate L, R. Count them: "it
+  renders" is not "it works".
+
+**Panel.** Three arms in `app.py`'s `delay` block: `division` copied from
+`autopan`'s; `feel` a combo over `DELAY_FEELS` (a `delay.py` constant, imported
+as `AUTOPAN_SHAPES` is); `spread` a 0..1 slider labelled `spread (out_l/r)`.
+
+**Docs.** `delay.py`: replace the "by ear" use case, add **Clock sync** and
+**Stereo** sections, update ports, voice-awareness and the class docstring.
+`_render_delay` and `_render_delay_core` docstrings, including the path rule.
+The "every existing single-out module" comment in `numpy_backend.py`. MODULES.md:
+index row, ports and params tables, both sections, the "under one block"
+per-sample line, an example-appendix line. This spec moves to the appendix.
+
+**Example.** `examples/delay_pingpong_sync.json`: `delay_dub_echo`'s seven
+modules with the speaker swapped for `stereo_speaker_output`, `out_l`/`out_r`
+into `in_l`/`in_r`, and the delay at `division` 1, `feel` dotted. That's the
+same 375 ms, now derived instead of set by ear.
+
+**Build order.** Reference renders and SHA pins; hops (no bits move); clock; side
+line and ports; panel, docs, example.
+
+**Matthew's calls** (the spec is written to the first option of each)
+
+1. Long clocked times: **fold by octaves** in the 2 s line, a clamp (simpler,
+   drifts off the grid), or a longer line (more RAM and a second time limit,
+   and `test_modfx_block_exact` relies on today's wrap).
+2. Default `spread`: **1.0**, because cabling the jacks is already the request
+   and at 0 they'd be silently mono, or 0.0, the `modal`/`pitch_shifter` habit.
+   `out` can't move either way.
+3. Time changes: **crossfade only**, or also a tape-style `bend` option, which
+   is cheap in the rows but doubles the freeze and fade test matrix. His ears
+   should settle this one.
+4. Division control: **float `division` + `feel`**, or one combo of ratios. The
+   combo is one widget but stores a string where the siblings store a float.
+5. Hops in this build: **yes**, or ship stereo with the 157% corner documented.
+
+**Adjacent follow-ons** (not in this spec): the `time` knob's jump (the same fade
+would cure it), a true stereo `in_r`, `spread_cv`, a panel readout of the locked
+time, clocked `reverb` predelay.
 
 ## The 2026-08-04 brainstorm (Matthew's keep-list — unspecced menu)
 
