@@ -438,6 +438,19 @@ likeliest to sound different come first.
 
 Calls, not bugs: each waits on a yes, a no or a which.
 
+*From the `delay` clock sync + stereo echo spec (2026-11-07; the spec is on
+branch `claude/delay-sync-spec-f333c7`, not merged, and is written to the first
+option of each):*
+- [ ] **Clocked times past the 2 s line:** fold down by octaves (stays on the
+      grid), a clamp (simpler, drifts off the grid), or a longer line?
+- [ ] **Default `spread`:** 1.0 (cabling the jacks gives a full ping-pong) or
+      0.0 (the `modal`/`pitch_shifter` habit)? `out` doesn't move either way.
+- [ ] **Time changes:** crossfade only, or also a tape-style `bend`? The bend
+      doubles the freeze and fade tests. His ears should settle this one.
+- [ ] **Division control:** float `division` + `feel`, or one combo of ratios?
+- [ ] **Hops prep commit in this build:** yes, or ship stereo with the 157%
+      corner documented?
+
 *From the seventh batch (2026-10-12):*
 - [ ] **`adsr`: exact stage TIMES?** Both paths end a stage when the
       per-sample sum reaches its target, so a 20 ms attack can take

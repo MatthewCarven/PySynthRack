@@ -46,6 +46,38 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-07 — the delay's clock sync + stereo echo: specced, not built
+
+Matthew asked after an echo and a reverb, thinking he'd forgotten them. Both
+have shipped for months, as `delay` and `reverb`. What the delay really lacks
+is a `clock` input (`time` is milliseconds, set "by ear") and a stereo out.
+He approved a spec for those two, run in a subsession with this session
+supervising.
+
+- **Where it is:** a section of `docs/MODULE_IDEAS.md` on branch
+  `claude/delay-sync-spec-f333c7` (8a931f5, d5e88c9). Not merged, not pushed.
+  Nothing under `src/`, `tests/` or `examples/` changed, and every number is a
+  prototype measurement. Nothing has been heard.
+- **The design:** `clock` + `division` + `feel`, a 10 ms crossfade between reads
+  when the time changes, and ping-pong as a second "side" line whose sum and
+  difference with the existing line are the two cross-coupled channels, so `out`
+  stays bit-exact at every setting. A prep commit runs the per-sample path in
+  hops, because a side line would otherwise cost 157% of a block's budget at
+  delays under a block.
+- **Review found two gaps.** A stopped side line kept stale audio while
+  `write_idx` ran on, so a re-cable played a ghost (measured at −4.0 dB); uncabling
+  now drops it. And nothing covered `reset` or a short `run` stop, which gave a
+  wrong span for two ticks. The spec session was told to document that unless it
+  could do better; it changed the rule, and any interval that breaks the two-tick
+  pattern now restarts the measurement, at the cost of a real tempo step landing
+  on tick 3 rather than tick 2. Not raised as a call for Matthew: the numbers
+  are one-sided. Reproduced here on real clock edges: 0 retargets after the lock
+  on resets, stops and dropped ticks, and one on tick 3 for each tempo step.
+
+Five calls are his, in TODO.md under Decisions.
+
+---
+
 ## 2026-10-12 — the seventh batch: eight agents, and three things found sideways
 
 Matthew: "Pick tasks that you can run subagents in worktrees todo please
