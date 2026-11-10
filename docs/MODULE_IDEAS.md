@@ -91,7 +91,8 @@ Paste the preamble below plus one module spec as the task.
 ## Index
 
 - **Open, spec'd (ready to pick):** `pitch_detector` (M–L) · `spectrum` (M) ·
-  `delay` clock sync + stereo echo (M, a love pass on a shipped module).
+  `delay` clock sync + stereo echo (M, a love pass on a shipped module; calls
+  decided 2026-11-10).
 - **Open, one-liners (spec when picked):** from the keep-list,
   `midi_output` (M); quick hits `exciter` `gate_delay` `macro` `tuner`
   `looper` (L), vocoder follow-ups.
@@ -165,8 +166,9 @@ FFT analyzer tap.
 
 ### `delay`: clock sync + stereo echo (M) — love pass on a shipped module, "Effects"
 
-> *Specced 2026-11-07: scope approved by Matthew, not built, and five calls
-> are still his (listed at the end).* This is a love pass, so the submit
+> *Specced 2026-11-07, scope approved by Matthew. All five calls decided
+> 2026-11-10: he took the first option of each, so the spec stands as
+> written (listed at the end). Ready to build, not built.* This is a love pass, so the submit
 > preamble changes: no class, `_RENDERERS` row, `modules/__init__` export or
 > README count. pyo needs nothing: `delay` is already in
 > `_SILENT_STUB_TYPES`, so it stays a silent stub whatever ports it grows.
@@ -495,7 +497,11 @@ same 375 ms, now derived instead of set by ear.
 **Build order.** Reference renders and SHA pins; hops (no bits move); clock; side
 line and ports; panel, docs, example.
 
-**Matthew's calls** (the spec is written to the first option of each)
+**Matthew's calls: decided 2026-11-10, the first option of each** ("Yes, take
+all five"). The spec was already written to those, so nothing above changes.
+The alternatives stay listed for the record. Number 3 was flagged for his ears,
+so a tape-style `bend` can still come later as its own pass if the crossfade
+sounds too polite once built.
 
 1. Long clocked times: **fold by octaves** in the 2 s line, a clamp (simpler,
    drifts off the grid), or a longer line (more RAM and a second time limit,

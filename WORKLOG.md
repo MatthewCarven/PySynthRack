@@ -76,6 +76,13 @@ supervising.
 
 Five calls are his, in TODO.md under Decisions.
 
+**2026-11-10:** Matthew: "Yes, take all five". He took every recommendation:
+fold by octaves, `spread` 1.0, crossfade only, `division` + `feel`, and hops
+first. With his OK the two spec commits were cherry-picked onto main (8da47ba,
+3c5a0ff), the calls moved to TODO-ARCHIVE.md, and the build went into the Build
+queue. The spec branch and its worktree are still there; deleting them is his
+call.
+
 ---
 
 ## 2026-10-12 — the seventh batch: eight agents, and three things found sideways

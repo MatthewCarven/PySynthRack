@@ -3452,3 +3452,24 @@ Eight agents in worktrees, all landed; records in WORKLOG.md 2026-10-12.
       see the note at the top). WORKLOG.md and the `error_handler_*.md`
       move are still to do.*
       **SHIPPED 2026-10-12** (62522ac, c0e6603): WORKLOG.md 8,487 -> 2,650 lines (July and August verbatim to the archive, a fresh snapshot on top); `error_handler_*.md` moved to docs/ (nothing referenced them, the exe doesn't bundle them).
+
+### Decided 2026-11-10: the `delay` clock sync + stereo echo spec's five calls
+
+Filed under Decisions in TODO.md on 2026-11-07. Matthew took the first option of
+each ("Yes, take all five"), which is what the spec was written to. The build
+is queued in TODO.md.
+
+- [x] **Clocked times past the 2 s line:** fold down by octaves (stays on the
+      grid), a clamp (simpler, drifts off the grid), or a longer line?
+      **DECIDED 2026-11-10:** fold by octaves.
+- [x] **Default `spread`:** 1.0 (cabling the jacks gives a full ping-pong) or
+      0.0 (the `modal`/`pitch_shifter` habit)? `out` doesn't move either way.
+      **DECIDED 2026-11-10:** 1.0.
+- [x] **Time changes:** crossfade only, or also a tape-style `bend`? The bend
+      doubles the freeze and fade tests. His ears should settle this one.
+      **DECIDED 2026-11-10:** crossfade only for now; his ears get the final
+      say once it's built (tracked on the build item).
+- [x] **Division control:** float `division` + `feel`, or one combo of ratios?
+      **DECIDED 2026-11-10:** float `division` + `feel`.
+- [x] **Hops prep commit in this build:** yes, or ship stereo with the 157%
+      corner documented? **DECIDED 2026-11-10:** yes.
