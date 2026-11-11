@@ -23,10 +23,51 @@ Use cases:
   * Slapback on a lead or the FilePlayer (short time, low feedback).
   * Dub/space echo on a sequencer line (longer time, high feedback,
     low ``tone`` so the tail melts away).
-  * Rhythmic echoes — set ``time`` to a note value of your clock by ear,
-    or wobble ``time_cv`` from an LFO for tape flutter.
+  * Rhythmic echoes — patch the sequencer's ``clock`` into ``clock`` and
+    the echo locks to it: ``division`` 1 with ``feel`` dotted is the
+    dotted-eighth dub echo on an 8th-note clock, at any tempo. Wobble
+    ``time_cv`` from an LFO on top for tape flutter.
+  * Ping-pong: cable ``out_l`` / ``out_r`` into a stereo sink and the
+    repeats bounce left, right, left.
   * Beat-repeat / stutter: pulse ``freeze`` from a slow clock and the last
     ``time`` milliseconds of whatever you played stutter until it drops.
+
+Clock sync (2026-11-11 love pass):
+  Patch a clock into ``clock`` and the echo becomes ``division`` clock
+  ticks long (0.25..64), times ``feel`` (``straight`` 1, ``dotted`` 3/2,
+  ``triplet`` 2/3 -- ratios, so they stay true whatever the clock's own
+  division makes a tick), in WHOLE samples. While locked ``time`` steps
+  aside; ``time_cv`` still adds on top (wow and dub throws on a synced
+  echo), and with no cv the read is whole samples, so a locked echo skips
+  the two-tap low-pass. The lock takes three rising edges (the span of
+  the last three measures two ticks, which keeps a tempo that isn't a
+  whole number of samples, and a swung clock, from retargeting every
+  tick); until then ``time`` rules, bit for bit. An interval that breaks
+  the two-tick pattern -- a ``reset``, a short stop, a tempo step --
+  restarts the measurement from that edge, so no span is ever measured
+  across it and the echo holds its time meanwhile; a real tempo step
+  lands on its third tick. A clock that stops keeps its last time. A
+  target past the 2 s line folds down by octaves, staying on the grid.
+  Every change of time -- the lock, a new tempo, a ``division`` or
+  ``feel`` move, the unpatch (home to ``time``) -- crossfades the old and
+  new reads over 10 ms (one fade at a time; a new target waits its turn;
+  during a ``freeze`` hold it waits for the release). The unclocked
+  ``time`` knob still jumps, as it always has.
+
+Stereo (2026-11-11 love pass):
+  Cable ``out_l`` or ``out_r`` and the delay runs a second line, so the
+  repeats ping-pong: an impulse lands L, R, L, R with the far side
+  silent (swap the cables to start right). A hard ping-pong is two lines
+  feeding each other; their sum obeys the delay's own loop and their
+  difference the same loop with the feedback negated, so the existing
+  line is the "mid", untouched -- ``out`` is bit-exact whatever the
+  stereo jacks do -- and the new "side" line is one sign away. ``spread``
+  is the far side's fade (its level is ``1 - spread``) at the output
+  only: 1 is hard left-right, 0 is ``out`` on both. The dry stays
+  centred. A freeze holds the side with gain -1, so a held ping-pong
+  keeps bouncing. Uncabling both jacks drops the side line (a re-cable
+  starts it empty, so it can't play back old audio); echoes already in
+  the mid then play centred until they decay, and new notes bounce.
 
 Freeze:
   While the ``freeze`` gate is high **the echo hangs**: the line
@@ -70,7 +111,11 @@ Ports:
   * ``freeze`` (gate): high (> 0.5) hangs the echo (see Freeze above).
     ORed with the ``freeze`` tickbox. Optional; unpatched means never
     frozen unless ticked.
+  * ``clock`` (gate): locks the echo to ``division`` ticks times ``feel``
+    (see Clock sync above). Optional; unpatched means ``time`` rules.
   * ``out`` (audio): the dry+echo mix.
+  * ``out_l`` / ``out_r`` (audio): the ping-pong pair (see Stereo above).
+    Optional; uncabled means no side line runs.
 
 Voice-awareness:
   Shape-polymorphic, per the v0.4 convention. A mono ``(F,)`` audio in
@@ -81,6 +126,12 @@ Voice-awareness:
   each voice independently. A single voice row is bit-identical to the
   mono path. A ``(V, F)`` ``freeze`` gate collapses to any-voice-high
   (the house sum) and the one row freezes every voice's line together.
+  ``clock`` and ``spread`` are shared by every voice (a ``(V, F)`` clock
+  collapses like the freeze gate); ``time_cv`` stays per voice.
+  ``out_l`` / ``out_r`` take ``out``'s shape -- ``(V, F)`` in gives
+  ``(V, F)`` out, each voice with its own mid and side line, nothing
+  summed (the stereo sinks sum voices themselves). Sixteen voices in
+  stereo cost a second 11.3 MB ring.
 """
 from __future__ import annotations
 
@@ -100,7 +151,9 @@ DELAY_FEELS = tuple(DELAY_FEEL_RATIOS)
 
 @register_module_type
 class Delay(Module):
-    """Analog-voiced feedback delay (echo) with a damped feedback path.
+    """Analog-voiced feedback delay (echo) with a damped feedback path,
+    clock sync (``clock`` / ``division`` / ``feel``) and a ping-pong pair
+    (``out_l`` / ``out_r`` / ``spread``).
 
     Parameters:
         time: Base delay time in milliseconds (1..2000).

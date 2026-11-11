@@ -90,9 +90,7 @@ Paste the preamble below plus one module spec as the task.
 
 ## Index
 
-- **Open, spec'd (ready to pick):** `pitch_detector` (M–L) · `spectrum` (M) ·
-  `delay` clock sync + stereo echo (M, a love pass on a shipped module; calls
-  decided 2026-11-10).
+- **Open, spec'd (ready to pick):** `pitch_detector` (M–L) · `spectrum` (M).
 - **Open, one-liners (spec when picked):** from the keep-list,
   `midi_output` (M); quick hits `exciter` `gate_delay` `macro` `tuner`
   `looper` (L), vocoder follow-ups.
@@ -113,6 +111,8 @@ Paste the preamble below plus one module spec as the task.
   The quick-hit run: `logic` `mid_side` `octaver` `matrix_mixer` `vinyl`
   `supersaw` `wavetable_morph` ·
   Keep-list one-liners: `function_generator` `rotary`.
+- **Love passes specced here** ([in the appendix](#love-passes-specced-here)):
+  `delay` clock sync + stereo echo (2026-11-11).
 - **Shipped off-menu** (5, [listed in the appendix](#shipped-off-menu)):
   `specific_stereo_speaker_output` `key_trigger`
   `buffered_specific_speaker_output` `warping_buffered_speaker_output`
@@ -164,7 +164,152 @@ FFT analyzer tap.
   compensated); two-tone resolution at 4096; averaging time constant; rebin
   map monotone and gap-free.
 
-### `delay`: clock sync + stereo echo (M) — love pass on a shipped module, "Effects"
+## The 2026-08-04 brainstorm (Matthew's keep-list — unspecced menu)
+
+From the "what's left" brainstorm (WORKLOG 2026-08-04); Matthew asked
+for all of these on the roadmap. One-liners only — promote to a full
+spec (ports/params/DSP/neutral/tests) when picked, same as ever.
+`sampler`, `organ` and `chaos` were picked first and already have
+full specs above.
+
+*Realigned 2026-10-10:* nine of the twelve items shipped (`bowed` and
+`wind`, `function_generator`, `drift`, `cv_math`, `cv_recorder`, `rotary`,
+`vowel`, `freeze`, `autopan`). Their bullets moved to the appendix, where
+the full specs mentioned above now live too. Three remain:
+
+**I/O**
+- `midi_output` (M) — the rack has `midi_input` but can't drive
+  external hardware. Gates + pitch CV → MIDI notes, CVs → CCs. A
+  whole new dimension: PySynthRack as the *brain* of a hardware
+  setup.
+
+**The endgame (architecture, not modules)**
+- **Subpatch containers** (L) — group a set of modules into a
+  reusable macro-module with exposed ports. At that point the rack
+  stops *adding* modules and starts *multiplying* them — every patch
+  ever built becomes a module. The feature that makes "running out of
+  options" structurally impossible.
+- **Snapshot morph** (M–L) — save knob scenes, interpolate between
+  them with one CV. A performance feature more than a module.
+
+*Note 2026-10-10:* there is no "I/O" CATEGORY; `midi_output` would most
+likely be filed under Outputs, decided when it is specced. Matthew on
+`midi_output`: wanted, "but only for midi based patches". It's the
+hardware-rig case, so spec it around a patch that already talks MIDI.
+
+*Off the module menu 2026-10-10 (Matthew: "nah, unless easy to
+implement").* Neither is easy. Subpatch containers (L) is now under
+`TODO.md` § "Plan together first": scope and plan it with Matthew if
+it's ever taken up. Snapshot morph (M–L) is in `TODO.md` § "Later /
+wishlist": it would drive every numeric param of every module from one
+CV each block, through the single param-write door. The two bullets
+above are kept as the record.
+
+## Quick hits (S unless noted)
+
+- `exciter` — HP → soft nonlinearity (oversampling infra) → blend; adds air.
+- `gate_delay` — delay/stretch a gate by ms or clock division.
+- `sequential_switch` — clocked 1→4 router / 4→1 selector, reset in.
+- `macro` — one big knob → 4 scaled/offset cv outs; performance macro
+  (cv_scale ×4 in one panel).
+- `tuner` — pitch_detector core + a cents needle panel.
+- `looper` (L) — clock-synced record/overdub/undo layer on the transport
+  pattern (FilePlayer Play/Stop + resampler seam crossfades); slice it.
+- Vocoder follow-ups (from TODO): stereo decorrelated bands, `formant` shift
+  knob, carrier normal to noise, per-band trims.
+
+*Notes 2026-10-10:*
+- `sequential_switch`: **DROPPED 2026-10-10** (Matthew: "no unless we're
+  missing functionality somewhere"). Nothing's missing; it's just more
+  modules to patch. `possibility_selector` with every step decided
+  (`out1..4`, gates) → four `adsr` (sustain 1, attack and release at
+  their shortest: the gate → CV bridge, which de-clicks the switch too)
+  → four `vca.cv` → `mixer` switches audio on a clock. For CV, use
+  `cv_math` `mult` instead of the `vca` and a `cv_combiner` instead of
+  the `mixer`.
+- `tuner` needs `pitch_detector` first.
+- `looper`: `cv_recorder` (shipped 2026-09-19) is the CV half; this is
+  the audio one. **KEPT 2026-10-10** under Matthew's same rule, because
+  this IS missing: nothing records live audio in layers. `delay` freeze
+  holds at most 2 s, `granular` freeze at most its 10 s ring, and both
+  only hold one take: no overdub, no undo, no clocked length.
+- The vocoder follow-ups are also listed under the shipped Vocoder bullet
+  in `TODO.md`.
+
+## Offered, not taken up
+
+- **Scope persistence/afterglow** — accumulate N frames and fade the old
+  ones, so `chaos` in xy mode draws the dense butterfly. Offered
+  2026-08-21; Matthew didn't take it up and it was deliberately kept off
+  `TODO.md` (WORKLOG 2026-08-21, "the butterfly lands"). Here so it stays
+  findable, not as a pick. **Revived 2026-10-10** (Matthew: "I love
+  options but if it's too much CPU let's skip it"). The estimate says
+  it's cheap, so it's in `TODO.md` as an opt-in scope feature, off by
+  default.
+
+---
+
+# Appendix: shipped from this menu
+
+The specs below are history, moved here verbatim on 2026-10-10 and kept
+under their original section headings. The one line added under each
+heading gives the ship date, how the build differed from the spec (if it
+did), and the `docs/MODULES.md` entry, which is the reference for what was
+built.
+
+## Shipped off-menu
+
+Built on a whim, never on this menu. There is no spec here; MODULES.md is
+the record.
+
+- `specific_stereo_speaker_output` (Outputs) — 2026-07-06 — the stereo
+  sink sent to a chosen output device (a monitor or cue bus). →
+  [MODULES.md](MODULES.md#specific_stereo_speaker_output)
+- `key_trigger` (Sources) — 2026-07-11 — one computer key as a gate,
+  trigger or latch. → [MODULES.md](MODULES.md#key_trigger)
+- `buffered_specific_speaker_output` (Outputs) — 2026-07-11 — the device
+  sink with its own buffer size; the ring governor (`fill` out,
+  `ratio_cv`, `auto_govern`) followed on 2026-07-16. →
+  [MODULES.md](MODULES.md#buffered_specific_speaker_output)
+- `warping_buffered_speaker_output` (Outputs) — 2026-07-18 — its
+  tape-warp sibling: the governor drives an audible varispeed. →
+  [MODULES.md](MODULES.md#warping_buffered_speaker_output)
+- `possibility_seq` (Modulation) — 2026-08-15 — a step sequencer whose
+  steps are 0, 1 or `?`. Its sibling `possibility_selector` was specced
+  here before it was built. → [MODULES.md](MODULES.md#possibility_seq)
+
+Also built from a keep-list one-liner, with no full spec here:
+`function_generator` (Modulation, 2026-08-23) and `rotary` (Effects,
+2026-09-14). Their bullets are under the keep-list heading at the end of
+this appendix.
+
+## Love passes specced here
+
+Capability added to a module that had already shipped, specced on this
+menu first. Same rule as above: the spec verbatim, one line added.
+
+### `delay`: clock sync + stereo echo (M) — love pass on a shipped module, "Effects" — **SHIPPED 2026-11-11** (see TODO.md / WORKLOG.md)
+
+> **Shipped 2026-11-11**, built as written: hops, clock, side line, in
+> the spec's order, every number the tests pin re-measured on the module.
+> How the build differed: (1) `_DELAY_HOP_FLOOR` stays 4, but the build's
+> re-measure had hops ahead of the loop even at 3 and 2 samples (7.8 ms
+> against 9.5 on a 512 block), so 4 is conservative and the loop could
+> go; (2) the `division` / `feel` / `spread` panel arms landed with their
+> params, not in a last panel step, so the widget sweep stayed green at
+> every commit; (3) small seams for the self-tests (`_delay_hop`,
+> `_delay_breaks_pattern`, `_delay_xfade_weights`, `_delay_side_line`);
+> (4) the clock's `ck_*` keys survive the voice-count re-init (the
+> siblings' `_MOD_CLOCK_KEYS` precedent), and an unpatch drops the
+> measurement, so a re-patch locks afresh; (5) the sweep measured 3.7 ms
+> behind the two-interval average (3.2 in the spec, on a slightly
+> different sweep). Measured as specced: one event per render on all five
+> clocks, every reset and stop bit for bit, the fade 100-440x under the
+> knob jump, the ghost -4.0 against -92.7 dB, the textbook pair to
+> 1.5e-8, budget 67 / 92 / 154 us per block (one voice: unclocked,
+> clocked, stereo) and 289 / 672 at sixteen voices. The corner left: a
+> 2-3-sample delay in stereo runs the loop at ~160 % of the block.
+> → MODULES.md: [`delay`](MODULES.md#delay)
 
 > *Specced 2026-11-07, scope approved by Matthew. All five calls decided
 > 2026-11-10: he took the first option of each, so the spec stands as
@@ -519,125 +664,6 @@ sounds too polite once built.
 **Adjacent follow-ons** (not in this spec): the `time` knob's jump (the same fade
 would cure it), a true stereo `in_r`, `spread_cv`, a panel readout of the locked
 time, clocked `reverb` predelay.
-
-## The 2026-08-04 brainstorm (Matthew's keep-list — unspecced menu)
-
-From the "what's left" brainstorm (WORKLOG 2026-08-04); Matthew asked
-for all of these on the roadmap. One-liners only — promote to a full
-spec (ports/params/DSP/neutral/tests) when picked, same as ever.
-`sampler`, `organ` and `chaos` were picked first and already have
-full specs above.
-
-*Realigned 2026-10-10:* nine of the twelve items shipped (`bowed` and
-`wind`, `function_generator`, `drift`, `cv_math`, `cv_recorder`, `rotary`,
-`vowel`, `freeze`, `autopan`). Their bullets moved to the appendix, where
-the full specs mentioned above now live too. Three remain:
-
-**I/O**
-- `midi_output` (M) — the rack has `midi_input` but can't drive
-  external hardware. Gates + pitch CV → MIDI notes, CVs → CCs. A
-  whole new dimension: PySynthRack as the *brain* of a hardware
-  setup.
-
-**The endgame (architecture, not modules)**
-- **Subpatch containers** (L) — group a set of modules into a
-  reusable macro-module with exposed ports. At that point the rack
-  stops *adding* modules and starts *multiplying* them — every patch
-  ever built becomes a module. The feature that makes "running out of
-  options" structurally impossible.
-- **Snapshot morph** (M–L) — save knob scenes, interpolate between
-  them with one CV. A performance feature more than a module.
-
-*Note 2026-10-10:* there is no "I/O" CATEGORY; `midi_output` would most
-likely be filed under Outputs, decided when it is specced. Matthew on
-`midi_output`: wanted, "but only for midi based patches". It's the
-hardware-rig case, so spec it around a patch that already talks MIDI.
-
-*Off the module menu 2026-10-10 (Matthew: "nah, unless easy to
-implement").* Neither is easy. Subpatch containers (L) is now under
-`TODO.md` § "Plan together first": scope and plan it with Matthew if
-it's ever taken up. Snapshot morph (M–L) is in `TODO.md` § "Later /
-wishlist": it would drive every numeric param of every module from one
-CV each block, through the single param-write door. The two bullets
-above are kept as the record.
-
-## Quick hits (S unless noted)
-
-- `exciter` — HP → soft nonlinearity (oversampling infra) → blend; adds air.
-- `gate_delay` — delay/stretch a gate by ms or clock division.
-- `sequential_switch` — clocked 1→4 router / 4→1 selector, reset in.
-- `macro` — one big knob → 4 scaled/offset cv outs; performance macro
-  (cv_scale ×4 in one panel).
-- `tuner` — pitch_detector core + a cents needle panel.
-- `looper` (L) — clock-synced record/overdub/undo layer on the transport
-  pattern (FilePlayer Play/Stop + resampler seam crossfades); slice it.
-- Vocoder follow-ups (from TODO): stereo decorrelated bands, `formant` shift
-  knob, carrier normal to noise, per-band trims.
-
-*Notes 2026-10-10:*
-- `sequential_switch`: **DROPPED 2026-10-10** (Matthew: "no unless we're
-  missing functionality somewhere"). Nothing's missing; it's just more
-  modules to patch. `possibility_selector` with every step decided
-  (`out1..4`, gates) → four `adsr` (sustain 1, attack and release at
-  their shortest: the gate → CV bridge, which de-clicks the switch too)
-  → four `vca.cv` → `mixer` switches audio on a clock. For CV, use
-  `cv_math` `mult` instead of the `vca` and a `cv_combiner` instead of
-  the `mixer`.
-- `tuner` needs `pitch_detector` first.
-- `looper`: `cv_recorder` (shipped 2026-09-19) is the CV half; this is
-  the audio one. **KEPT 2026-10-10** under Matthew's same rule, because
-  this IS missing: nothing records live audio in layers. `delay` freeze
-  holds at most 2 s, `granular` freeze at most its 10 s ring, and both
-  only hold one take: no overdub, no undo, no clocked length.
-- The vocoder follow-ups are also listed under the shipped Vocoder bullet
-  in `TODO.md`.
-
-## Offered, not taken up
-
-- **Scope persistence/afterglow** — accumulate N frames and fade the old
-  ones, so `chaos` in xy mode draws the dense butterfly. Offered
-  2026-08-21; Matthew didn't take it up and it was deliberately kept off
-  `TODO.md` (WORKLOG 2026-08-21, "the butterfly lands"). Here so it stays
-  findable, not as a pick. **Revived 2026-10-10** (Matthew: "I love
-  options but if it's too much CPU let's skip it"). The estimate says
-  it's cheap, so it's in `TODO.md` as an opt-in scope feature, off by
-  default.
-
----
-
-# Appendix: shipped from this menu
-
-The specs below are history, moved here verbatim on 2026-10-10 and kept
-under their original section headings. The one line added under each
-heading gives the ship date, how the build differed from the spec (if it
-did), and the `docs/MODULES.md` entry, which is the reference for what was
-built.
-
-## Shipped off-menu
-
-Built on a whim, never on this menu. There is no spec here; MODULES.md is
-the record.
-
-- `specific_stereo_speaker_output` (Outputs) — 2026-07-06 — the stereo
-  sink sent to a chosen output device (a monitor or cue bus). →
-  [MODULES.md](MODULES.md#specific_stereo_speaker_output)
-- `key_trigger` (Sources) — 2026-07-11 — one computer key as a gate,
-  trigger or latch. → [MODULES.md](MODULES.md#key_trigger)
-- `buffered_specific_speaker_output` (Outputs) — 2026-07-11 — the device
-  sink with its own buffer size; the ring governor (`fill` out,
-  `ratio_cv`, `auto_govern`) followed on 2026-07-16. →
-  [MODULES.md](MODULES.md#buffered_specific_speaker_output)
-- `warping_buffered_speaker_output` (Outputs) — 2026-07-18 — its
-  tape-warp sibling: the governor drives an audible varispeed. →
-  [MODULES.md](MODULES.md#warping_buffered_speaker_output)
-- `possibility_seq` (Modulation) — 2026-08-15 — a step sequencer whose
-  steps are 0, 1 or `?`. Its sibling `possibility_selector` was specced
-  here before it was built. → [MODULES.md](MODULES.md#possibility_seq)
-
-Also built from a keep-list one-liner, with no full spec here:
-`function_generator` (Modulation, 2026-08-23) and `rotary` (Effects,
-2026-09-14). Their bullets are under the keep-list heading at the end of
-this appendix.
 
 ## Dynamics — the biggest hole in the rack
 

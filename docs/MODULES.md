@@ -132,7 +132,7 @@ The full map:
 | `granular.position_cv` | `1.0` (`position_cv_depth`) | fraction of the buffer | `position + d·cv[onset]`, read at each grain's onset and latched for that grain; clamped 0…1; a `(V, F)` source is averaged |
 | `sample_hold.prob_cv` | `1.0` (`prob_cv_depth`) | probability (0…1, the knob's unit) | `clip(prob + d·cv[edge], 0, 1)`, read at each rising edge's own sample and decided there (a die is drawn only where 0 < p < 1, so a CV that pins p at 1 consumes none); a `(V, F)` source is one chance per voice at that voice's edge; a non-finite sample reads as 0 |
 | `supersaw.detune_cv` | `1.0` (`detune_cv_depth`) | detune (0…1, the knob's unit) | `clip(detune + d·mean cv, 0, 1)`, block-rate; a `(V, F)` source on a voice-aware stack gives every voice its own detune, a `(V, F)` source on a mono stack is averaged |
-| `delay.time_cv` | `50.0` | ms | `time + d·cv` |
+| `delay.time_cv` | `50.0` | ms | `time + d·cv`; while `clock` is locked, `T + d·cv` (the clocked time, which `time` steps aside for — the cv does not) |
 | `loudness.level_cv` | `1.0` | level (0…1) | `level + d·mean cv` |
 | `tilt_eq.tilt_cv` | `6.0` | dB | `tilt + d·mean cv` |
 | `compressor.threshold_cv` | `12.0` | dB | `threshold + d·mean cv` |
@@ -464,7 +464,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`granular`](#granular) | Effects | `in` (audio), `position_cv` (cv), `freeze` (gate) → `out`, `out_l`, `out_r` (audio) |
 | [`freeze`](#freeze) | Effects | `in` (audio), `freeze` (gate), `pitch_cv`,`width_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
-| [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv), `freeze` (gate) → `out` (audio) |
+| [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv), `freeze` (gate), `clock` (gate) → `out`, `out_l`, `out_r` (audio) |
 | [`reverb`](#reverb) | Effects | `in` (audio), `decay_cv`,`damping_cv`,`mix_cv` (cv), `freeze` (gate) → `out_l`,`out_r` (audio) |
 | [`compressor`](#compressor) | Effects | `in`,`sidechain` (audio), `threshold_cv` (cv) → `out` (audio), `gr` (cv) |
 | [`limiter`](#limiter) | Effects | `in` (audio) → `out` (audio) |
@@ -2444,7 +2444,10 @@ of staying digitally bright.
 | `in` | in | audio | Signal to echo. Unpatched → silence. |
 | `time_cv` | in | cv | Added to `time`, scaled by `cv_depth`. Modulate for wow / dub throws. |
 | `freeze` | in | gate | (2026-09-19) High (> 0.5) **hangs the echo**: unity loop, damping bypassed, input muted from the line, read pinned to `round(time)` samples (the dry path still passes). A `(V, F)` gate collapses to any-voice-high. ORed with the `freeze` tickbox. Unpatched and un-ticked → never frozen, bit-exact with the pre-freeze render. |
-| `out` | out | audio | Dry + echo mix. |
+| `clock` | in | gate | (2026-11-11) **Locks the echo** to `division` ticks × `feel`, in whole samples, three edges in; changes crossfade over 10 ms (see *Clock sync*). A `(V, F)` clock collapses to the house sum. Unpatched → `time` rules, bit-exact with the pre-sync render. |
+| `out` | out | audio | Dry + echo mix. Bit-exact whatever `out_l` / `out_r` do. |
+| `out_l` | out | audio | (2026-11-11) The **ping-pong** pair's left: repeats alternate L, R, L … (see *Stereo*). Cabling either jack runs the side line; uncabled → none. |
+| `out_r` | out | audio | (2026-11-11) The pair's right. Swap the two cables to start the bounce on the right. |
 
 **Parameters**
 
@@ -2456,13 +2459,24 @@ of staying digitally bright.
 | `mix` | `0.35` | 0 … 1 | Dry / wet balance. |
 | `cv_depth` | `50.0` | 0 … 2000 ms/unit | Milliseconds of delay time per unit of `time_cv`. |
 | `freeze` | off | tickbox | (2026-09-20) Hang the echo from the panel — ORed with the `freeze` gate. Ticking is a rising edge at the first sample of the block it lands on (same ramp, same `round(time)` latch, bit-exact with a gate rising there); clearing releases like a gate fall. |
+| `division` | `1.0` | 0.25 … 64 ticks | (2026-11-11) Clock ticks per echo while `clock` is patched — the [`flanger`](#flanger) / [`phaser`](#phaser) / [`autopan`](#autopan) rail. A drag. |
+| `feel` | `straight` | `straight` · `dotted` · `triplet` | (2026-11-11) ×1, ×3/2 or ×2/3 on the clocked echo. Ratios, not note names: what a tick is depends on the clock's own `division`, so a name would lie. Dotted is `division` 1.5 too; a triplet needs 4/3, which a drag can't land on. |
+| `spread` | `1.0` | 0 … 1 | (2026-11-11) The ping-pong's width on `out_l` / `out_r`: the far side's level is `1 − spread`. 1 bounces hard left-right; 0 is `out` on both. Output only, so a move is immediate. |
 
 Shape-polymorphic like [Filter](#filter) / [Crossover](#crossover): a
 mono input runs one delay line; a voice-aware `(V, F)` input runs one
-line per voice slot (a single voice row is bit-identical to mono). Any
-musical delay time is many blocks long, so the common case runs on a
-fully vectorized block path; only short or heavily modulated delays
-(under one block) fall back to a per-sample loop.
+line per voice slot (a single voice row is bit-identical to mono);
+`out_l` / `out_r` take `out`'s shape, each voice with its own mid and
+side line, nothing summed (the stereo sinks sum voices themselves).
+`clock` and `spread` are shared by every voice; `time_cv` stays per
+voice. The block runs in **hops no longer than its shortest delay**
+(2026-11-11, the [`reverb`](#reverb)'s idiom): within a hop every read
+predates the hop's writes, so it vectorizes, and a musical delay time —
+a block or more — is one block-length hop. Only a delay under 4 samples
+takes the per-sample loop (a hop would cost more there). Per 512 block,
+one voice: ~70 µs unclocked, ~90 clocked, ~150 stereo; sixteen voices
+~290 and ~670 stereo, against an 11.6 ms budget. The corner left: a 2- or
+3-sample delay in stereo runs the per-sample loop at ~160 % of the block.
 
 **Block-size exact** (2026-09-24): the render is bit-identical at any
 block size — 64, 128, 512 or 1000, over four seconds with feedback,
@@ -2484,7 +2498,9 @@ buffer slider.
 `time_cv` from an [LFO](#lfo) for tape flutter, or set a short `time`
 with a little modulation for chorus / vibrato shading. See
 `examples/delay_dub_echo.json` (a self-playing sequencer melody through a
-dotted-eighth dub echo).
+dotted-eighth dub echo, set by ear) and `examples/delay_pingpong_sync.json`
+(the same patch with the clock locking the echo and the repeats bouncing
+across a stereo sink).
 
 **Freeze** (2026-09-19 love pass). Hold `freeze` and **the echo hangs**:
 the last `time` milliseconds of whatever you played stutter, unchanged,
@@ -2532,6 +2548,105 @@ cable patched but low it holds exactly as the cable would. Off, with the
 gate unpatched, the module never enters the freeze machinery — still the
 pre-freeze code by construction (every shipped example with a delay
 re-rendered bit-exact).
+
+**Clock sync** (2026-11-11 love pass). Patch a [`clock`](#clock) into
+`clock` and the echo locks to it: **`division` ticks** (0.25 … 64) times
+**`feel`** (`straight` ×1, `dotted` ×3/2, `triplet` ×2/3), in whole
+samples — `T = round(span · division · num / (2 · den))`, floor 2, where
+`span` is the measured two-tick span. `delay_dub_echo`'s 375 ms on an
+8th-note clock is now `division` 1, `feel` dotted, at any tempo. While
+locked `time` steps aside (as `rate` does on the modulation effects), but
+`time_cv` still adds on top: wow and dub throws on a synced echo are the
+point. With no cv the read is whole samples, so a locked echo skips the
+two-tap low-pass (a locked 4410-sample echo is `time` 100 ms bit for bit).
+
+*Measuring.* The lock takes **three rising edges** (250 ms at 120 BPM ×4,
+1 s on a quarter-note clock); until then `time` rules, bit for bit. The
+span is that of the last three edges — two ticks — not the last two:
+the real clock's interval alternates at any tempo that isn't a whole
+number of samples (5512 / 5513 at 120 ×4) and a swung clock alternates by
+design, so a last-two-edges echo would retarget nearly every tick (239
+times in 30 s, measured on the spec's prototype); this one retargets
+once, at the lock, on every clock tried. A deadband (`span / 1024`, at least 2 samples) lets only a real
+change through. And **an interval that breaks the two-tick pattern
+restarts the measurement from that edge**: no span is ever measured
+across a `reset`, a short `run` stop or a tempo step, and the echo holds
+its time meanwhile. Every off-grid, swung, repeated or on-grid reset and
+every `run` stop from 1.5 to 24 ticks renders bit for bit what the
+undisturbed clock renders; a real tempo step lands one retarget, on its
+third tick, at the right span. A clock that stops keeps its last time.
+What is documented rather than fixed: three ticks is 1.5 s on a
+quarter-note clock at 120; a ±10 % wobble at 1 Hz leaves `T` up to 16 ms
+behind (×`division`); two breaks inside three ticks (a doubled tick, two
+quick resets) can get one wrong span through, costing two fades and
+correcting within four ticks; a rhythm on the jack isn't a tempo and
+holds whichever span it locked to.
+
+*Long times fold.* A target past the 2 s line **folds down by octaves**,
+so it stays on the grid: a 100 BPM quarter clock at `division` 4 asks for
+2.4 s and gets 1.2 s, on the beat, where a clamp would sit at 2.0 s —
+3.33 beats, drifting off the grid every repeat.
+
+*Changing time.* Every change — the lock, a new tempo, a `division` or
+`feel` move, the unpatch (which fades home to `time`) — **crossfades the
+old and new reads over 10 ms** (the freeze's ramp), weighted from an
+integer count, starting on the edge sample that measured it or at the
+block head. One fade runs at a time and a new target waits its turn, so
+a dragged `division` moves in 10 ms steps. Measured on tones, the worst
+high band (> 3 kHz) across a switch is 100–440× under today's `time`
+knob jumping between the same two times, and on a sine or pad never above
+the render with no switch at all. The blend is linear, not equal-power,
+so the loop gain never exceeds 1 through it (the loop's peak during a
+fade stays under the peak before it, at `feedback` 0.98 too). Its one
+weakness: on a sustained tone whose two reads are exactly out of phase,
+a crossfade must pass near silence — about 3 ms under −12 dB at 10 ms,
+the reason it is no longer. The unclocked `time` knob still jumps, as it
+always has. A pitch-bending tape glide is the alternative (and a possible
+later `bend` option); it leaves the grid for up to seconds while it
+settles.
+
+*With freeze.* A clock edge during a hold is measured but does not move
+the read; any retarget waits until the gate is low and its release has
+run out, then fades as usual — landing on the sample the release ends. A
+fade already in flight at a rise finishes (it ends before the hold
+reaches unity), and the latch takes the new read; a locked hold is `T`
+exactly, with no slide.
+
+Block-size exact like the rest: edges are integer sample positions, the
+span and the break test integers, `T` a pure function of integers and two
+params, the fade weight an integer count. Five scenarios — a tempo step,
+swing, `feel`, cv, freeze and stereo together; whole-sample reads; the
+fold; the unpatch; three voices with the paths flipping — match in
+output and state at 64, 128 and 1000 against 512 (param moves pinned to
+block heads the sizes share).
+
+**Stereo** (2026-11-11 love pass). Cable `out_l` / `out_r` and the
+repeats **ping-pong**: an impulse lands L, R, L, R, with the far side
+exactly silent. Swap the cables to start right. A hard ping-pong is two
+lines feeding each other — `L = x + fb·R@T`, `R = fb·L@T` — and adding and
+subtracting them shows the sum obeys the delay's existing loop while the
+difference obeys the same loop with the feedback **negated**. So the
+existing line is the *mid*, untouched — `out` is bit-exact whatever the
+stereo jacks do — and the new *side* line is one sign away from it
+(it matches a textbook cross-coupled pair to float32 rounding, up to
+`feedback` 0.98, fractional times included). `spread` is the far side's
+fade — its level is `1 − spread` — at the output only, so a move is
+immediate; at 0 both jacks are `out`. The dry stays centred. No switch:
+cabling a jack turns it on, and the side line runs only while one is
+cabled. A **freeze** holds the side with gain −1 (negation is exact), so a
+held ping-pong keeps bouncing — over 10 s of hold the mid repeats and the
+side negates bit for bit every lap, and L on one lap is R on the next.
+
+*Re-cabling.* Uncabling both jacks **drops** the side line and the next
+cabled block starts it empty: it can't simply wait, because the write
+position keeps moving, and a re-cable would read and feed back audio from
+the earlier cabled period (measured: a ghost at −4.0 dB with the mid at
+−86.6 dB; dropped, −92.7 dB). One jack left cabled keeps it running.
+After a re-cable, echoes already in the mid play centred at half level
+on each side (L + R is still the mid) and decay as usual without
+bouncing; notes played after it bounce at full level. A re-cable during
+a hold leaves the hold centred and exact. The identity needs a linear
+loop: a drive inside it would need the cross-coupled pair itself.
 
 #### `reverb`
 
@@ -6542,6 +6657,7 @@ loads in the app. Notable ones referenced above:
   difference the clear makes.
 - `pluck_velocity_color.json` — the same picked line with the [`pluck`](#pluck)'s `vel_color` at 0.8: each pick's velocity now sets the burst's colour as well as its level (`color` 0.8 at full velocity, 0.24 at the softest), so the accents ring bright and the quiet picks thud — measured, every hit's first-50 ms centroid sits below the `vel_color` 0 render's, 0.61× at velocity 0.36. The ring-down is untouched; turn `vel_color` to 0 and it is `pluck_velocity.json` again.
 - `delay_freeze_stutter.json` — the beat-repeat: a sixteenth-note [`pluck`](#pluck) phrase into a 187.5 ms (dotted-sixteenth) [`delay`](#delay), a 15 BPM [`clock`](#clock)'s [`logic`](#logic) `not_a` holding the delay's `freeze` for the second two seconds of every four — the last one-and-a-half notes stutter, tumbling against the grid, while the phrase carries on dry over the top through `mix`.
+- `delay_pingpong_sync.json` — the dub echo, synced and in stereo: `delay_dub_echo`'s seven modules with its 8th-note [`clock`](#clock) also patched into the [`delay`](#delay)'s `clock` (`division` 1, `feel` dotted — the same 375 ms, now derived, locked to 16537 samples) and `out_l` / `out_r` into a [`stereo_speaker_output`](#stereo_speaker_output): each note's repeats bounce left, right, left, right while the melody plays centred.
 - `tape_stop_drop.json` — the tape-stop drop: an eighth-note saw riff ([`clock`](#clock) → [`sequencer`](#sequencer) → [`oscillator`](#oscillator) → [`adsr`](#adsr)/[`vca`](#vca)) on [`tape`](#tape) (`sat` 0.3, `wow` 0.15, `mix` 1), a 7.5 BPM clock's [`logic`](#logic) `not_a` pulling the tape's `stop` for the last 1.6 s of every 8 — the beat dives over `stop_time` 1.25 s, halts, and spins back up over `start_time` 0.6 s.
 - `cv_keyboard_external_voice.json` — the CV keyboard: `pitch_cv` drives an external oscillator, `key_c` triggers a separate noise voice.
 - `freeze_chord_pad.json` — module #100, the spectral freeze: a bar clock plays four sus2 chords on the [`organ`](#organ) ([`sequencer`](#sequencer) → [`chord`](#chord)) for a second each; the clock's `not_a` through [`logic`](#logic) is the [`freeze`](#freeze) gate, so it rises the instant the chord's gate falls and the capture is the chord's sustain — held as a glassy pad (`smear` 0.25) for the rest of the bar, easing out under the next chord over a 300 ms `fade`. Try `smear` 1 (the wash), `pitch` −12 (a sub-pad), `size` 16384 (a longer, smoother moment).

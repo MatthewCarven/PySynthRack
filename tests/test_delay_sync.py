@@ -52,7 +52,11 @@ Coverage (grows with the build, one commit per step):
     self-test; the per-sample loop and hops agree through a fade, side
     line included.
   - Panel: ``feel`` is a combo over ``DELAY_FEELS``; ``division`` is the
-    siblings' 0.25..64 drag.
+    siblings' 0.25..64 drag; ``spread`` a 0..1 slider labelled for its
+    jacks.
+  - Example: delay_pingpong_sync.json locks to 375 ms (16537 samples) on
+    its 8th-note clock, and one note's first four repeats land L, R, L, R
+    -- counted, the far side 30x down or more.
 """
 from __future__ import annotations
 
@@ -995,6 +999,12 @@ def _panel_calls(monkeypatch):
     return out
 
 
+def test_the_panel_offers_spread_as_a_unit_slider(monkeypatch):
+    kind, kw = _panel_calls(monkeypatch)["spread (out_l/r)"]
+    assert kind == "add_slider_float"
+    assert (kw["min_value"], kw["max_value"], kw["default_value"]) == (0.0, 1.0, 1.0)
+
+
 def test_the_panel_offers_division_and_feel(monkeypatch):
     from pysynthrack.modules.delay import DELAY_FEELS
     w = _panel_calls(monkeypatch)
@@ -1257,3 +1267,57 @@ class TestStereoFreeze:
         idx = (w - 1 - np.arange(D)) % st["buf"].shape[1]
         assert np.array_equal(st["buf_s"][0, idx], -st["buf_s"][0, (idx - D) % st["buf"].shape[1]])
         assert np.array_equal(st["buf"][0, idx], st["buf"][0, (idx - D) % st["buf"].shape[1]])
+
+
+# ----- the example ---------------------------------------------------------------
+
+
+def _render_example(one_note=False, seconds=6.0):
+    from pathlib import Path
+    from pysynthrack.io_patch import load_patch
+
+    np.random.seed(0)
+    path = Path(__file__).resolve().parent.parent / "examples" / "delay_pingpong_sync.json"
+    patch = load_patch(path)
+    dl = next(m for m in patch if m.TYPE == "delay")
+    if one_note:                      # the bar's first note alone
+        seq = next(m for m in patch if m.TYPE == "sequencer")
+        for k in range(2, 9):
+            seq.params[f"step{k}_on"] = False
+    b = NumpyBackend(sample_rate=SR, block_size=F)
+    b.compile(patch)
+    outs = []
+    for _ in range(int(SR * seconds / F)):
+        out, _devices = b.render_block_multi(F)
+        assert out is not None and np.all(np.isfinite(out))
+        outs.append(np.asarray(out).copy())
+    return np.concatenate(outs, axis=0), b._state[dl.id], patch
+
+
+def test_the_pingpong_example_locks_to_the_dotted_eighth():
+    # delay_dub_echo's seven modules: the same 375 ms, now derived from
+    # the 8th-note clock (division 1, dotted) instead of set by ear.
+    y, st, patch = _render_example()
+    assert len(patch.modules) == 7
+    assert y.shape[1] == 2 and 0.1 < float(np.abs(y).max()) < 0.8
+    assert st["ck_sync"] is True
+    assert abs(st["ck_cur"] - 16537.5) <= 1.0              # 375 ms
+    assert float(np.abs(y[:, 0] - y[:, 1]).max()) > 0.05   # really stereo
+
+
+def test_the_pingpong_examples_repeats_alternate_left_right():
+    # Count them: one note (the bar's first, at 2 s, after the lock) and
+    # its first four repeats -- L, R, L, R, the far side 40 dB down or
+    # more (measured ~300x). The fifth meets the next bar's note.
+    y, st, _patch = _render_example(one_note=True)
+    T = int(st["ck_cur"])
+    L, R = y[:, 0].astype(np.float64), y[:, 1].astype(np.float64)
+    t0 = 2 * SR
+    sides = []
+    for k in range(1, 5):
+        w = slice(t0 + k * T, t0 + k * T + int(0.2 * SR))
+        el, er = np.sqrt(np.mean(L[w] ** 2)), np.sqrt(np.mean(R[w] ** 2))
+        assert max(el, er) > 1e-3, k
+        assert max(el, er) > 30 * min(el, er), (k, el, er)
+        sides.append("L" if el > er else "R")
+    assert sides == ["L", "R", "L", "R"]

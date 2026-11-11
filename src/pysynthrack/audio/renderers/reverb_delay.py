@@ -273,10 +273,25 @@ class ReverbDelayRenderers:
         ``time_cv`` broadcasts across voices; a ``(V, F)`` ``time_cv``
         modulates each independently. Missing audio in -> silence, with the
         line left intact so reconnecting the cable doesn't snap the tail.
+        Paths: hops no longer than the shortest delay, the per-sample loop
+        only under ``_DELAY_HOP_FLOOR`` samples (see the core).
 
         ``freeze`` (gate): while high the echo hangs -- see the core below.
         A ``(V, F)`` gate collapses to the house sum (any voice high freezes)
         and the one row is shared by every voice's line.
+
+        ``clock`` (gate, 2026-11-11): locks the echo to ``division`` ticks
+        times ``feel`` -- see :meth:`_delay_clock_edges` (the measurement),
+        :meth:`_delay_sync_target` (the time) and :meth:`_delay_sync_rows`
+        (the crossfade). Collapsed like the freeze gate, shared by every
+        voice. With ``in`` unpatched a patched clock is still measured.
+
+        ``out_l`` / ``out_r`` (2026-11-11): the ping-pong pair, from a side
+        line that runs only while either is cabled
+        (``patch.cables_out_of``). The return follows it: a bare ``out``
+        array when neither is cabled -- the engine files it under the first
+        output port, which ``out`` stays -- and a dict of all three
+        otherwise, each in ``out``'s shape.
         """
         src = self._input_buffer(
             patch, buffers, module.id, "in", collapse=False
@@ -394,6 +409,23 @@ class ReverbDelayRenderers:
         the row is all-high from the first sample of the block it is seen
         on (a rising edge there, ramp and latch and all); off again, it
         releases like a gate fall.
+
+        ``clock`` (the clock row, or None; 2026-11-11): while patched and
+        locked, the read time per sample comes from the clock rows
+        (:meth:`_delay_sync_rows`) instead of ``time``, ``time_cv`` still
+        added on top, and a change of time crossfades two reads (``old``
+        and the new) by an integer-count weight, spelled the same on both
+        paths. Order matters: the freeze envelope first (a retarget waits
+        out a hold and its release), then the rows, then the per-sample
+        delay, then the freeze latch (a fade in flight at a rise finishes,
+        and the latch takes the new read). Unpatched and with no fade
+        live, neither the measurement nor the rows is called and the
+        pre-sync lines run verbatim.
+
+        ``stereo`` (2026-11-11): run the side line beside the mid -- the
+        same reads, its own damping state, the feedback negated -- and
+        return ``(out, out_l, out_r)``. False never touches it (and drops
+        it if it was running). Returns the bare ``out`` otherwise.
         """
         V = src.shape[0]
         sr = self.sample_rate
