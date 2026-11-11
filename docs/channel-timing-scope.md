@@ -31,6 +31,12 @@ separate them. A tick-based clock or timestamps would not touch this.
 decision. One session, and the gap becomes zero by construction. Until then
 there are two workarounds that need no code (Option 0).
 
+**Picked.** Matthew chose Option 1 to plan the same day. The build plan,
+with a working prototype's measurements and a listening pair, is in
+[channel-timing-plan.md](channel-timing-plan.md).
+
+Line numbers in this document are as of commit e61daa4.
+
 ## The symptom
 
 Matthew's request: "Implementing tick based timing control or other
@@ -324,7 +330,8 @@ These need his machine, his ears and his load. I could not run them.
 3. Is `auto_govern` ticked, or is `fill -> ratio_cv` cabled? The fix is the
    same; it matters for Option 2.
 4. What usually causes the load: a GUI lockup, a heavy patch, or other
-   programs?
+   programs? **Answered 2026-11-11:** "other programs usually chewing too
+   much cpu seems to be the cause".
 5. The governed path adds about 100 ms on top of the ring and the host
    buffer. Is that acceptable on that speaker?
 
