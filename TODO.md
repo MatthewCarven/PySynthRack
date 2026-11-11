@@ -33,7 +33,14 @@ verdicts are in TODO-ARCHIVE.md (§ Consolidation of 2026-10-10, under
 "The sampler"), and what is left of that bank is under "Still owed from
 earlier sessions" below.
 
-*After the backend split (2026-09-28) — start here, EYES more than EARS.*
+*The delay's clock sync + stereo echo (landed 2026-11-11) — newest, start here.*
+Every existing example that uses the delay renders bit-identical (checked at
+block 512 and block 100), so the only thing to hear is new.
+- [ ] `delay_pingpong_sync.json` — the 120 BPM clock drives both the sequencer and the delay's `clock` (`division` 1, `feel` dotted), with `out_l`/`out_r` into the stereo output. The echoes should bounce left and right and stay locked to the beat.
+- [ ] **Call 3, crossfade vs bend.** In that patch, change the clock's `bpm` while it plays. The echo time follows with a 10 ms crossfade, so there should be no pitch swoop and no click. Is that enough, or do you want a tape-style `bend` option as well?
+- [ ] **EYES on the panel:** the delay node shows `division`, a `feel` combo (straight / dotted / triplet) and `spread`, plus the new `clock` input and the `out_l` / `out_r` jacks. `spread` only does anything while `out_l`/`out_r` are cabled; turn it from 1 to 0 and the bounce should fold into the middle.
+
+*After the backend split (2026-09-28) — EYES more than EARS.*
 Every offline render is bit-identical before and after the split (165/165),
 so there's nothing new to *hear*. What renders can't reach is the GUI side:
 hooks the app calls on the backend that now live in mixins, plus the
@@ -397,7 +404,15 @@ likeliest to sound different come first.
       example's render. *Held 2026-11-11:* Matthew may fix it in the
       channel-timing scope session (`claude/channel-timing-scope-afe939`),
       since the clocks are the first suspect. Check that branch before
-      starting a separate fix.
+      starting a separate fix. **Retest when that session commits**
+      (Matthew: "retest the bug upon scope channel timing drifts eventual
+      commit"): render the example at block 100 and block 512 on main
+      with the fix applied, and compare the overlapping frames of
+      `master` (`render_audit compare` reports inf when lengths differ).
+      Baseline on f50aa7e: same 651,264 differ, max 0.0606. The lead:
+      clock 1 (120 BPM, `division` 4) has a period of 5512.5 samples, not
+      a whole number. `delay_pingpong_sync`, whose clock is a whole 11025
+      samples, is exact across block sizes even with the new clock sync.
 - [ ] **No epoch wrap on the no-CV oscillator/organ phase** — precision
       erodes to ~−116 dB after 24 h of running. Low priority.
       *Plain English (2026-10-10, for Matthew):* with no CV patched, the
@@ -588,16 +603,6 @@ session before anything is built. Don't build ahead.
       left.*
 
 ## Build queue — the keep-list and the ideas backlog
-
-- [ ] **Build the `delay` clock sync + stereo echo love pass.** The spec is in
-      docs/MODULE_IDEAS.md § "`delay`: clock sync + stereo echo", reviewed,
-      with all five calls decided 2026-11-10 (Matthew took every
-      recommendation). Build order is in the spec: reference renders and SHA
-      pins, hops (no bits move), clock, side line and ports, then panel, docs
-      and example. Every number in it is a prototype measurement, so measure
-      the module, not the prototype. Wants EARS afterwards on
-      `delay_pingpong_sync.json`, and on whether the crossfade is enough or a
-      tape `bend` is wanted (call 3).
 
 - [ ] **The 2026-08-04 brainstorm keep-list** — Matthew: "Can you add
       to the todo" (2026-08-04, with the full writeup pasted back).

@@ -46,7 +46,7 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
-## 2026-11-07 — the delay's clock sync + stereo echo: specced, not built
+## 2026-11-07 — the delay's clock sync + stereo echo: specced, built, landed 11-11
 
 Matthew asked after an echo and a reverb, thinking he'd forgotten them. Both
 have shipped for months, as `delay` and `reverb`. What the delay really lacks
@@ -104,6 +104,23 @@ Matthew asked for this session to supervise a second subsession, a scope of
 channel timing drift on one device. He asked for it to run on Fable 5.2 at
 extra-high effort, but the start call's model was ignored, so it was switched,
 then stopped and restarted on Fable about a minute in.
+
+**2026-11-11, later: landed.** Matthew: "merge it now but retest the bug upon
+scope channel timing drifts eventual commit". The five commits were cherry-picked
+onto main with no conflicts (5b621e9 pins, db59d6e hops, 65f371d clock, 3e54e71
+side line, f50aa7e docs and example). Afterwards `src/`, `tests/`, `examples/`
+and `docs/` on main are identical to the branch the full suite passed on (the
+only diff is TODO.md and WORKLOG.md), and the three delay test files pass on main
+(170). The Build-queue item came out, and three listening items open the
+TODO checklist: the ping-pong example, call 3's crossfade vs bend, and eyes on
+the panel. Not pushed. The build branch and worktree are still there; deleting
+them is his call.
+
+He may fix the `delay_freeze_stutter` block-size defect in the channel-timing
+session, since the clocks feeding the delay are the first suspect. So the
+separate fix card was withdrawn, and the TODO item now says to retest when
+that session commits: render the example at block 100 and block 512 on
+main with its fix applied, and compare.
 
 ---
 
