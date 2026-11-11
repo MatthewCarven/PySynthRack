@@ -385,6 +385,16 @@ likeliest to sound different come first.
 ## Open defects
 
 *Block-size exactness (the recurring defect class):*
+- [ ] **`delay_freeze_stutter.json` is not exact across block sizes**
+      (found 2026-11-11 while verifying the delay build). On main
+      (e61daa4), 651,264 of 705,536 stereo samples differ between block
+      100 and block 512, max 0.061, over 8 s. The listening note above says
+      the delay itself is exact now, and the delay examples without a freeze
+      gate match bit for bit, so the cause is in the chain feeding it: two
+      `clock`s, `sequencer`, `pluck`, and `logic` `not_a` into the delay's
+      `freeze`. Not yet located. Bisect by module (render sub-patches at
+      100/512), then fix with the usual recipe. A fix will move this
+      example's render.
 - [ ] **No epoch wrap on the no-CV oscillator/organ phase** — precision
       erodes to ~−116 dB after 24 h of running. Low priority.
       *Plain English (2026-10-10, for Matthew):* with no CV patched, the

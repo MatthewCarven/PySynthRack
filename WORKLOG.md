@@ -83,6 +83,28 @@ first. With his OK the two spec commits were cherry-picked onto main (8da47ba,
 queue. The spec branch and its worktree are still there; deleting them is his
 call.
 
+**2026-11-11: built in a subsession, not yet landed.** It's on
+`claude/delay-sync-build-f670f7`, five commits in spec order (7654f1e pins,
+f698982 hops, 17d4a2e clock, 5f1669f side line, afa9f54 docs and example).
+The supervisor checked it independently rather than taking the report's word:
+- The full suite in the worktree: 5875 passed, 5 skipped.
+- The six delay examples plus the new one, rendered at block 512 on main and on
+  the branch: 0 moved, 1 new.
+- The same at block 100: main and branch agree bit for bit on every one.
+- Ruff isn't installed here, so CI does the first lint.
+
+Deviations the session reported: it kept the 4-sample hop floor, though hops
+also won at 2 and 3 samples; the sweep error measured 3.7 ms against the spec's
+3.2; and the panel arms landed with their params, so each commit stays green.
+
+The same render check found `delay_freeze_stutter` inexact across block sizes
+on main too, so it is not from the build. It's under Open defects in TODO.md.
+
+Matthew asked for this session to supervise a second subsession, a scope of
+channel timing drift on one device. He asked for it to run on Fable 5.2 at
+extra-high effort, but the start call's model was ignored, so it was switched,
+then stopped and restarted on Fable about a minute in.
+
 ---
 
 ## 2026-10-12 — the seventh batch: eight agents, and three things found sideways
