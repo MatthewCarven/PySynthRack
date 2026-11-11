@@ -1,11 +1,15 @@
 # Channel timing, Option 1: the build plan (2026-11-11)
 
-A plan, not a build. Matthew picked Option 1 from
+**Built the same day.** Matthew read this plan, got the listening pair and
+said "Build it". The last section, "How the build went", has what was done
+and what was verified. Everything above it is the plan as it was written,
+before any code changed.
+
+Matthew picked Option 1 from
 [channel-timing-scope.md](channel-timing-scope.md) to plan: make the
 buffered speaker's two stretch engines share one splice decision, so left
-and right cannot part. Nothing under `src/`, `tests/` or `examples/` has
-changed. A working prototype sits outside the repo and every claim below
-that says "measured" comes from it.
+and right cannot part. A working prototype sits outside the repo and every
+claim in the plan that says "measured" comes from it.
 
 ## What gets built
 
@@ -241,3 +245,53 @@ repo: `p1_linked_pair.py` (the split engine, the pair, and the sink's
 actuation tail), `p2_plan_measures.py` (every table above) and
 `p3_ab_files.py` (the listening pair). The build can lift the split and the
 pair from `p1` nearly as they stand.
+
+## How the build went (2026-11-11)
+
+Built as planned, in five commits on `claude/channel-timing-scope-afe939`:
+
+| Commit | What |
+|---|---|
+| 315b684 | `tests/test_grain_shifter_pin.py`: the lone engine pinned, passing on the unchanged code |
+| 2d83480 | The engine split, no behaviour change |
+| 16c5ba8 | `_GrainShifterPair`, the sink switched to it, `tests/test_sink_stereo_link.py` |
+| 865c729 | The sink's docstring and its MODULES.md entry |
+| 02b9b6f | The sink test at three main buffer sizes |
+
+**What was verified**
+
+| Check | Result |
+|---|---|
+| Pin: live engine against the engine before the split, 24 cases plus carried state and the dry ring | Identical in every sample |
+| The pin can fail: four deliberate breakages of the split, at run time | Caught in 24, 24, 13 and 24 of its 24 cases |
+| Render audit, every example, before against after | 167 examples, moved 0 |
+| Full suite | 5,914 passed, 5 skipped (the usual five), 11 minutes. That run predates the sink test's two extra buffer sizes; its file was re-run alone afterwards: 15 passed |
+| New tests against the old wiring (pair added, sink still on two engines) | The sink test failed (sides 616 samples apart, then held at 228) and so did the tripwire; the other eleven passed |
+| New tests after the switch | 15 passed |
+| Built sink on the real render path under load (a 250 ms stall, then 12% overload), five stereo sources | Both sides cut at identical positions in all 1,227 grains of each |
+| Built sink on real PortAudio streams (laptop, MME, silent), three one-second lockups, ring from empty to full | Identical positions in all 2,290 grains |
+| The scope's held-ratio click probe, repeated | A different tone per side: 0 (was up to 5.7 ms). Independent noise: within 3 samples, the detector's resolution (was up to 20.7 ms, with clicks missing on one side) |
+| Latency of the governed path | Unchanged: 93 to 112 ms |
+
+**Where it left the plan**
+
+- **The pin is a frozen copy, not checksums.** The engine's search runs
+  through BLAS, whose last bit differs between machines, and CI runs on
+  Linux. The pin keeps the pre-split `_produce_one` and `process` verbatim
+  in a subclass inside the test and compares the live engine with it in
+  one process.
+- **"Same as a lone engine" is asserted to 1e-9, not to the bit.** It
+  measured identical, but the joint score and the lone score round
+  differently in the last place, so bit equality is not guaranteed on
+  every machine. The out-of-phase test is exact.
+- **The sink test runs at three main buffer sizes** (64, 512, 1000), which
+  the plan did not ask for.
+- **ruff was not run.** It is not installed here and was not downloaded.
+  The new files were checked by hand for unused imports, trailing
+  whitespace and import order; CI's lint job is the first real run.
+
+**Still open**
+
+- Matthew's ears: the listening pair, then his own patch under load on
+  the desktop ("After the build: his checks", above).
+- Landing on `main` and pushing.
