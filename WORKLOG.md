@@ -153,7 +153,7 @@ through renderers already on the block-size list. So the fix should start from a
 sweep of every example. Recorded in TODO.
 
 Matthew also okayed rewording the project CLAUDE.md: pushing moved to "Do
-freely" and force-pushing went under "Mine to run" (the file isn't tracked).
+freely" and force-pushing went under "Mine to run".
 
 ---
 
