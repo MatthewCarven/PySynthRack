@@ -284,10 +284,16 @@ class BufferedSpecificSpeakerOutput(Module):
     low ring needs a POSITIVE cv (push more), so the loop inverts —
     positive gain runs away to an empty or pinned-full ring. The stretch
     is PITCH-PRESERVING: a streaming WSOLA shift (the pitch shifter's
-    engine, 50 ms grain per channel) cancelled by the length resample,
-    so even large corrections hold pitch — at the cost of one constant
-    ~50 ms latency on the governed path and a one-grain warm-up (brief
-    silence) when the cable first lands or the transport starts. The
+    engine, 50 ms grain) cancelled by the length resample, so even large
+    corrections hold pitch — at the cost of one constant latency of
+    about 100 ms on the governed path (measured 93 to 112 ms, depending
+    on the main buffer size) and a short warm-up (brief silence) when
+    the cable first lands or the transport starts. The two sides are
+    stretched as a PAIR: one engine each, sharing a single choice of
+    where to splice, so left and right are always cut at the same spot
+    and cannot drift apart however hard the governor works. (Until
+    2026-11-11 each side chose for itself, and a spell of load could
+    leave them up to 25 ms apart for good.) The
     engines stay in-circuit while cabled, even at ratio 1, so that
     warm-up is never paid mid-performance. Set ``auto_govern`` and the
     sink runs that controller *internally* — the same half-full setpoint

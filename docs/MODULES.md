@@ -6265,9 +6265,14 @@ ships at **scale −4**, from Matthew's 2026-10-10 real-GUI run: −4 held the
 ring between about 50 and 66% with nothing audible, −2 between 50 and 75%,
 −8 sat at the edge (drops, still inaudible), and positive broke apart. The stretch is **pitch-preserving**
 (streaming WSOLA cancelled by the length resample), so even large
-corrections hold pitch — at the cost of ~50 ms constant latency on the
-governed path and a one-grain warm-up (brief silence) when the cable
-first lands. Prefer no patching? Flip **`auto_govern`** and the sink runs
+corrections hold pitch — at the cost of about 100 ms of constant latency
+on the governed path (measured 93 to 112 ms, depending on the main buffer
+size) and a short warm-up (brief silence) when the cable first lands. The
+two sides are stretched as a **pair** that shares one choice of where to
+splice, so left and right are always cut at the same spot and cannot
+drift apart under load (before 2026-11-11 each side chose for itself and
+a spell of load could leave them up to 25 ms apart;
+[channel-timing-scope.md](channel-timing-scope.md)). Prefer no patching? Flip **`auto_govern`** and the sink runs
 that same controller internally (canonical half-full setpoint + 0.5
 gain), holding its own ring with no cables; a patched `ratio_cv` still
 overrides it. With `ratio_cv` unpatched and `auto_govern` off (both
