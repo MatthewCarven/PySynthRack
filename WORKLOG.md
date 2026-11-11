@@ -122,6 +122,16 @@ separate fix card was withdrawn, and the TODO item now says to retest when
 that session commits: render the example at block 100 and block 512 on
 main with its fix applied, and compare.
 
+**Pushed, and CI's lint fixed.** Matthew: "feel free to push whenever you please
+Claude". Main went up (df7b46c..9125a71, 33 commits). On that run both test jobs
+passed (Python 3.12 and 3.10, so the delay build also passes on Linux) and lint
+failed. Lint had been failing on main since 2026-10-10: two import-order errors
+(I001) in `ui/app.py` and `renderers/io.py`, plus a third that came in with the
+delay build in `tests/test_delay_sync.py`. Ruff isn't installed in the
+global Python, so nobody saw them. `uvx ruff check --fix` sorted the three
+(imports only; the 2,230 tests that import the changed files pass), and that
+went up as 95191c3.
+
 ---
 
 ## 2026-10-12 — the seventh batch: eight agents, and three things found sideways
