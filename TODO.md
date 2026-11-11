@@ -394,7 +394,10 @@ likeliest to sound different come first.
       `clock`s, `sequencer`, `pluck`, and `logic` `not_a` into the delay's
       `freeze`. Not yet located. Bisect by module (render sub-patches at
       100/512), then fix with the usual recipe. A fix will move this
-      example's render.
+      example's render. *Held 2026-11-11:* Matthew may fix it in the
+      channel-timing scope session (`claude/channel-timing-scope-afe939`),
+      since the clocks are the first suspect. Check that branch before
+      starting a separate fix.
 - [ ] **No epoch wrap on the no-CV oscillator/organ phase** — precision
       erodes to ~−116 dB after 24 h of running. Low priority.
       *Plain English (2026-10-10, for Matthew):* with no CV patched, the
