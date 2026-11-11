@@ -252,6 +252,17 @@ class ReverbDelayRenderers:
     # reverb's 10 ms, for the same reason: short enough to catch the
     # moment, long enough that the switch is inaudible inside the echo.
     _DELAY_FREEZE_RAMP_S = 0.010
+    # Shortest hop, in samples, the block path runs in. A delay shorter
+    # than a block runs as hops no longer than the delay; below this a hop
+    # (an ``lfilter`` call and a fancy-indexed read and write) costs more
+    # than the per-sample loop, so delays of 2 and 3 samples keep the loop.
+    # Measured on a 512 block, one voice, per block: 5 ms 0.15 ms in hops
+    # against 9.4 ms per sample, 1 ms 0.6 against 8.9, 12 samples 1.5
+    # against 9.2, 4 samples 3.9 against 9.1 (the block's budget is 11.6).
+    # The spec's run (2026-11-07) had the loop ahead at 3 samples (13.7 in
+    # hops against 10.5); the build's (11-11) had hops ahead even there
+    # (7.8 against 9.5), so 4 is the conservative end.
+    _DELAY_HOP_FLOOR = 4
 
     def _render_delay(self, module, frames: int, buffers, patch) -> np.ndarray:
         """Analog-voiced feedback delay (echo) with a damped feedback path.
@@ -318,14 +329,18 @@ class ReverbDelayRenderers:
         row is bit-identical to the mono render -- the float ops are the
         same per row regardless of V.
 
-        Per-sample (not block-vectorized) because the feedback recirculation
-        is sequential when the delay is shorter than a block; when every
-        read this block lands at least a block back, a vectorized fast path
-        runs instead. Exact at any block size (2026-09-24): the read splits
-        the delay into whole samples and a fraction rather than forming
-        ``index - delay`` (a ring index rounds at its own magnitude), and
-        both paths spell the damping one-pole as ``lfilter`` evaluates it,
-        since which path a block takes depends on the block size.
+        The path rule (2026-11-11): the block runs in hops no longer than
+        its shortest delay, so within a hop every read predates the hop's
+        writes and the hop vectorizes, the damping one-pole running via
+        ``lfilter`` with its state carried. A delay of a block or more is a
+        single block-length hop. Only a delay under ``_DELAY_HOP_FLOOR``
+        (4) samples somewhere in the block takes the per-sample loop, where
+        a hop would cost more than the loop. Exact at any block size
+        (2026-09-24): the read splits the delay into whole samples and a
+        fraction rather than forming ``index - delay`` (a ring index rounds
+        at its own magnitude), and both paths spell the damping one-pole as
+        ``lfilter`` evaluates it, since which path a block takes depends on
+        the block size.
 
         ``fz`` (the ``freeze`` gate row, or None): while high the echo
         hangs. A per-sample blend ``e`` (0 = normal, 1 = frozen) follows
@@ -481,42 +496,56 @@ class ReverbDelayRenderers:
         # a block takes depends on the block size, so the two must agree.
         c1 = 1.0 - g
         rows = np.arange(V)
-        if float(dly.min()) >= frames:
-            # Fast path: every read this block lands at least one block back,
-            # so no read depends on a sample written this block and the whole
-            # block vectorizes. The damping one-pole runs via ``lfilter`` with
-            # its state carried in ``zi``. This is the common echo case
-            # (any musical delay time is many blocks long).
-            absidx = wp + np.arange(frames)                  # (F,) absolute
-            i0 = absidx[np.newaxis, :] - backs               # (V, F) whole
-            frac = fracs
-            d = (
-                buf[rows[:, None], i0 % L] * (1.0 - frac)
-                + buf[rows[:, None], (i0 + 1) % L] * frac
-            )
-            zi = (c1 * lp)[:, np.newaxis]                    # (V, 1)
-            damped = lfilter([g], [1.0, -c1], d, axis=-1, zi=zi)[0]
-            if e is None:
-                buf[rows[:, None], absidx % L] = x + feedback * damped
-            else:
-                # Frozen or ramping: per sample, the fed-back signal slides
-                # from the damped read to the raw read, the loop gain from
-                # ``feedback`` to exactly 1.0 and the input to silence --
-                # each as ``a * (1 - e) + b * e``, exact at both ends, so at
-                # e == 1 the write is ``buf[wp] = d = buf[wp - D]`` bit for
-                # bit. Convex blends on the way in: the loop gain never
-                # exceeds 1, so the ramp cannot grow the loop either.
-                eh = e[np.newaxis, :]
-                om = 1.0 - eh
-                fb_sig = damped * om + d * eh
-                gain = feedback * om + eh
-                buf[rows[:, None], absidx % L] = x * om + gain * fb_sig
-            out = x * (1.0 - mix) + d * mix
-            lp = damped[:, -1].copy()
-            wp = (wp + frames) % L
+        # Which path: the block runs in HOPS no longer than its shortest
+        # delay (the reverb's idiom). Within a hop every read lands at
+        # least a hop back, so no read depends on a sample written in the
+        # same hop and the hop vectorizes. A delay of a block or more is
+        # one hop the length of the block -- the old fast path, verbatim.
+        # Below ``_DELAY_HOP_FLOOR`` samples a hop costs more than the
+        # per-sample loop it replaces, so 2- and 3-sample delays keep that
+        # loop. The two compute the same bits (the trap notes above), and
+        # so do hops of any length: ``lp`` carried into ``zi`` between
+        # hops is what ``lfilter`` carries between samples.
+        hop = self._delay_hop(float(dly.min()), frames)
+        if hop:
+            out = np.empty((V, frames), dtype=np.float64)
+            pos = 0
+            while pos < frames:
+                h = min(hop, frames - pos)
+                sl = slice(pos, pos + h)
+                absidx = wp + np.arange(h)                   # (h,) absolute
+                i0 = absidx[np.newaxis, :] - backs[:, sl]    # (V, h) whole
+                frac = fracs[:, sl]
+                d = (
+                    buf[rows[:, None], i0 % L] * (1.0 - frac)
+                    + buf[rows[:, None], (i0 + 1) % L] * frac
+                )
+                zi = (c1 * lp)[:, np.newaxis]                # (V, 1)
+                damped = lfilter([g], [1.0, -c1], d, axis=-1, zi=zi)[0]
+                xs = x[:, sl]
+                if e is None:
+                    buf[rows[:, None], absidx % L] = xs + feedback * damped
+                else:
+                    # Frozen or ramping: per sample, the fed-back signal
+                    # slides from the damped read to the raw read, the loop
+                    # gain from ``feedback`` to exactly 1.0 and the input to
+                    # silence -- each as ``a * (1 - e) + b * e``, exact at
+                    # both ends, so at e == 1 the write is ``buf[wp] = d =
+                    # buf[wp - D]`` bit for bit. Convex blends on the way
+                    # in: the loop gain never exceeds 1, so the ramp cannot
+                    # grow the loop either.
+                    eh = e[sl][np.newaxis, :]
+                    om = 1.0 - eh
+                    fb_sig = damped * om + d * eh
+                    gain = feedback * om + eh
+                    buf[rows[:, None], absidx % L] = xs * om + gain * fb_sig
+                out[:, sl] = xs * (1.0 - mix) + d * mix
+                lp = damped[:, -1].copy()
+                wp = (wp + h) % L
+                pos += h
         else:
-            # Per-sample path: the delay dips below a block (short or heavily
-            # modulated), so the feedback recirculation is sequential.
+            # Per-sample path: a delay of 2 or 3 samples somewhere in the
+            # block, so the feedback recirculation is sequential.
             out = np.empty((V, frames), dtype=np.float64)
             if e is not None:
                 om = 1.0 - e
@@ -543,6 +572,20 @@ class ReverbDelayRenderers:
         state["write_idx"] = int(wp)
         state["lp"] = lp
         return out.astype(np.float32)
+
+    def _delay_hop(self, low: float, frames: int) -> int:
+        """The delay's hop length for a block whose shortest read is
+        ``low`` samples back, or 0 for the per-sample loop.
+
+        A read ``low`` back lands before the hop's first write as long as
+        the hop is at most ``int(low)`` long (``frac`` > 0 puts the second
+        tap one sample nearer, still behind; at ``frac`` == 0 that tap
+        weighs 0). A read a block or more back is one block-length hop.
+        """
+        hop = int(low) if low < frames else frames
+        if hop >= self._DELAY_HOP_FLOOR or hop >= frames:
+            return hop
+        return 0
 
     def _freeze_gate_row(self, gate, frames: int, tick: bool, state, ramp_n: int):
         """The reverb's / delay's freeze row: the ``freeze`` gate cable

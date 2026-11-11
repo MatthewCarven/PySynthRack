@@ -184,3 +184,79 @@ def test_the_pre_edit_renders_are_unchanged(name):
 def test_the_pins_are_block_size_independent(name, block):
     out, st = _pin_case(name, block=block)
     assert _digest(out, st) == _PIN_SHA[name]
+
+
+# ----- hops (the prep commit) ---------------------------------------------------
+
+
+def _hop_case(name, n=SR):
+    """Delays shorter than a block, which the per-sample loop ran before."""
+    if name == "poly_cv_freeze":
+        params = {"time": 5.0, "feedback": 0.8, "tone": 0.7, "cv_depth": 3.0,
+                  "mix": 0.6}
+        jacks = {"in": np.stack([_noise(20 + v, n) for v in range(3)]),
+                 "time_cv": np.stack([_sine(0.7 + 0.3 * v, 1.0, n)
+                                      for v in range(3)]),
+                 "freeze": _gate([(9001, 20003), (30007, 33777)], n)}
+    elif name == "twelve":
+        params = {"time": 12 / SR * 1000.0, "feedback": 0.9, "tone": 0.3,
+                  "mix": 0.7}
+        jacks = {"in": _noise(21, n)}
+    elif name == "four":
+        # exactly the floor: hops of 4, whole-sample reads (frac 0)
+        params = {"time": 4 / SR * 1000.0, "feedback": 0.95, "tone": 1.0,
+                  "mix": 1.0}
+        jacks = {"in": _noise(22, n)}
+    else:
+        raise KeyError(name)
+    return params, jacks
+
+
+@pytest.mark.parametrize("name", ["poly_cv_freeze", "twelve", "four"])
+@pytest.mark.parametrize("block", [512, 1000])
+def test_hops_equal_the_forced_per_sample_loop(name, block, monkeypatch):
+    # Raise the floor past any delay and every block shorter than its
+    # delay runs the per-sample loop again, as the delay did before the
+    # hops. Same output, same line, same filter state.
+    params, jacks = _hop_case(name)
+    rig = Rig(params, jacks, block=block)
+    hops = rig.run(SR)
+    st_h = {k: np.array(rig.st[k]) for k in ("buf", "lp", "write_idx")}
+    monkeypatch.setattr(NumpyBackend, "_DELAY_HOP_FLOOR", 10 ** 9)
+    rig2 = Rig(params, jacks, block=block)
+    loop = rig2.run(SR)
+    assert float(np.abs(hops).max()) > 0.01
+    assert np.array_equal(hops, loop)
+    for k, v in st_h.items():
+        assert np.array_equal(np.array(rig2.st[k]), v), k
+
+
+def _out_and_line(params, jacks, n):
+    rig = Rig(params, jacks)
+    return rig.run(n), np.array(rig.st["buf"])
+
+
+@pytest.mark.parametrize("name", ["poly_cv_freeze", "twelve", "four"])
+def test_the_hop_comparison_can_fail(name, monkeypatch):
+    # Self-test: a hop ONE sample longer than the shortest delay reads a
+    # sample of the same hop before it is written. The forced loop must
+    # then disagree, or the test above proves nothing. The line is part
+    # of the exposure: "12 samples" is 11.999999999999998, so the early
+    # read weighs 2e-15 -- it moves the float64 line and never reaches
+    # the float32 output.
+    params, jacks = _hop_case(name)
+    n = SR // 4
+    monkeypatch.setattr(NumpyBackend, "_DELAY_HOP_FLOOR", 10 ** 9)
+    y_loop, line_loop = _out_and_line(params, jacks, n)
+    monkeypatch.undo()
+    y, line = _out_and_line(params, jacks, n)
+    assert np.array_equal(y, y_loop) and np.array_equal(line, line_loop)
+    real = NumpyBackend._delay_hop
+
+    def one_too_long(self, low, frames):
+        hop = real(self, low, frames)
+        return hop + 1 if 0 < hop < frames else hop
+
+    monkeypatch.setattr(NumpyBackend, "_delay_hop", one_too_long)
+    y, line = _out_and_line(params, jacks, n)
+    assert not (np.array_equal(y, y_loop) and np.array_equal(line, line_loop))

@@ -31,9 +31,11 @@ The mechanisms these pin (2026-09-24):
 * **The delay's two paths damped differently.** The fast path runs the
   damping one-pole through ``lfilter`` (``g*d + (1-g)*lp``) and the
   per-sample path spelled it ``lp + g*(d - lp)``; which path a block
-  takes depends on the block size (``delay >= frames``), so a delay
+  takes depended on the block size (``delay >= frames``), so a delay
   between 64 and 1000 samples, or a ``time_cv`` sweeping across that
-  range, switched arithmetic with the block size.
+  range, switched arithmetic with the block size. Since the hops
+  (2026-11-11) only a delay under 4 samples takes the per-sample loop,
+  but the same spelling is what keeps the loop and the hops agreeing.
 """
 from __future__ import annotations
 
@@ -118,11 +120,12 @@ def _assert_exact(mtype, params, jacks):
 
 
 def test_delay_short_modulated_frozen_poly_is_block_size_exact():
-    # 5 ms +/- a 3 ms time_cv: the delay sweeps ~88..353 samples, so the
-    # block takes the per-sample path at 512 / 1000 and flips between the
-    # two paths at 64 / 128 -- the paths must compute the same bits. Three
-    # voices, each its own cv, and a freeze gate that rises and falls
-    # mid-block at every size.
+    # 5 ms +/- a 3 ms time_cv: the delay sweeps ~88..353 samples. Since the
+    # hops (2026-11-11) every size runs the block path -- in hops of the
+    # shortest delay at 512 / 1000, one hop or several at 64 / 128 -- so
+    # this no longer reaches the per-sample loop (the floor pin below
+    # does). Three voices, each its own cv, and a freeze gate that rises
+    # and falls mid-block at every size.
     jacks = {
         "in": np.stack([_noise(10 + v) for v in range(3)]),
         "time_cv": np.stack([_sine(0.2 + 0.13 * v, 1.0) for v in range(3)]),
@@ -147,6 +150,18 @@ def test_delay_long_modulated_frozen_is_block_size_exact():
              "freeze": _gate([(120001, 160000)])}
     _assert_exact("delay", {"time": 400.37, "feedback": 0.9,
                             "cv_depth": 100.0, "mix": 0.5}, jacks)
+
+
+def test_delay_across_the_hop_floor_is_block_size_exact():
+    # 0.1 ms +/- 0.05 ms: 2.2 .. 6.6 samples, so blocks flip between the
+    # per-sample loop (a delay under ``_DELAY_HOP_FLOOR`` = 4 samples
+    # somewhere in the block) and hops of 4..6 samples, at a different
+    # moment at each size -- the loop and the hops must compute the same
+    # bits. A freeze edge inside both regimes.
+    jacks = {"in": _noise(3), "time_cv": _sine(1.7, 1.0),
+             "freeze": _gate([(30001, 50003)])}
+    _assert_exact("delay", {"time": 0.1, "feedback": 0.7, "tone": 0.9,
+                            "cv_depth": 0.05, "mix": 0.5}, jacks)
 
 
 # ----- flanger ----------------------------------------------------------------

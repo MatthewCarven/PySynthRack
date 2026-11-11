@@ -8,8 +8,10 @@ Coverage:
     repeats; the feedback is clamped so runaway settings stay bounded; the
     tone knob damps the repeats (dark < bright high-frequency tail);
     block-spanning echoes are continuous across blocks.
-  - Paths: the vectorized fast path (delay >= block) and the per-sample
-    path (delay < block) agree bit-for-bit.
+  - Paths: one block-length hop (delay >= block) and hops shorter than
+    the block (delay < block) agree bit-for-bit. (Since 2026-11-11 only a
+    delay under 4 samples takes the per-sample loop; test_delay_sync.py
+    pins the loop against the hops.)
   - Voice: a single-voice row is bit-identical to mono; voices echo
     independently via per-voice time_cv.
   - time_cv: positive CV lengthens the delay; cv_depth scales it.
@@ -192,7 +194,7 @@ class TestMonoDSP:
         assert out.shape == (1, 0)
 
     def test_mix_zero_is_exact_passthrough(self):
-        # Both paths: long delay (fast) and short delay (per-sample).
+        # Long delay (one hop per block) and short delay (hops of ~88).
         for block, time_ms in ((128, 50.0), (700, 2.0)):
             patch, src, dl, _, b = _rig(
                 {"mix": 0.0, "feedback": 0.8, "time": time_ms}, block=block
@@ -203,7 +205,7 @@ class TestMonoDSP:
 
     def test_single_tap_timing(self):
         # feedback 0, mix 1 -> one clean echo exactly `time` samples late.
-        T = 256  # < block -> per-sample path
+        T = 256  # < block -> hops of 256 (the per-sample path until 2026-11-11)
         time_ms = T / SR * 1000.0
         patch, src, dl, _, b = _rig(
             {"feedback": 0.0, "mix": 1.0, "tone": 1.0, "time": time_ms}
@@ -270,15 +272,16 @@ class TestMonoDSP:
 class TestPaths:
     def test_fast_and_per_sample_paths_agree(self):
         # Same delay, same input: render once in a single big block (delay <
-        # block -> per-sample) and once in small blocks (delay >= block ->
-        # vectorized). The two must match bit-for-bit.
+        # block -> hops of 300; the per-sample path until 2026-11-11) and
+        # once in small blocks (delay >= block -> one hop per block). The
+        # two must match bit-for-bit.
         x = np.random.randn(1800).astype(np.float32)
         T = 300
         time_ms = T / SR * 1000.0
         params = {"time": time_ms, "feedback": 0.6, "tone": 0.4, "mix": 0.5}
-        pa, sa, da, _, ba = _rig(params, block=1800)   # per-sample
+        pa, sa, da, _, ba = _rig(params, block=1800)   # hops of 300
         per_sample = _run(ba, pa, sa, da, x, block=1800)
-        pb, sb, db, _, bb = _rig(params, block=100)    # fast path
+        pb, sb, db, _, bb = _rig(params, block=100)    # one hop per block
         fast = _run(bb, pb, sb, db, x, block=100)
         assert np.array_equal(per_sample, fast)
 
@@ -685,8 +688,9 @@ class TestFreeze:
     def test_patched_but_low_freeze_is_bit_exact_with_unpatched(self):
         # The ship-off pin: with the gate low both paths run their
         # pre-freeze code verbatim, so a patched-but-silent freeze jack
-        # cannot change a sample. Long delay (fast path) and short delay
-        # (per-sample path), with a wobbling time_cv on each.
+        # cannot change a sample. Long delay (one hop per block) and short
+        # delay (hops shorter than the block), with a wobbling time_cv on
+        # each.
         n = 3 * SR
         x = _burst(n) + _tone(n, 330.0, 0.1)
         cv = (0.3 * np.sin(2 * np.pi * 0.5 * np.arange(n) / SR)).astype(np.float32)
@@ -697,8 +701,8 @@ class TestFreeze:
 
     @pytest.mark.parametrize("time_ms", [300.37, 200 / SR * 1000.0])
     def test_block_size_independent_with_a_freeze_edge_mid_stream(self, time_ms):
-        # 300 ms: the fast path at both block sizes. 200 samples: the
-        # per-sample path at 512 and the fast path at 64 -- the two must
+        # 300 ms: one hop per block at both block sizes. 200 samples: hops
+        # of 200 at 512 and one hop per block at 64 -- the two must
         # still agree with the freeze ramping, holding and releasing.
         params = dict(FZ_PARAMS, time=time_ms)
         n = 4 * SR
@@ -762,8 +766,8 @@ class TestFreeze:
         # Twice over, so the second hold rises from the idle state the
         # release hands back to. Bit-exact with a gate cable doing the
         # same, and the tick at 64 lands on the same sample as the tick
-        # at 512. 300 ms: the fast path; 200 samples: the per-sample
-        # path at 512 and the fast path at 64.
+        # at 512. 300 ms: one hop per block; 200 samples: hops of 200 at
+        # 512 and one hop per block at 64.
         params = dict(FZ_PARAMS, time=time_ms)
         n = 6 * SR
         # a tone under the burst keeps even the 4.5 ms loop sounding at
