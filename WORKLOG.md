@@ -155,6 +155,9 @@ sweep of every example. Recorded in TODO.
 Matthew also okayed rewording the project CLAUDE.md: pushing moved to "Do
 freely" and force-pushing went under "Mine to run".
 
+Then, on his "Yes, merge the scope doc please", the scope commit was
+cherry-picked onto main as a2c6475 (`docs/channel-timing-scope.md`, docs only).
+
 ---
 
 ## 2026-10-12 — the seventh batch: eight agents, and three things found sideways

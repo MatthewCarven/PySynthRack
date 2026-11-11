@@ -474,7 +474,7 @@ likeliest to sound different come first.
 *Audio I/O:*
 - [ ] **Left and right drift apart on a governed buffered speaker under
       load** (scoped 2026-11-11 on Fable 5.2: `docs/channel-timing-scope.md`
-      on `claude/channel-timing-scope-afe939`, 9100b6b, not merged). The
+      on main since a2c6475, cherry-picked from the scope branch). The
       governor stretches each side with its own WSOLA engine
       (`numpy_backend.py`, the `_sink_stretch` pair; the supervisor checked
       the code), and under load the two sides splice at different points.
