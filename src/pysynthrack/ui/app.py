@@ -23,8 +23,7 @@ import pysynthrack.modules  # noqa: F401
 
 from .. import _crash
 from .._resources import app_icon, examples_dir
-from ..audio import AudioBackend, pick_backend
-from ..audio import recordings
+from ..audio import AudioBackend, pick_backend, recordings
 from ..core.module import grouped_module_types
 from ..core.patch import Cable, Patch
 from ..io_patch import load_patch, save_patch

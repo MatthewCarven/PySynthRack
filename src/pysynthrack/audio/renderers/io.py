@@ -36,8 +36,7 @@ from scipy.signal import lfilter
 from ...modules.cv_gates import KEY_CV_NAMES
 from ...modules.cv_keyboard import CV_REFERENCE_NOTE, KEY_GATE_NAMES
 from ...modules.keyboard import midi_to_freq
-from .. import media
-from .. import recordings
+from .. import media, recordings
 
 
 class IORenderers:

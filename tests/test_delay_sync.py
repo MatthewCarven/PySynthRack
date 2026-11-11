@@ -1274,6 +1274,7 @@ class TestStereoFreeze:
 
 def _render_example(one_note=False, seconds=6.0):
     from pathlib import Path
+
     from pysynthrack.io_patch import load_patch
 
     np.random.seed(0)
