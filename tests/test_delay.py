@@ -109,6 +109,7 @@ class TestModel:
             "freeze": False,
             "division": 1.0,
             "feel": "straight",
+            "spread": 1.0,
         }
 
     def test_ports_and_signal_kinds(self):
@@ -121,6 +122,8 @@ class TestModel:
         ]
         assert [(p.name, p.signal_kind) for p in dl.output_ports] == [
             ("out", "audio"),
+            ("out_l", "audio"),
+            ("out_r", "audio"),
         ]
 
     def test_json_round_trip(self):

@@ -30,11 +30,27 @@ Coverage (grows with the build, one commit per step):
     bit; edges in a hold are measured, the read waits, the retarget lands
     on the sample the release runs out; a rise inside a fade holds the
     new read.
-  - Block size: five scenarios (tempo step + swing + feel + cv + freeze;
-    whole-sample reads; fold; unpatch; three voices with the paths
-    flipping) exact in output and state at 64/128/1000 against 512, with
-    a planted float-carried fade weight as the self-test; the per-sample
-    loop and hops agree through a fade.
+  - Stereo: ``out`` is the uncabled ``out`` at spread 0 / 0.4 / 1 on both
+    paths (freeze, cv and a fade in the run), and ``out_l == out_r ==
+    out`` at spread 0; an uncabled delay never runs the side line
+    (raise-if-called); an impulse bounces L, R, L ... with the far side
+    exactly 0; the textbook cross-coupled pair to float32 rounding up to
+    feedback 0.98; the far-side law; ``mix`` 0 is dry on all three;
+    ``(V, F)`` shapes, a single row equals mono, no cross-talk.
+  - Re-cable: uncabling drops the side line, so no ghost (a kept line,
+    planted, reads the old burst back over 100x the mid); old echoes play
+    centred at half level with L + R = mid while a new note bounces; one
+    jack left cabled keeps the line; a re-cable during a hold stays
+    centred and exact; a voice-count change reallocates both lines and
+    keeps the clock's span.
+  - Stereo freeze: over 10 s of hold the mid repeats and the side negates
+    bit for bit every lap, and L on one lap is R on the next.
+  - Block size: five scenarios (tempo step + swing + feel + cv + freeze +
+    stereo; whole-sample reads; fold; unpatch; three voices with the
+    paths flipping, stereo) exact in output and state at 64/128/1000
+    against 512, with a planted float-carried fade weight as the
+    self-test; the per-sample loop and hops agree through a fade, side
+    line included.
   - Panel: ``feel`` is a combo over ``DELAY_FEELS``; ``division`` is the
     siblings' 0.25..64 drag.
 """
@@ -51,6 +67,7 @@ from pysynthrack.core import Patch
 
 SR = 44100
 F = 512
+LR = ("out_l", "out_r")                 # both stereo jacks, for Rig(stereo=)
 
 
 # ----- harness ----------------------------------------------------------------
@@ -838,7 +855,9 @@ def _bs_case(name, block):
     1000 share (multiples of 64000), and gate rows injected."""
     n = N_BS
     script = None
+    stereo = ()
     if name == "tempo_swing_feel_cv_freeze":
+        stereo = LR
         params = {"time": 123.4, "division": 1.5, "feel": "dotted",
                   "feedback": 0.7, "cv_depth": 5.0, "mix": 0.6}
         jacks = {"in": _noise(30, n),
@@ -865,8 +884,9 @@ def _bs_case(name, block):
         # three voices whose reads sweep 500..1000 samples: hops of a few
         # hundred at 1000, a block-length hop or hops at 512 by turns,
         # block-length hops at 64 and 128 -- the paths flip per size
+        stereo = LR
         params = {"division": 1.0, "feedback": 0.75, "tone": 0.8,
-                  "cv_depth": 5.0, "mix": 0.7}
+                  "cv_depth": 5.0, "mix": 0.7, "spread": 0.8}
         jacks = {"in": np.stack([_noise(40 + v, n) for v in range(3)]),
                  "clock": _ticks(n, range(0, n, 735)),        # T = 735
                  "time_cv": np.stack([_sine(0.3 + 0.2 * v, 1.0, n) for v in range(3)]),
@@ -874,10 +894,12 @@ def _bs_case(name, block):
         script = {64000: {"division": 0.5}, 128000: {"division": 1.0}}
     else:
         raise KeyError(name)
-    rig = Rig(params, jacks, block=block)
+    rig = Rig(params, jacks, block=block, stereo=stereo)
     out = rig.run(n, script=script)
+    if stereo:
+        out = np.stack(out)                      # out, out_l, out_r
     keep = ("buf", "lp", "write_idx", "fz_dly", "ck_cur", "ck_span", "ck_fn",
-            "ck_sync")
+            "ck_sync", "buf_s", "lp_s")
     st = {k: np.array(rig.st[k]) for k in keep if k in rig.st}
     return out, st
 
@@ -924,10 +946,12 @@ def _tiny_clocked(block, n=SR // 2):
               "cv_depth": 0.4 / SR * 1000.0}
     jacks = {"in": _noise(50, n), "clock": _ticks(n, range(0, n, 3), 1),
              "time_cv": _sine(31.0, 1.0, n)}
-    rig = Rig(params, jacks, block=block)
+    rig = Rig(params, jacks, block=block, stereo=LR)
     # the moves sit on block heads that 64, 128 and 512 share
-    y = rig.run(n, script={6144: {"division": 2.0}, 12800: {"division": 1.5}})
-    return y, np.array(rig.st["buf"]), rig.st["ck_cur"]
+    y = np.stack(rig.run(n, script={6144: {"division": 2.0},
+                                    12800: {"division": 1.5}}))
+    lines = np.stack([rig.st["buf"], rig.st["buf_s"]])
+    return y, lines, rig.st["ck_cur"]
 
 
 @pytest.mark.parametrize("block", [64, 128, 512])
@@ -982,3 +1006,254 @@ def test_the_panel_offers_division_and_feel(monkeypatch):
     assert (kw["min_value"], kw["max_value"]) == (0.25, 64.0)
     assert (NumpyBackend._MOD_DIV_MIN, NumpyBackend._MOD_DIV_MAX) == (0.25, 64.0)
     assert kw["format"].endswith(" ticks") and kw["default_value"] == 1.0
+
+
+# ----- stereo: the side line -------------------------------------------------------
+
+
+def _textbook_pair(x, T, fb, tone, mix):
+    """A hard ping-pong the textbook way, float64, one sample at a time:
+    two lines feeding each other, ``L = x + fb LP(R@T)``, ``R = fb LP(L@T)``,
+    each fed-back read through its own damping one-pole; the left output
+    plays line L's read."""
+    n = len(x)
+    Lb, Rb = np.zeros(n), np.zeros(n)
+    fc = 200.0 * (18000.0 / 200.0) ** tone
+    g = 1.0 - float(np.exp(-2.0 * np.pi * fc / SR))
+    back = int(np.ceil(T))
+    fr = back - T
+    lpa = lpb = 0.0
+    ol, orr = np.zeros(n), np.zeros(n)
+
+    def rd(buf, i):
+        a = buf[i - back] if i >= back else 0.0
+        b = buf[i - back + 1] if i - back + 1 >= 0 else 0.0
+        return a * (1 - fr) + b * fr
+
+    for i in range(n):
+        rl, rr = rd(Lb, i), rd(Rb, i)
+        lpa = g * rr + (1 - g) * lpa
+        lpb = g * rl + (1 - g) * lpb
+        Lb[i] = x[i] + fb * lpa
+        Rb[i] = fb * lpb
+        ol[i] = x[i] * (1 - mix) + rl * mix
+        orr[i] = x[i] * (1 - mix) + rr * mix
+    return ol, orr
+
+
+class TestStereoNeutral:
+    @pytest.mark.parametrize("spread", [0.0, 0.4, 1.0])
+    @pytest.mark.parametrize("path", ["hops", "loop"])
+    def test_out_is_the_uncabled_out_whatever_the_side_line_does(self, spread, path):
+        # Both paths, with freeze, time_cv and a clocked fade in the run.
+        n = 2 * SR
+        x = _noise(4, n)
+        if path == "hops":
+            params = {"time": 300.0, "cv_depth": 3.0, "division": 2.0}
+            jacks = {"in": x, "time_cv": _sine(0.5, 1.0, n),
+                     "freeze": _gate([(50001, 60000)], n),
+                     "clock": _ticks(n, range(0, n, 2205))}
+        else:
+            params = {"time": 0.06, "cv_depth": 0.02}        # 2.2 .. 3.5 samples
+            jacks = {"in": x, "time_cv": _sine(0.5, 1.0, n),
+                     "freeze": _gate([(50001, 60000)], n)}
+        script = {44032: {"division": 3.0}}
+        ref = Rig(params, jacks).run(n, script=script)
+        y, l, r = Rig(dict(params, spread=spread), jacks, stereo=LR).run(n, script=script)
+        assert np.array_equal(y, ref)
+        if spread == 0.0:
+            assert np.array_equal(l, y) and np.array_equal(r, y)
+        else:
+            assert not np.array_equal(l, r)
+
+    def test_an_uncabled_delay_never_runs_the_side_line(self, monkeypatch):
+        def boom(*a, **k):
+            raise AssertionError("the side line ran uncabled")
+
+        monkeypatch.setattr(NumpyBackend, "_delay_side_line", staticmethod(boom))
+        n = SR
+        jacks = {"in": _noise(2, n), "time_cv": _sine(0.5, 1.0, n),
+                 "freeze": _gate([(10001, 20000)], n), "clock": _ticks(n, range(0, n, 2205))}
+        for params in ({"time": 300.37, "spread": 0.3}, {"time": 0.05, "cv_depth": 0.01}):
+            y = Rig(params, jacks).run(n)
+            assert isinstance(y, np.ndarray) and y.shape == (n,)
+
+
+class TestStereo:
+    def test_an_impulse_bounces_left_right_and_the_far_side_is_silent(self):
+        n = SR
+        T = 2000
+        y, l, r = Rig({"time": T / SR * 1000, "feedback": 0.5, "mix": 1.0, "tone": 1.0},
+                      {"in": _impulse(n, 0)}, stereo=LR).run(n)
+        for k in range(1, 7):
+            near, far = (l, r) if k % 2 else (r, l)
+            assert near[k * T] == y[k * T] and near[k * T] > 0.01
+            assert far[k * T] == 0.0
+        assert np.array_equal(l + r, y)            # every repeat on one side
+
+    @pytest.mark.parametrize("T, fb", [(1234.56, 0.6), (300.25, 0.98), (5000.0, 0.9),
+                                       (37.4, 0.95)])
+    def test_it_is_the_textbook_cross_coupled_pair(self, T, fb):
+        # Measured under 1.5e-8 (float32 rounding of the outputs), up to
+        # feedback 0.98, fractional times, on hops and one-hop blocks.
+        n = SR // 2
+        x = _noise(3, n) * 0.5
+        params = {"time": T / SR * 1000.0, "feedback": fb, "tone": 0.6, "mix": 0.7}
+        y, l, r = Rig(params, {"in": x}, stereo=LR).run(n)
+        tl, tr = _textbook_pair(x.astype(np.float64), params["time"] * SR / 1000.0,
+                                fb, 0.6, 0.7)
+        assert np.abs(l - tl).max() < 6e-8 and np.abs(r - tr).max() < 6e-8
+
+    def test_the_far_side_law(self):
+        # At ``spread`` s each side carries its own echo at full level and
+        # the other side's at 1 - s.
+        n = SR
+        x = _noise(6, n)
+        params = {"time": 123.4, "feedback": 0.6, "mix": 0.8}
+        y, l1, r1 = Rig(params, {"in": x}, stereo=LR).run(n)
+        dry = x.astype(np.float64) * 0.2
+        wl, wr = l1 - dry, r1 - dry                     # the pure L / R echoes
+        for s in (0.0, 0.25, 0.7):
+            _y, ls, rs = Rig(dict(params, spread=s), {"in": x}, stereo=LR).run(n)
+            assert np.abs(ls - (dry + wl + (1 - s) * wr)).max() < 1e-6
+            assert np.abs(rs - (dry + wr + (1 - s) * wl)).max() < 1e-6
+
+    def test_mix_zero_is_dry_on_all_three(self):
+        n = SR // 2
+        x = _noise(7, n)
+        for t_ms in (300.0, 0.05):
+            y, l, r = Rig({"time": t_ms, "mix": 0.0, "feedback": 0.9}, {"in": x},
+                          stereo=LR).run(n)
+            assert np.array_equal(y, x) and np.array_equal(l, x) and np.array_equal(r, x)
+
+    def test_voices_keep_their_own_lines_and_one_row_is_mono(self):
+        n = SR // 2
+        x1 = _noise(8, n)
+        y, l, r = Rig({"time": 50.0, "feedback": 0.7}, {"in": x1}, stereo=LR).run(n)
+        x3 = np.stack([x1, np.zeros(n, np.float32), _noise(9, n)])
+        y3, l3, r3 = Rig({"time": 50.0, "feedback": 0.7}, {"in": x3}, stereo=LR).run(n)
+        assert y3.shape == l3.shape == r3.shape == (3, n)
+        assert np.array_equal(l3[0], l) and np.array_equal(r3[0], r)   # row = mono
+        assert np.array_equal(y3[0], y)
+        assert not np.any(l3[1]) and not np.any(r3[1])                 # no cross-talk
+        assert not np.array_equal(l3[2], l3[0])
+
+
+class TestRecable:
+    P = {"time": 300.0, "feedback": 0.5, "tone": 0.8, "mix": 1.0, "spread": 1.0}
+    N = 8 * SR
+    T = int(0.3 * SR)
+
+    @staticmethod
+    def _burst(n, spans, seed):
+        x = np.zeros(n, dtype=np.float32)
+        rng = np.random.default_rng(seed)
+        for a, b in spans:
+            x[a:b] = 0.3 * rng.standard_normal(b - a)
+        return x
+
+    def _run(self, x, params=None, keep=False, hold=None):
+        """Cabled 0..2 s, uncabled 2..5 s, cabled again 5..8 s."""
+        jacks = {"in": x}
+        if hold is not None:
+            jacks["freeze"] = hold
+        rig = Rig(params or self.P, jacks, stereo=LR)
+        o1, _l, _r = rig.run(2 * SR)
+        saved = (rig.st["buf_s"], rig.st["lp_s"])
+        rig.uncable_out("out_l")
+        rig.uncable_out("out_r")
+        mono = rig.run(3 * SR)
+        dropped = "buf_s" not in rig.st and "lp_s" not in rig.st
+        if keep:                                   # the planted stale line
+            rig.st["buf_s"], rig.st["lp_s"] = saved
+        rig.cable_out("out_l")
+        rig.cable_out("out_r")
+        o2, l2, r2 = rig.run(3 * SR)
+        return np.concatenate([o1, mono, o2]), l2, r2, rig, dropped
+
+    def test_uncabling_drops_the_side_line_so_a_recable_has_no_ghost(self):
+        # A burst before the uncable, silence after; by the re-cable the mid
+        # has decayed (-86.6 dB) and a kept side line would read the old
+        # burst back at -4.0 dB (the planted self-test). Dropped: -92.7 dB.
+        x = self._burst(self.N, [(int(0.5 * SR), int(1.0 * SR))], 1)
+        o, l, r, _rig, dropped = self._run(x)
+        assert dropped
+        mid = float(np.abs(o[5 * SR:5 * SR + self.T]).max())
+        assert 0.0 < mid < 1e-4
+        assert float(np.abs(l[:self.T]).max()) <= 0.5 * mid + 1e-12
+        o, l, r, _rig, _d = self._run(x, keep=True)
+        assert float(np.abs(l[:self.T]).max()) > 100 * mid      # the ghost
+
+    def test_old_echoes_play_centred_and_a_new_note_bounces(self):
+        x = self._burst(self.N, [(int(4.8 * SR), int(4.81 * SR)),
+                                 (int(5.5 * SR), int(5.51 * SR))], 2)
+        o, l, r, _rig, _d = self._run(x, dict(self.P, feedback=0.6))
+        m = o[5 * SR:]
+        old = slice(0, int(0.45 * SR))
+        assert np.array_equal(l[old], r[old])                     # centred
+        assert np.abs((l[old] + r[old]) - m[old]).max() < 1e-12   # L + R = mid
+        assert np.abs(l[old]).max() > 0.1
+
+        def pk(y, a):
+            return float(np.abs(y[int((a - 0.02) * SR):int((a + 0.03) * SR)]).max())
+
+        assert pk(r, 0.8) == 0.0 and pk(l, 0.8) == pk(m, 0.8)    # new: L first
+        assert pk(l, 1.1) == 0.0 and pk(r, 1.1) == pk(m, 1.1)    # ... then R
+
+    def test_one_jack_left_cabled_keeps_the_side_line(self):
+        n = SR
+        rig = Rig(self.P, {"in": _noise(1, n)}, stereo=LR)
+        rig.run(n // 2)
+        buf_s = rig.st["buf_s"]
+        rig.uncable_out("out_r")
+        y, l, r = rig.run(n // 2)
+        assert rig.st["buf_s"] is buf_s and np.any(buf_s)
+
+    def test_a_recable_during_a_hold_stays_centred_and_exact(self):
+        x = self._burst(self.N, [(int(1.5 * SR), int(3.0 * SR))], 3)
+        g = _gate([(int(3.2 * SR), int(7.5 * SR))], self.N)
+        o, l, r, rig, _d = self._run(x, hold=g)
+        k = int(2.4 * SR)
+        assert np.all(rig.st["buf_s"] == 0.0)
+        assert np.array_equal(l[:k], r[:k])
+        assert np.array_equal(l[:k], (0.5 * o[5 * SR:5 * SR + k]).astype(np.float32))
+        assert np.abs(l[:k]).max() > 0.1
+
+    def test_a_voice_count_change_lands_in_the_same_clean_state(self):
+        n = SR
+        clk = _ticks(n, range(0, n, 2205))
+        rig = Rig({"division": 2.0}, {"in": _noise(1, n), "clock": clk}, stereo=LR)
+        rig.run(n // 2)
+        span = rig.st["ck_span"]
+        rig.jacks["in"] = np.stack([_noise(1, n), _noise(2, n)])     # now 2 voices
+        y, l, r = rig.run(F)
+        assert rig.st["buf_s"].shape == rig.st["buf"].shape == (2, rig.st["buf"].shape[1])
+        assert rig.st["lp_s"].shape == (2,)
+        assert rig.st["ck_span"] == span                 # the clock kept its span
+        assert l.shape == (2, F)
+
+
+class TestStereoFreeze:
+    def test_a_held_ping_pong_keeps_bouncing_bit_for_bit(self):
+        # The side line holds with gain -1, so over 10 s of hold the mid
+        # repeats exactly every lap, the side negates exactly every lap,
+        # and L on one lap is R on the next.
+        n = 12 * SR
+        x = _noise(11, n) * 0.5
+        rise = SR + 37
+        g = _gate([(rise, n)], n)
+        rig = Rig({"time": 250.0, "feedback": 0.5, "mix": 1.0}, {"in": x, "freeze": g},
+                  stereo=LR)
+        y, l, r = rig.run(n)
+        D = int(rig.st["fz_dly"][0])
+        assert D == 11025
+        a = rise + RAMP + D
+        assert np.array_equal(y[a:], y[a - D:-D])              # mid: periodic
+        assert np.array_equal(l[a:], r[a - D:-D])              # sides swap per lap
+        assert np.array_equal(r[a:], l[a - D:-D])
+        assert np.abs(l[a:] - r[a:]).max() > 0.01              # really stereo
+        st = rig.st
+        w = int(st["write_idx"])
+        idx = (w - 1 - np.arange(D)) % st["buf"].shape[1]
+        assert np.array_equal(st["buf_s"][0, idx], -st["buf_s"][0, (idx - D) % st["buf"].shape[1]])
+        assert np.array_equal(st["buf"][0, idx], st["buf"][0, (idx - D) % st["buf"].shape[1]])

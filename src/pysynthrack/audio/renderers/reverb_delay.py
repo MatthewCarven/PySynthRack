@@ -283,6 +283,10 @@ class ReverbDelayRenderers:
         )
         # A (V, F) clock collapses to the house sum, like the freeze gate.
         clock = self._input_buffer(patch, buffers, module.id, "clock")
+        # The side line runs while either stereo jack is cabled, whatever
+        # ``spread`` is, so a spread move is immediate.
+        stereo = any(c.src_port in ("out_l", "out_r")
+                     for c in patch.cables_out_of(module.id))
         if src is None:
             # Nothing to echo, but a patched clock keeps being measured,
             # so the echo is already on time when the audio arrives (and
@@ -294,7 +298,10 @@ class ReverbDelayRenderers:
                 st = self._state.get(module.id)
                 if st is not None and "ck_n" in st:
                     self._delay_clock_edges(st, None, frames)
-            return np.zeros(frames, dtype=np.float32)
+            z = np.zeros(frames, dtype=np.float32)
+            if stereo:
+                return {"out": z, "out_l": z.copy(), "out_r": z.copy()}
+            return z
 
         time_cv = self._input_buffer(
             patch, buffers, module.id, "time_cv", collapse=False
@@ -315,24 +322,31 @@ class ReverbDelayRenderers:
                 cv = np.broadcast_to(
                     self._voice_mean(time_cv), (V, time_cv.shape[1])
                 )
-            return self._render_delay_core(
-                module, frames, src, cv, fz_gate, clock)
+            got = self._render_delay_core(
+                module, frames, src, cv, fz_gate, clock, stereo)
+            if stereo:
+                return {"out": got[0], "out_l": got[1], "out_r": got[2]}
+            return got
 
         # Mono audio. A 2D time_cv collapses to one shared modulation
         # (mean over voices) -- summing time voltages would be nonsense.
         if time_cv is not None and time_cv.ndim == 2:
             time_cv = self._voice_mean(time_cv)
-        out = self._render_delay_core(
+        got = self._render_delay_core(
             module,
             frames,
             src[np.newaxis, :],
             None if time_cv is None else time_cv[np.newaxis, :],
             fz_gate,
             clock,
+            stereo,
         )
-        return out[0]
+        if stereo:
+            return {"out": got[0][0], "out_l": got[1][0], "out_r": got[2][0]}
+        return got[0]
 
-    def _render_delay_core(self, module, frames, src, cv, fz=None, clock=None):
+    def _render_delay_core(self, module, frames, src, cv, fz=None, clock=None,
+                           stereo=False):
         """Shared ``(V, F)`` feedback-delay engine.
 
         Per output sample: read the line ``delay`` samples back with linear
@@ -422,9 +436,21 @@ class ReverbDelayRenderers:
         buf = state["buf"]
         wp = int(state["write_idx"])
         lp = state["lp"]
+        # The side line (the ping-pong's second line): only while a stereo
+        # jack is cabled. Uncabling both DROPS it -- it can't simply wait,
+        # because ``write_idx`` keeps moving while it stops, so a re-cable
+        # would read and feed back the earlier cabled period's audio (a
+        # ghost, measured at -4.0 dB). The re-init above clears it too.
+        if stereo:
+            buf_s, lp_s = self._delay_side_line(state, V, L)
+        else:
+            buf_s = lp_s = None
+            state.pop("buf_s", None)
+            state.pop("lp_s", None)
 
         if frames == 0:
-            return np.empty((V, 0), dtype=np.float32)
+            e0 = np.empty((V, 0), dtype=np.float32)
+            return (e0, e0.copy(), e0.copy()) if stereo else e0
 
         # Damping one-pole coefficient from the tone knob: a log-swept
         # cutoff from ~200 Hz (dark) to ~18 kHz (bright), sample-rate
@@ -581,6 +607,30 @@ class ReverbDelayRenderers:
         # hops is what ``lfilter`` carries between samples. With a fade
         # live, the hop is no longer than the nearer of the two reads.
         hop = self._delay_hop(low, frames)
+        # --- stereo: the side line. A hard ping-pong is two lines feeding
+        # each other, ``L = x + fb * R@T``, ``R = fb * L@T``. Their sum obeys
+        # the existing loop and their difference the same loop with the
+        # feedback NEGATED, so the existing line is the mid, untouched (and
+        # ``out`` with it), and the side line differs from it by one sign:
+        # ``buf_s = x - fb * damped_s``. Out: ``L = (mid + side) / 2``,
+        # ``R = (mid - side) / 2`` at full spread, the far side's level
+        # ``1 - spread`` below that; the dry stays centred. A hold is gain
+        # -1 on the side (``buf_s[n] = -buf_s[n - D]``, negation exact),
+        # so a held ping-pong keeps bouncing. NOTE: the identity needs a
+        # LINEAR loop -- a drive inside it would need the cross-coupled
+        # pair itself.
+        if buf_s is not None:
+            try:
+                spread = float(module.params.get("spread", 1.0))
+            except (TypeError, ValueError):
+                spread = 1.0
+            if not np.isfinite(spread):
+                spread = 1.0
+            spread = min(max(spread, 0.0), 1.0)
+            far = 0.5 * spread
+            home = 1.0 - far
+            out_l = np.empty((V, frames), dtype=np.float64)
+            out_r = np.empty((V, frames), dtype=np.float64)
         if hop:
             out = np.empty((V, frames), dtype=np.float64)
             pos = 0
@@ -624,6 +674,29 @@ class ReverbDelayRenderers:
                     buf[rows[:, None], absidx % L] = xs * om + gain * fb_sig
                 out[:, sl] = xs * (1.0 - mix) + d * mix
                 lp = damped[:, -1].copy()
+                if buf_s is not None:
+                    # the side line: the same reads, its own one-pole
+                    ds = (
+                        buf_s[rows[:, None], i0 % L] * (1.0 - frac)
+                        + buf_s[rows[:, None], (i0 + 1) % L] * frac
+                    )
+                    if old is not None:
+                        dso = (
+                            buf_s[rows[:, None], i0o % L] * (1.0 - fo)
+                            + buf_s[rows[:, None], (i0o + 1) % L] * fo
+                        )
+                        ds = dso * (1.0 - cs) + ds * cs
+                    zi_s = (c1 * lp_s)[:, np.newaxis]
+                    damped_s = lfilter([g], [1.0, -c1], ds, axis=-1, zi=zi_s)[0]
+                    if e is None:
+                        buf_s[rows[:, None], absidx % L] = xs - feedback * damped_s
+                    else:
+                        buf_s[rows[:, None], absidx % L] = (
+                            xs * om - gain * (damped_s * om + ds * eh))
+                    lp_s = damped_s[:, -1].copy()
+                    dry = xs * (1.0 - mix)
+                    out_l[:, sl] = dry + (d * home + ds * far) * mix
+                    out_r[:, sl] = dry + (d * home - ds * far) * mix
                 wp = (wp + h) % L
                 pos += h
         else:
@@ -657,11 +730,36 @@ class ReverbDelayRenderers:
                         x[:, n] * om[n] + gain[n] * (lp * om[n] + d * e[n])
                     )
                 out[:, n] = x[:, n] * (1.0 - mix) + d * mix
+                if buf_s is not None:
+                    ds = (
+                        buf_s[rows, i0 % L] * (1.0 - frac)
+                        + buf_s[rows, (i0 + 1) % L] * frac
+                    )
+                    if old is not None:
+                        dso = (
+                            buf_s[rows, i0o % L] * (1.0 - fo)
+                            + buf_s[rows, (i0o + 1) % L] * fo
+                        )
+                        ds = dso * (1.0 - xf[n]) + ds * xf[n]
+                    lp_s = g * ds + c1 * lp_s
+                    if e is None:
+                        buf_s[rows, wp % L] = x[:, n] - feedback * lp_s
+                    else:
+                        buf_s[rows, wp % L] = (
+                            x[:, n] * om[n] - gain[n] * (lp_s * om[n] + ds * e[n])
+                        )
+                    dry = x[:, n] * (1.0 - mix)
+                    out_l[:, n] = dry + (d * home + ds * far) * mix
+                    out_r[:, n] = dry + (d * home - ds * far) * mix
                 wp += 1
             wp = wp % L
 
         state["write_idx"] = int(wp)
         state["lp"] = lp
+        if buf_s is not None:
+            state["lp_s"] = lp_s
+            return (out.astype(np.float32), out_l.astype(np.float32),
+                    out_r.astype(np.float32))
         return out.astype(np.float32)
 
     def _delay_hop(self, low: float, frames: int) -> int:
@@ -864,6 +962,17 @@ class ReverbDelayRenderers:
         if faded:
             return new, old, c
         return new, None, None
+
+    @staticmethod
+    def _delay_side_line(state, V: int, L: int):
+        """The delay's side line, ``(buf_s, lp_s)``, allocated zeroed on
+        the first cabled block (and after the re-init or an uncable
+        dropped it). Called only while ``out_l`` or ``out_r`` is cabled:
+        an uncabled delay never reaches it."""
+        if state.get("buf_s") is None:
+            state["buf_s"] = np.zeros((V, L), dtype=np.float64)
+            state["lp_s"] = np.zeros(V, dtype=np.float64)
+        return state["buf_s"], state["lp_s"]
 
     @staticmethod
     def _delay_xfade_weights(fn: int, m: int, ramp_n: int):

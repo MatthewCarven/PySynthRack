@@ -119,6 +119,9 @@ class Delay(Module):
             0.25..64 (default 1.0).
         feel: ``straight`` | ``dotted`` | ``triplet`` -- a multiplier of
             1, 3/2 or 2/3 on the clocked echo (default straight).
+        spread: 0..1 (default 1.0), the ping-pong's width on
+            ``out_l`` / ``out_r``: the far side's level is ``1 - spread``,
+            so 1 bounces hard left-right and 0 is ``out`` on both.
 
     Ports:
         in (in, audio): signal to echo. Unpatched -> silence.
@@ -135,6 +138,11 @@ class Delay(Module):
             locked, ``time_cv`` still adds. ``(V, F)`` collapses to the
             house sum. Unpatched -> ``time`` rules (bit-exact).
         out (out, audio): dry + echo mix.
+        out_l, out_r (out, audio): the ping-pong pair -- repeats alternate
+            L, R, L ... (swap the cables to start right), the dry centred.
+            Cabling either runs a second "side" line beside the first, so
+            ``out`` is bit-exact whatever these do. Uncabled -> no side
+            line at all.
     """
 
     TYPE = "delay"
@@ -148,6 +156,7 @@ class Delay(Module):
         "freeze": False,
         "division": 1.0,
         "feel": "straight",
+        "spread": 1.0,
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),
@@ -155,4 +164,11 @@ class Delay(Module):
         Port("freeze", "in", "gate"),
         Port("clock", "in", "gate"),
     ]
-    OUTPUT_PORTS = [Port("out", "out", "audio")]
+    # ``out`` stays first: the engine files a bare-array return under the
+    # first output port, and the delay returns a bare array whenever
+    # neither stereo jack is cabled.
+    OUTPUT_PORTS = [
+        Port("out", "out", "audio"),
+        Port("out_l", "out", "audio"),
+        Port("out_r", "out", "audio"),
+    ]

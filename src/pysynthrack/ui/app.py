@@ -2765,6 +2765,15 @@ class App:
                     width=120, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
+            if param_name == "spread":
+                # The ping-pong's width on out_l / out_r: the far side's
+                # level is 1 - spread (1 = hard left-right, 0 = mono).
+                dpg.add_slider_float(
+                    label=f"{param_name} (out_l/r)", default_value=float(current),
+                    min_value=0.0, max_value=1.0, format="%.2f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
 
         if module.TYPE == "reverb":
             # Stereo FDN reverb: four 0..1 macro controls (size, decay,

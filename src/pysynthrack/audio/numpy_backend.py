@@ -2366,8 +2366,11 @@ class NumpyBackend(
                     buffers[(module_id, port_name)] = buf
             else:
                 # Legacy single-output convention. Stash under the module's
-                # first declared output port name (every existing single-out
-                # module declares exactly one).
+                # first declared output port name. Most single-out modules
+                # declare exactly one; the delay declares three and returns
+                # a bare ``out`` whenever neither ``out_l`` nor ``out_r`` is
+                # cabled (its side line isn't running then), so nothing
+                # else is read from it.
                 if module.OUTPUT_PORTS:
                     buffers[(module_id, module.OUTPUT_PORTS[0].name)] = result
 
