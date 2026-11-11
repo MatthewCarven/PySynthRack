@@ -976,6 +976,105 @@ class _GrainShifter:
         return float(self.iw - self.rp / max(r, 1e-9))
 
 
+def _no_grain(r: float) -> bool:
+    """A grain producer that lays nothing (see _GrainShifterPair.process)."""
+    return False
+
+
+class _GrainShifterPair:
+    """Two :class:`_GrainShifter` engines that share ONE splice search: the
+    stereo form, for a left/right pair that has to stay a pair.
+
+    WSOLA places every grain where it lines up best with the grain before
+    it, up to half a hop (12.5 ms at the 50 ms grain) either side of the
+    ideal grid. Give each side of a stereo signal its own engine and each
+    picks that spot from its own waveform. With the same signal on both
+    sides they agree. With different material they do not, and the
+    disagreement is lasting: near ratio 1 a grain's best match is simply
+    the continuation of the last one, so each side carries whatever offset
+    it has. A hard swing of the ratio makes each side re-splice on its
+    own; afterwards the two sides sit up to 25 ms apart and stay there.
+    That was the buffered sink's ring governor until 2026-11-11 (Matthew:
+    left and right drift apart under load and usually do not recover;
+    docs/channel-timing-scope.md has the measurements).
+
+    A pair searches once and cuts twice. Each engine supplies its raw
+    similarity terms; they are combined into one score, the stereo frame
+    treated as a single vector::
+
+        ncc[k] = (dot_L[k] + dot_R[k])
+                 / (sqrt(e_L[k] + e_R[k]) * (sqrt(t_L^2 + t_R^2) + 1e-9))
+
+    and both engines place their grain at the one position it picks. The
+    gap between the sides is zero by construction, at Start and through
+    any swing. Three properties of that score are worth keeping if it is
+    ever changed:
+
+    * Each side's correlation is taken against its OWN target and then
+      added. Sides that are out of phase with each other (right = -left,
+      a mid/side widener at full width) therefore still agree on the
+      cut; searching the sum left + right would be searching silence.
+    * The same signal on both sides (at any two gains) reduces it to the
+      lone engine's score, and a silent side drops out of it, so those
+      sound as they did through one engine. (To within a hair, not to
+      the bit: the two forms round differently in the last place.)
+    * The louder side has the larger say, which is the side a wrong
+      splice would be heard on.
+
+    The two engines keep identical grids (same input counts, same ratio),
+    so one loop lays every grain on both. Everything else -- the rings,
+    the overlap-add, the read-out -- is the lone engine's, untouched.
+    """
+
+    def __init__(self, grain: int, overlap: int, head: int) -> None:
+        self.engines = (
+            _GrainShifter(grain, overlap, head),
+            _GrainShifter(grain, overlap, head),
+        )
+
+    def _produce_one(self, r: float) -> bool:
+        left, right = self.engines
+        c = left._grid()
+        # The grids are identical already; the right engine takes the
+        # left's by decree, so not even the snap-forward safety net could
+        # ever part them.
+        right.a = left.a
+        if c is None:
+            return False
+        if not left.have_tgt:
+            p = float(c)
+        else:
+            dot_l, e_l = left._terms(c)
+            dot_r, e_r = right._terms(c)
+            t_l = float(np.linalg.norm(left.tgt))
+            t_r = float(np.linalg.norm(right.tgt))
+            ncc = (dot_l + dot_r) / (
+                np.sqrt(e_l + e_r) * (np.sqrt(t_l * t_l + t_r * t_r) + 1e-9)
+            )
+            shift, dfr = left._pick(ncc - left._search_bias())
+            p = c + shift + dfr
+        left._place(p, r)
+        right._place(p, r)
+        return True
+
+    def process(self, xl: np.ndarray, xr: np.ndarray, r: float):
+        """Push one block per side (1D float64 each, same length), return
+        the two shifted blocks ``(left, right)``."""
+        F = xl.shape[0]
+        if F == 0:
+            return np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.float64)
+        left, right = self.engines
+        left._feed(xl)
+        right._feed(xr)
+        left._advance(r, F, self._produce_one)
+        # Every grain above was laid on both engines, so the right one has
+        # none left to lay. It only needs its priming flags and read
+        # pointer brought level, which _advance does when handed a
+        # producer that lays nothing.
+        right._advance(r, F, _no_grain)
+        return left._read(F, r), right._read(F, r)
+
+
 class _PartitionedConvolver:
     """Uniformly-partitioned FFT convolution for one IR channel (overlap-save).
 
@@ -1391,12 +1490,14 @@ class NumpyBackend(
         # module id; an entry exists only while that sink's ratio_cv is
         # cabled, so the unpatched path carries no state at all.
         self._sink_ratio: dict[int, float] = {}
-        # Per-sink [L, R] _GrainShifter pair for the governed push's
+        # Per-sink _GrainShifterPair for the governed push's
         # pitch-preserving stage (see the actuation tail of
-        # render_block_multi). Same lifecycle as _sink_ratio: created
-        # lazily on the first governed block, dropped when ratio_cv is
-        # uncabled, absent entirely on the unpatched path.
-        self._sink_stretch: dict[int, list] = {}
+        # render_block_multi): one engine per side, sharing one splice
+        # search so the two sides cannot part. Same lifecycle as
+        # _sink_ratio: created lazily on the first governed block,
+        # dropped when ratio_cv is uncabled, absent entirely on the
+        # unpatched path.
+        self._sink_stretch: dict[int, Any] = {}
         # GUI thread writes the patch reference; audio thread reads it.
         self._lock = threading.Lock()
         # Audio-callback crash protection. After the first uncaught
@@ -2544,12 +2645,17 @@ class NumpyBackend(
         # only in what feeds it:
         #
         #   * PITCH-PRESERVING (plain buffered sink) — a streaming WSOLA shift
-        #     UP by `ratio` (_GrainShifter, one per channel, state persistent
-        #     across blocks) cancels the resample's pitch move, so the push
-        #     holds pitch. The engines stay in-circuit while governed even at
-        #     ratio 1.0 — bypassing at unity would spend the ~one-grain warm-up
-        #     (zeros) exactly when the governor first corrects — so the wet
-        #     path keeps one constant ~grain (50 ms) latency.
+        #     UP by `ratio` cancels the resample's pitch move, so the push
+        #     holds pitch. It is ONE _GrainShifterPair per sink: an engine
+        #     per side that share a single splice search (state persistent
+        #     across blocks), so both sides are cut at the same spot every
+        #     grain. Two independent engines were not, and a swing of the
+        #     ratio left the sides up to 25 ms apart for good (2026-11-11,
+        #     docs/channel-timing-scope.md). The engines stay in-circuit
+        #     while governed even at ratio 1.0 — bypassing at unity would
+        #     spend the warm-up (zeros) exactly when the governor first
+        #     corrects — so the wet path keeps one constant latency of
+        #     about 100 ms (measured 93..112 ms, by main block size).
         #   * VARISPEED (warping sibling) — no shift: the raw block is resampled
         #     straight to length frames * ratio, so pitch bends WITH the ratio
         #     (ratio > 1 = longer = slower = lower — the tape running out of
@@ -2569,24 +2675,20 @@ class NumpyBackend(
                     # pitch is meant to move. No persistent engine state.
                     base = blk.astype(np.float64)
                 else:
-                    engines = self._sink_stretch.get(mid)
-                    if engines is None:
+                    pair = self._sink_stretch.get(mid)
+                    if pair is None:
                         # The pitch shifter's house defaults: 50 ms grain,
                         # overlap 2, and headroom for any block size the
-                        # main stream can run.
+                        # main stream can run. ONE pair for the two sides.
                         grain = max(8, int(round(0.05 * self.sample_rate)))
                         head = max(16384, 16 * int(getattr(self, "block_size", 512)))
-                        engines = [
-                            _GrainShifter(grain, 2, head),
-                            _GrainShifter(grain, 2, head),
-                        ]
-                        self._sink_stretch[mid] = engines
+                        pair = _GrainShifterPair(grain, 2, head)
+                        self._sink_stretch[mid] = pair
                     base = np.empty((frames, 2), dtype=np.float64)
-                    base[:, 0] = engines[0].process(
-                        blk[:, 0].astype(np.float64), ratio
-                    )
-                    base[:, 1] = engines[1].process(
-                        blk[:, 1].astype(np.float64), ratio
+                    base[:, 0], base[:, 1] = pair.process(
+                        blk[:, 0].astype(np.float64),
+                        blk[:, 1].astype(np.float64),
+                        ratio,
                     )
                 m = max(1, int(round(frames * ratio)))
                 if m == frames:
