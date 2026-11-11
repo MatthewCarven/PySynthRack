@@ -772,11 +772,20 @@ class _GrainShifter:
         self.primed = False
         self.bias = 1e-3                     # smallest-shift tie-break bias
 
-    def _produce_one(self, r: float) -> bool:
-        Lg, Hs, Lov, seek = self.Lg, self.Hs, self.Lov, self.seek
+    # The grain step is cut in four -- grid, terms, pick, place -- and
+    # process() in three -- feed, advance, read -- so that a PAIR of engines
+    # can share one splice search (see _GrainShifterPair). A lone engine
+    # runs the same statements in the same order as the two methods they
+    # were cut from; tests/test_grain_shifter_pin.py holds it to that,
+    # sample for sample, against the engine as it stood before the cut.
+
+    def _grid(self):
+        """The next grain's ideal position (an absolute input index), or
+        ``None`` while there is not yet enough input to cut it."""
+        Lg, seek = self.Lg, self.seek
         c = int(round(self.a))
         if c + seek + Lg + 2 > self.iw:              # not enough input yet
-            return False
+            return None
         if c - seek - 1 < self.iw - self.Lin + 2:
             # The grid fell off the back of the ring (only possible
             # after an abnormal stall -- with the ideal-grid pointer
@@ -784,26 +793,47 @@ class _GrainShifter:
             self.a = float(self.iw - self.Lin + 3 + seek)
             c = int(round(self.a))
             if c + seek + Lg + 2 > self.iw:
-                return False
-        if not self.have_tgt:
-            p = float(c)
+                return None
+        return c
+
+    def _terms(self, c: int):
+        """The raw similarity terms for the ``2*seek + 1`` candidate
+        positions around ``c``: each one's dot product against the target
+        (the previous grain's continuation) and the energy of the input
+        under it (floored). Raw, not yet a normalised score, so that a
+        pair can add two engines' terms before normalising."""
+        seek, Lov = self.seek, self.Lov
+        seg = self.ib[(c - seek + np.arange(2 * seek + Lov + 1)) % self.Lin]
+        dot = np.correlate(seg[:-1], self.tgt, "valid")          # (2*seek+1,)
+        cs = np.concatenate([[0.0], np.cumsum(seg * seg)])
+        energy = np.maximum(cs[Lov:] - cs[:-Lov], 1e-12)[: 2 * seek + 1]
+        return dot, energy
+
+    def _search_bias(self) -> np.ndarray:
+        """The smallest-shift tie-break, one value per candidate position."""
+        seek = self.seek
+        return self.bias * np.abs(np.arange(-seek, seek + 1)) / seek
+
+    def _pick(self, ncc: np.ndarray):
+        """The best candidate in a score curve, as ``(whole shift from the
+        grid, sub-sample fraction)``."""
+        seek = self.seek
+        k = int(np.argmax(ncc))
+        if 0 < k < 2 * seek:
+            # Parabolic sub-sample refinement of the NCC peak.
+            y0, y1, y2 = float(ncc[k - 1]), float(ncc[k]), float(ncc[k + 1])
+            den = y0 - 2.0 * y1 + y2
+            dfr = 0.5 * (y0 - y2) / den if abs(den) > 1e-12 else 0.0
+            dfr = float(np.clip(dfr, -0.5, 0.5))
         else:
-            seg = self.ib[(c - seek + np.arange(2 * seek + Lov + 1)) % self.Lin]
-            dot = np.correlate(seg[:-1], self.tgt, "valid")          # (2*seek+1,)
-            cs = np.concatenate([[0.0], np.cumsum(seg * seg)])
-            nrm = np.sqrt(np.maximum(cs[Lov:] - cs[:-Lov], 1e-12))[: 2 * seek + 1]
-            tn = float(np.linalg.norm(self.tgt)) + 1e-9
-            ncc = dot / (nrm * tn) - self.bias * np.abs(np.arange(-seek, seek + 1)) / seek
-            k = int(np.argmax(ncc))
-            if 0 < k < 2 * seek:
-                # Parabolic sub-sample refinement of the NCC peak.
-                y0, y1, y2 = float(ncc[k - 1]), float(ncc[k]), float(ncc[k + 1])
-                den = y0 - 2.0 * y1 + y2
-                dfr = 0.5 * (y0 - y2) / den if abs(den) > 1e-12 else 0.0
-                dfr = float(np.clip(dfr, -0.5, 0.5))
-            else:
-                dfr = 0.0
-            p = c + (k - seek) + dfr
+            dfr = 0.0
+        return k - seek, dfr
+
+    def _place(self, p: float, r: float) -> None:
+        """Cut the grain at (fractional) input position ``p``, overlap-add
+        it at the synthesis onset, keep its continuation as the next search
+        target, and step the grid."""
+        Lg, Hs, Lov = self.Lg, self.Hs, self.Lov
         # Fractional grain extraction (linear interp) at position p.
         i0 = int(np.floor(p))
         fr = p - i0
@@ -819,7 +849,81 @@ class _GrainShifter:
         self.a += Hs / r      # ideal grid: search excursions never accumulate
         self.onset += Hs
         self.final = self.onset
+
+    def _produce_one(self, r: float) -> bool:
+        c = self._grid()
+        if c is None:
+            return False
+        if not self.have_tgt:
+            p = float(c)
+        else:
+            dot, energy = self._terms(c)
+            nrm = np.sqrt(energy)
+            tn = float(np.linalg.norm(self.tgt)) + 1e-9
+            shift, dfr = self._pick(dot / (nrm * tn) - self._search_bias())
+            p = c + shift + dfr
+        self._place(p, r)
         return True
+
+    def _feed(self, x: np.ndarray, x_dry=None) -> None:
+        """Write one input block into the ring (and ``x_dry``, when given,
+        into the parallel raw ring)."""
+        F = x.shape[0]
+        slots = (self.iw + np.arange(F)) % self.Lin
+        self.ib[slots] = x
+        if x_dry is not None:
+            if self.db is None:
+                self.db = np.zeros(self.Lin)
+            self.db[slots] = x_dry
+        self.iw += F
+
+    def _advance(self, r: float, F: int, produce) -> None:
+        """Lay grains until a block of ``F`` can be read: prime first (one
+        whole grain of stretched signal), then keep the stretched ring
+        ahead of the read pointer. ``produce(r)`` lays one grain and says
+        whether it could: a lone engine passes its own ``_produce_one``, a
+        pair passes the step that lays each grain on both engines."""
+        if not self.primed:
+            while self.final < self.Lg:
+                if not produce(r):
+                    break
+            if self.final >= self.Lg:
+                self.primed = True
+                self.rp = 0.0
+                self.zeroed = 0
+        if self.primed:
+            need = self.rp + r * F + 2.0
+            guard = 0
+            while self.final < need:
+                if not produce(r):
+                    break
+                guard += 1
+                if guard > 20000:
+                    break
+
+    def _read(self, F: int, r: float) -> np.ndarray:
+        """Resample ``F`` output samples from the stretched ring at rate
+        ``r`` and retire what the read pointer has passed. Silence until
+        the engine has primed."""
+        if not self.primed:
+            return np.zeros(F, dtype=np.float64)
+        pos = self.rp + np.arange(F) * r
+        pos = np.minimum(pos, self.final - 1.0001)   # underrun guard
+        i0 = np.floor(pos).astype(np.int64)
+        fr = pos - i0
+        w0 = self.sw[i0 % self.Lstr]
+        w1 = self.sw[(i0 + 1) % self.Lstr]
+        v0 = np.where(w0 > 1e-6, self.ss[i0 % self.Lstr] / np.where(w0 > 1e-6, w0, 1.0), 0.0)
+        v1 = np.where(w1 > 1e-6, self.ss[(i0 + 1) % self.Lstr] / np.where(w1 > 1e-6, w1, 1.0), 0.0)
+        out = v0 * (1.0 - fr) + v1 * fr
+        self.rp = min(self.rp + r * F, float(self.final))
+        tz = int(np.floor(self.rp)) - 1
+        if tz > self.zeroed:
+            sl = np.arange(self.zeroed, tz) % self.Lstr
+            self.ss[sl] = 0.0
+            self.sw[sl] = 0.0
+            self.zeroed = tz
+        return out
 
     def process(self, x: np.ndarray, r: float, x_dry=None) -> np.ndarray:
         """Push one input block (1D float64), return the shifted block.
@@ -831,48 +935,9 @@ class _GrainShifter:
         F = x.shape[0]
         if F == 0:
             return np.zeros(0, dtype=np.float64)
-        slots = (self.iw + np.arange(F)) % self.Lin
-        self.ib[slots] = x
-        if x_dry is not None:
-            if self.db is None:
-                self.db = np.zeros(self.Lin)
-            self.db[slots] = x_dry
-        self.iw += F
-        if not self.primed:
-            while self.final < self.Lg:
-                if not self._produce_one(r):
-                    break
-            if self.final >= self.Lg:
-                self.primed = True
-                self.rp = 0.0
-                self.zeroed = 0
-        out = np.zeros(F, dtype=np.float64)
-        if self.primed:
-            need = self.rp + r * F + 2.0
-            guard = 0
-            while self.final < need:
-                if not self._produce_one(r):
-                    break
-                guard += 1
-                if guard > 20000:
-                    break
-            pos = self.rp + np.arange(F) * r
-            pos = np.minimum(pos, self.final - 1.0001)   # underrun guard
-            i0 = np.floor(pos).astype(np.int64)
-            fr = pos - i0
-            w0 = self.sw[i0 % self.Lstr]
-            w1 = self.sw[(i0 + 1) % self.Lstr]
-            v0 = np.where(w0 > 1e-6, self.ss[i0 % self.Lstr] / np.where(w0 > 1e-6, w0, 1.0), 0.0)
-            v1 = np.where(w1 > 1e-6, self.ss[(i0 + 1) % self.Lstr] / np.where(w1 > 1e-6, w1, 1.0), 0.0)
-            out = v0 * (1.0 - fr) + v1 * fr
-            self.rp = min(self.rp + r * F, float(self.final))
-            tz = int(np.floor(self.rp)) - 1
-            if tz > self.zeroed:
-                sl = np.arange(self.zeroed, tz) % self.Lstr
-                self.ss[sl] = 0.0
-                self.sw[sl] = 0.0
-                self.zeroed = tz
-        return out
+        self._feed(x, x_dry)
+        self._advance(r, F, self._produce_one)
+        return self._read(F, r)
 
     def history(self, n: int, dry: bool = False) -> np.ndarray:
         """The last ``n`` input samples (raw ring when ``dry``), oldest
