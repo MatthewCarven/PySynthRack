@@ -484,7 +484,13 @@ likeliest to sound different come first.
       re-ticking `auto_govern` pulls drifted sides back. **Recommended fix:**
       one splice decision for both sides (S, one session). The doc has five
       questions for Matthew and five desktop checks; the first check takes
-      three minutes and confirms the cause.
+      three minutes and confirms the cause. **Planned 2026-11-11:**
+      `docs/channel-timing-plan.md` on `claude/channel-timing-scope-afe939`
+      (c7add01, not on main). The prototype gives a 0 ms gap and is
+      sample-identical where sides match. It waits on Matthew: an A/B
+      listening pair (sent from that session) and three calls (louder side
+      leads the score; correct the latency docstring; leave the governor's
+      law alone), answered in that session.
 - [ ] **Found during that scope, not reproduced by the supervisor:**
       (a) 3 of 12 device names in the sink's dropdown won't open on the
       laptop ("Multiple output devices found"); (b) `disk_writer` drops

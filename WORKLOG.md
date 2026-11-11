@@ -158,6 +158,14 @@ freely" and force-pushing went under "Mine to run".
 Then, on his "Yes, merge the scope doc please", the scope commit was
 cherry-picked onto main as a2c6475 (`docs/channel-timing-scope.md`, docs only).
 
+**Branches cleared, on his "go ahead and clear them out".** The delay spec and
+build branches and worktrees are gone (`claude/delay-sync-spec-f333c7`,
+`claude/delay-sync-build-f670f7`). `git cherry` confirmed every commit was
+already on main, neither worktree had changes, and neither branch was ever on
+GitHub. The timing branch stays: by then its session had planned the fix
+(c7add01, `docs/channel-timing-plan.md`, not on main) and was waiting on
+Matthew for an A/B listen and three calls.
+
 ---
 
 ## 2026-10-12 — the seventh batch: eight agents, and three things found sideways
