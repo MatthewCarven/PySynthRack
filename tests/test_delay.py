@@ -107,6 +107,8 @@ class TestModel:
             "mix": 0.35,
             "cv_depth": 50.0,
             "freeze": False,
+            "division": 1.0,
+            "feel": "straight",
         }
 
     def test_ports_and_signal_kinds(self):
@@ -115,6 +117,7 @@ class TestModel:
             ("in", "audio"),
             ("time_cv", "cv"),
             ("freeze", "gate"),
+            ("clock", "gate"),
         ]
         assert [(p.name, p.signal_kind) for p in dl.output_ports] == [
             ("out", "audio"),

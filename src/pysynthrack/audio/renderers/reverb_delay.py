@@ -281,7 +281,19 @@ class ReverbDelayRenderers:
         src = self._input_buffer(
             patch, buffers, module.id, "in", collapse=False
         )
+        # A (V, F) clock collapses to the house sum, like the freeze gate.
+        clock = self._input_buffer(patch, buffers, module.id, "clock")
         if src is None:
+            # Nothing to echo, but a patched clock keeps being measured,
+            # so the echo is already on time when the audio arrives (and
+            # one unpatched meanwhile drops its measurement, as below).
+            if clock is not None:
+                self._delay_clock_edges(
+                    self._state.setdefault(module.id, {}), clock, frames)
+            else:
+                st = self._state.get(module.id)
+                if st is not None and "ck_n" in st:
+                    self._delay_clock_edges(st, None, frames)
             return np.zeros(frames, dtype=np.float32)
 
         time_cv = self._input_buffer(
@@ -303,7 +315,8 @@ class ReverbDelayRenderers:
                 cv = np.broadcast_to(
                     self._voice_mean(time_cv), (V, time_cv.shape[1])
                 )
-            return self._render_delay_core(module, frames, src, cv, fz_gate)
+            return self._render_delay_core(
+                module, frames, src, cv, fz_gate, clock)
 
         # Mono audio. A 2D time_cv collapses to one shared modulation
         # (mean over voices) -- summing time voltages would be nonsense.
@@ -315,10 +328,11 @@ class ReverbDelayRenderers:
             src[np.newaxis, :],
             None if time_cv is None else time_cv[np.newaxis, :],
             fz_gate,
+            clock,
         )
         return out[0]
 
-    def _render_delay_core(self, module, frames, src, cv, fz=None):
+    def _render_delay_core(self, module, frames, src, cv, fz=None, clock=None):
         """Shared ``(V, F)`` feedback-delay engine.
 
         Per output sample: read the line ``delay`` samples back with linear
@@ -385,7 +399,12 @@ class ReverbDelayRenderers:
 
         state = self._state.setdefault(module.id, {})
         if "buf" not in state or state["buf"].shape != (V, L):
+            # The clock's keys (``ck_*``) survive the re-init, as the
+            # modulation effects' ``_MOD_CLOCK_KEYS`` do: a voice-count
+            # change keeps the span it measured and the time it locked.
+            ck = {k: v for k, v in state.items() if k.startswith("ck_")}
             state.clear()
+            state.update(ck)
             state["buf"] = np.zeros((V, L), dtype=np.float64)
             state["write_idx"] = 0
             state["lp"] = np.zeros(V, dtype=np.float64)
@@ -420,13 +439,6 @@ class ReverbDelayRenderers:
         min_s = self._DELAY_MIN_SAMP
         max_s = float(L - 2)
 
-        # Per-sample delay in samples, (V, F), clamped into the line.
-        if cv is None:
-            dly = np.full((V, frames), time_samp, dtype=np.float64)
-        else:
-            dly = time_samp + cv_depth_samp * cv.astype(np.float64)
-        np.clip(dly, min_s, max_s, out=dly)
-
         # --- freeze blend: one 0..1 row per block, or None when the gate
         # is unpatched or has not risen (both paths below then run their
         # pre-freeze code verbatim, so the feature ships bit-exact OFF).
@@ -434,15 +446,65 @@ class ReverbDelayRenderers:
         # (``_freeze_gate_row``): unpatched and un-ticked never enters
         # here; the tick alone rises at sample 0 of the block it is seen
         # on and, cleared, releases through the same ramp as a gate fall.
+        # The envelope comes FIRST: the clock rows below need to know
+        # which samples are held (or releasing), because a retarget waits
+        # them out.
         e = None
         ramp_n = max(1, int(round(self._DELAY_FREEZE_RAMP_S * sr)))
         gt = self._freeze_gate_row(
             fz, frames, bool(module.params.get("freeze", False)), state, ramp_n)
+        busy = None
         if gt is not None:
             prev = bool(state["fz_prev"])
             env, fz_on, fz_off, fz_env = self._gate_ramp_env(
                 gt, prev, int(state["fz_on"]), int(state["fz_off"]),
                 float(state["fz_env"]), ramp_n, ramp_n)
+            busy = gt | (env > 0.0)
+
+        # --- clock sync: the read time per sample, or None when ``clock``
+        # is unpatched and no fade is live (the lines after run verbatim).
+        # ``old`` / ``xf`` are the outgoing read and the crossfade weight
+        # while a fade is live this block, else None. The door: a module
+        # that has never seen a clock, or has faded home from one, calls
+        # neither the measurement nor the rows.
+        sync = None
+        span0 = int(state.get("ck_span", 0))
+        if clock is not None or "ck_n" in state:
+            events = self._delay_clock_edges(state, clock, frames)
+        else:
+            events = []
+        if (clock is not None or state.get("ck_sync", False)
+                or int(state.get("ck_fn", -1)) >= 0):
+            sync = self._delay_sync_rows(
+                module, frames, state, events, span0, clock is not None,
+                time_samp, busy, ramp_n)
+
+        # Per-sample delay in samples, (V, F), clamped into the line.
+        old = xf = None
+        if sync is None:
+            if cv is None:
+                dly = np.full((V, frames), time_samp, dtype=np.float64)
+            else:
+                dly = time_samp + cv_depth_samp * cv.astype(np.float64)
+        else:
+            # Locked, ``time`` has stepped aside, but ``time_cv`` still
+            # adds on top: wow and dub throws on a synced echo. Before the
+            # lock the row IS ``time_samp``, so these are the same bits.
+            new, old_row, xf = sync
+            cvs = None if cv is None else cv_depth_samp * cv.astype(np.float64)
+            if cvs is None:
+                dly = np.broadcast_to(new, (V, frames)).copy()
+            else:
+                dly = new + cvs
+            if old_row is not None:
+                if cvs is None:
+                    old = np.broadcast_to(old_row, (V, frames)).copy()
+                else:
+                    old = old_row + cvs
+                np.clip(old, min_s, max_s, out=old)
+        np.clip(dly, min_s, max_s, out=dly)
+
+        if gt is not None:
             # The held delay latches at a FRESH rising edge (one the ramp
             # meets fully released): the per-sample delay at that sample,
             # rounded to whole samples, per voice. It is a per-sample row
@@ -489,6 +551,17 @@ class ReverbDelayRenderers:
         back = np.ceil(dly)                                  # (V, F)
         fracs = back - dly                   # forward weight, in [0, 1)
         backs = back.astype(np.int64)
+        low = float(dly.min())
+        if old is not None:
+            # A fade is live: the outgoing read, split the same way. The
+            # two reads blend as ``old * (1 - c) + new * c`` with ``c`` an
+            # integer count over the fade, spelled identically on both
+            # paths below, since which one a block takes depends on its
+            # size. A locked read with no cv is whole samples (frac 0).
+            back_o = np.ceil(old)
+            fracs_o = back_o - old
+            backs_o = back_o.astype(np.int64)
+            low = min(low, float(old.min()))
         # The damping one-pole's coefficients, spelled the way ``lfilter``
         # evaluates them, so the per-sample path below computes the same
         # bits as the fast path's ``lfilter`` (``g * d + (1 - g) * lp``,
@@ -505,8 +578,9 @@ class ReverbDelayRenderers:
         # per-sample loop it replaces, so 2- and 3-sample delays keep that
         # loop. The two compute the same bits (the trap notes above), and
         # so do hops of any length: ``lp`` carried into ``zi`` between
-        # hops is what ``lfilter`` carries between samples.
-        hop = self._delay_hop(float(dly.min()), frames)
+        # hops is what ``lfilter`` carries between samples. With a fade
+        # live, the hop is no longer than the nearer of the two reads.
+        hop = self._delay_hop(low, frames)
         if hop:
             out = np.empty((V, frames), dtype=np.float64)
             pos = 0
@@ -520,6 +594,15 @@ class ReverbDelayRenderers:
                     buf[rows[:, None], i0 % L] * (1.0 - frac)
                     + buf[rows[:, None], (i0 + 1) % L] * frac
                 )
+                if old is not None:
+                    i0o = absidx[np.newaxis, :] - backs_o[:, sl]
+                    fo = fracs_o[:, sl]
+                    do = (
+                        buf[rows[:, None], i0o % L] * (1.0 - fo)
+                        + buf[rows[:, None], (i0o + 1) % L] * fo
+                    )
+                    cs = xf[sl]
+                    d = do * (1.0 - cs) + d * cs
                 zi = (c1 * lp)[:, np.newaxis]                # (V, 1)
                 damped = lfilter([g], [1.0, -c1], d, axis=-1, zi=zi)[0]
                 xs = x[:, sl]
@@ -557,6 +640,14 @@ class ReverbDelayRenderers:
                     buf[rows, i0 % L] * (1.0 - frac)
                     + buf[rows, (i0 + 1) % L] * frac
                 )
+                if old is not None:
+                    i0o = wp - backs_o[:, n]
+                    fo = fracs_o[:, n]
+                    do = (
+                        buf[rows, i0o % L] * (1.0 - fo)
+                        + buf[rows, (i0o + 1) % L] * fo
+                    )
+                    d = do * (1.0 - xf[n]) + d * xf[n]
                 lp = g * d + c1 * lp                         # damped feedback
                 if e is None:
                     buf[rows, wp % L] = x[:, n] + feedback * lp
@@ -586,6 +677,202 @@ class ReverbDelayRenderers:
         if hop >= self._DELAY_HOP_FLOOR or hop >= frames:
             return hop
         return 0
+
+    def _delay_clock_edges(self, state, clock, frames: int):
+        """Measure the delay's ``clock``: the spans that changed this block,
+        as ``[(sample in block, new span), ...]``.
+
+        Edges are found the way :meth:`_render_slew` finds them (a lagged
+        compare against ``_GATE_HIGH``, the last sample carried in
+        ``ck_prev``) and keyed to an absolute sample counter (``ck_n``),
+        so every quantity here is an integer and the same at any block
+        size. ``span`` is the distance between the last three rising
+        edges, TWO ticks (``clock_divider``'s ``avg``, doubled), so a
+        tempo that isn't a whole number of samples -- whose intervals
+        alternate, 5512 / 5513 at 120 BPM x4 -- or a swung clock, which
+        alternates by design, measures one steady span instead of
+        retargeting nearly every tick. The deadband (``span // 1024``, at
+        least 2 samples) lets the span move only for a real change.
+
+        The break rule: an interval that breaks the two-tick pattern (it
+        differs from the one two ticks back by more than the deadband)
+        restarts the measurement from that edge, so no span is ever
+        measured across a ``reset``, a short stop or a tempo step, and
+        the echo holds its time meanwhile. ``ck_rearm`` switches the test
+        off until the next span is taken, so a tempo that keeps moving
+        still gets measured. This departs from the rack's last-two-edges
+        rule on purpose: an echo has no phase to follow, only a length.
+
+        ``clock`` None (unpatched): the measurement is dropped, so it
+        starts afresh the next time a clock is patched (three edges to
+        lock, ``time`` ruling meanwhile); nothing is returned.
+        """
+        if clock is None:
+            for key in ("ck_n", "ck_prev", "ck_e1", "ck_e2", "ck_e3",
+                        "ck_span", "ck_rearm"):
+                state.pop(key, None)
+            return []
+        base = int(state.get("ck_n", 0))
+        state["ck_n"] = base + frames
+        hi = clock > self._GATE_HIGH
+        lag = np.empty(frames, dtype=bool)
+        lag[0] = bool(state.get("ck_prev", False))
+        lag[1:] = hi[:-1]
+        state["ck_prev"] = bool(hi[-1])
+        e1 = int(state.get("ck_e1", -1))
+        e2 = int(state.get("ck_e2", -1))
+        e3 = int(state.get("ck_e3", -1))
+        span = int(state.get("ck_span", 0))
+        rearm = bool(state.get("ck_rearm", False))
+        events = []
+        for n in np.flatnonzero(hi & ~lag).tolist():
+            now = base + n
+            dead = max(2, span // 1024)
+            if (span > 0 and e3 >= 0 and not rearm
+                    and self._delay_breaks_pattern(now, e1, e2, e3, dead)):
+                rearm = True                 # a break: measure afresh from here
+                e1, e2, e3 = now, -1, -1
+                continue
+            if e2 >= 0:
+                s = now - e2
+                rearm = False
+                if span == 0 or abs(s - span) > dead:
+                    span = s                 # a real change: retarget here
+                    events.append((n, span))
+            e3, e2, e1 = e2, e1, now
+        state["ck_e1"], state["ck_e2"], state["ck_e3"] = e1, e2, e3
+        state["ck_span"] = span
+        state["ck_rearm"] = rearm
+        return events
+
+    @staticmethod
+    def _delay_breaks_pattern(now: int, e1: int, e2: int, e3: int,
+                              dead: int) -> bool:
+        """The break test: the newest interval (``now - e1``) against the
+        one two ticks back (``e2 - e3``), so a swung clock, whose
+        neighbouring intervals differ by design, stays on pattern."""
+        return abs((now - e1) - (e2 - e3)) > dead
+
+    def _delay_sync_target(self, module, span: int) -> float:
+        """The locked echo, in whole samples: ``division`` ticks of a
+        measured two-tick ``span``, times ``feel``, floor 2.
+
+        A target past the 2 s line folds down by OCTAVES rather than
+        clamping, so it stays on the grid: a 100 BPM quarter clock at
+        ``division`` 4 asks for 2.4 s and gets 1.2 s, on the beat, where a
+        clamp would give 2.0 s, 3.33 beats, and drift every repeat. A pure
+        function of integers and two params, so nothing carries a float.
+        """
+        from ...modules.delay import DELAY_FEEL_RATIOS
+
+        try:
+            division = float(module.params.get("division", 1.0))
+        except (TypeError, ValueError):
+            division = 1.0
+        if not np.isfinite(division):
+            division = 1.0
+        division = min(max(division, self._MOD_DIV_MIN), self._MOD_DIV_MAX)
+        num, den = DELAY_FEEL_RATIOS.get(
+            str(module.params.get("feel", "straight")), (1, 1))
+        line = self._DELAY_MAX_MS * self.sample_rate / 1000.0
+        t = span * division * num / (2 * den)
+        while t > line:
+            t *= 0.5
+        return float(max(2, int(round(t))))
+
+    def _delay_sync_rows(self, module, frames: int, state, events, span0: int,
+                         patched: bool, time_samp: float, busy, ramp_n: int):
+        """The delay's read time per sample while the clock drives it:
+        ``(new, old, c)`` -- the incoming read ``(frames,)``, and while a
+        fade is live this block the outgoing read and the crossfade
+        weight (else None, None). None when ``clock`` is unpatched and no
+        fade is live: the caller then runs its pre-sync lines verbatim.
+
+        Before the lock (patched, fewer than three edges) the row is
+        ``time_samp`` itself, the knob jumping as it always has, so the
+        render is bit-exact with unpatched. A change of target -- the
+        first lock, a new span, a ``division`` or ``feel`` move, the
+        unpatch (home to ``time``) -- crossfades the two reads over
+        ``ramp_n`` samples (the freeze's 10 ms), weighted ``k / ramp_n``
+        from an integer count, starting on the edge sample that measured
+        it or at the block head. One fade runs at a time; a new target
+        waits its turn, so a dragged ``division`` moves in 10 ms steps.
+        ``busy`` (the freeze held or releasing) makes a retarget wait until
+        it has run out; a fade already in flight finishes.
+
+        State: ``ck_cur`` (the read time when no fade is live),
+        ``ck_sync`` (that time came from the clock), and the fade:
+        ``ck_fn`` (samples into it, -1 = none), ``ck_from`` / ``ck_to``
+        and ``ck_tosync``.
+        """
+        synced = bool(state.get("ck_sync", False))
+        fn = int(state.get("ck_fn", -1))
+        if not patched and not synced and fn < 0:
+            return None
+        cur = state.get("ck_cur")
+        cur = time_samp if cur is None else float(cur)
+        src_t = float(state.get("ck_from", cur))
+        dst_t = float(state.get("ck_to", cur))
+        tosync = bool(state.get("ck_tosync", False))
+        new = np.empty(frames, dtype=np.float64)
+        old = np.empty(frames, dtype=np.float64)
+        c = np.ones(frames, dtype=np.float64)
+        faded = False
+        n, ev, span = 0, 0, span0
+        while n < frames:
+            while ev < len(events) and events[ev][0] <= n:
+                span = events[ev][1]
+                ev += 1
+            locked = patched and span > 0
+            nxt = events[ev][0] if ev < len(events) else frames
+            if fn < 0:
+                want = self._delay_sync_target(module, span) if locked else time_samp
+                if not locked and not synced:
+                    cur = want                   # free: the knob jumps, as today
+                elif want == cur:
+                    synced = locked
+                elif busy is not None and busy[n]:
+                    # held or releasing: the retarget waits for the first
+                    # free sample (this segment keeps the current read)
+                    free = np.flatnonzero(~busy[n:nxt])
+                    if len(free):
+                        nxt = n + int(free[0])
+                else:
+                    src_t, dst_t, tosync, fn = cur, want, locked, 0
+            if fn >= 0:
+                end = min(nxt, n + (ramp_n - fn))
+                new[n:end] = dst_t
+                old[n:end] = src_t
+                c[n:end] = self._delay_xfade_weights(fn, end - n, ramp_n)
+                faded = True
+                fn += end - n
+                if fn >= ramp_n:
+                    fn = -1
+                    cur = dst_t
+                    synced = tosync
+                n = end
+            else:
+                new[n:nxt] = cur
+                old[n:nxt] = cur
+                n = nxt
+        state["ck_cur"] = cur
+        state["ck_sync"] = synced
+        state["ck_fn"] = fn
+        state["ck_from"] = src_t
+        state["ck_to"] = dst_t
+        state["ck_tosync"] = tosync
+        if faded:
+            return new, old, c
+        return new, None, None
+
+    @staticmethod
+    def _delay_xfade_weights(fn: int, m: int, ramp_n: int):
+        """The next ``m`` crossfade weights of a fade ``fn`` samples in:
+        ``k / ramp_n`` for k = fn + 1 .. fn + m, each from an exact
+        integer, so a weight is the same number at any block size (a
+        weight carried as a float, ``c += 1 / ramp_n``, would round
+        differently cut into 64s than into 512s). The last is exactly 1."""
+        return np.arange(fn + 1, fn + 1 + m, dtype=np.float64) / ramp_n
 
     def _freeze_gate_row(self, gate, frames: int, tick: bool, state, ramp_n: int):
         """The reverb's / delay's freeze row: the ``freeze`` gate cable

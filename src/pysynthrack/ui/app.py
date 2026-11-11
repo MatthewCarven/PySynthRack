@@ -42,6 +42,7 @@ from ..modules.compressor import DETECTOR_MODES
 from ..modules.cv_recorder import CV_RECORDER_MODES, CV_RECORDER_PLAY_MODES, CV_RECORDER_SPEEDS
 from ..modules.cvcombiner import CVCOMBINER_MODES
 from ..modules.cvtofrequency import MODES as CVTOFREQ_MODES
+from ..modules.delay import DELAY_FEELS
 from ..modules.distortion import DISTORTION_MODES
 from ..modules.drift import DRIFT_MODES
 from ..modules.drums import HAT_TONE_MAX, HAT_TONE_MIN
@@ -2745,6 +2746,23 @@ class App:
                 dpg.add_checkbox(
                     label=f"{param_name} (or gate)", default_value=bool(current),
                     callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "division":
+                # Clock ticks per echo while ``clock`` is patched -- the
+                # flanger / phaser / autopan rail and widget.
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.05,
+                    min_value=0.25, max_value=64.0, format="%.2f ticks",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+                return
+            if param_name == "feel":
+                # x1, x3/2 or x2/3 on the clocked echo.
+                dpg.add_combo(
+                    label=param_name, items=list(DELAY_FEELS),
+                    default_value=str(current),
+                    width=120, callback=self._on_param_changed, user_data=user_data,
                 )
                 return
 

@@ -87,6 +87,16 @@ from __future__ import annotations
 from ..core.module import Module, register_module_type
 from ..core.port import Port
 
+# ``feel``: the multiplier a clocked echo takes on top of ``division``, as
+# an exact ratio (num, den). Ratios, not note names, so they stay true on
+# any clock: what one tick is depends on the clock's own ``division``.
+DELAY_FEEL_RATIOS = {
+    "straight": (1, 1),
+    "dotted": (3, 2),
+    "triplet": (2, 3),
+}
+DELAY_FEELS = tuple(DELAY_FEEL_RATIOS)
+
 
 @register_module_type
 class Delay(Module):
@@ -105,6 +115,10 @@ class Delay(Module):
             patched. Ticking is a rising edge at the first sample of the
             block it lands on (same ramp, same latch, same hold as a
             gate rising there); clearing releases like a gate fall.
+        division: Clock ticks per echo while ``clock`` is patched,
+            0.25..64 (default 1.0).
+        feel: ``straight`` | ``dotted`` | ``triplet`` -- a multiplier of
+            1, 3/2 or 2/3 on the clocked echo (default straight).
 
     Ports:
         in (in, audio): signal to echo. Unpatched -> silence.
@@ -115,6 +129,11 @@ class Delay(Module):
             any-voice-high. ORed with the ``freeze`` tickbox. Unpatched
             and un-ticked -> never frozen (bit-exact with the pre-freeze
             render).
+        clock (in, gate): a patched clock sets the echo to ``division``
+            ticks (times ``feel``), in whole samples, and moves between
+            times with a 10 ms crossfade; ``time`` steps aside while
+            locked, ``time_cv`` still adds. ``(V, F)`` collapses to the
+            house sum. Unpatched -> ``time`` rules (bit-exact).
         out (out, audio): dry + echo mix.
     """
 
@@ -127,10 +146,13 @@ class Delay(Module):
         "mix": 0.35,
         "cv_depth": 50.0,
         "freeze": False,
+        "division": 1.0,
+        "feel": "straight",
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),
         Port("time_cv", "in", "cv"),
         Port("freeze", "in", "gate"),
+        Port("clock", "in", "gate"),
     ]
     OUTPUT_PORTS = [Port("out", "out", "audio")]
