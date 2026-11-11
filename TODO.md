@@ -401,18 +401,29 @@ likeliest to sound different come first.
       `clock`s, `sequencer`, `pluck`, and `logic` `not_a` into the delay's
       `freeze`. Not yet located. Bisect by module (render sub-patches at
       100/512), then fix with the usual recipe. A fix will move this
-      example's render. *Held 2026-11-11:* Matthew may fix it in the
-      channel-timing scope session (`claude/channel-timing-scope-afe939`),
-      since the clocks are the first suspect. Check that branch before
-      starting a separate fix. **Retest when that session commits**
-      (Matthew: "retest the bug upon scope channel timing drifts eventual
-      commit"): render the example at block 100 and block 512 on main
-      with the fix applied, and compare the overlapping frames of
-      `master` (`render_audit compare` reports inf when lengths differ).
-      Baseline on f50aa7e: same 651,264 differ, max 0.0606. The lead:
-      clock 1 (120 BPM, `division` 4) has a period of 5512.5 samples, not
-      a whole number. `delay_pingpong_sync`, whose clock is a whole 11025
-      samples, is exact across block sizes even with the new clock sync.
+      example's render. Compare the overlapping frames of `master`
+      (`render_audit compare` reports inf when lengths differ).
+      *Retested 2026-11-11 on the channel-timing scope's commit (9100b6b),
+      as Matthew asked:* unchanged, 651,264 differ, max 0.0606. The scope
+      is docs only, and the drift it found is the buffered sink's per-side
+      stretch engines, not the clock, so that work won't fix this one.
+      *Narrowed the same day* (variants rendered at 100 vs 512):
+      - **Not the clock's fractional period.** Clock 1 on `division` 2
+        (a whole 11025 samples) still differs, by 595,606 samples, max 0.010.
+      - **Not the freeze gate.** With the freeze cable removed, 651,260
+        still differ.
+      - **Not the delay.** With delay `mix` 0 (dry pluck only), a
+        whole-number clock and no freeze, 418,740 still differ, max 0.021.
+      - **So it's the clock → sequencer → pluck (`pitch_cv` + `trigger`)
+        chain.** Yet `pluck_*` and `sequencer_*` examples are exact on
+        their own, so look at what this patch does that those don't.
+      - **The class is wider.** Of the 19 examples that use a pluck, 12
+        differ at 100 vs 512: `fg_eor_swell_strike` (max 0.56),
+        `pitch_shifter_shimmer` (0.31), `freeze_wide_wash` (0.13), the three
+        granulars, `reverb_freeze_pad`, `freeze_drone_breathe`,
+        `drift_wander`, plus two at about 1e-6. Many go through renderers
+        already listed in the block-size memory. **Start the fix with a
+        100-vs-512 sweep of every example**, rather than this one alone.
 - [ ] **No epoch wrap on the no-CV oscillator/organ phase** — precision
       erodes to ~−116 dB after 24 h of running. Low priority.
       *Plain English (2026-10-10, for Matthew):* with no CV patched, the
@@ -461,6 +472,25 @@ likeliest to sound different come first.
       scales the drawing, never the widgets.
 
 *Audio I/O:*
+- [ ] **Left and right drift apart on a governed buffered speaker under
+      load** (scoped 2026-11-11 on Fable 5.2: `docs/channel-timing-scope.md`
+      on `claude/channel-timing-scope-afe939`, 9100b6b, not merged). The
+      governor stretches each side with its own WSOLA engine
+      (`numpy_backend.py`, the `_sink_stretch` pair; the supervisor checked
+      the code), and under load the two sides splice at different points.
+      They can stay up to 25 ms apart afterwards. Measured offline and on
+      real streams on the laptop; not yet run on Matthew's desktop.
+      **Workaround today:** untick `auto_govern` or use the warping sink;
+      re-ticking `auto_govern` pulls drifted sides back. **Recommended fix:**
+      one splice decision for both sides (S, one session). The doc has five
+      questions for Matthew and five desktop checks; the first check takes
+      three minutes and confirms the cause.
+- [ ] **Found during that scope, not reproduced by the supervisor:**
+      (a) 3 of 12 device names in the sink's dropdown won't open on the
+      laptop ("Multiple output devices found"); (b) `disk_writer` drops
+      blocks without saying so, so a left file and a right file can part
+      under load (read in the code, not reproduced); (c) the governed
+      path's latency measures 93-112 ms, not the documented 50 ms.
 
 ## Decisions waiting on Matthew
 

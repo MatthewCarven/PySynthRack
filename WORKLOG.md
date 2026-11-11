@@ -132,6 +132,29 @@ global Python, so nobody saw them. `uvx ruff check --fix` sorted the three
 (imports only; the 2,230 tests that import the changed files pass), and that
 went up as 95191c3.
 
+**The channel-timing scope reported, and the retest.** The Fable session
+committed `docs/channel-timing-scope.md` (9100b6b, branch
+`claude/channel-timing-scope-afe939`, not merged). What Matthew hears is left
+against right on one governed buffered speaker, under load: the governor
+stretches each side with its own WSOLA engine, and the two splice apart. The
+supervisor checked the two-engine code. It isn't the clock, so tick timing
+wouldn't touch it. The recommended fix is one splice decision for both sides;
+until then, untick `auto_govern`. Filed under Open defects, Audio I/O, with the
+scope's three side findings.
+
+The retest Matthew asked for: `delay_freeze_stutter` is unchanged on 9100b6b
+(651,264 differ), as expected from a docs-only commit. Then the supervisor's
+own lead, the clock's 5512.5-sample period, turned out wrong. A whole-number
+period still differs, so does the patch without the freeze gate, and so does
+the dry pluck with the delay's `mix` at 0. The inexactness is in the clock →
+sequencer → pluck chain, though `pluck_*` and `sequencer_*` examples are exact
+on their own. And 12 of the 19 pluck examples differ at 100 vs 512, mostly
+through renderers already on the block-size list. So the fix should start from a
+sweep of every example. Recorded in TODO.
+
+Matthew also okayed rewording the project CLAUDE.md: pushing moved to "Do
+freely" and force-pushing went under "Mine to run" (the file isn't tracked).
+
 ---
 
 ## 2026-10-12 — the seventh batch: eight agents, and three things found sideways
