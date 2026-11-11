@@ -54,10 +54,10 @@ SINK = "buffered_specific_speaker_output"
 MAX_LAG = 1200
 
 
-def _swing(i: int) -> float:
-    """The governor's ratio by block index: restless around 1, one hard
-    swing up to 1.19 and back (a starved ring refilling), and a smaller
-    dip below 1 (the overshoot draining)."""
+def _swing(i: float) -> float:
+    """The governor's ratio by (512-sample) block index: restless around 1,
+    one hard swing up to 1.19 and back (a starved ring refilling), and a
+    smaller dip below 1 (the overshoot draining)."""
     return (1.0 + 0.004 * np.sin(i * 0.37)
             + 0.19 * np.exp(-(((i - 150) / 18.0) ** 2))
             - 0.07 * np.exp(-(((i - 430) / 14.0) ** 2)))
@@ -145,10 +145,13 @@ class TestTheSidesStayTogether:
         flat, _ = _run_pair(xl, xr, ratio=lambda i: 1.0)
         assert not np.array_equal(yl, flat)
 
-    def test_the_governed_sink_never_parts(self):
+    @pytest.mark.parametrize("block", [64, 512, 1000])
+    def test_the_governed_sink_never_parts(self, block):
         # The same claim through the real sink: three noises make a stereo
         # pair with a shared part, a constant on ratio_cv is swung by hand,
-        # and what the sink would push to its device is measured.
+        # and what the sink would push to its device is measured. At three
+        # main buffer sizes: the governor smooths its ratio once per block,
+        # so each size walks the engines along a different path.
         patch = Patch()
         sink = patch.add_module(SINK, params={"device": "LinkDev"})
         common = patch.add_module("noise", params={"seed": 101, "amp": 0.30})
@@ -164,21 +167,22 @@ class TestTheSidesStayTogether:
         patch.connect(mix_l.id, "out", sink.id, "in_l")
         patch.connect(mix_r.id, "out", sink.id, "in_r")
         patch.connect(const.id, "out", sink.id, "ratio_cv")
-        b = NumpyBackend(sample_rate=SR, block_size=BLOCK)
+        b = NumpyBackend(sample_rate=SR, block_size=block)
         b.compile(patch)
         pushed = []
         ratios = []
-        for i in range(int(8.0 * SR / BLOCK)):
+        for i in range(int(8.0 * SR / block)):
             # ratio = 1 + cv * ratio_depth (0.25); the sink smooths it.
-            const.params["value"] = (_swing(i) - 1.0) / 0.25
-            _out, blocks = b.render_block_multi(BLOCK)
+            # _swing counts in 512-sample blocks: keep its shape in time.
+            const.params["value"] = (_swing(i * block / BLOCK) - 1.0) / 0.25
+            _out, blocks = b.render_block_multi(block)
             (blk,) = blocks.values()
             pushed.append(blk.copy())
             ratios.append(b._sink_ratio[sink.id])
         y = np.concatenate(pushed)
         # The swing really reached the engines, and really changed the push.
         assert max(ratios) > 1.15 and min(ratios) < 0.96
-        assert {p.shape[0] for p in pushed} != {BLOCK}
+        assert {p.shape[0] for p in pushed} != {block}
         lags, peaks = _side_lags(y[:, 0], y[:, 1])
         assert len(lags) > 100
         assert np.all(lags == 0), (
