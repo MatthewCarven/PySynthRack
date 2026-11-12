@@ -46,6 +46,53 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-12 — `--render`: a patch to a WAV file, offline
+
+**Why.** Matthew wants sound effects for the roguelike on his website made
+with this synth, and asked for a way to get a patch out as a file. The CLI
+could only play: `--cli --seconds N` opens the sound card and sleeps. The
+README even said it was "useful for batch rendering", which it was not.
+
+**What.** `python -m pysynthrack --render out.wav --patch p.json --seconds 2`
+(add `--mono` for the mean of the two sides). `render_cli` in `cli.py`
+builds a `NumpyBackend` itself, compiles the patch and pulls
+`render_block` -- the offline tests' own path -- then writes 16-bit PCM
+with the stdlib `wave` module. No device is opened and `sounddevice` is
+never asked for, so it runs where `NumpyBackend.is_available()` is False
+(it was written and tested in exactly such a sandbox). The file is exactly
+`round(seconds * 44100)` frames. It prints the peak, warns on silence and
+at full scale, and normalises nothing: the master bus is already clipped
+by the backend, so the file is what the speakers would have had.
+
+**Decisions.**
+
+* `--render` does not need `--cli`; it is its own mode, checked first.
+* `--seconds` is required with it (exit 5 without). A default length would
+  be a guess, and a silent tail or a cut note is the kind of thing nobody
+  notices until later.
+* numpy only. `--backend pyo` with `--render` is refused (exit 3) rather
+  than quietly ignored.
+* Sample rate and block size are not flags. 44.1 kHz / 512 are the engine
+  defaults; add flags when something needs them.
+* One-shots: a `clock`'s first pulse lands on sample 0, so
+  `clock -> ad_envelope` fires at the very start of the file. Pinned by a
+  test and said in the README, because a patch waiting on a key renders
+  silence.
+
+**Verified.** `tests/test_cli_render.py`, 20 tests: format and exact
+length (including lengths that are not whole blocks, down to one sample),
+the 440 Hz of `hello_sine` in the spectrum, mono against the stereo mean,
+byte-identical repeat renders, the clock one-shot, every refusal (no or
+impossible length, missing patch, missing output folder, pyo), silence
+warned about, and the real command line through `main()`. `ruff check src
+tests tools examples packaging` is clean. Of the existing suite, the first
+~48% ran clean and so did about a third of the rest before the sandbox's
+3-minute limit cut each run off; nothing failed, but **the full suite was
+not run locally** -- CI has to say.
+
+**Wants a human:** nothing to hear here; the renders get their listening
+in the roguelike's sound effects.
+
 ## 2026-11-07 — the delay's clock sync + stereo echo: specced, built, landed 11-11
 
 Matthew asked after an echo and a reverb, thinking he'd forgotten them. Both
@@ -2844,50 +2891,3 @@ waveform face (markers should sit at start/end, loop markers appear only
 in `loop` mode and inside the region, "<< reverse" caption when ticked);
 and `midi_input.velocity_cv → sampler.vel` with a real keyboard, which
 the tests can't do.
-
-## 2026-11-12 -- `--render`: a patch to a WAV file, offline
-
-**Why.** Matthew wants sound effects for the roguelike on his website made
-with this synth, and asked for a way to get a patch out as a file. The CLI
-could only play: `--cli --seconds N` opens the sound card and sleeps. The
-README even said it was "useful for batch rendering", which it was not.
-
-**What.** `python -m pysynthrack --render out.wav --patch p.json --seconds 2`
-(add `--mono` for the mean of the two sides). `render_cli` in `cli.py`
-builds a `NumpyBackend` itself, compiles the patch and pulls
-`render_block` -- the offline tests' own path -- then writes 16-bit PCM
-with the stdlib `wave` module. No device is opened and `sounddevice` is
-never asked for, so it runs where `NumpyBackend.is_available()` is False
-(it was written and tested in exactly such a sandbox). The file is exactly
-`round(seconds * 44100)` frames. It prints the peak, warns on silence and
-at full scale, and normalises nothing: the master bus is already clipped
-by the backend, so the file is what the speakers would have had.
-
-**Decisions.**
-
-* `--render` does not need `--cli`; it is its own mode, checked first.
-* `--seconds` is required with it (exit 5 without). A default length would
-  be a guess, and a silent tail or a cut note is the kind of thing nobody
-  notices until later.
-* numpy only. `--backend pyo` with `--render` is refused (exit 3) rather
-  than quietly ignored.
-* Sample rate and block size are not flags. 44.1 kHz / 512 are the engine
-  defaults; add flags when something needs them.
-* One-shots: a `clock`'s first pulse lands on sample 0, so
-  `clock -> ad_envelope` fires at the very start of the file. Pinned by a
-  test and said in the README, because a patch waiting on a key renders
-  silence.
-
-**Verified.** `tests/test_cli_render.py`, 20 tests: format and exact
-length (including lengths that are not whole blocks, down to one sample),
-the 440 Hz of `hello_sine` in the spectrum, mono against the stereo mean,
-byte-identical repeat renders, the clock one-shot, every refusal (no or
-impossible length, missing patch, missing output folder, pyo), silence
-warned about, and the real command line through `main()`. `ruff check src
-tests tools examples packaging` is clean. Of the existing suite, the first
-~48% ran clean and so did about a third of the rest before the sandbox's
-3-minute limit cut each run off; nothing failed, but **the full suite was
-not run locally** -- CI has to say.
-
-**Wants a human:** nothing to hear here; the renders get their listening
-in the roguelike's sound effects.
