@@ -224,7 +224,16 @@ python -m pysynthrack --cli --patch my_patch.json # custom patch
 python -m pysynthrack --cli --backend numpy       # force numpy backend
 ```
 
-CLI mode is the fastest way to verify your audio device works and a patch makes sound. It's also useful for batch rendering or running patches from a script.
+CLI mode is the fastest way to verify your audio device works and a patch makes sound.
+
+### Rendering a patch to a WAV file
+
+```powershell
+python -m pysynthrack --render out.wav --patch my_patch.json --seconds 2          # stereo
+python -m pysynthrack --render blip.wav --patch my_patch.json --seconds 0.3 --mono
+```
+
+`--render` plays nothing and opens no audio device: the patch is rendered offline, as fast as the machine can go, and written as a 16-bit PCM WAV at 44.1 kHz, exactly `--seconds` long. It prints the peak level and warns if the result is silent or reaches full scale (nothing is normalised). It always uses the numpy backend, and works on a machine with no sound card. A patch that needs someone at the keys will render silence: drive it from a `clock` instead, whose first pulse lands on the first sample.
 
 ### Forcing a backend
 
