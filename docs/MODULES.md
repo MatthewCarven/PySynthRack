@@ -433,6 +433,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`keyboard`](#keyboard) | Sources | — → `out` (audio), `gate` (gate) |
 | [`cv_keyboard`](#cv_keyboard) | Sources | — → `pitch_cv` (cv), `gate`, `key_c`…`key_b` (gate) |
 | [`cv_gates`](#cv_gates) | Sources | — → `c4`…`e5` (cv, one enveloped gate per key) |
+| [`key_cv`](#key_cv) | Sources | `in` (cv) → `out` (cv), `gate` (gate) |
 | [`key_trigger`](#key_trigger) | Sources | — → `out` (gate) |
 | [`midi_input`](#midi_input) | Sources | — → `out` (audio), `gate`, `pitch_cv`, `mod_cv`, `pressure_cv`, `velocity_cv` |
 | [`file_player`](#file_player) | Sources | — → `left`,`right` (audio) |
@@ -716,6 +717,45 @@ to tape-stop, tap again to spin back up — see
 `examples/key_trigger_latch_brake.json`. Or `trigger` mode into a
 [`sequencer`](#sequencer) `clock`/`reset`, or `gate` mode into an
 [`adsr`](#adsr) for a hands-on one-key voice.
+
+
+#### `key_cv`
+
+**One bound key → a CV between two values you choose** (2026-11-19). The
+sibling of [`key_trigger`](#key_trigger): bind any key with **Learn**, and
+`out` sits at `idle` while the key is up and moves to `active` while it is
+down — any two numbers, so `+1` is an octave up on an
+[`oscillator`](#oscillator)'s `freq_cv` (1 V/oct), `-2` two octaves down,
+`0.5` half a sweep. `glide` sets how long the move takes: 0 snaps, a few
+seconds is a slow drift there and back. Matthew asked for it ("bound to a
+key and set when active to output 0, 1, 2, -1, -2 cv ... or a slow drift
+between ... and let one key driven cv feed into another key driven cv").
+
+**Ports**
+
+| Port | Dir | Kind | Description |
+|------|-----|------|-------------|
+| `in` | in | cv | Optional CV to chain onto — usually another `key_cv`'s `out`. Voice-aware (each voice keeps its value; the key's ramp is shared). Unpatched = 0. |
+| `out` | out | cv | The key's CV, combined with `in` per `chain`. |
+| `gate` | out | gate | 1 while the key is active (held, or latched on) — fire an envelope off the same key. |
+
+**Parameters**
+
+| Param | Default | Options / range | Description |
+|-------|---------|-----------------|-------------|
+| `key` | `""` | a key name | The bound key, set with **Learn** (as on `key_trigger`). `""` = unbound: sits at `idle`. |
+| `mode` | `gate` | `gate` / `latch` | **gate** = active while held; **latch** = each press toggles between idle and active. |
+| `idle` | `0.0` | soft ±10 | The value with the key up. Exact at rest. |
+| `active` | `1.0` | soft ±10 | The value with the key down. Exact once reached. |
+| `glide` | `0.0` | 0 … 60 s | Time for a full idle ↔ active move, at a constant rate (let go half way and it comes back in half the time). 0 = instant. |
+| `chain` | `add` | `add` / `override` | How `in` combines. **add**: `out = in + value` — keys stack. **override**: while held this key takes over, gliding from `in + idle` to `active` and back — the last held key in a chain wins. Same thing when `in` is unpatched. |
+
+**Patching.** Chain keys `out` → `in` and the last one into a pitch, a
+cutoff or a mix CV. `examples/key_cv_transpose.json`: hold **1** for an
+octave up, **2** for a fifth up, **3** to drift an octave down over two
+seconds (they add), and tap **4** to latch two octaves up over the whole
+chain (override). The key is read once per block, like every key module,
+so a press lands at the next block (about 11 ms at 512).
 
 #### `midi_input`
 

@@ -47,6 +47,7 @@ from .freeze import Freeze
 from .freq_shifter import FreqShifter
 from .function_generator import FunctionGenerator
 from .granular import Granular
+from .key_cv import KeyCV
 from .key_trigger import KeyTrigger
 from .keyboard import Keyboard
 from .lfo import LFO
@@ -151,6 +152,7 @@ __all__ = [
     "FunctionGenerator",
     "HatDrum",
     "Keyboard",
+    "KeyCV",
     "KeyTrigger",
     "KickDrum",
     "LeftSpeakerOutput",

@@ -52,6 +52,7 @@ from ..modules.fm_op import snap_ratio as fm_snap_ratio
 from ..modules.freeze import FREEZE_SIZES
 from ..modules.function_generator import FUNCTION_GENERATOR_MODES
 from ..modules.granular import GRANULAR_WINDOWS
+from ..modules.key_cv import KEY_CV_CHAINS, KEY_CV_MODES
 from ..modules.key_trigger import KEY_TRIGGER_MODES
 from ..modules.keyboard import (
     midi_to_name,
@@ -813,7 +814,7 @@ class App:
                         continue
                     # key_trigger's bound key gets a Learn button + label
                     # panel below instead of a raw text box.
-                    if module.TYPE == "key_trigger" and param_name == "key":
+                    if module.TYPE in ("key_trigger", "key_cv") and param_name == "key":
                         continue
                     # organ's bar1..bar9 are drawn by the drawbar bank.
                     if module.TYPE == "organ" and param_name.startswith("bar"):
@@ -936,10 +937,10 @@ class App:
                             user_data=module.id,
                         )
 
-            # KeyTrigger: a Learn button that binds the next key press, plus a
-            # label showing the currently bound key. (The ``mode`` param renders
-            # as a normal combo in the loop above; only ``key`` is custom.)
-            if module.TYPE == "key_trigger":
+            # KeyTrigger / KeyCV: a Learn button that binds the next key press,
+            # plus a label showing the currently bound key. (The ``mode`` param
+            # renders as a normal combo in the loop above; only ``key`` is custom.)
+            if module.TYPE in ("key_trigger", "key_cv"):
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                     with dpg.group(horizontal=True):
                         dpg.add_button(
@@ -1085,6 +1086,31 @@ class App:
     def _add_param_widget(self, module, param_name: str, default) -> None:
         current = module.params[param_name]
         user_data = (module.id, param_name)
+
+        if module.TYPE == "key_cv" and param_name in ("idle", "active", "glide", "chain"):
+            # KeyCV: two free values (soft +/-10, the CV-utility range: several
+            # octaves of 1 V/oct either way), a glide time up to a minute, and
+            # how ``in`` combines. ``mode`` falls through to the shared combo
+            # branch; ``key`` is the Learn panel.
+            if param_name == "chain":
+                dpg.add_combo(
+                    label=param_name, items=list(KEY_CV_CHAINS),
+                    default_value=str(current), width=120,
+                    callback=self._on_param_changed, user_data=user_data,
+                )
+            elif param_name == "glide":
+                dpg.add_drag_float(
+                    label=f"{param_name} (0 = snap)", default_value=float(current),
+                    speed=0.01, min_value=0.0, max_value=60.0, format="%.2f s",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+            else:
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current),
+                    speed=0.01, min_value=-10.0, max_value=10.0, format="%.3f",
+                    width=140, callback=self._on_param_changed, user_data=user_data,
+                )
+            return
 
         if (
             module.TYPE in ("file_player", "convolver", "sampler")
@@ -4151,6 +4177,8 @@ class App:
                 items = list(WAVESHAPER_MODES)
             elif module.TYPE == "key_trigger":
                 items = list(KEY_TRIGGER_MODES)
+            elif module.TYPE == "key_cv":
+                items = list(KEY_CV_MODES)
             elif module.TYPE == "scope":
                 items = list(SCOPE_MODES)
             elif module.TYPE == "bernoulli_gate":

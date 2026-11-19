@@ -3068,6 +3068,7 @@ class NumpyBackend(
         "cv_keyboard": "_render_cv_keyboard",
         "cv_gates": "_render_cv_gates",
         "key_trigger": "_render_key_trigger",
+        "key_cv": "_render_key_cv",
         "clock": "_render_clock",
         # fader_seq is the Sequencer with a different front panel —
         # identical param contract, one engine (see modules/fader_seq.py).

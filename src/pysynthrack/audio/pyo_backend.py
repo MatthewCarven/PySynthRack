@@ -92,6 +92,7 @@ _SILENT_STUB_TYPES = (
     "fader_seq",
     "vocoder",
     "key_trigger",
+    "key_cv",
     "slew",
     "quantizer",
     "shift_random",

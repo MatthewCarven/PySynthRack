@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "next_id": 8,
+  "modules": [
+    {
+      "id": 1,
+      "type": "key_cv",
+      "name": "hold 3 = drift an octave down (2 s)",
+      "params": {
+        "key": "3",
+        "mode": "gate",
+        "idle": 0.0,
+        "active": -1.0,
+        "glide": 2.0,
+        "chain": "add"
+      }
+    },
+    {
+      "id": 2,
+      "type": "key_cv",
+      "name": "hold 2 = up a fifth",
+      "params": {
+        "key": "2",
+        "mode": "gate",
+        "idle": 0.0,
+        "active": 0.5833333333333334,
+        "glide": 0.08,
+        "chain": "add"
+      }
+    },
+    {
+      "id": 3,
+      "type": "key_cv",
+      "name": "hold 1 = up an octave",
+      "params": {
+        "key": "1",
+        "mode": "gate",
+        "idle": 0.0,
+        "active": 1.0,
+        "glide": 0.08,
+        "chain": "add"
+      }
+    },
+    {
+      "id": 4,
+      "type": "key_cv",
+      "name": "tap 4 = latch two octaves up (takes over)",
+      "params": {
+        "key": "4",
+        "mode": "latch",
+        "idle": 0.0,
+        "active": 2.0,
+        "glide": 0.5,
+        "chain": "override"
+      }
+    },
+    {
+      "id": 5,
+      "type": "oscillator",
+      "name": "saw 110",
+      "params": {
+        "waveform": "saw_blep",
+        "freq": 110.0,
+        "amp": 0.3
+      }
+    },
+    {
+      "id": 6,
+      "type": "filter",
+      "name": "soften",
+      "params": {
+        "mode": "lowpass",
+        "cutoff": 1800.0,
+        "resonance": 0.3
+      }
+    },
+    {
+      "id": 7,
+      "type": "speaker_output",
+      "name": "speaker",
+      "params": {
+        "gain": 0.8
+      }
+    }
+  ],
+  "cables": [
+    {
+      "src_module_id": 1,
+      "src_port": "out",
+      "dst_module_id": 2,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 2,
+      "src_port": "out",
+      "dst_module_id": 3,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 3,
+      "src_port": "out",
+      "dst_module_id": 4,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 4,
+      "src_port": "out",
+      "dst_module_id": 5,
+      "dst_port": "freq_cv"
+    },
+    {
+      "src_module_id": 5,
+      "src_port": "out",
+      "dst_module_id": 6,
+      "dst_port": "in"
+    },
+    {
+      "src_module_id": 6,
+      "src_port": "out",
+      "dst_module_id": 7,
+      "dst_port": "in"
+    }
+  ],
+  "ui": {
+    "node_positions": {
+      "1": [
+        40,
+        40
+      ],
+      "2": [
+        40,
+        300
+      ],
+      "3": [
+        40,
+        560
+      ],
+      "4": [
+        380,
+        300
+      ],
+      "5": [
+        720,
+        300
+      ],
+      "6": [
+        1040,
+        300
+      ],
+      "7": [
+        1360,
+        300
+      ]
+    }
+  }
+}

@@ -450,6 +450,79 @@ class IORenderers:
 
         return out
 
+    # Longest glide the renderer honours, seconds (the panel's drag tops out
+    # here too). A full idle <-> active move over a minute is already a drift.
+    _KEY_CV_MAX_GLIDE = 60.0
+
+    def _render_key_cv(self, module, frames: int, buffers, patch) -> dict[str, np.ndarray]:
+        """One bound key -> a CV between ``idle`` and ``active``, with glide.
+
+        The key's state is read once per block, like :meth:`_render_key_trigger`
+        (``gate`` = held, ``latch`` = an odd number of presses this block
+        toggles), so a press lands on the first sample of the next block.
+        A position ``x`` in [0, 1] (0 = idle, 1 = active) is carried in
+        state and walks toward the target at a constant ``1 / glide`` per
+        second -- computed as ``x0 +- step * k`` from the block's start, so
+        each sample rounds once and the ramp barely depends on the block
+        size; ``glide`` 0 snaps. The value is ``idle * (1 - x) + active * x``,
+        which is exactly ``idle`` at rest and exactly ``active`` when there.
+
+        ``chain`` combines the ``in`` jack: ``add`` -> ``in + value``;
+        ``override`` -> ``(1 - x) * (in + idle) + x * active`` (this key takes
+        over while it is down). Unpatched ``in`` is 0, so both read the same.
+        A voice-aware ``in`` keeps its voices (the key's ramp is shared). A
+        non-finite ``in`` sample reads as 0.
+
+        Returns ``{"out": cv, "gate": 0/1}``.
+        """
+        held, presses = module.snapshot()
+        state = self._state.setdefault(module.id, {})
+        if str(module.params.get("mode", "gate")) == "latch":
+            if presses & 1:
+                state["latched"] = not state.get("latched", False)
+            on = bool(state.get("latched", False))
+        else:   # "gate", and the fallback for an unknown mode
+            on = bool(held)
+
+        def _num(name, default):
+            try:
+                v = float(module.params.get(name, default))
+            except (TypeError, ValueError):
+                return default
+            return v if np.isfinite(v) else default
+
+        idle = _num("idle", 0.0)
+        active = _num("active", 1.0)
+        glide = float(np.clip(_num("glide", 0.0), 0.0, self._KEY_CV_MAX_GLIDE))
+
+        target = 1.0 if on else 0.0
+        x0 = float(state.get("x", 0.0))
+        if glide <= 0.0 or x0 == target:
+            x = np.full(frames, target, dtype=np.float64)
+        else:
+            step = 1.0 / (glide * float(self.sample_rate))
+            k = np.arange(1, frames + 1, dtype=np.float64)
+            if target > x0:
+                x = np.minimum(x0 + step * k, target)
+            else:
+                x = np.maximum(x0 - step * k, target)
+        if frames:
+            state["x"] = float(x[-1])
+
+        value = idle * (1.0 - x) + active * x
+        src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        if src is None:
+            out = value
+        else:
+            inp = np.asarray(src, dtype=np.float64)
+            inp = np.where(np.isfinite(inp), inp, 0.0)
+            if str(module.params.get("chain", "add")) == "override":
+                out = (1.0 - x) * (inp + idle) + x * active
+            else:
+                out = inp + value
+        gate = np.full(frames, 1.0 if on else 0.0, dtype=np.float32)
+        return {"out": np.asarray(out, dtype=np.float32), "gate": gate}
+
     def _render_midi_input(self, module, frames: int) -> dict[str, np.ndarray]:
         """Voice-aware MIDI renderer.
 
