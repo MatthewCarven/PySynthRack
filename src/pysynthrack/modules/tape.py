@@ -104,14 +104,28 @@ Use cases:
     dives, halts, and spins back up (``mix = 1`` so the dry doesn't give
     the game away).
 
+**Stereo** (``in_r`` / ``out_r``, added 2026-11-19): patch the right side
+of a stereo signal into ``in_r`` and take it from ``out_r``. It is one
+tape with two tracks: one transport, so wow, flutter, drift and the stop
+move both sides together, while each side keeps its own delay line,
+saturation and head bump, and its own hiss (two tracks hiss independently
+on a real deck). Two tape modules, one per side, are two machines instead:
+flutter and drift draw from a different random stream on each, so with
+any of them up the sides wobble apart and the image smears. With ``in_r``
+empty the module is exactly the mono tape and ``out_r`` carries nothing;
+with only ``in_r`` patched, ``out`` is silent. Patching or pulling
+``in_r`` restarts the tape from rest.
+
 Ports:
   * ``in`` (audio): signal to tape. Voice-aware; a single voice row is
     bit-identical to mono. Unpatched → silence.
+  * ``in_r`` (audio): optional right side; patched → stereo (above).
   * ``stop`` (gate): the tape-stop. High = coast to a halt over
     ``stop_time``, low = spin back up over ``start_time``. One transport
     for every voice: a ``(V, F)`` gate collapses to any-voice-high.
     Unpatched → today's code path exactly.
   * ``out`` (audio): the taped (and dry-blended) signal.
+  * ``out_r`` (audio): the right side, with ``in_r`` patched.
 """
 from __future__ import annotations
 
@@ -142,10 +156,13 @@ class Tape(Module):
 
     Ports:
         in (in, audio): signal to tape. Unpatched → silence.
+        in_r (in, audio): optional right side -- one tape, two tracks:
+            shared transport, own delay line / saturation / bump / hiss.
         stop (in, gate): the tape-stop; high halts, low restarts. A
             ``(V, F)`` gate collapses to any-voice-high. Unpatched → the
             pre-stop code path exactly.
         out (out, audio): taped (and dry-blended) signal.
+        out_r (out, audio): the right side, with ``in_r`` patched.
     """
 
     TYPE = "tape"
@@ -161,5 +178,9 @@ class Tape(Module):
         "stop_time": 1.0,
         "start_time": 0.5,
     }
-    INPUT_PORTS = [Port("in", "in", "audio"), Port("stop", "in", "gate")]
-    OUTPUT_PORTS = [Port("out", "out", "audio")]
+    INPUT_PORTS = [
+        Port("in", "in", "audio"),
+        Port("in_r", "in", "audio"),
+        Port("stop", "in", "gate"),
+    ]
+    OUTPUT_PORTS = [Port("out", "out", "audio"), Port("out_r", "out", "audio")]

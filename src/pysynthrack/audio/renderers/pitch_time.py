@@ -1875,10 +1875,72 @@ class PitchTimeRenderers:
         below is the pre-stop code verbatim; ``mix <= 0`` keeps its early
         out, so the transport idles there (an edge that lands while the mix
         is dry is seen when it comes back).
+
+        Stereo (``in_r`` patched, 2026-11-19): :meth:`_render_tape_stereo`
+        stacks the right side's rows under the left's and runs them
+        through :meth:`_tape_core` as one tape -- one transport, so wow,
+        flutter, drift and the stop move both sides together -- with
+        independent hiss per side. With ``in_r`` empty the mono path is
+        the core exactly as it was.
         """
         src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        if any(c.dst_port == "in_r" for c in patch.cables_into(module.id)):
+            return self._render_tape_stereo(module, frames, buffers, patch, src)
         if src is None or src.size == 0:
             return np.zeros(frames, dtype=np.float32)
+        return self._tape_core(module, frames, buffers, patch, src)
+
+    def _render_tape_stereo(self, module, frames, buffers, patch, src_l):
+        """``in`` -> ``out`` and ``in_r`` -> ``out_r`` on ONE tape.
+
+        Two tape modules, one per side, are two machines: flutter and drift
+        each draw from a generator seeded by the module's id (and the wow
+        sine counts from when each module's state began), so with any of
+        them up the two sides wobble independently and the image smears
+        and wanders. A stereo tape is two tracks on one tape: the right
+        side's rows are stacked under the left's and the core runs them
+        together, so the one modulation curve and the one stop transport
+        drive every row, each row keeps its own delay line, oversampler,
+        shelf and dry tail, and the right side's rows take their own hiss
+        (``split``). Shapes need not match (a row is a row). A missing side
+        is silence -- no hiss on an unpatched track -- and its row is still
+        carried, so the other side renders the same either way.
+        Patching ``in_r`` in or out changes the row count, which rebuilds
+        the tape from rest (a fresh tape, like a new module).
+        """
+        src_r = self._input_buffer(patch, buffers, module.id, "in_r", collapse=False)
+        if src_l is not None and src_l.size == 0:
+            src_l = None
+        if src_r is not None and src_r.size == 0:
+            src_r = None
+        if src_l is None and src_r is None:
+            z = np.zeros(frames, dtype=np.float32)
+            return {"out": z, "out_r": z}
+        left = src_l if src_l is not None else np.zeros(frames, dtype=np.float32)
+        right = src_r if src_r is not None else np.zeros(frames, dtype=np.float32)
+        rows_l = np.atleast_2d(left)
+        rows_r = np.atleast_2d(right)
+        split = rows_l.shape[0]
+        out = np.atleast_2d(self._tape_core(
+            module, frames, buffers, patch,
+            np.concatenate([rows_l, rows_r], axis=0), split=split,
+        ))
+        o_l = out[:split]
+        o_r = out[split:]
+        o_l = o_l[0] if left.ndim == 1 else o_l
+        o_r = o_r[0] if right.ndim == 1 else o_r
+        if src_l is None:
+            o_l = np.zeros(frames, dtype=np.float32)
+        if src_r is None:
+            o_r = np.zeros(frames, dtype=np.float32)
+        return {"out": o_l, "out_r": o_r}
+
+    def _tape_core(self, module, frames, buffers, patch, src, split=None):
+        """The tape itself, on ``src`` (``(F,)`` or ``(V, F)`` rows): the
+        body of :meth:`_render_tape` as it stood before the stereo jack.
+        ``split`` (stereo only): rows from ``split`` on are the right
+        side, and take their own hiss; every other path treats all rows
+        alike."""
         stop_gate = self._input_buffer(patch, buffers, module.id, "stop")
         stop_patched = stop_gate is not None and stop_gate.shape[-1] == frames
 
@@ -2098,7 +2160,24 @@ class PitchTimeRenderers:
             hn = state["rng_hiss"].standard_normal(frames) * amp
             if stop_env is not None:
                 hn = hn * speed                    # tape hiss: a still head reads none
-            wet = wet + hn[None, :]
+            if split is None:
+                wet = wet + hn[None, :]
+            else:
+                # Stereo: two tracks on one tape -- one transport, but each
+                # track's noise is its own. The right side's generator is
+                # seeded from the module id too, through a seed sequence
+                # that no plain integer seed can collide with.
+                rng_r = state.get("rng_hiss_r")
+                if rng_r is None:
+                    rng_r = state["rng_hiss_r"] = np.random.default_rng(
+                        [self._TAPE_HISS_SEED + int(module.id), 1])
+                hr = rng_r.standard_normal(frames) * amp
+                if stop_env is not None:
+                    hr = hr * speed
+                add = np.empty_like(wet)
+                add[:split] = hn
+                add[split:] = hr
+                wet = wet + add
 
         # --- head-bump low shelf (~60 Hz), streaming per voice ------------
         if bump_active:

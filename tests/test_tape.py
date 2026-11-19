@@ -130,8 +130,9 @@ class TestModel:
     def test_ports_and_kinds(self):
         tp = Patch().add_module("tape")
         assert [(p.name, p.signal_kind) for p in tp.input_ports] == [
-            ("in", "audio"), ("stop", "gate")]
-        assert [(p.name, p.signal_kind) for p in tp.output_ports] == [("out", "audio")]
+            ("in", "audio"), ("in_r", "audio"), ("stop", "gate")]   # in_r: 2026-11-19
+        assert [(p.name, p.signal_kind) for p in tp.output_ports] == [
+            ("out", "audio"), ("out_r", "audio")]
 
     def test_gate_into_stop_accepted_cv_and_audio_rejected(self):
         patch = Patch()
