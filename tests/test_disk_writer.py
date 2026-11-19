@@ -35,7 +35,7 @@ class TestDiskWriterModel:
         assert dw.params == {
             "path": "recording.wav", "armed": True, "timestamp": False,
         }
-        assert [p.name for p in dw.input_ports] == ["in"]
+        assert [p.name for p in dw.input_ports] == ["in", "in_r"]   # in_r: stereo, 2026-11-19
         assert dw.input_ports[0].signal_kind == "audio"
         assert dw.output_ports == []  # it's a sink
 

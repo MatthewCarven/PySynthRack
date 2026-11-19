@@ -70,18 +70,9 @@
     {
       "id": 8,
       "type": "disk_writer",
-      "name": "disk_writer",
+      "name": "disk_writer (stereo: one file, both sides)",
       "params": {
-        "path": "recordingleft.wav",
-        "armed": true
-      }
-    },
-    {
-      "id": 9,
-      "type": "disk_writer",
-      "name": "disk_writer",
-      "params": {
-        "path": "recordingright.wav",
+        "path": "karaoke_take.wav",
         "armed": true
       }
     },
@@ -160,12 +151,6 @@
       "src_module_id": 11,
       "src_port": "out",
       "dst_module_id": 8,
-      "dst_port": "in"
-    },
-    {
-      "src_module_id": 12,
-      "src_port": "out",
-      "dst_module_id": 9,
       "dst_port": "in"
     },
     {
@@ -263,6 +248,12 @@
       "src_port": "out",
       "dst_module_id": 4,
       "dst_port": "in"
+    },
+    {
+      "src_module_id": 12,
+      "src_port": "out",
+      "dst_module_id": 8,
+      "dst_port": "in_r"
     }
   ],
   "ui": {
@@ -290,10 +281,6 @@
       "8": [
         974,
         -9
-      ],
-      "9": [
-        977,
-        555
       ],
       "10": [
         -74,

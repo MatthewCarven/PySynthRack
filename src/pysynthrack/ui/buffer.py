@@ -147,3 +147,21 @@ def format_sink_buffer(
         got = "auto" if stream[1] == 0 else str(stream[1])
         line += f"\ndevice block {got} - {stream[0]} would not open"
     return line
+
+
+def format_disk_writer_status(entry: tuple[int, int] | None) -> str:
+    """The disk_writer node's take readout (2026-11-19).
+
+    ``entry`` is the backend's ``(channels, dropped_blocks)`` for a writer
+    with a take open (see ``NumpyBackend.snapshot_disk_writers``), or
+    ``None`` when it has none (stopped, disarmed, nothing patched).
+    ``dropped`` counts blocks this take lost because the disk fell behind
+    the queue -- 0 is a clean take; anything else is a gap in the file. A
+    stereo take drops both sides of a block together, so its channels stay
+    in step whatever the count. ASCII only, like the other node readouts.
+    """
+    if entry is None:
+        return "rec: idle"
+    channels, dropped = entry
+    kind = "stereo" if int(channels) == 2 else "mono"
+    return f"rec: {kind}, dropped {int(dropped)}"

@@ -46,6 +46,54 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-19 — disk_writer stereo: one file, one queue, both sides or neither
+
+Matthew picked the scope's first item ("Yes please Claude disk_writer"). Two
+mono writers recording left and right each own a 64-block queue; when the
+disk stalls each drops on its own, so the files part by whole blocks for the
+rest of the take. `mic_karaoke_recorder.json` (`recordingleft.wav` +
+`recordingright.wav`) was exactly that setup.
+
+**What changed.**
+
+* `disk_writer` gains `in_r`. Patched, each block goes on the ONE queue as a
+  `(frames, 2)` array -- a full queue drops both sides of that block or
+  neither -- and the worker writes a two-channel WAV (the array flattens
+  row-major into interleaved L R frames). A missing side is silence. `in_r`
+  empty: the mono path, byte for byte (the worker's new `channels` argument
+  defaults to 1).
+* The channel count is part of the take: patching or pulling `in_r` mid-take
+  starts a new one, like a path change (with `timestamp` off it overwrites,
+  as re-arming always has).
+* `dropped_blocks` now resets per take (it was cumulative per module, and
+  nothing read it). `snapshot_disk_writers()` publishes `{id: (channels,
+  dropped)}` for open takes.
+* The node shows the take: `rec: idle` / `rec: mono, dropped N` /
+  `rec: stereo, dropped N` -- grey idle, green clean, red once a block is
+  lost (a dropped block is a gap in the file, so it stays red for the take).
+  Same label/frame-update/prune pattern as the buffered sink's readout.
+* `mic_karaoke_recorder.json` now records through one stereo writer
+  (`karaoke_take.wav`).
+
+**Verified.**
+
+| Check | Result |
+|---|---|
+| New tests first, against the old code | 9 of 11 failed (the exposure test and the mono-unchanged test passed, as they should) |
+| Exposure: two mono writers, the right's disk stalls for 36 blocks | left drops 0, right 36; past the gap the right file is 36 blocks ahead (block 106 where the left has block 70) |
+| Stereo take with the worker held back, 101 blocks into a 64-block queue | 37 dropped; the file holds 64 blocks and L == -R in every frame (the sides never parted) |
+| Each side exact; missing side silent; mono unchanged; drop count per take; patching `in_r` mid-take gives a mono file and a stereo file; the snapshot hook; the readout text, colour and frame update | pass |
+| `tests/test_disk_writer_stereo.py` x3 reruns | 11 passed each time (the drop tests use a gated worker, not timing) |
+| Existing disk_writer tests | pass |
+| Full suite | 6,028 passed, 6 skipped |
+| Render audit vs the key_cv tree (d751f7e) | 168 examples, moved 0; the audit's own take of `mic_karaoke_recorder` came out as a 2-channel WAV |
+| ruff (CI's command) | All checks passed (after renaming one unused loop variable in the new test) |
+
+**Wants a human:** the checklist entry for `mic_karaoke_recorder.json` (a
+stereo take opens; `dropped 0`; load the CPU mid-take and watch it).
+
+---
+
 ## 2026-11-19 — key_cv (a key as a set CV, chainable), and the stereo scope
 
 Two asks in one message, then a third mid-build. "can you scope any other

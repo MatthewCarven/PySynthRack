@@ -1,7 +1,19 @@
 """DiskWriter — record an audio bus to a WAV file.
 
-A sink module: audio in, nothing out, written to disk as a 16-bit
-mono WAV at the backend's sample rate.
+A sink module: audio in, nothing out, written to disk as a 16-bit WAV
+at the backend's sample rate -- mono, or stereo with ``in_r`` patched.
+
+**Stereo** (``in_r``, added 2026-11-19): patch a stereo source's left into
+``in`` and its right into ``in_r`` and the take is ONE two-channel WAV,
+fed through one queue and one worker. Two mono writers recording left and
+right each drop blocks on their own when the disk stalls, so their files
+can part by a whole block and never rejoin; one stereo writer drops a
+block from both sides at once or not at all, so the two channels cannot
+go out of step. The channel count is fixed for a take: patching or
+pulling ``in_r`` mid-take starts a new take (with ``timestamp`` off that
+overwrites the file, exactly as re-arming does). A missing side records
+silence. The node shows the take (mono / stereo) and how many blocks it
+has dropped -- 0 is a clean take.
 
 Threading model. Disk I/O can pause for tens of ms (filesystem cache
 flush, antivirus scan, the OS deciding it'd like a coffee break) so we
@@ -36,8 +48,8 @@ Parameters:
     armed: When False the writer ignores incoming audio and never
         opens a file. Lets you keep the module in the patch without
         a take being made every time you hit play.
-    timestamp: When True each take (every Start, re-arm, or path
-        change) writes a NEW file, ``<stem>_YYYY-MM-DD_HH-MM-SS.wav``,
+    timestamp: When True each take (every Start, re-arm, path change,
+        or ``in_r`` patched / pulled) writes a NEW file, ``<stem>_YYYY-MM-DD_HH-MM-SS.wav``,
         stamped when the take opens; a second take inside the same
         second gets ``_2``. Off (the default) keeps the one name and
         overwrites it, as before.
@@ -55,5 +67,5 @@ class DiskWriter(Module):
     TYPE = "disk_writer"
     CATEGORY = "Outputs"
     DEFAULT_PARAMS = {"path": "recording.wav", "armed": True, "timestamp": False}
-    INPUT_PORTS = [Port("in", "in", "audio")]
+    INPUT_PORTS = [Port("in", "in", "audio"), Port("in_r", "in", "audio")]
     OUTPUT_PORTS: list = []  # sink — no audio output

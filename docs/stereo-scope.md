@@ -4,6 +4,8 @@ Scope only. Nothing under `src/`, `tests/` or `examples/` changed for it.
 The decisions at the end are Matthew's. Read in the code at cf9024d;
 nothing here was measured except where it says so.
 
+**Status:** item 1 (disk_writer) built the same evening -- see WORKLOG.
+
 Matthew, after the stereo pitch_shifter, tape and parametric_eq landed:
 "can you scope any other modules that might need a stereo upgrade for
 balancing the left and right tracks".

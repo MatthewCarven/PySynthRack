@@ -152,6 +152,7 @@ from .buffer import (
     SINK_BUFFER_SIZES,
     coerce_buffer_size,
     coerce_sink_buffer_size,
+    format_disk_writer_status,
     format_sink_buffer,
     index_to_size,
     size_to_index,
@@ -415,6 +416,9 @@ class App:
         # readout is tinted amber, making a struggling ring catch the eye
         # without the cumulative counters tinting it forever.
         self._sink_buffer_labels: dict[int, int] = {}
+        # disk_writer take readouts: module_id -> the dpg text item showing
+        # "rec: mono/stereo, dropped N" (_update_disk_writers, each frame).
+        self._disk_writer_labels: dict[int, int] = {}
         self._sink_buffer_last: dict[int, tuple[int, int]] = {}
         self._sink_buffer_flash: dict[int, float] = {}
         # Routed speaker sinks whose stream fell back to a smaller block, or
@@ -482,6 +486,7 @@ class App:
                 self._update_sampler_faces()
                 self._update_dsp_load()
                 self._update_sink_buffers()
+                self._update_disk_writers()
                 self._update_file_positions()
                 self._advance_file_playlists()
                 self._report_media_failures()
@@ -848,6 +853,17 @@ class App:
                         color=self._SINK_BUF_IDLE_RGBA,
                     )
                     self._sink_buffer_labels[module.id] = label
+
+            # DiskWriter: the take readout -- mono / stereo and how many
+            # blocks this take has dropped (0 = clean). Grey when idle, green
+            # while recording clean, red once a block has been lost.
+            if module.TYPE == "disk_writer":
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                    label = dpg.add_text(
+                        format_disk_writer_status(None),
+                        color=self._SINK_BUF_IDLE_RGBA,
+                    )
+                    self._disk_writer_labels[module.id] = label
 
             # FilePlayer: tape-style transport buttons plus a live
             # 'elapsed / total' playhead readout (_update_file_positions
@@ -6253,6 +6269,7 @@ class App:
             # with the node, so a lingering entry would have the next
             # _update_sink_buffers frame set_value a freed dpg item.
             self._sink_buffer_labels.pop(module_id, None)
+            self._disk_writer_labels.pop(module_id, None)
             self._sink_buffer_last.pop(module_id, None)
             self._sink_buffer_flash.pop(module_id, None)
             # possibility_seq panel: the cell buttons and count text are
@@ -6818,6 +6835,7 @@ class App:
         self._playlist_listboxes.clear()
         self._fileplayer_advanced_gen.clear()
         self._sink_buffer_labels.clear()
+        self._disk_writer_labels.clear()
         self._sink_buffer_last.clear()
         self._sink_buffer_flash.clear()
         self._sink_streams_reported.clear()
@@ -7127,6 +7145,37 @@ class App:
     # broken, and the readout must not look like either.
     _SINK_BUF_FAILED_RGBA = (235, 120, 110)
     _SINK_BUF_FLASH_S = 1.5
+
+    def _update_disk_writers(self) -> None:
+        """Push each disk_writer's take state into its node readout: mono /
+        stereo and the take's dropped-block count (format_disk_writer_status).
+        Grey idle, green clean, red once the take has lost a block -- a
+        dropped block is a gap in the file, so it stays red for the take.
+        Backends without the hook (the pyo stub) leave it idle; dead dpg
+        items are pruned, not crashed on."""
+        if not self._disk_writer_labels:
+            return
+        hook = getattr(self.backend, "snapshot_disk_writers", None)
+        try:
+            entries = hook() if hook is not None else {}
+        except Exception:
+            entries = {}
+        stale: list[int] = []
+        for mid, label in self._disk_writer_labels.items():
+            entry = entries.get(mid)
+            if entry is None:
+                color = self._SINK_BUF_IDLE_RGBA
+            elif entry[1] > 0:
+                color = self._SINK_BUF_FAILED_RGBA
+            else:
+                color = self._SINK_BUF_OK_RGBA
+            try:
+                dpg.set_value(label, format_disk_writer_status(entry))
+                dpg.configure_item(label, color=color)
+            except Exception:
+                stale.append(mid)
+        for mid in stale:
+            self._disk_writer_labels.pop(mid, None)
 
     def _update_sink_buffers(self) -> None:
         """Push each buffered sink's secondary-stream ring telemetry into

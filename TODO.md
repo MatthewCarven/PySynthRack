@@ -52,6 +52,10 @@ Test the exe too (it's the windowed build).
 - [ ] `scope_tap.json`: the scope draws (`scope_window`).
 - [ ] `record_a_take.json`: the disk writer records, and the .wav plays back in another player.
 - [ ] `mic_karaoke_recorder.json` (needs a mic): the input device opens (`_resolve_mic_input`).
+      *2026-11-19:* now ONE stereo disk_writer (`karaoke_take.wav`, in +
+      in_r) instead of `recordingleft.wav` + `recordingright.wav`. Check the
+      take opens as stereo in a player and the node reads `rec: stereo,
+      dropped 0` -- then load the CPU (Chrome) mid-take and watch the count.
 - [ ] `convolver_reverb.json`: the IR loads and you hear the room.
 - [ ] `keyboard_play.json` / `midi_lead.json`: notes play; in the MIDI one, the velocity-calibration dialog opens.
 - [ ] **Dead-cable report.** Copy any example and hand-edit one cable's `dst_port` to `nope`, then open the copy. The status line reads "1 dead cable dropped (list in ...load_<time>_<name>.txt)". That file under `~/.pysynthrack/crashes/` names the cable and warns that saving drops it for good. In the exe this is the only place the list appears.
@@ -576,7 +580,8 @@ likeliest to sound different come first.
 - [ ] **Found during that scope, not reproduced by the supervisor:**
       (a) 3 of 12 device names in the sink's dropdown won't open on the
       laptop ("Multiple output devices found"); (b) `disk_writer` drops
-      blocks without saying so, so a left file and a right file can part
+      blocks without saying so [*shown on the node, and a stereo take drops
+      both sides together, since 2026-11-19*], so a left file and a right file can part
       under load (read in the code, not reproduced); (c) the governed
       path's latency measures 93-112 ms, not the documented 50 ms.
 
@@ -702,6 +707,11 @@ session before anything is built. Don't build ahead.
       (motion_eq / sweep_eq / tilt_eq as before). Leave rotary mono. Also
       found: the tape's three seeds overlap across module ids (#4's drift
       = #3's flutter stream). Waits on Matthew's pick.
+      **Item 1 BUILT 2026-11-19:** disk_writer `in_r` -- one two-channel
+      WAV through one queue; a drop loses both sides of a block or
+      neither; the node shows `rec: mono/stereo, dropped N` (green clean,
+      red once lost); `mic_karaoke_recorder.json` now records stereo.
+      Next on the list: the linked dynamics.
 
 *From the seventh batch (2026-10-12):*
 - [ ] **Sink open ladder runs on every reconcile** while a device is

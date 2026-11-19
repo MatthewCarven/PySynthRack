@@ -1373,7 +1373,16 @@ class IORenderers:
         return out
 
     def _render_disk_writer(self, module, frames: int, buffers, patch):
-        """Enqueue blocks of audio for the worker thread to write to disk."""
+        """Enqueue blocks of audio for the worker thread to write to disk.
+
+        Stereo (``in_r`` patched, 2026-11-19): each block goes onto the ONE
+        queue as a ``(frames, 2)`` array, so a full queue drops both sides
+        of that block together and the file's channels stay in step (two
+        mono writers drop independently). The channel count is part of
+        the take: a change starts a new one. A missing side is silence.
+        ``dropped_blocks`` counts the take's drops (reset per take) and
+        is what :meth:`snapshot_disk_writers` shows on the node.
+        """
         state = self._state.setdefault(
             module.id,
             {
@@ -1392,8 +1401,19 @@ class IORenderers:
             return None
 
         src = self._input_buffer(patch, buffers, module.id, "in")
-        if src is None:
-            return None
+        if any(c.dst_port == "in_r" for c in patch.cables_into(module.id)):
+            src_r = self._input_buffer(patch, buffers, module.id, "in_r")
+            if src is None and src_r is None:
+                return None
+            left = src if src is not None else np.zeros(frames, dtype=np.float32)
+            right = src_r if src_r is not None else np.zeros(frames, dtype=np.float32)
+            block = np.stack([left, right], axis=1)   # interleaved L R once flat
+            channels = 2
+        else:
+            if src is None:
+                return None
+            block = src
+            channels = 1
 
         path = str(module.params.get("path", "recording.wav"))
         stamp = bool(module.params.get("timestamp", False))
@@ -1401,6 +1421,7 @@ class IORenderers:
             state["queue"] is None
             or state["path"] != path
             or state.get("timestamp") != stamp
+            or state.get("channels", 1) != channels
         ):
             # First arrival (a Start, or a re-arm), or the path or the
             # timestamp tickbox changed: a new take, so (re)start the
@@ -1409,6 +1430,8 @@ class IORenderers:
             self._close_disk_writer_state(state)
             state["path"] = path
             state["timestamp"] = stamp
+            state["channels"] = channels
+            state["dropped_blocks"] = 0
             target = recordings.resolve_recording_path(path, timestamp=stamp)
             state["target"] = target
             state["queue"] = queue.Queue(maxsize=64)
@@ -1417,7 +1440,7 @@ class IORenderers:
                 target=self._disk_writer_worker,
                 args=(
                     state["queue"], state["stop_event"], target,
-                    self.sample_rate, self._recording_log, stamp,
+                    self.sample_rate, self._recording_log, stamp, channels,
                 ),
                 daemon=True,
                 name=f"DiskWriter-{module.id}",
@@ -1428,11 +1451,29 @@ class IORenderers:
         # Non-blocking enqueue. Drop on backlog rather than glitch the
         # audio thread; bumped counter is visible in tests / debug.
         try:
-            state["queue"].put_nowait(src.astype(np.float32).copy())
+            state["queue"].put_nowait(block.astype(np.float32).copy())
         except queue.Full:
             state["dropped_blocks"] += 1
 
         return None  # sink
+
+    def snapshot_disk_writers(self) -> dict[int, tuple[int, int]]:
+        """(GUI hook) ``{module_id: (channels, dropped_blocks)}`` for every
+        disk_writer with a take open. Called from the GUI thread each frame;
+        the counts are plain ints the audio thread bumps, read without a
+        lock (a frame-stale count is fine for a readout)."""
+        out: dict[int, tuple[int, int]] = {}
+        patch = getattr(self, "_patch", None)
+        if patch is None:
+            return out
+        for m in list(patch.modules.values()):
+            if m.TYPE != "disk_writer":
+                continue
+            st = self._state.get(m.id)
+            if not st or st.get("queue") is None:
+                continue
+            out[m.id] = (int(st.get("channels", 1)), int(st.get("dropped_blocks", 0)))
+        return out
 
     def _close_disk_writer_state(self, state) -> None:
         """Signal the writer thread to drain and join. Idempotent."""
@@ -1454,9 +1495,12 @@ class IORenderers:
 
     @staticmethod
     def _disk_writer_worker(
-        q, stop_event, target, sample_rate, log=None, unique=False
+        q, stop_event, target, sample_rate, log=None, unique=False, channels=1
     ) -> None:
-        """Write queued blocks to a mono 16-bit WAV until stop is set.
+        """Write queued blocks to a 16-bit WAV until stop is set.
+
+        ``channels`` is 1 (blocks ``(F,)``) or 2 (blocks ``(F, 2)``, which
+        flatten row-major into the interleaved L R frames a WAV wants).
 
         ``target`` is the resolved path (see ``audio/recordings.py``). A
         take inside the recordings folder creates the folders it needs; a
@@ -1487,7 +1531,7 @@ class IORenderers:
         if log is not None:
             log.append(("opened", str(path)))
         wf = wave.open(fh, "wb")
-        wf.setnchannels(1)
+        wf.setnchannels(int(channels))
         wf.setsampwidth(2)  # 16-bit
         wf.setframerate(int(sample_rate))
         try:

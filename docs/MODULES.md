@@ -530,7 +530,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`specific_stereo_speaker_output`](#specific_stereo_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv` (cv) → — |
 | [`buffered_specific_speaker_output`](#buffered_specific_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv`,`ratio_cv` (cv) → `fill` (cv) |
 | [`warping_buffered_speaker_output`](#warping_buffered_speaker_output) | Outputs | `in_l`,`in_r` (audio), `pan_cv`,`width_cv`,`ratio_cv` (cv) → `fill` (cv) |
-| [`disk_writer`](#disk_writer) | Outputs | `in` (audio) → — |
+| [`disk_writer`](#disk_writer) | Outputs | `in`, `in_r` (audio) → — |
 
 ---
 
@@ -6516,8 +6516,9 @@ See `examples/warping_buffer_tape.json`.
 
 #### `disk_writer`
 
-Records its `in` to a **16-bit mono WAV** at the backend's sample rate — a
-sink: audio in, nothing out, a file on disk. The renderer opens the file
+Records its `in` to a **16-bit WAV** at the backend's sample rate — mono,
+or **stereo with `in_r` patched** — a sink: audio in, nothing out, a file
+on disk. The renderer opens the file
 lazily the first time a compiled patch contains an armed writer and closes
 it when the transport stops; re-arming creates a new take under the same
 name (existing files are overwritten without prompting — no modal dialogs
@@ -6526,6 +6527,21 @@ own file. Disk I/O never touches the audio callback: each writer owns a
 daemon worker thread behind a bounded queue, and in the rare case the queue
 is momentarily full the block is dropped (counted) rather than letting the
 audible output glitch.
+
+**Stereo (2026-11-19).** Patch a stereo source's left into `in` and its
+right into `in_r`: the take is ONE two-channel WAV, fed through one queue
+and one worker. Use it instead of two writers, one per side. Each mono
+writer drops blocks on its own when the disk stalls, so a left file and a
+right file can part by a whole block and never rejoin (the test that pins
+it shows a 36-block stall leaving the right file 36 blocks ahead for the
+rest of the take). A stereo writer drops a block from both sides at once
+or not at all, so the channels cannot go out of step. The channel count
+is fixed for a take: patching or pulling `in_r` mid-take starts a new take
+(with `timestamp` off that overwrites the file, as re-arming does). A
+missing side records silence. **The node shows the take** — `rec: mono` /
+`rec: stereo` and how many blocks it has dropped: green at 0 (a clean
+take), red once anything is lost (a gap in the file), grey when idle.
+`examples/mic_karaoke_recorder.json` records its two sides this way.
 
 **Where takes land** (since 2026-10-10, `audio/recordings.py`): a relative
 `path` is a name inside the recordings folder, **`<Music>/PySynthRack/`**,
@@ -6545,7 +6561,8 @@ the folder; the test suite points it at a temp dir.
 
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
-| `in` | in | audio | The bus to record. |
+| `in` | in | audio | The bus to record (the left side, in stereo). |
+| `in_r` | in | audio | (2026-11-19) Optional right side: patched → one two-channel WAV, both sides through one queue (see *Stereo* above). Empty → a mono WAV, as before. |
 
 **Parameters**
 
@@ -6553,7 +6570,7 @@ the folder; the test suite points it at a temp dir.
 |-------|---------|-------|-------------|
 | `path` | `"recording.wav"` | filename | Where the WAV lands. Relative → inside `<Music>/PySynthRack/`; absolute → as given. Browse... picks one; add `.wav` yourself when typing. |
 | `armed` | `True` | bool | Off = the writer sits in the patch inert, no file opened; lets you keep it wired without cutting a take every play. |
-| `timestamp` | `False` | bool | On = each take (every Start, re-arm or path change) writes a new file, `<stem>_YYYY-MM-DD_HH-MM-SS.wav`, stamped when the take opens; a second take in the same second gets `_2`. Off = one name, overwritten, as before. |
+| `timestamp` | `False` | bool | On = each take (every Start, re-arm, path change, or `in_r` patched / pulled) writes a new file, `<stem>_YYYY-MM-DD_HH-MM-SS.wav`, stamped when the take opens; a second take in the same second gets `_2`. Off = one name, overwritten, as before. |
 
 See `examples/record_a_take.json`.
 
