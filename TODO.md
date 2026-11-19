@@ -379,12 +379,19 @@ likeliest to sound different come first.
       card right now; the plan is an **HDMI display** (its audio shows
       up as its own device: hit Refresh on the node). A display with no
       speakers still answers the question through the `fill` readout.
-- [ ] **Stream-health reading under load** (meatthread0, pending since
+- [x] **Stream-health reading under load** (meatthread0, pending since
       2026-07-20) — run it under load (load some Chrome tabs) and report
       `DSP%` / `xrun` / `api` together; that reading decides between
       "Off-thread audio rendering" and "Host-API / device selection"
       under Later / wishlist. *Hoisted 2026-10-10 from the archived
       "Stream-health readout" entry.*
+      **Done 2026-11-19:** under real load (four Chrome windows running a
+      game on auto-play, plus the synth playing a file through 2 EQs, 2
+      pitch_shifters and 2 tapes) the readout sat at `DSP 15%`, `xrun 0`,
+      `api MME`, and Matthew heard no skipping. No underflows means no
+      case today for off-thread rendering on throughput or jitter
+      grounds. The GUI-lockup freeze (the check above) is a separate
+      question this reading did not exercise.
 - [ ] **EYES: the app icon** — the taskbar / title-bar icon in a real
       Windows build. *Hoisted 2026-10-10 from the archived "App icon"
       entry (2026-09-25).*
@@ -625,6 +632,11 @@ session before anything is built. Don't build ahead.
       pitch_shifter pair (Audio I/O, Open defects). The part of the idea
       that does help, the output collecting buffers rendered ahead of time,
       is this item's render-ahead ring. Direction is Matthew's call.
+      *Same day, the reading under load:* `DSP 15%`, `xrun 0`, `api MME`,
+      no skipping (Hands-on checks, done). On that evidence neither the
+      render-ahead ring nor a C# rewrite is needed for performance today;
+      what is left for this item is the GUI-lockup freeze, if it still
+      happens.
 - [ ] **Subpatch containers** (L) — group modules into a reusable
       macro-module with exposed ports. Off the module menu 2026-10-10;
       Matthew: "can take or leave this, again a planning scope and plan

@@ -73,6 +73,14 @@ when both return to the base grain. Regrain off, or the same signal both
 sides: exactly 0. Numbers and the fix are in TODO.md (Audio I/O). The
 probe scripts are kept in the session, not in the repo.
 
+**Matthew's checks, same day.** With `grain_size` 150 on both
+pitch_shifters (they never regrain) he heard no desync through a song.
+Then the reading under load that had waited since July: four Chrome
+windows running a game on auto-play, the synth at `DSP 15%`, `xrun 0`,
+`api MME`, no skipping. No underflows means the render-ahead ring and a
+C# rewrite have no performance case today; the stereo pitch_shifter is
+the fix that matters.
+
 **Loose ends.** Could not push from the session (the repository was not
 attached for writing); TODO.md and WORKLOG.md were written to the folder
 for Matthew to commit. The TODO note on the buffered-sink drift now says
