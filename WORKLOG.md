@@ -46,6 +46,48 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-19 — the oscillator shows the frequency it is putting out
+
+Matthew, after testing key_cv into an oscillator: "on the oscillator can we
+have a number read only frequency output so we can see in not quite
+realtime but like not lazily the output frequency number?"
+
+**What changed.** `_render_oscillator` calls `_publish_osc_freq` once per
+block, before the wave is made and without touching it: `freq` with no
+`freq_cv`, else `freq * 2 ** cv` at the block's last sample (one value, or
+the lo/hi range across a voice-aware cv's slots; nan if non-finite). It
+writes `NumpyBackend._osc_freqs`, whose keys compile() makes on the GUI
+thread (the audio-level meters' rule), so the GUI's `dict()` copy in
+`snapshot_osc_freqs()` never races a size change. The node gets a line,
+`format_osc_freq` in the new `ui/readouts.py`: `out: 541.9 Hz  C#5 -39c`,
+two decimals under 100 Hz, no note under 16 Hz or over 20 kHz, the range
+and voice count when voices differ, grey `out: --` while stopped.
+`_update_osc_freqs` repeats it at most every 0.1 s -- "not quite realtime
+but not lazily": a key press or a glide shows within a tenth of a second,
+and the digits hold still long enough to read under vibrato.
+
+**Also recorded today:** his key_cv test (Learn on three fresh nodes, `add`
+chaining, +0.1 each) and the stereo take it recorded (`rec: stereo,
+dropped 0`; the WAV checked: 2 channels, 519 whole blocks, L == R as
+patched, no gaps, 440 -> 541.7 Hz = +0.3 oct). TODO's checklist entries
+say what is left (glide, latch, override; the take under load and with
+the mic).
+
+**Verified.**
+
+| Check | Result |
+|---|---|
+| New tests first, against the old code | 12 of 21 failed (every backend and UI test); the 9 text tests are on the new formatter |
+| `tests/test_osc_freq_readout.py` | 21 passed: none before a block; the knob with no cv; held cv; last sample of a ramp; voice range; nan; the wave identical with and without the bookkeeping; compile tracks added/removed oscillators; render_block; note names (A4, C4, A0, C8, +-39 c); precision; every line; ASCII; the node gets the line; running vs stopped; the 0.1 s repeat |
+| Full suite | 6,050 passed, 6 skipped |
+| Render audit vs main (88c300a) | 168 examples, moved 0 |
+| ruff (CI's command) | All checks passed (after letting it sort the new import in ui/app.py) |
+
+**Wants a human:** watch the line while playing key_cv into an oscillator
+(and with a glide); stop the transport and see it grey out.
+
+---
+
 ## 2026-11-19 — disk_writer stereo: one file, one queue, both sides or neither
 
 Matthew picked the scope's first item ("Yes please Claude disk_writer"). Two

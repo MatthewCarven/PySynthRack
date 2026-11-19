@@ -563,6 +563,17 @@ pulse width.
 | `pulse_width` | `0.5` | 0.05…0.95 | Duty cycle of `square` / `square_blep` (the pulse is high while the phase is below the width; 0.5 = the classic symmetric square). Ignored by every other shape, including `square_wt`. |
 | `pw_cv_depth` | `0.5` | width per CV unit | Scales `pw_cv`. At 0.5 a bipolar ±1 LFO sweeps the whole 0.05…0.95 band. |
 
+**Output-frequency readout (2026-11-19).** The node shows, read-only,
+the frequency it is actually putting out — `freq · 2^freq_cv` at the
+latest block — with the nearest note and how far off it is in cents, e.g.
+`out: 541.9 Hz  C#5 -39c`. It repeats about ten times a second (quick
+enough to follow a key or a glide, steady enough to read), names no note
+below 16 Hz (an LFO) or above 20 kHz, shows the range across voice slots
+for a voice-aware `freq_cv` (`out: 130.8-523.3 Hz (16 voices)` — idle
+slots keep their last pitch), reads `out: nan Hz` for a non-finite cv,
+and goes grey `out: --` while the transport is stopped. It is
+bookkeeping beside the render; the wave is untouched.
+
 **Pulse width.** `square` and `square_blep` are pulse waves: `pulse_width`
 sets the duty cycle and `pw_cv` moves it per sample, clamped to 0.05…0.95
 (narrower is a click train; at the rails the two edges' band-limiting

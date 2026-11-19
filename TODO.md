@@ -56,6 +56,10 @@ Test the exe too (it's the windowed build).
       in_r) instead of `recordingleft.wav` + `recordingright.wav`. Check the
       take opens as stereo in a player and the node reads `rec: stereo,
       dropped 0` -- then load the CPU (Chrome) mid-take and watch the count.
+      *Partly done 2026-11-19:* a stereo take from his key_cv test patch
+      read `rec: stereo, dropped 0`, and the file checked out: 2 channels,
+      16-bit 44.1 kHz, 6.03 s = 519 whole blocks, L == R (fed the same
+      osc), peak 0.300, no gaps. Still to do: under CPU load, and the mic.
 - [ ] `convolver_reverb.json`: the IR loads and you hear the room.
 - [ ] `keyboard_play.json` / `midi_lead.json`: notes play; in the MIDI one, the velocity-calibration dialog opens.
 - [ ] **Dead-cable report.** Copy any example and hand-edit one cable's `dst_port` to `nope`, then open the copy. The status line reads "1 dead cable dropped (list in ...load_<time>_<name>.txt)". That file under `~/.pysynthrack/crashes/` names the cable and warns that saving drops it for good. In the exe this is the only place the list appears.
@@ -260,6 +264,13 @@ still stand.)
       3 (drifts an octave down over 2 s); they add. Tap 4 to latch two octaves
       up over the lot (override), tap again to let go. Also try Learn on a
       fresh key_cv node, and `latch` mode.
+      *Partly done 2026-11-19 (Matthew, "working well"):* Learn on three
+      fresh nodes (E / W / Q) and `add` chaining into an oscillator --
+      +0.1 each, +0.3 with all three held, confirmed in the recorded take
+      (440 -> 541.7 Hz). Still to try: a slow `glide`, `latch`, `override`
+      (key 4 in the example). Tip filed in MODULES.md terms: on a 1 V/oct
+      `freq_cv`, 1/12 = a semitone, 7/12 a fifth, 0.1 is ~1.2 st.
+      The oscillator's new `out:` readout shows each step live.
 - [ ] `schmitt_lfo_clock.json`
 - [ ] `resampler_tape_wobble.json`
 - [ ] `crossover_sweep.json`

@@ -110,6 +110,7 @@ class OscillatorRenderers:
                 _PW_MIN, _PW_MAX,
             )
 
+        self._publish_osc_freq(module.id, freq, freq_cv)
         if freq_cv is not None and freq_cv.ndim == 2:
             return self._render_oscillator_voice(
                 module, frames, freq, amp, waveform, freq_cv, amp_cv, pw
@@ -117,6 +118,31 @@ class OscillatorRenderers:
         return self._render_oscillator_mono(
             module, frames, freq, amp, waveform, freq_cv, amp_cv, pw
         )
+
+    def _publish_osc_freq(self, module_id, freq, freq_cv) -> None:
+        """Record the oscillator's current output frequency for the node's
+        read-only readout (:meth:`snapshot_osc_freqs`): ``freq`` with no
+        ``freq_cv``, else ``freq * 2 ** cv`` at the block's last sample --
+        one value, or the lo/hi range across a voice-aware cv's slots.
+        Read-only bookkeeping beside the render: nothing here feeds the
+        wave. Only keys compile() made are written (see ``_osc_freqs``);
+        an empty block publishes nothing."""
+        freqs = getattr(self, "_osc_freqs", None)
+        if freqs is None or module_id not in freqs:
+            return
+        if freq_cv is None:
+            f = float(freq)
+            freqs[module_id] = (f, f, 1)
+            return
+        if freq_cv.shape[-1] == 0:
+            return
+        with np.errstate(over="ignore", invalid="ignore"):
+            last = freq * np.power(2.0, np.asarray(freq_cv, dtype=np.float64)[..., -1])
+        last = np.atleast_1d(last)
+        if not np.all(np.isfinite(last)):
+            freqs[module_id] = (float("nan"), float("nan"), int(last.size))
+            return
+        freqs[module_id] = (float(last.min()), float(last.max()), int(last.size))
 
     # ----- Supersaw rendering ----------------------------------------------
 

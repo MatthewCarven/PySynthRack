@@ -1531,6 +1531,12 @@ class NumpyBackend(
         # have to re-derive signal kinds per block.
         self._cv_output_ports: list[tuple[int, str]] = []
         self._meter_levels: dict[tuple[int, str], float] = {}
+        # Each oscillator's current output frequency (2026-11-19, the node's
+        # read-only readout): module_id -> (lo_hz, hi_hz, voices), or None
+        # before its first block. Keys are made in compile() (GUI thread);
+        # the audio thread only assigns existing keys, so the GUI's
+        # dict() copy never races a size change.
+        self._osc_freqs: dict[int, tuple[float, float, int] | None] = {}
         # Latest per-Meter-module peak envelope (linear amplitude),
         # written by the audio thread, read by the GUI as dB. Keys are
         # created in compile() (GUI thread) so the audio thread only ever
@@ -1605,6 +1611,9 @@ class NumpyBackend(
                         cv_ports.append((mid, port.name))
             self._cv_output_ports = cv_ports
             self._meter_levels = {}
+            self._osc_freqs = {
+                mid: None for mid, m in patch.modules.items() if m.TYPE == "oscillator"
+            }
             self._audio_levels = {
                 mid: 0.0
                 for mid, m in patch.modules.items()
@@ -2904,6 +2913,17 @@ class NumpyBackend(
         if abs(delta) <= max_step:
             return target
         return prev + (max_step if rising else -max_step)
+
+    def snapshot_osc_freqs(self) -> dict[int, tuple[float, float, int] | None]:
+        """GUI hook: each oscillator's current output frequency.
+
+        ``{module_id: (lo_hz, hi_hz, voices)}`` -- the frequency at the
+        last sample of the last rendered block, ``freq * 2 ** freq_cv``
+        (lo == hi for a mono oscillator; the range across voice slots for
+        a voice-aware ``freq_cv``), or ``None`` before the first block.
+        A copy, so the caller never sees the audio thread's next write.
+        """
+        return dict(self._osc_freqs)
 
     def snapshot_meter_levels(self) -> dict[tuple[int, str], float]:
         """GUI hook: a copy of the latest per-cv-port block-mean levels.

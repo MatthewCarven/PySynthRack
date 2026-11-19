@@ -169,6 +169,7 @@ from .dsp_load import (
 )
 from .node_layout import find_free_position
 from .param_scroll import cycle_index, decimals_from_format, nudge_number
+from .readouts import format_osc_freq
 from .window_geometry import make_geometry
 from .window_geometry import resolve as resolve_window
 from .zoom import (
@@ -419,6 +420,11 @@ class App:
         # disk_writer take readouts: module_id -> the dpg text item showing
         # "rec: mono/stereo, dropped N" (_update_disk_writers, each frame).
         self._disk_writer_labels: dict[int, int] = {}
+        # Oscillator output-frequency readouts: module_id -> dpg text item
+        # ("out: 541.9 Hz  C#5 -39c"); _update_osc_freqs refreshes them at
+        # most every _OSC_FREQ_EVERY_S so the digits can be read.
+        self._osc_freq_labels: dict[int, int] = {}
+        self._osc_freq_last_update = 0.0
         self._sink_buffer_last: dict[int, tuple[int, int]] = {}
         self._sink_buffer_flash: dict[int, float] = {}
         # Routed speaker sinks whose stream fell back to a smaller block, or
@@ -487,6 +493,7 @@ class App:
                 self._update_dsp_load()
                 self._update_sink_buffers()
                 self._update_disk_writers()
+                self._update_osc_freqs()
                 self._update_file_positions()
                 self._advance_file_playlists()
                 self._report_media_failures()
@@ -853,6 +860,17 @@ class App:
                         color=self._SINK_BUF_IDLE_RGBA,
                     )
                     self._sink_buffer_labels[module.id] = label
+
+            # Oscillator: a read-only line with the frequency it is actually
+            # putting out -- freq * 2^freq_cv at the latest block -- and the
+            # nearest note. Grey "out: --" while the transport is stopped.
+            if module.TYPE == "oscillator":
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                    label = dpg.add_text(
+                        format_osc_freq(None),
+                        color=self._SINK_BUF_IDLE_RGBA,
+                    )
+                    self._osc_freq_labels[module.id] = label
 
             # DiskWriter: the take readout -- mono / stereo and how many
             # blocks this take has dropped (0 = clean). Grey when idle, green
@@ -6270,6 +6288,7 @@ class App:
             # _update_sink_buffers frame set_value a freed dpg item.
             self._sink_buffer_labels.pop(module_id, None)
             self._disk_writer_labels.pop(module_id, None)
+            self._osc_freq_labels.pop(module_id, None)
             self._sink_buffer_last.pop(module_id, None)
             self._sink_buffer_flash.pop(module_id, None)
             # possibility_seq panel: the cell buttons and count text are
@@ -6836,6 +6855,7 @@ class App:
         self._fileplayer_advanced_gen.clear()
         self._sink_buffer_labels.clear()
         self._disk_writer_labels.clear()
+        self._osc_freq_labels.clear()
         self._sink_buffer_last.clear()
         self._sink_buffer_flash.clear()
         self._sink_streams_reported.clear()
@@ -7145,6 +7165,45 @@ class App:
     # broken, and the readout must not look like either.
     _SINK_BUF_FAILED_RGBA = (235, 120, 110)
     _SINK_BUF_FLASH_S = 1.5
+
+    # How often the oscillator frequency readouts repeat their text: about
+    # ten times a second -- quick enough to follow a key or a glide, slow
+    # enough that the digits hold still long enough to read.
+    _OSC_FREQ_EVERY_S = 0.1
+    _OSC_FREQ_LIVE_RGBA = (225, 225, 225)
+
+    def _update_osc_freqs(self, force: bool = False) -> None:
+        """Refresh each oscillator node's output-frequency line from the
+        backend's snapshot (format_osc_freq), at most every
+        _OSC_FREQ_EVERY_S unless ``force``. Grey "out: --" while stopped or
+        before a block has rendered; backends without the hook (the pyo
+        stub) stay idle; dead dpg items are pruned, not crashed on."""
+        if not self._osc_freq_labels:
+            return
+        now = time.monotonic()
+        if not force and now - self._osc_freq_last_update < self._OSC_FREQ_EVERY_S:
+            return
+        self._osc_freq_last_update = now
+        hook = getattr(self.backend, "snapshot_osc_freqs", None)
+        try:
+            entries = hook() if hook is not None else {}
+        except Exception:
+            entries = {}
+        running = bool(getattr(self.backend, "is_running", False))
+        stale: list[int] = []
+        for mid, label in self._osc_freq_labels.items():
+            entry = entries.get(mid)
+            live = running and entry is not None
+            try:
+                dpg.set_value(label, format_osc_freq(entry, running))
+                dpg.configure_item(
+                    label,
+                    color=self._OSC_FREQ_LIVE_RGBA if live else self._SINK_BUF_IDLE_RGBA,
+                )
+            except Exception:
+                stale.append(mid)
+        for mid in stale:
+            self._osc_freq_labels.pop(mid, None)
 
     def _update_disk_writers(self) -> None:
         """Push each disk_writer's take state into its node readout: mono /
