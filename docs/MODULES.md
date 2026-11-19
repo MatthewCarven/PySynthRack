@@ -454,7 +454,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`filter`](#filter) | Filters & EQ | `in` (audio), `cutoff_cv` (cv), `resonance_cv` (cv) → `out` (audio) |
 | [`crossover`](#crossover) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `low`,`high` (audio) |
 | [`vowel`](#vowel) | Filters & EQ | `in` (audio), `vowel_cv` (cv, block or per-sample), `formant_cv` (cv) → `out` (audio) |
-| [`parametric_eq`](#parametric_eq) | Filters & EQ | `in` (audio) → `out` (audio) |
+| [`parametric_eq`](#parametric_eq) | Filters & EQ | `in`, `in_r` (audio) → `out`, `out_r` (audio) |
 | [`sweep_eq`](#sweep_eq) | Filters & EQ | `in` (audio), `freq_cv` (cv) → `out` (audio) |
 | [`motion_eq`](#motion_eq) | Filters & EQ | `in` (audio), `band{i}_freq_cv`, `band{i}_gain_cv`, `band{i}_q_cv` ×4 (cv) → `out` (audio) |
 | [`tilt_eq`](#tilt_eq) | Filters & EQ | `in` (audio), `tilt_cv` (cv) → `out` (audio) |
@@ -477,7 +477,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`ring_mod`](#ring_mod) | Effects | `in`,`carrier` (audio), `freq_cv` (cv) → `out` (audio) |
 | [`freq_shifter`](#freq_shifter) | Effects | `in` (audio), `shift_cv` (cv) → `out_up`,`out_down` (audio) |
 | [`bitcrusher`](#bitcrusher) | Effects | `in` (audio), `bits_cv`,`rate_cv` (cv) → `out` (audio) |
-| [`tape`](#tape) | Effects | `in` (audio), `stop` (gate) → `out` (audio) |
+| [`tape`](#tape) | Effects | `in`, `in_r` (audio), `stop` (gate) → `out`, `out_r` (audio) |
 | [`vinyl`](#vinyl) | Effects | `in` (audio) → `out` (audio) |
 | [`convolver`](#convolver) | Effects | `in` (audio) → `out_l`,`out_r` (audio) |
 | [`chorus`](#chorus) | Effects | `in` (audio), `rate_cv` (cv) → `out_l`,`out_r` (audio) |
@@ -2059,7 +2059,9 @@ or a full-range four-point tone control.
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to equalise. |
-| `out` | out | audio | Equalised signal. |
+| `in_r` | in | audio | (2026-11-19) Optional right side of a stereo signal, EQ'd by the same bands through its own filter memory. Empty → the mono EQ, unchanged. |
+| `out` | out | audio | Equalised signal (the left side, in stereo). |
+| `out_r` | out | audio | The right side, with `in_r` patched; nothing otherwise. |
 
 **Parameters** (per band `i` in 1–4)
 
@@ -2075,6 +2077,16 @@ are tonally free. Coefficients are param-only (no CV yet) and the path
 is shape-polymorphic like [Filter](#filter) / [Crossover](#crossover):
 a mono input runs one cascade, a voice-aware `(V, F)` input runs V
 independent cascades.
+
+**Stereo (2026-11-19).** Patch a stereo source's right side into
+`in_r` and take it from `out_r`: one node and one set of knobs per stereo
+source, so the two sides cannot end up EQ'd differently by a stray nudge.
+Each side runs through its own filter memory and renders exactly as a lone
+EQ with these settings would. (Two separate EQs with matching settings
+already keep the sides in time — a filter delays both alike — so this is
+for convenience, not sync; Matthew, planning for several stereo sources
+to several devices.) The two sides need not match in shape; with only
+`in_r` patched, `out` is silent.
 
 **Patching.** Drop it anywhere in an audio chain: `oscillator →
 parametric_eq → vca → speaker`, or sculpt a drum/sub bus. See
@@ -3351,8 +3363,10 @@ without combing.
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to tape. Voice-aware; a single voice row is bit-identical to mono. Unpatched → silence. |
+| `in_r` | in | audio | (2026-11-19) Optional right side: one tape with two tracks — see *Stereo* below. Empty → the mono tape, unchanged. |
 | `stop` | in | gate | The tape-stop. High = the head coasts to a halt over `stop_time` (pitch dives, level fades to silence); low = it spins back up over `start_time`. One transport for every voice: a `(V, F)` gate collapses to any-voice-high. Unpatched → the pre-stop code path exactly. |
-| `out` | out | audio | Taped (and dry-blended) signal. |
+| `out` | out | audio | Taped (and dry-blended) signal (the left side, in stereo). |
+| `out_r` | out | audio | The right side, with `in_r` patched; nothing otherwise. |
 
 **Parameters**
 
@@ -3367,6 +3381,20 @@ without combing.
 | `mix` | `1.0` | 0 … 1 | Dry/wet. 0 = bit-exact dry passthrough. |
 | `stop_time` | `1.0` | 0.05 … 8 s | Seconds for the head to coast from full speed to a halt after `stop` rises (linear in speed). |
 | `start_time` | `0.5` | 0.05 … 8 s | Seconds for the head to spin back up to full speed after `stop` falls. |
+
+**Stereo (2026-11-19).** Patch a stereo source's right side into
+`in_r` and take it from `out_r`. It is one tape with two tracks: one
+transport, so wow, flutter, drift and the tape-stop move both sides
+together, while each side keeps its own delay line, saturation, head bump
+and hiss (two tracks hiss independently on a real deck). Use it instead of
+one tape per side: two tape modules are two machines, and flutter and
+drift draw from a different random stream on each, so with any of them up
+the sides wobble apart (measured: several milliseconds; drift alone allows
+6 ms) and the image smears. Fed the same signal on both sides with hiss
+off, the two outputs are identical and equal to the mono tape's, bit for
+bit, stop and all; it stays block-size independent. Patching or pulling
+`in_r` restarts the tape from rest; with only `in_r` patched, `out` is
+silent.
 
 **How it works.** Signal flow is `in → wow/flutter/drift-modulated
 fractional delay → saturation → + hiss → head-bump low shelf → mix with

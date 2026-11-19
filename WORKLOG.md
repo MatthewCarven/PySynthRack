@@ -46,6 +46,58 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-19 — stereo jacks on tape and parametric_eq
+
+Matthew, after hearing the stereo pitch_shifter ("Sounds good"): "can we do
+the same for tape and parametric eq? Its just the convenience really for
+the parametric eq ... i can see people using like 3 output devices and 3
+separate stereo sources in the future". Both gain `in_r` -> `out_r`; `in`
+-> `out` stays the left; `in_r` empty is the module exactly as it was.
+
+**parametric_eq: convenience.** A fixed filter delays both sides alike, so
+two EQs with matching settings were never a sync problem (his two had a Q
+of 1.06 vs 1.00: about 0.4 dB at 30-40 Hz and under 2 degrees of phase,
+fixed). The right side runs the same coefficients through its own DF-I
+memory under `state["right"]`; `_render_parametric_eq_mono` / `_voice`
+gained a `state=` keyword (default: the module's own, so motion_eq and
+sweep_eq are untouched). The two sides need not match in shape. Pulling
+`in_r` drops the right memory so a re-patch starts from rest.
+
+**tape: one tape, two tracks.** Two tapes are two machines: flutter and
+drift draw from generators seeded by each module's id, so with any of them
+up the sides wobble apart (measured on the same signal: several ms; drift
+alone allows 6). The body of `_render_tape` moved verbatim into
+`_tape_core(..., split=None)`; `_render_tape_stereo` stacks the right
+side's rows under the left's and runs them through the core as one tape.
+The core already shared one transport across a polyphonic input's rows
+(one modulation curve, one stop) while keeping each row's delay line,
+oversampler, shelf and dry tail, so the only new DSP is the hiss: rows
+from `split` on draw from a second generator, seeded through a seed
+sequence `[HISS_SEED + id, 1]` that no integer seed can collide with.
+Independent hiss per side was the proposal Matthew left standing. A
+missing side is silence (no hiss on an unpatched track); patching or
+pulling `in_r` changes the row count, which restarts the tape from rest.
+
+**Verified.**
+
+| Check | Result |
+|---|---|
+| New tests first, against the old code | EQ: 11 of 12 failed. Tape: 12 of 14 failed (the two that passed are the exposure test and one that needs no new code) |
+| EQ: each side vs a lone EQ | identical, sample for sample, including a knob turned mid-stream |
+| Tape: same signal both sides, everything on, two stops | the two outputs identical and equal to the mono tape's, bit for bit |
+| Tape: different material per side | each side equals the mono tape on that side, bit for bit |
+| Tape: hiss | left = the mono tape's hiss exactly; right uncorrelated with it (abs corr < 0.05), same level within 10% |
+| Tape: block size 64 vs 1000, everything on incl. hiss and stops | bit for bit, both sides |
+| Existing tape and EQ-family tests (motion_eq, sweep_eq share the cascade) | all pass |
+| Full suite | 5,987 passed, 6 skipped (libportaudio2 installed in the sandbox) |
+| Render audit, main (34e22d7) vs this tree | 167 examples, moved 0 |
+| ruff (CI's command) | All checks passed |
+
+**Wants a human:** the hands-on check in TODO.md (the song patch collapsed
+to one node per stage; flutter/drift up; the stop; the hiss width).
+
+---
+
 ## 2026-11-19 — pitch_shifter stereo mode: one `in_r` jack, one pair, one regrain decision
 
 Built the same afternoon as the planning entry below, on Matthew's go:

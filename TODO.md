@@ -341,7 +341,7 @@ likeliest to sound different come first.
       (`sampler_mellotron` and `sampler_scrub` heard 2026-10-05.)
 
 *Hands-on checks outside the examples:*
-- [ ] **EARS: the stereo pitch_shifter on the song patch** (new
+- [x] **EARS: the stereo pitch_shifter on the song patch** (new
       2026-11-19) — in the patch with two pitch_shifters, delete
       pitch_shifter #7 and rewire #6: `in` <- parametric_eq #4 `out`,
       `in_r` <- parametric_eq #5 `out`, `out_l` -> tape #9 `in`, `out_r`
@@ -352,6 +352,18 @@ likeliest to sound different come first.
       together throughout; the shifted sound is otherwise the same.
       Report any splice that is louder on one side than the other (one
       shared splice is a compromise when the sides differ a lot).
+      **Done 2026-11-19** -- Matthew: "Sounds good on the stereo pitch
+      shifter".
+- [ ] **EARS: the stereo tape and EQ on the song patch** (new
+      2026-11-19) -- collapse the song patch to one node per stage: one
+      parametric_eq (`in` / `in_r` -> `out` / `out_r`, then one set of
+      knobs), the stereo pitch_shifter, one tape (`out_l`/`out_r` ->
+      `in` / `in_r`, `out` / `out_r` -> the meter and the speaker), the
+      key_trigger still on `stop`. Turn the tape's `flutter` and `drift`
+      up: the image should wobble as one, staying centred, not smear or
+      wander side to side. Hit the stop: both sides dive and climb
+      together. With `hiss` up, the hiss should sit wide (each side its
+      own), not as a mono line in the middle.
 - [ ] **HANDS + EYES: the buffered sink's fallback** (new 2026-10-12)
       — `ring_governor_monitor.json`, `buffer_size` 8192, Start: if the
       Realtek refuses 8192 the node's second line reads `device block
@@ -666,6 +678,17 @@ session before anything is built. Don't build ahead.
       2026-08-04 brainstorm".
 
 ## Follow-ons and small items
+
+*From the 2026-11-19 stereo work:*
+- [ ] **Which other modules wander apart when doubled, one per side?**
+      The pitch_shifter (splices and regrains from its own audio) and the
+      tape (flutter/drift from its own random stream) did; an LTI module
+      (EQ, filter) cannot. Candidates to check: anything that decides
+      from its own audio or draws its own random numbers -- granular,
+      freeze, the chorus/flanger/phaser LFOs (phase from when the state
+      began), drift, vinyl, shift_random. Offered to Matthew, not asked
+      for yet. Also open: `in_r` on motion_eq / sweep_eq / tilt_eq for
+      the same convenience as parametric_eq.
 
 *From the seventh batch (2026-10-12):*
 - [ ] **Sink open ladder runs on every reconcile** while a device is
