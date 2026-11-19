@@ -26,6 +26,18 @@ param edits — the same discipline as the Filter and Crossover modules.
 
 There are no CV inputs yet: bands are set by parameter, like Crossover.
 (Per-band freq/gain CV could follow if a patch wants animated EQ.)
+
+**Stereo** (``in_r`` / ``out_r``, added 2026-11-19): patch the right side
+of a stereo signal into ``in_r`` and take it from ``out_r``; ``in`` ->
+``out`` stays the left. Both sides run the same four bands -- one set of
+knobs, so the two sides cannot end up EQ'd differently by a stray nudge
+-- each through its own filter memory, so nothing crosses between them.
+An EQ is a fixed filter: two separate EQs with matching settings already
+keep the sides in time; this is for convenience (one node per stereo
+source). The two sides need not match in shape (a voice-aware left and a
+mono right is fine). With ``in_r`` empty the module is exactly the mono
+EQ and ``out_r`` carries nothing; with only ``in_r`` patched, ``out`` is
+silent.
 """
 from __future__ import annotations
 
@@ -54,17 +66,22 @@ def _default_params() -> dict[str, float]:
 
 @register_module_type
 class ParametricEQ(Module):
-    """4-band peaking parametric EQ (mono in/out).
+    """4-band peaking parametric EQ (mono, or stereo with ``in_r``).
 
     Parameters (per band ``i`` in 1..4):
         band{i}_freq: Centre frequency in Hz (20 … 0.45·sample-rate).
         band{i}_gain: Boost/cut in dB (0 = flat/transparent).
         band{i}_q:    Q factor (band width); ~0.7 broad, high = narrow.
+
+    Ports:
+        in (in, audio) -> out (out, audio): the (left) signal.
+        in_r (in, audio) -> out_r (out, audio): optional right side, EQ'd
+            by the same bands through its own filter memory.
     """
 
     TYPE = "parametric_eq"
     CATEGORY = "Filters & EQ"
     EQ_BANDS = EQ_BANDS
     DEFAULT_PARAMS = _default_params()
-    INPUT_PORTS = [Port("in", "in", "audio")]
-    OUTPUT_PORTS = [Port("out", "out", "audio")]
+    INPUT_PORTS = [Port("in", "in", "audio"), Port("in_r", "in", "audio")]
+    OUTPUT_PORTS = [Port("out", "out", "audio"), Port("out_r", "out", "audio")]

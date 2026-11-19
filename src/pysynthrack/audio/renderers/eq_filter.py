@@ -678,18 +678,56 @@ class EQFilterRenderers:
         input runs V parallel cascades (one per voice slot, each with
         its own biquad memory) and emits ``(V, F)``. Coefficients are
         param-only (no CV yet) so the same set applies to every voice.
+
+        Stereo (2026-11-19): with ``in_r`` patched the right side runs the
+        same coefficients through its own memory, kept under
+        ``state["right"]``, and the render returns ``{"out", "out_r"}``.
+        With ``in_r`` empty the path below is the mono EQ as it was (the
+        only addition is dropping a stale right-side memory, so a cable
+        patched back in starts from rest).
         """
         src = self._input_buffer(
             patch, buffers, module.id, "in", collapse=False
         )
+        if any(c.dst_port == "in_r" for c in patch.cables_into(module.id)):
+            return self._render_parametric_eq_stereo(module, frames, buffers, patch, src)
+        st = self._state.get(module.id)
+        if st is not None:
+            st.pop("right", None)
         if src is None:
             return np.zeros(frames, dtype=np.float32)
         if src.ndim == 2:
             return self._render_parametric_eq_voice(module, frames, src)
         return self._render_parametric_eq_mono(module, frames, src)
 
+    def _render_parametric_eq_stereo(self, module, frames, buffers, patch, src):
+        """``in`` -> ``out`` and ``in_r`` -> ``out_r`` through the same bands.
+
+        Each side is the mono (or voice) cascade on its own: the left keeps
+        the module's own state, the right a ``state["right"]`` dict of its
+        own, so the two never share filter memory and a side renders
+        exactly as a lone EQ with these settings would render it. The left
+        runs first -- its reinit clears the module's state, right side
+        included, which is what a change of band count should do to both.
+        A missing side is silence.
+        """
+        src_r = self._input_buffer(patch, buffers, module.id, "in_r", collapse=False)
+
+        def side(x, state):
+            if x is None:
+                return np.zeros(frames, dtype=np.float32)
+            if x.ndim == 2:
+                return self._render_parametric_eq_voice(module, frames, x, state=state)
+            return self._render_parametric_eq_mono(module, frames, x, state=state)
+
+        left = side(src, None)
+        right_state = self._state.setdefault(module.id, {}).setdefault("right", {})
+        right = side(src_r, right_state)
+        return {"out": left, "out_r": right}
+
     def _render_parametric_eq_mono(self, module, frames, src, freqs_override=None,
-                                   gains_override=None, qs_override=None):
+                                   gains_override=None, qs_override=None,
+                                   state=None):
         """Mono path -- N cascaded peaking biquads via ``lfilter``.
 
         Same state design as ``_render_filter_mono`` (filter
@@ -701,6 +739,9 @@ class EQFilterRenderers:
         transposed-DF-II ``zi`` (the lfiltic identity, inlined), the
         biquad runs in C, and the new history is read off the
         input/output tails. The output of stage k feeds stage k+1.
+
+        ``state`` (2026-11-19): the dict holding the filter memory; the
+        module's own by default, the stereo right side passes its own.
         """
         freqs, gains, qs = self._peq_band_params(module)
         if freqs_override is not None:
@@ -712,7 +753,8 @@ class EQFilterRenderers:
         n_bands = len(freqs)
         b0, b1, b2, a1n, a2n = self._peq_coeffs(freqs, gains, qs)
 
-        state = self._state.setdefault(module.id, {})
+        if state is None:
+            state = self._state.setdefault(module.id, {})
         x1 = state.get("x1")
         needs_reinit = (
             x1 is None
@@ -756,7 +798,8 @@ class EQFilterRenderers:
         return x.astype(np.float32)
 
     def _render_parametric_eq_voice(self, module, frames, src, freqs_override=None,
-                                    gains_override=None, qs_override=None):
+                                    gains_override=None, qs_override=None,
+                                    state=None):
         """Voice-aware path -- V parallel cascades, output ``(V, F)``.
 
         The cascade is the mono path vectorized across voices. Because
@@ -766,6 +809,8 @@ class EQFilterRenderers:
         arrays. Each row holds one band's per-voice memory, kept
         independent so a per-voice carrier upstream is EQ'd without
         cross-talk.
+
+        ``state``: as for the mono path.
         """
         V = src.shape[0]
         freqs, gains, qs = self._peq_band_params(module)
@@ -778,7 +823,8 @@ class EQFilterRenderers:
         n_bands = len(freqs)
         b0, b1, b2, a1n, a2n = self._peq_coeffs(freqs, gains, qs)
 
-        state = self._state.setdefault(module.id, {})
+        if state is None:
+            state = self._state.setdefault(module.id, {})
         x1 = state.get("x1")
         needs_reinit = (
             x1 is None

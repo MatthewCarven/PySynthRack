@@ -79,10 +79,10 @@ class TestModel:
         patch = Patch()
         eq = patch.add_module("parametric_eq")
         assert [(p.name, p.signal_kind) for p in eq.input_ports] == [
-            ("in", "audio")
+            ("in", "audio"), ("in_r", "audio")      # stereo, 2026-11-19
         ]
         assert [(p.name, p.signal_kind) for p in eq.output_ports] == [
-            ("out", "audio")
+            ("out", "audio"), ("out_r", "audio")
         ]
 
     def test_json_round_trip(self):
