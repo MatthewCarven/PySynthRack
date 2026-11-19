@@ -341,6 +341,17 @@ likeliest to sound different come first.
       (`sampler_mellotron` and `sampler_scrub` heard 2026-10-05.)
 
 *Hands-on checks outside the examples:*
+- [ ] **EARS: the stereo pitch_shifter on the song patch** (new
+      2026-11-19) — in the patch with two pitch_shifters, delete
+      pitch_shifter #7 and rewire #6: `in` <- parametric_eq #4 `out`,
+      `in_r` <- parametric_eq #5 `out`, `out_l` -> tape #9 `in`, `out_r`
+      -> tape #10 `in`; cv_offset stays on `pitch_cv`. Put `grain_size`
+      back to 50 (the 150 workaround is no longer needed). Play a song
+      with deep bass, turn the offset knob down a few semitones and back
+      while something else loads the CPU. Expected: left and right stay
+      together throughout; the shifted sound is otherwise the same.
+      Report any splice that is louder on one side than the other (one
+      shared splice is a compromise when the sides differ a lot).
 - [ ] **HANDS + EYES: the buffered sink's fallback** (new 2026-10-12)
       — `ring_governor_monitor.json`, `buffer_size` 8192, Start: if the
       Realtek refuses 8192 the node's second line reads `device block
@@ -501,7 +512,7 @@ likeliest to sound different come first.
       *Update:* **BUILT AND ON MAIN 2026-11-11** (16c5ba8; the 11-18 exe
       has it): both sides now cut every grain at the same spot. Still open:
       his ears and the desktop check under load.
-- [ ] **Two pitch_shifters, one per side, drift left against right**
+- [x] **Two pitch_shifters, one per side, drift left against right**
       (found 2026-11-19 in a planning session, on Matthew's patch:
       file_player -> parametric_eq x2 -> pitch_shifter x2 -> tape x2 ->
       buffered sink, "falls in and out of stereo sync a few times per
@@ -534,6 +545,17 @@ likeliest to sound different come first.
       buffered sink's signature, and that sink sat idle in this patch.
       If a split still follows load once the stereo pitch_shifter is in,
       look for a second cause.
+      **BUILT 2026-11-19:** the `in_r` jack (stereo mode). With it
+      patched each voice runs one `_GrainShifterPair` and one regrain
+      decision (the deeper side decides), so every grain is cut at the
+      same spot on both sides; `out`/`out_l` = the `in` side, `out_r` =
+      the `in_r` side, `spread` inert. `in_r` empty = the mono module,
+      untouched (render audit: moved 0). Measured in
+      `tests/test_pitch_shifter_stereo.py`: two mono modules 23-30 ms
+      apart on one-sided deep bass at 0 st and up to 15 ms apart while
+      the pitch turns 0 -> -3 st; one stereo module 0 in both. Same
+      signal both sides = the mono render (0.0 difference here, 1e-6 in
+      the test for other BLAS builds). His ears: Hands-on checks.
 - [ ] **Found during that scope, not reproduced by the supervisor:**
       (a) 3 of 12 device names in the sink's dropdown won't open on the
       laptop ("Multiple output devices found"); (b) `disk_writer` drops

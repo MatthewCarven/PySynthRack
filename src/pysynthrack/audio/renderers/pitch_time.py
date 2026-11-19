@@ -1075,7 +1075,15 @@ class PitchTimeRenderers:
         ``pitch_cv`` broadcasts across voices; a ``(V, F)`` ``pitch_cv``
         drives each voice. Pitch CV is sampled per block (block-rate),
         summed in semitone space. Missing audio in -> silence.
+
+        ``in_r`` patched -> :meth:`_render_pitch_shifter_stereo` (one
+        stereo signal, the two sides shifted as a pair). Nothing below
+        this dispatch runs then, and nothing in the stereo path runs
+        without it, so a module with ``in_r`` empty renders exactly as
+        it did before the jack existed.
         """
+        if any(c.dst_port == "in_r" for c in patch.cables_into(module.id)):
+            return self._render_pitch_shifter_stereo(module, frames, buffers, patch)
         src = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
         if src is None:
             z = np.zeros(frames, dtype=np.float32)
@@ -1381,6 +1389,304 @@ class PitchTimeRenderers:
             t = (np.arange(frames) + 1.0) / frames
             wet = np.sin(0.5 * np.pi * t) * wet + np.cos(0.5 * np.pi * t) * wet_old
         return wet, eng, was_primed
+
+    # ----- stereo (in_r patched, 2026-11-19) -------------------------------
+
+    def _render_pitch_shifter_stereo(self, module, frames, buffers, patch):
+        """Stereo pitch shift: ``in`` and ``in_r`` as ONE stereo signal.
+
+        Matthew, 2026-11-19: one pitch_shifter per side of a song drifted
+        in and out of stereo sync, worse while he moved the pitch. Each
+        lone engine chooses its splices, and when to regrain on deep bass,
+        from its own side's audio, so two of them part by tens of ms.
+        Here each voice runs one :class:`_GrainShifterPair` (one splice
+        search for both sides -- the buffered sink's 2026-11-11 fix) and
+        makes one regrain decision for both, so the sides share every
+        grain and every delay by construction.
+
+        Shapes: two mono inputs -> one pair; two ``(V, F)`` inputs of the
+        same V -> one pair per voice; any other mix -> both summed to mono
+        rows first (a pair needs the same rows on both sides). A missing
+        side is silence. ``pitch_cv`` follows the mono rules.
+
+        Returns ``{"out", "out_l", "out_r"}``: ``out_l`` the ``in`` side,
+        ``out_r`` the ``in_r`` side, ``out`` = ``out_l``.
+        """
+        src_l = self._input_buffer(patch, buffers, module.id, "in", collapse=False)
+        src_r = self._input_buffer(patch, buffers, module.id, "in_r", collapse=False)
+        if src_l is None and src_r is None:
+            z = np.zeros(frames, dtype=np.float32)
+            return {"out": z, "out_l": z, "out_r": z}
+        if src_l is None:
+            src_l = np.zeros_like(src_r)
+        if src_r is None:
+            src_r = np.zeros_like(src_l)
+        if src_l.shape != src_r.shape:
+            if src_l.ndim == 2:
+                src_l = self._voice_sum(src_l)
+            if src_r.ndim == 2:
+                src_r = self._voice_sum(src_r)
+        pitch_cv = self._input_buffer(
+            patch, buffers, module.id, "pitch_cv", collapse=False
+        )
+        if src_l.ndim == 2:
+            V = src_l.shape[0]
+            if pitch_cv is None:
+                cv = None
+            elif pitch_cv.ndim == 1:
+                cv = np.broadcast_to(pitch_cv, (V, pitch_cv.shape[0]))
+            elif pitch_cv.shape[0] == V:
+                cv = pitch_cv
+            elif pitch_cv.shape[0] == 1:
+                cv = np.broadcast_to(pitch_cv, (V, pitch_cv.shape[1]))
+            else:
+                cv = np.broadcast_to(self._voice_mean(pitch_cv), (V, pitch_cv.shape[1]))
+            return self._pitch_shifter_stereo_core(module, frames, src_l, src_r, cv)
+
+        if pitch_cv is not None and pitch_cv.ndim == 2:
+            pitch_cv = self._voice_mean(pitch_cv)
+        outs = self._pitch_shifter_stereo_core(
+            module,
+            frames,
+            src_l[np.newaxis, :],
+            src_r[np.newaxis, :],
+            None if pitch_cv is None else pitch_cv[np.newaxis, :],
+        )
+        return {k: a[0] for k, a in outs.items()}
+
+    def _pitch_shifter_stereo_core(self, module, frames, src_l, src_r, cv):
+        """The ``(V, F)`` stereo engine: :meth:`_pitch_shifter_core` with
+        a pair per voice where it has a lone engine, and every per-side
+        state (whitening, re-colouring, the shimmer loop) kept per side.
+
+        The same signal on both sides gives the mono core's render (to
+        the last-place rounding the pair's joint score allows); a single
+        voice row is the flat render, bit for bit. State lives under
+        ``state["stereo"]`` -- switching ``in_r`` in or out clears the
+        other mode's engines, so each mode starts from rest.
+        """
+        V = src_l.shape[0]
+        sr = self.sample_rate
+        semis = float(module.params.get("semitones", 0.0))
+        cents = float(module.params.get("cents", 0.0))
+        cv_depth = float(module.params.get("cv_depth", 12.0))
+        mix = float(np.clip(float(module.params.get("mix", 1.0)), 0.0, 1.0))
+        grain_ms = float(module.params.get("grain_size", 50.0))
+        overlap = max(2, min(4, int(module.params.get("overlap", 2))))
+        formant = bool(module.params.get("formant_preserve", False))
+        Lg = max(8, int(round(grain_ms * 1e-3 * sr)))
+
+        def _f(name, lo, hi, default):
+            try:
+                return float(np.clip(float(module.params.get(name, default)), lo, hi))
+            except (TypeError, ValueError):
+                return default
+
+        feedback = _f("feedback", 0.0, self._PS_FB_MAX, 0.0)
+        harmony_st = _f("harmony", -24.0, 24.0, 0.0)
+        harmony_level = _f("harmony_level", 0.0, 1.0, 0.0)
+        use_harm = harmony_level > 0.0
+
+        from ..numpy_backend import _GrainShifterPair, _lpc_coeffs  # lazy: it imports this module
+        head = max(16384, 16 * int(getattr(self, "block_size", 512)))
+        state = self._state.setdefault(module.id, {})
+        st = state.get("stereo")
+        if st is None or st["V"] != V or st["Lg"] != Lg or st["ov"] != overlap:
+            state.clear()   # drops the mono engines too, if any
+            st = state["stereo"] = {
+                "V": V,
+                "Lg": Lg,
+                "ov": overlap,
+                "pair": [_GrainShifterPair(Lg, overlap, head) for _ in range(V)],
+                "last_det": [0] * V,
+                "regrains": np.zeros(V, dtype=np.int64),
+                "lpc_zi_w": [[None, None] for _ in range(V)],
+                "lpc_zi_s_l": [None] * V,
+                "lpc_zi_s_r": [None] * V,
+                "lpc_fifo": [[[], []] for _ in range(V)],
+                "fb": [[None, None] for _ in range(V)],
+                "fb_lp": [[0.0, 0.0] for _ in range(V)],
+            }
+        if use_harm and "pair2" not in st:
+            st["pair2"] = [_GrainShifterPair(Lg, overlap, head) for _ in range(V)]
+            st["last_det2"] = [0] * V
+            st["regrains2"] = np.zeros(V, dtype=np.int64)
+            st["lpc_zi_w2"] = [[None, None] for _ in range(V)]
+            st["lpc_zi_s2_l"] = [None] * V
+            st["lpc_zi_s2_r"] = [None] * V
+        elif not use_harm and "pair2" in st:
+            for key in ("pair2", "last_det2", "regrains2", "lpc_zi_w2",
+                        "lpc_zi_s2_l", "lpc_zi_s2_r"):
+                st.pop(key, None)
+
+        if frames == 0:
+            z = np.empty((V, 0), dtype=np.float32)
+            return {"out": z, "out_l": z, "out_r": z}
+
+        fb_a = 0.0
+        if feedback > 0.0:
+            fb_a = float(np.exp(-2.0 * np.pi * self._PS_FB_LP_HZ / float(sr)))
+
+        base_st = semis + cents / 100.0
+        out_l = np.empty((V, frames), dtype=np.float32)
+        out_r = np.empty((V, frames), dtype=np.float32)
+        sides = ("_l", "_r")
+        for v in range(V):
+            cv_st = 0.0 if cv is None else cv_depth * self._finite_mean(cv[v])
+            st_amt = base_st if cv is None else base_st + cv_st
+            r = self._pow2_clipped(st_amt / 12.0, self._PS_MAX_ST / 12.0)
+            x = (src_l[v].astype(np.float64), src_r[v].astype(np.float64))
+            engines = st["pair"][v].engines
+
+            x_in = list(x)
+            if feedback > 0.0:
+                for s in (0, 1):
+                    prev = st["fb"][v][s]
+                    if prev is not None and prev.shape[0] != frames:
+                        fix = np.zeros(frames)
+                        n = min(frames, prev.shape[0])
+                        fix[:n] = prev[:n]
+                        prev = fix
+                    if prev is not None:
+                        damped, zf = lfilter(
+                            [1.0 - fb_a], [1.0, -fb_a], prev, zi=[st["fb_lp"][v][s]]
+                        )
+                        st["fb_lp"][v][s] = float(zf[0])
+                        x_in[s] = x[s] + feedback * self._ps_soft_ceiling(damped)
+            x_dry = (x if (formant or feedback > 0.0) else (None, None))
+
+            a_cur = [None, None]
+            xw = list(x_in)
+            if formant:
+                for s in (0, 1):
+                    eng = engines[s]
+                    raw_tail = eng.history(self._PS_LPC_WIN, dry=True) if eng.db is not None \
+                        else eng.history(self._PS_LPC_WIN)
+                    a_cur[s] = _lpc_coeffs(raw_tail, self._PS_LPC_ORDER, sr)
+                    if a_cur[s] is not None:
+                        zi = st["lpc_zi_w"][v][s]
+                        if zi is None:
+                            zi = np.zeros(self._PS_LPC_ORDER)
+                        xw[s], zf = lfilter(a_cur[s], [1.0], x_in[s], zi=zi)
+                        st["lpc_zi_w"][v][s] = zf
+
+            wet, pair, was_primed = self._ps_shift_pair(
+                st, "", v, xw, x_dry, r, frames, Lg, overlap, head, sr
+            )
+
+            a_del = [None, None]
+            if formant:
+                lag_blocks = max(0, int(round(pair.engines[0].Lg / float(frames))))
+                for s in (0, 1):
+                    fifo = st["lpc_fifo"][v][s]
+                    fifo.append(a_cur[s] if was_primed else None)
+                    while len(fifo) > lag_blocks + 1:
+                        fifo.pop(0)
+                    a_del[s] = fifo[0]
+                    if a_del[s] is not None:
+                        wet[s] = self._ps_recolor(
+                            st, "lpc_zi_s" + sides[s], v, wet[s], a_del[s], x[s]
+                        )
+
+            if feedback > 0.0:
+                st["fb"][v] = [wet[0], wet[1]]
+
+            harm = None
+            if use_harm:
+                st2 = harmony_st + cv_st
+                r2 = self._pow2_clipped(st2 / 12.0, self._PS_MAX_ST / 12.0)
+                xw2 = list(xw)
+                if feedback > 0.0:
+                    xw2 = list(x)
+                    if formant:
+                        for s in (0, 1):
+                            if a_cur[s] is None:
+                                continue
+                            zi2 = st["lpc_zi_w2"][v][s]
+                            if zi2 is None:
+                                zi2 = np.zeros(self._PS_LPC_ORDER)
+                            xw2[s], zf2 = lfilter(a_cur[s], [1.0], x[s], zi=zi2)
+                            st["lpc_zi_w2"][v][s] = zf2
+                harm, _pair2, _wp2 = self._ps_shift_pair(
+                    st, "2", v, xw2, x if formant else (None, None), r2, frames,
+                    Lg, overlap, head, sr,
+                )
+                for s in (0, 1):
+                    if formant and a_del[s] is not None:
+                        harm[s] = self._ps_recolor(
+                            st, "lpc_zi_s2" + sides[s], v, harm[s], a_del[s], x[s]
+                        )
+                    harm[s] = harmony_level * harm[s]
+
+            Dc = pair.engines[0].latency(r)   # the same on both engines
+            for s, dest in ((0, out_l), (1, out_r)):
+                wet_sum = wet[s] if harm is None else wet[s] + harm[s]
+                if mix >= 1.0:
+                    blk = wet_sum
+                elif mix <= 0.0:
+                    blk = pair.engines[s].dry_tap(frames, Dc)
+                else:
+                    blk = (1.0 - mix) * pair.engines[s].dry_tap(frames, Dc) + mix * wet_sum
+                dest[v] = blk.astype(np.float32)
+        return {"out": out_l, "out_l": out_l, "out_r": out_r}
+
+    def _ps_shift_pair(self, st, sfx, v, xw, x_dry, r, frames, Lg, overlap, head, sr):
+        """:meth:`_ps_shift` for a pair: ONE regrain decision for both
+        sides, then the pair's one splice search. The period is estimated
+        on each side and the deeper one decides (bass on either side needs
+        the longer grain), with the mono hysteresis; the replacement pair
+        is primed from both sides' history and equal-power spliced in
+        over one block, exactly as the mono slot does. ``xw`` and
+        ``x_dry`` are (left, right). Returns ``([wet_l, wet_r], pair,
+        was_primed)``."""
+        pairs = st["pair" + sfx]
+        last_det = st["last_det" + sfx]
+        pair = pairs[v]
+        old_pair = None
+        left, right = pair.engines
+        if left.iw - last_det[v] >= self._PS_DETECT_EVERY:
+            last_det[v] = left.iw
+            # lazy: numpy_backend imports this module
+            from ..numpy_backend import _detect_period, _GrainShifterPair
+            want = Lg
+            for eng in (left, right):
+                period = _detect_period(
+                    eng.history(self._PS_DETECT_WIN), sr, fmin=self._PS_FMIN
+                )
+                if period is not None:
+                    want = max(want, int(round(self._PS_SYNC_PERIODS * period)))
+            want = min(want, int(self._PS_MAX_GRAIN_SEC * sr))
+            cur = left.Lg
+            if want > cur * 1.2 or (cur > Lg and want < cur * 0.8):
+                new_pair = _GrainShifterPair(want, overlap, head)
+                hist_l = left.history(new_pair.engines[0].Lin - frames - 8)
+                n = hist_l.shape[0]
+                hist_r = right.history(n)
+                dry_l = left.history(n, dry=True) if left.db is not None else None
+                dry_r = right.history(n, dry=True) if right.db is not None else None
+                if n:
+                    # prime; output discarded
+                    new_pair.process(hist_l, hist_r, r, x_dry_l=dry_l, x_dry_r=dry_r)
+                old_pair = pair
+                pair = new_pair
+                pairs[v] = pair
+                st["regrains" + sfx][v] += 1
+
+        was_primed = pair.engines[0].primed
+        wl, wr = pair.process(xw[0], xw[1], r, x_dry_l=x_dry[0], x_dry_r=x_dry[1])
+        if old_pair is not None:
+            ol, orr = old_pair.engines
+            owl, owr = old_pair.process(
+                xw[0], xw[1], r,
+                x_dry_l=x_dry[0] if ol.db is not None else None,
+                x_dry_r=x_dry[1] if orr.db is not None else None,
+            )
+            t = (np.arange(frames) + 1.0) / frames
+            fade_in = np.sin(0.5 * np.pi * t)
+            fade_out = np.cos(0.5 * np.pi * t)
+            wl = fade_in * wl + fade_out * owl
+            wr = fade_in * wr + fade_out * owr
+        return [wl, wr], pair, was_primed
 
     def _ps_recolor(self, state, key, v, wet, a_del, x):
         """Formant re-colour through ``1/A(z)`` with carried state under

@@ -1057,15 +1057,21 @@ class _GrainShifterPair:
         right._place(p, r)
         return True
 
-    def process(self, xl: np.ndarray, xr: np.ndarray, r: float):
+    def process(self, xl: np.ndarray, xr: np.ndarray, r: float,
+                x_dry_l=None, x_dry_r=None):
         """Push one block per side (1D float64 each, same length), return
-        the two shifted blocks ``(left, right)``."""
+        the two shifted blocks ``(left, right)``.
+
+        ``x_dry_l`` / ``x_dry_r``, when given, go to each engine's raw
+        ring, as ``x_dry`` does for a lone engine: the stereo
+        pitch_shifter feeds the pair a whitened or recirculated signal
+        and still needs the true input for its dry tap and estimators."""
         F = xl.shape[0]
         if F == 0:
             return np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.float64)
         left, right = self.engines
-        left._feed(xl)
-        right._feed(xr)
+        left._feed(xl, x_dry_l)
+        right._feed(xr, x_dry_r)
         left._advance(r, F, self._produce_one)
         # Every grain above was laid on both engines, so the right one has
         # none left to lay. It only needs its priming flags and read

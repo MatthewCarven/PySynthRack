@@ -46,6 +46,60 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-19 — pitch_shifter stereo mode: one `in_r` jack, one pair, one regrain decision
+
+Built the same afternoon as the planning entry below, on Matthew's go:
+"adjusting pitches does make the bug more pronounced ... some songs i
+adjust down to my pitch to sing". So the fix had to hold at any pitch,
+which the `grain_size` 150 workaround (no regrain) does not: off 0 st two
+lone engines still splice independently.
+
+**What changed.**
+
+* `pitch_shifter` gains an `in_r` audio jack (between `in` and
+  `pitch_cv`). Patched, `_render_pitch_shifter` hands off to
+  `_render_pitch_shifter_stereo` at its first line, so the mono path
+  below the dispatch is byte-for-byte what it was and runs only when
+  `in_r` is empty.
+* The stereo core is the mono core with a `_GrainShifterPair` per voice
+  where the mono core has a lone `_GrainShifter`, and every per-side state
+  (LPC whitening and re-colouring, the shimmer loop and its one-pole) kept
+  per side. `_ps_shift_pair` is `_ps_shift` for a pair: the period is
+  estimated on each side and the deeper one decides (bass on either side
+  needs the longer grain), with the mono hysteresis; the replacement pair
+  is primed from both sides' history and equal-power spliced in.
+* `_GrainShifterPair.process` takes optional `x_dry_l` / `x_dry_r`, the
+  pair form of a lone engine's `x_dry` (formant preserve and shimmer feed
+  the engine one signal and need the raw one for the dry tap). Omitted,
+  it is the sink's call exactly.
+* Jacks: `out` / `out_l` = the `in` side, `out_r` = the `in_r` side (the
+  meter's pairing). Harmony is added to each side; `spread` has no say,
+  since the input carries its own image. Two voice-aware inputs of the
+  same voice count pair up voice for voice; any other mix is summed to
+  mono rows first. A missing side is silence. State lives under
+  `state["stereo"]`, and patching or pulling `in_r` clears the other
+  mode's engines.
+
+**Verified.**
+
+| Check | Result |
+|---|---|
+| New tests first, against the old code | 20 of the 24 failed; the 4 that passed are the two exposure tests and two that need no new code |
+| Exposure: two mono modules on this material | one-sided 33 Hz bass at 0 st: 23 to 30 ms apart; pitch turned 0 -> -3 st on noise: -12.7 to +14.6 ms, over 1 ms in 37 of 45 windows |
+| One stereo module, same material | 0 samples apart in every window, both cases and combined |
+| Same signal both sides vs the mono module | 0.0 difference at default, -3 st, formant on, and shimmer + harmony + mix 0.7 (the test allows 1e-6 for other BLAS builds) |
+| Real render path | two tones -> one stereo pitch_shifter -> stereo speaker: each channel its own side, shifted |
+| `tests/test_pitch_shifter_stereo.py` | 25 passed |
+| Full suite | 5,960 passed, 6 skipped. The first run failed 181 UI/backend tests; untouched main failed the same 181 (no PortAudio in the sandbox, so the app factory found no backend). With `libportaudio2` installed all 181 pass |
+| Render audit, every example, main vs this tree | 167 examples, moved 0 (two runs of main: moved 0, so nothing nondeterministic) |
+| ruff (CI's command) | All checks passed |
+| Cost, 10 s at -2 st | two mono modules 3.9% of real time, one stereo module 3.1% (one regrain check and one search loop instead of two) |
+
+**Wants a human:** the hands-on check in TODO.md (rewire the song patch
+to one pitch_shifter, `grain_size` back to 50, turn the knob under load).
+
+---
+
 ## 2026-11-19 — planning: pull scheduling, C#, and a stereo drift that is neither
 
 Matthew opened a planning session: pull-based scheduling (the output asks

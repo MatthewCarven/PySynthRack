@@ -78,6 +78,23 @@ interval opens across the field. Without a harmony, or at 0, both jacks
 are ``out`` — so a patch wired stereo plays mono rather than falling
 silent until the knob moves.
 
+**Stereo input** (``in_r``, added 2026-11-19): patch the right side of a
+stereo signal into ``in_r`` and the module shifts the pair as ONE stereo
+signal. ``out`` / ``out_l`` carry the ``in`` side and ``out_r`` the
+``in_r`` side (the meter's ``in`` -> ``out``, ``in_r`` -> ``out_r``
+pairing). Use this instead of one pitch_shifter per side: two separate
+shifters each choose where to splice, and when to grow the grain on deep
+bass, from their own side's audio, so the sides part by up to tens of
+milliseconds and drift in and out of sync (Matthew's song patch did).
+One stereo module makes those choices once for both sides -- every grain
+is cut at the same spot on both, and the grain grows on both when either
+side needs it -- so left and right cannot part, at any pitch. With
+``in_r`` patched the harmony is added to each side and ``spread`` has no
+say (the input already carries its stereo image). A voice-aware pair
+shifts voice for voice; if only one side is voice-aware, both are summed
+to mono rows first. ``in_r`` alone shifts the right side and leaves the
+left silent.
+
 Deep bass takes care of itself: the engine watches the input period
 and, when the configured grain is too short to hold ~2.5 cycles (low
 E and below at the default 50 ms), grows its working grain
@@ -87,6 +104,9 @@ and grain joins are aligned to sub-sample precision.
 
 Ports:
   * ``in`` (audio): the signal to transpose. Unpatched -> silence out.
+  * ``in_r`` (audio): optional right side of a stereo input. Patched ->
+    stereo mode (above): ``out`` / ``out_l`` = the ``in`` side, ``out_r``
+    = the ``in_r`` side, shifted as one stereo signal.
   * ``pitch_cv`` (cv): added to the semitone amount, scaled by
     ``cv_depth``. Optional; unpatched means 0.
   * ``out`` (audio): the pitch-shifted signal (main + harmony, mono sum).
@@ -136,6 +156,10 @@ class PitchShifter(Module):
 
     Ports:
         in (in, audio): signal to transpose. Unpatched -> silence.
+        in_r (in, audio): right side of a stereo input. Patched, the pair
+            is shifted as one stereo signal (one splice search, one
+            regrain decision) and comes out on out_l / out_r; ``out`` is
+            the left side and ``spread`` is inert.
         pitch_cv (in, cv): added to the transpose, scaled by cv_depth
             (moves the harmony too).
         out (out, audio): the pitch-shifted signal, main + harmony.
@@ -160,6 +184,7 @@ class PitchShifter(Module):
     }
     INPUT_PORTS = [
         Port("in", "in", "audio"),
+        Port("in_r", "in", "audio"),
         Port("pitch_cv", "in", "cv"),
     ]
     OUTPUT_PORTS = [

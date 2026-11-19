@@ -461,7 +461,7 @@ signal-flow role (sources → processors → … → sinks).
 | [`vca`](#vca) | Routing & VCA | `audio` (audio), `cv` (cv) → `out` (audio) |
 | [`matrix_mixer`](#matrix_mixer) | Routing & VCA | `in_1`…`in_4` (audio), `cv_1`…`cv_4` (cv) → `out_1`…`out_4` (audio) |
 | [`resampler`](#resampler) | Effects | `in` (audio), `pitch_cv` (cv), `brake` (gate) → `out`, `out_l`, `out_r` (audio) |
-| [`pitch_shifter`](#pitch_shifter) | Effects | `in` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
+| [`pitch_shifter`](#pitch_shifter) | Effects | `in`, `in_r` (audio), `pitch_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`granular`](#granular) | Effects | `in` (audio), `position_cv` (cv), `freeze` (gate) → `out`, `out_l`, `out_r` (audio) |
 | [`freeze`](#freeze) | Effects | `in` (audio), `freeze` (gate), `pitch_cv`,`width_cv` (cv) → `out`, `out_l`, `out_r` (audio) |
 | [`delay`](#delay) | Effects | `in` (audio), `time_cv` (cv), `freeze` (gate), `clock` (gate) → `out`, `out_l`, `out_r` (audio) |
@@ -2344,6 +2344,7 @@ without it getting faster or slower.
 | Port | Dir | Kind | Description |
 |------|-----|------|-------------|
 | `in` | in | audio | Signal to transpose. Unpatched → silence. |
+| `in_r` | in | audio | (2026-11-19) Right side of a stereo input. Patched → **stereo mode**: the pair is shifted as one stereo signal, `out` / `out_l` carry the `in` side and `out_r` the `in_r` side, and `spread` has no say. See *Stereo input* below. |
 | `pitch_cv` | in | cv | Added to the transpose, scaled by `cv_depth` (summed in semitone space, sampled per block). Moves the `harmony` voice too, so a chord transposes as one. |
 | `out` | out | audio | The pitch-shifted signal — main + harmony, mono sum. |
 | `out_l` / `out_r` | out | audio | (2026-09-14) The stereo pair: with a harmony present, `spread` leans the main shift left and the harmony right; the dry stays centred. Identical to `out` when there is no harmony or `spread` is 0, so a patch wired stereo plays mono rather than falling silent. |
@@ -2397,6 +2398,26 @@ into a cloud. For a **stereo triad from one module** see
 `harmony` +7 at `harmony_level` 0.9, `spread` 1 — root centred, third
 hard left, fifth hard right, `out_l`/`out_r` into the
 [left](#left_speaker_output)/[right](#right_speaker_output) speakers.
+
+**Stereo input (2026-11-19).** To shift a stereo signal, patch its left
+into `in` and its right into `in_r`, and take `out_l` / `out_r`. Do not
+use one pitch_shifter per side: each engine decides where to splice its
+grains, and when to grow its grain on deep bass, from its own side's
+audio, so two of them part by up to tens of milliseconds and the image
+drifts in and out (Matthew's song patch — a file_player through one EQ
+and one pitch_shifter per side — did, worse while he moved the pitch to
+sing). In stereo mode each voice runs one `_GrainShifterPair` (one splice
+search for both sides, the buffered sink's 2026-11-11 fix) and makes one
+regrain decision for both, the deeper side deciding: every grain is cut
+at the same spot on both sides, so left and right cannot part, at any
+pitch. Measured on one-sided deep bass at 0 st: two mono modules 23 to
+30 ms apart, one stereo module 0; with the pitch turned from 0 to −3 st:
+up to 15 ms apart against 0. The same signal on both sides comes out as
+the mono module renders it, harmony is added to each side, and `spread`
+is inert (the input carries its own image). Two voice-aware inputs of
+the same voice count shift voice for voice; any other mix is summed to
+mono rows first. `in_r` alone shifts the right side and leaves the left
+silent. With `in_r` empty the module is the mono module, unchanged.
 
 **Accuracy & deep bass (2026-07-02).** The analysis clock runs on the
 ideal WSOLA grid (search excursions never accumulate into the input

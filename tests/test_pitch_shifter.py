@@ -122,6 +122,7 @@ class TestModel:
         ps = Patch().add_module("pitch_shifter")
         assert [(p.name, p.signal_kind) for p in ps.input_ports] == [
             ("in", "audio"),
+            ("in_r", "audio"),      # stereo mode, 2026-11-19
             ("pitch_cv", "cv"),
         ]
         assert [(p.name, p.signal_kind) for p in ps.output_ports] == [
