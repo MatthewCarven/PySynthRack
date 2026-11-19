@@ -62,8 +62,8 @@ class TestModel:
 
     def test_defaults(self):
         m = all_module_types()["key_cv"](1)
-        assert m.params == {"key": "", "mode": "gate", "idle": 0.0, "active": 1.0,
-                            "glide": 0.0, "chain": "add"}
+        assert m.params == {"key": "", "mode": "gate", "units": "cv", "idle": 0.0,
+                            "active": 1.0, "glide": 0.0, "chain": "add"}
         assert KEY_CV_MODES == ("gate", "latch")
         assert KEY_CV_CHAINS == ("add", "override")
 
@@ -289,3 +289,82 @@ def test_ui_node_has_learn_button_and_its_own_combos(app):
     # The key is the Learn panel, never a raw text box.
     assert not any(c.kwargs.get("label") == "key"
                    for c in dpg.add_input_text.call_args_list[i0:])
+
+
+# ----- units: semitones (2026-11-20) -----------------------------------------
+
+
+class TestSemitones:
+    """``units = semitones``: idle / active read as semitones, divided by 12
+    exactly. Matthew: "so .01667 is the value for correct pitch addition" --
+    with semitones he types 2 for a whole tone and nothing rounds."""
+
+    def test_default_is_cv(self):
+        from pysynthrack.modules.key_cv import KEY_CV_UNITS
+        assert KEY_CV_UNITS == ("cv", "semitones")
+        assert all_module_types()["key_cv"](1).params["units"] == "cv"
+
+    @pytest.mark.parametrize("st", [1.0, 2.0, 7.0, 12.0, -12.0, 7.02, 3.86])
+    def test_divided_by_twelve_exactly(self, st):
+        be, patch, (k,) = _rig({"key": "Q", "units": "semitones", "active": st})
+        k.raw_key_down("Q")
+        assert np.all(_block(be, patch, [k])["out"] == np.float32(st / 12.0))
+
+    def test_stacked_whole_tones_land_on_the_notes(self):
+        be, patch, keys = _rig(*({"key": c, "units": "semitones", "active": 2.0} for c in "QWER"))
+        for k, c in zip(keys, "QWER"):
+            k.raw_key_down(c)
+        out = _block(be, patch, keys)["out"]
+        assert np.allclose(out, 8.0 / 12.0, rtol=0, atol=1e-7)   # four whole tones
+
+    def test_idle_is_in_semitones_too_and_in_stays_cv(self):
+        be, patch, (a, b) = _rig({"key": "1", "active": 1.0},
+                                 {"key": "2", "units": "semitones", "idle": -12.0})
+        a.raw_key_down("1")
+        assert np.allclose(_block(be, patch, [a, b])["out"], 0.0, atol=1e-7)  # +1 oct - 12 st
+
+    @pytest.fixture
+    def app(self, monkeypatch):
+        pytest.importorskip("dearpygui.dearpygui")
+        import itertools
+
+        import pysynthrack.ui.app as app_mod
+        monkeypatch.setenv("PYSYNTHRACK_BACKEND", "numpy")
+        monkeypatch.setattr(app_mod, "dpg", mock.MagicMock())
+        ids = itertools.count(5000)
+        app_mod.dpg.last_item.side_effect = lambda: next(ids)
+        a = app_mod.App()
+        a.backend = NumpyBackend(sample_rate=SR, block_size=F)
+        a.patch = Patch()
+        return a, app_mod
+
+    def test_switching_units_keeps_the_output(self, app):
+        a, app_mod = app
+        k = a.patch.add_module("key_cv", params={"idle": 0.25, "active": 0.5})
+        a._create_node_for_module(k)
+        a._on_key_cv_units_changed(None, "semitones", (k.id, "units"))
+        assert k.params["units"] == "semitones"
+        assert k.params["idle"] == 3.0 and k.params["active"] == 6.0
+        a._on_key_cv_units_changed(None, "cv", (k.id, "units"))
+        assert k.params["idle"] == 0.25 and k.params["active"] == 0.5
+
+    def test_the_drags_follow_the_units(self, app):
+        a, app_mod = app
+        k = a.patch.add_module("key_cv")
+        a._create_node_for_module(k)
+        a._on_key_cv_units_changed(None, "semitones", (k.id, "units"))
+        wid = a._param_widget(k.id, "active")
+        app_mod.dpg.configure_item.assert_any_call(
+            wid, speed=0.05, min_value=-120.0, max_value=120.0, format="%.2f st")
+
+    def test_the_node_has_the_units_combo(self, app):
+        a, app_mod = app
+        from pysynthrack.modules.key_cv import KEY_CV_UNITS
+        c0 = len(app_mod.dpg.add_combo.call_args_list)
+        k = a.patch.add_module("key_cv", params={"units": "semitones"})
+        a._create_node_for_module(k)
+        combos = {c.kwargs.get("label"): list(c.kwargs.get("items") or [])
+                  for c in app_mod.dpg.add_combo.call_args_list[c0:]}
+        assert combos["units"] == list(KEY_CV_UNITS)
+        drags = {c.kwargs.get("label"): c.kwargs for c in app_mod.dpg.add_drag_float.call_args_list}
+        assert drags["active"]["format"] == "%.2f st"

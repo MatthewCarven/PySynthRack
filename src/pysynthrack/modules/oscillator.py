@@ -29,6 +29,12 @@ PULSE_WIDTH_MIN = 0.05
 PULSE_WIDTH_MAX = 0.95
 
 
+OSC_TUNES = ("hz", "note")
+# How far ``cents`` may move a note: a semitone either way (beyond that,
+# pick the next note).
+OSC_CENTS_RANGE = 100.0
+
+
 @register_module_type
 class Oscillator(Module):
     """A simple audio-rate oscillator.
@@ -74,9 +80,25 @@ class Oscillator(Module):
 
     TYPE = "oscillator"
     CATEGORY = "Sources"
+
+    # Note mode, 2026-11-19 (Matthew: "i'd like to implement note selection
+    # on the oscillator ... but at the same time i do not wish to loose
+    # control over the final value ... some songs sing things a little
+    # brighter some songs flatter"). With ``tune`` = "note" the base pitch
+    # is ``note`` (C0..B8) moved by ``cents`` -- continuous, +/-100, so a
+    # song tuned to A = 442 is cents +7.9 -- and ``freq`` is ignored (the
+    # UI keeps it showing the resulting Hz, so a switch back is seamless).
+    # "hz" is the oscillator as it always was. ``freq_cv`` applies on top
+    # either way.
     DEFAULT_PARAMS = {
         "waveform": "sine",
         "freq": 440.0,
+        # Note mode (2026-11-19): ``tune`` picks what sets the pitch --
+        # "hz" (``freq``, the default) or "note" (``note`` moved by
+        # ``cents``). See OSC_TUNES and the class docstring.
+        "tune": "hz",
+        "note": "A4",
+        "cents": 0.0,
         "amp": 0.5,
         "pulse_width": 0.5,
         "pw_cv_depth": 0.5,

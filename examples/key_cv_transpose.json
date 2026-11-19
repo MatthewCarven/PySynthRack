@@ -5,12 +5,13 @@
     {
       "id": 1,
       "type": "key_cv",
-      "name": "hold 3 = drift an octave down (2 s)",
+      "name": "hold 3 = drift an octave down (-12 st over 2 s)",
       "params": {
         "key": "3",
         "mode": "gate",
+        "units": "semitones",
         "idle": 0.0,
-        "active": -1.0,
+        "active": -12.0,
         "glide": 2.0,
         "chain": "add"
       }
@@ -18,12 +19,13 @@
     {
       "id": 2,
       "type": "key_cv",
-      "name": "hold 2 = up a fifth",
+      "name": "hold 2 = up a fifth (+7 st)",
       "params": {
         "key": "2",
         "mode": "gate",
+        "units": "semitones",
         "idle": 0.0,
-        "active": 0.5833333333333334,
+        "active": 7.0,
         "glide": 0.08,
         "chain": "add"
       }
@@ -31,12 +33,13 @@
     {
       "id": 3,
       "type": "key_cv",
-      "name": "hold 1 = up an octave",
+      "name": "hold 1 = up an octave (+12 st)",
       "params": {
         "key": "1",
         "mode": "gate",
+        "units": "semitones",
         "idle": 0.0,
-        "active": 1.0,
+        "active": 12.0,
         "glide": 0.08,
         "chain": "add"
       }
@@ -44,12 +47,13 @@
     {
       "id": 4,
       "type": "key_cv",
-      "name": "tap 4 = latch two octaves up (takes over)",
+      "name": "tap 4 = latch two octaves up (+24 st, takes over)",
       "params": {
         "key": "4",
         "mode": "latch",
+        "units": "semitones",
         "idle": 0.0,
-        "active": 2.0,
+        "active": 24.0,
         "glide": 0.5,
         "chain": "override"
       }

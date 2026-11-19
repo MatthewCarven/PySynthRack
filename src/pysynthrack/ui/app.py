@@ -26,6 +26,7 @@ from .._resources import app_icon, examples_dir
 from ..audio import AudioBackend, pick_backend, recordings
 from ..core.module import grouped_module_types
 from ..core.patch import Cable, Patch
+from ..core.pitch import NOTE_CHOICES, hz_to_note, note_to_hz
 from ..io_patch import load_patch, save_patch
 from ..modules.arpeggiator import ARP_MODES
 from ..modules.autopan import AUTOPAN_LAWS, AUTOPAN_SHAPES
@@ -52,7 +53,7 @@ from ..modules.fm_op import snap_ratio as fm_snap_ratio
 from ..modules.freeze import FREEZE_SIZES
 from ..modules.function_generator import FUNCTION_GENERATOR_MODES
 from ..modules.granular import GRANULAR_WINDOWS
-from ..modules.key_cv import KEY_CV_CHAINS, KEY_CV_MODES
+from ..modules.key_cv import KEY_CV_CHAINS, KEY_CV_MODES, KEY_CV_UNITS
 from ..modules.key_trigger import KEY_TRIGGER_MODES
 from ..modules.keyboard import (
     midi_to_name,
@@ -82,7 +83,13 @@ from ..modules.organ import (
     PERC_DECAYS,
     PERC_MODES,
 )
-from ..modules.oscillator import PULSE_WIDTH_MAX, PULSE_WIDTH_MIN, WAVEFORMS
+from ..modules.oscillator import (
+    OSC_CENTS_RANGE,
+    OSC_TUNES,
+    PULSE_WIDTH_MAX,
+    PULSE_WIDTH_MIN,
+    WAVEFORMS,
+)
 from ..modules.output import available_output_devices as spk_available_devices
 from ..modules.possibility_selector import (
     MAX_STEPS as PSEL_MAX_STEPS,
@@ -843,6 +850,8 @@ class App:
                         wid = dpg.last_item()
                         if wid:
                             self._param_widgets[wid] = (module.id, param_name)
+                if module.TYPE == "oscillator":
+                    self._sync_osc_tune_widgets(module.id)
 
             # Buffered family (plain + warping): a live readout of the sink's
             # secondary-stream hand-off ring — fill %, queued/capacity
@@ -1121,7 +1130,7 @@ class App:
         current = module.params[param_name]
         user_data = (module.id, param_name)
 
-        if module.TYPE == "key_cv" and param_name in ("idle", "active", "glide", "chain"):
+        if module.TYPE == "key_cv" and param_name in ("idle", "active", "glide", "chain", "units"):
             # KeyCV: two free values (soft +/-10, the CV-utility range: several
             # octaves of 1 V/oct either way), a glide time up to a minute, and
             # how ``in`` combines. ``mode`` falls through to the shared combo
@@ -1132,6 +1141,12 @@ class App:
                     default_value=str(current), width=120,
                     callback=self._on_param_changed, user_data=user_data,
                 )
+            elif param_name == "units":
+                dpg.add_combo(
+                    label=param_name, items=list(KEY_CV_UNITS),
+                    default_value=str(current), width=120,
+                    callback=self._on_key_cv_units_changed, user_data=user_data,
+                )
             elif param_name == "glide":
                 dpg.add_drag_float(
                     label=f"{param_name} (0 = snap)", default_value=float(current),
@@ -1141,8 +1156,8 @@ class App:
             else:
                 dpg.add_drag_float(
                     label=param_name, default_value=float(current),
-                    speed=0.01, min_value=-10.0, max_value=10.0, format="%.3f",
                     width=140, callback=self._on_param_changed, user_data=user_data,
+                    **self._key_cv_value_drag(module.params.get("units", "cv")),
                 )
             return
 
@@ -1231,6 +1246,34 @@ class App:
             # ``pw_cv_depth`` scales pw_cv in width per CV unit (0.5 lets
             # a bipolar +/-1 LFO sweep the whole band). waveform / freq /
             # amp fall through to the shared widgets below.
+            #
+            # Note mode (2026-11-19): ``tune`` picks hz or note; ``note`` is
+            # a C0..B8 picker and ``cents`` a continuous +/-100 nudge (0.1 c
+            # steps, no snapping). Switching ``tune`` converts so the pitch
+            # does not jump; whichever of freq / note+cents is not in charge
+            # is greyed (_sync_osc_tune_widgets).
+            if param_name == "tune":
+                dpg.add_combo(
+                    label=param_name, items=list(OSC_TUNES),
+                    default_value=str(current), width=80,
+                    callback=self._on_osc_tune_changed, user_data=user_data,
+                )
+                return
+            if param_name == "note":
+                dpg.add_combo(
+                    label=param_name, items=list(NOTE_CHOICES),
+                    default_value=str(current), width=80,
+                    callback=self._on_osc_note_changed, user_data=user_data,
+                )
+                return
+            if param_name == "cents":
+                dpg.add_drag_float(
+                    label=param_name, default_value=float(current), speed=0.1,
+                    min_value=-OSC_CENTS_RANGE, max_value=OSC_CENTS_RANGE,
+                    format="%+.1f c", width=140,
+                    callback=self._on_osc_note_changed, user_data=user_data,
+                )
+                return
             if param_name == "pulse_width":
                 dpg.add_slider_float(
                     label=param_name, default_value=float(current),
@@ -4754,6 +4797,122 @@ class App:
         except Exception as exc:
             self._set_status(f"Param error: {exc}")
         return True
+
+    # ----- small widget helpers (2026-11-19) -------------------------------
+
+    def _param_widget(self, module_id: int, name: str):
+        """The dpg widget drawn for ``(module_id, name)``, or None."""
+        for wid, key in self._param_widgets.items():
+            if key == (module_id, name):
+                return wid
+        return None
+
+    def _mirror_param(self, module_id: int, name: str, value) -> None:
+        """Write a param through the one door and show it in its widget."""
+        if self._set_module_param(module_id, name, value):
+            wid = self._param_widget(module_id, name)
+            if wid is not None:
+                try:
+                    dpg.set_value(wid, value)
+                except Exception:
+                    pass
+
+    # ----- oscillator note mode ------------------------------------------
+
+    def _sync_osc_tune_widgets(self, module_id: int) -> None:
+        """Grey out whichever of ``freq`` / ``note`` + ``cents`` is not in
+        charge of the oscillator's pitch under its ``tune``."""
+        module = self.patch.modules.get(module_id)
+        if module is None:
+            return
+        note_mode = module.params.get("tune", "hz") == "note"
+        for name, enabled in (("freq", not note_mode), ("note", note_mode),
+                              ("cents", note_mode)):
+            wid = self._param_widget(module_id, name)
+            if wid is not None:
+                try:
+                    dpg.configure_item(wid, enabled=enabled)
+                except Exception:
+                    pass
+
+    def _on_osc_tune_changed(self, sender, app_data, user_data) -> None:
+        """Switch an oscillator between hz and note mode without moving its
+        pitch: into note mode, the nearest note to ``freq`` plus the exact
+        remainder in cents (clamped to the cents range only when ``freq``
+        is outside C0..B8); back to hz, ``freq`` = the note mode's Hz."""
+        module_id, _ = user_data
+        module = self.patch.modules.get(module_id)
+        if module is None:
+            return
+        tune = str(app_data)
+        if tune == "note":
+            note, cents = hz_to_note(float(module.params.get("freq", 440.0)))
+            if abs(cents) > OSC_CENTS_RANGE:
+                self._set_status(
+                    "freq is outside C0..B8: note mode starts from the nearest end note"
+                )
+                cents = max(-OSC_CENTS_RANGE, min(OSC_CENTS_RANGE, cents))
+            self._mirror_param(module_id, "note", note)
+            self._mirror_param(module_id, "cents", float(cents))
+        else:
+            hz = note_to_hz(str(module.params.get("note", "A4")),
+                            float(module.params.get("cents", 0.0)))
+            if hz is not None:
+                self._mirror_param(module_id, "freq", float(hz))
+        self._set_module_param(module_id, "tune", tune)
+        self._sync_osc_tune_widgets(module_id)
+
+    def _on_osc_note_changed(self, sender, app_data, user_data) -> None:
+        """``note`` or ``cents`` moved. In note mode, also write the
+        resulting Hz into ``freq`` -- so the freq field shows the pitch
+        being played and a switch back to hz is seamless."""
+        module_id, param_name = user_data
+        value = str(app_data) if param_name == "note" else float(app_data)
+        self._set_module_param(module_id, param_name, value)
+        module = self.patch.modules.get(module_id)
+        if module is None or module.params.get("tune", "hz") != "note":
+            return
+        hz = note_to_hz(str(module.params.get("note", "A4")),
+                        float(module.params.get("cents", 0.0)))
+        if hz is not None:
+            self._mirror_param(module_id, "freq", float(hz))
+
+    # ----- key_cv units --------------------------------------------------
+
+    @staticmethod
+    def _key_cv_value_drag(units: str) -> dict:
+        """Drag settings for key_cv's idle / active under ``units``: CV as a
+        soft +/-10 with three decimals, semitones as +/-120 (ten octaves)
+        with two."""
+        if units == "semitones":
+            return {"speed": 0.05, "min_value": -120.0, "max_value": 120.0,
+                    "format": "%.2f st"}
+        return {"speed": 0.01, "min_value": -10.0, "max_value": 10.0,
+                "format": "%.3f"}
+
+    def _on_key_cv_units_changed(self, sender, app_data, user_data) -> None:
+        """Switch key_cv between CV and semitones without moving its output:
+        idle and active are converted (x12 into semitones, /12 back) and
+        their drags take the new range and format."""
+        module_id, _ = user_data
+        module = self.patch.modules.get(module_id)
+        if module is None:
+            return
+        new = str(app_data)
+        old = module.params.get("units", "cv")
+        if new != old:
+            for name in ("idle", "active"):
+                value = float(module.params.get(name, 0.0))
+                value = value * 12.0 if new == "semitones" else value / 12.0
+                self._mirror_param(module_id, name, value)
+        self._set_module_param(module_id, "units", new)
+        for name in ("idle", "active"):
+            wid = self._param_widget(module_id, name)
+            if wid is not None:
+                try:
+                    dpg.configure_item(wid, **self._key_cv_value_drag(new))
+                except Exception:
+                    pass
 
     def _on_param_changed(self, sender, app_data, user_data) -> None:
         module_id, param_name = user_data

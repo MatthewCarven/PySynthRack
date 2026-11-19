@@ -72,6 +72,8 @@ class OscillatorRenderers:
         oscillator, so there is no float32 ``np.mean`` to audit.
         """
         freq = float(module.params.get("freq", 440.0))
+        if module.params.get("tune", "hz") == "note":
+            freq = self._osc_note_freq(module, freq)
         amp = float(module.params.get("amp", 0.5))
         waveform = str(module.params.get("waveform", "sine"))
         pulse_width = min(max(
@@ -118,6 +120,23 @@ class OscillatorRenderers:
         return self._render_oscillator_mono(
             module, frames, freq, amp, waveform, freq_cv, amp_cv, pw
         )
+
+    def _osc_note_freq(self, module, fallback: float) -> float:
+        """Note mode's base frequency: ``note`` moved by ``cents`` (clamped
+        to +/- OSC_CENTS_RANGE), equal temperament, A4 = 440 Hz. A note name
+        that does not parse falls back to ``freq`` rather than going silent
+        -- the patch file is hand-editable."""
+        from ...core.pitch import note_to_hz
+        from ...modules.oscillator import OSC_CENTS_RANGE
+        try:
+            cents = float(module.params.get("cents", 0.0))
+        except (TypeError, ValueError):
+            cents = 0.0
+        if not np.isfinite(cents):
+            cents = 0.0
+        cents = float(np.clip(cents, -OSC_CENTS_RANGE, OSC_CENTS_RANGE))
+        hz = note_to_hz(str(module.params.get("note", "A4")), cents)
+        return fallback if hz is None else hz
 
     def _publish_osc_freq(self, module_id, freq, freq_cv) -> None:
         """Record the oscillator's current output frequency for the node's

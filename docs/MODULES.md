@@ -558,10 +558,25 @@ pulse width.
 | Param | Default | Options / range | Description |
 |-------|---------|-----------------|-------------|
 | `waveform` | `sine` | `sine`, `saw`, `square`, `triangle`, plus `*_blep` and `*_wt` variants of saw/square/triangle | Shape + band-limiting. Naive shapes are cheap but alias; `_blep` (PolyBLEP/PolyBLAMP) and `_wt` (band-limited wavetable) are anti-aliased. `sine` is already band-limited. |
-| `freq` | `440.0` | Hz | Base pitch when `freq_cv` is unpatched. |
+| `freq` | `440.0` | Hz | Base pitch when `freq_cv` is unpatched (in `hz` mode; in `note` mode the node keeps it showing the note's Hz, greyed). |
+| `tune` | `hz` | `hz` / `note` | (2026-11-20) What sets the base pitch: `freq`, or `note` + `cents`. Switching converts, so the pitch does not move. |
+| `note` | `A4` | C0 … B8 | Note mode's note (equal temperament, A4 = 440 Hz). Greyed in `hz` mode. |
+| `cents` | `0.0` | ±100, continuous | Note mode's offset from the note, in 0.1-cent steps: a song tuned to A = 442 is `+7.9`. Greyed in `hz` mode. |
 | `amp` | `0.5` | 0…1 | Linear output level. |
 | `pulse_width` | `0.5` | 0.05…0.95 | Duty cycle of `square` / `square_blep` (the pulse is high while the phase is below the width; 0.5 = the classic symmetric square). Ignored by every other shape, including `square_wt`. |
 | `pw_cv_depth` | `0.5` | width per CV unit | Scales `pw_cv`. At 0.5 a bipolar ±1 LFO sweeps the whole 0.05…0.95 band. |
+
+**Note mode (2026-11-20).** Set `tune` to `note` and pick the pitch as a
+`note` (C0 … B8) plus `cents` — continuous, ±100, nothing snaps — instead
+of typing Hz. Matthew asked for it without losing control of the final
+value ("some songs sing things a little brighter some songs flatter"), so
+the note is only a way of entering the pitch: cents carry any offset (A =
+442 is +7.9, A = 435 is −19.8), switching to `note` picks the nearest note
+and puts the exact remainder in cents, switching back writes the exact Hz,
+and `hz` mode is the oscillator as it always was. Whichever of `freq` /
+`note` + `cents` is not in charge is greyed on the node. `freq_cv` rides on
+top in both modes. `tools/pitch_calculator.html` works out Hz and cents
+for other tunings (Just, Pythagorean, another A4).
 
 **Output-frequency readout (2026-11-19).** The node shows, read-only,
 the frequency it is actually putting out — `freq · 2^freq_cv` at the
@@ -756,16 +771,20 @@ between ... and let one key driven cv feed into another key driven cv").
 |-------|---------|-----------------|-------------|
 | `key` | `""` | a key name | The bound key, set with **Learn** (as on `key_trigger`). `""` = unbound: sits at `idle`. |
 | `mode` | `gate` | `gate` / `latch` | **gate** = active while held; **latch** = each press toggles between idle and active. |
-| `idle` | `0.0` | soft ±10 | The value with the key up. Exact at rest. |
-| `active` | `1.0` | soft ±10 | The value with the key down. Exact once reached. |
+| `units` | `cv` | `cv` / `semitones` | (2026-11-20) How `idle` / `active` read: as CV, or as semitones divided by 12 exactly — type `2` for a whole tone, `7` for a fifth, any decimal (`7.02` = a pure fifth). Switching converts both values, so the output does not move. `in` is CV either way. |
+| `idle` | `0.0` | soft ±10 (±120 st) | The value with the key up. Exact at rest. |
+| `active` | `1.0` | soft ±10 (±120 st) | The value with the key down. Exact once reached. |
 | `glide` | `0.0` | 0 … 60 s | Time for a full idle ↔ active move, at a constant rate (let go half way and it comes back in half the time). 0 = instant. |
 | `chain` | `add` | `add` / `override` | How `in` combines. **add**: `out = in + value` — keys stack. **override**: while held this key takes over, gliding from `in + idle` to `active` and back — the last held key in a chain wins. Same thing when `in` is unpatched. |
 
 **Patching.** Chain keys `out` → `in` and the last one into a pitch, a
-cutoff or a mix CV. `examples/key_cv_transpose.json`: hold **1** for an
-octave up, **2** for a fifth up, **3** to drift an octave down over two
-seconds (they add), and tap **4** to latch two octaves up over the whole
-chain (override). The key is read once per block, like every key module,
+cutoff or a mix CV. For pitch, set `units` to `semitones`: stacked keys
+then land exactly on the notes (four keys of `2` = four whole tones), and
+the oscillator's `out:` readout names each one. `examples/key_cv_transpose.json`
+(in semitones): hold **1** for an octave up (+12), **2** for a fifth up
+(+7), **3** to drift an octave down over two seconds (−12) — they add —
+and tap **4** to latch two octaves up over the whole chain (+24,
+override). The key is read once per block, like every key module,
 so a press lands at the next block (about 11 ms at 512).
 
 #### `midi_input`

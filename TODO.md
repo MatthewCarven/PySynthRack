@@ -260,8 +260,16 @@ still stand.)
 - [ ] `stereo_hard_pan.json`
 - [ ] `filter_resonance_sweep.json`
 - [ ] `key_trigger_latch_brake.json`
-- [ ] `key_cv_transpose.json` (new 2026-11-19) -- hold 1 (octave up), 2 (fifth up),
-      3 (drifts an octave down over 2 s); they add. Tap 4 to latch two octaves
+- [ ] **Oscillator note mode + key_cv semitones** (new 2026-11-20) -- on an
+      oscillator, switch `tune` hz -> note: the pitch must not move (the
+      `out:` readout stays put), `note` / `cents` light up and `freq` greys.
+      Pick a few notes; nudge `cents` (A = 442 is +7.9) and watch `freq`
+      follow; switch back to hz: still no jump. On a key_cv, switch `units`
+      cv -> semitones: idle / active turn into x12 values and the output
+      holds. Four keys of `2` semitones stacked should read A, B, C#, D#, F
+      (from A4) on the readout with +0c.
+- [ ] `key_cv_transpose.json` (new 2026-11-19; in semitones since 2026-11-20) --
+      hold 1 (octave up), 2 (fifth up), 3 (drifts an octave down over 2 s); they add. Tap 4 to latch two octaves
       up over the lot (override), tap again to let go. Also try Learn on a
       fresh key_cv node, and `latch` mode.
       *Partly done 2026-11-19 (Matthew, "working well"):* Learn on three

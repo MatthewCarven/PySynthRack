@@ -46,6 +46,63 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-20 — note mode on the oscillator, semitones on key_cv
+
+Past 2 am, Matthew playing a four-key additive keyboard (key_cv x4 at 0.1
+each into an oscillator) asked whether ".01667" was the value for in-tune
+steps (a whole tone is 0.1667; n semitones = n/12), then: "i'd like to
+implement note selection on the oscillator like it would make things easier
+but at the same time i do not wish to loose control over the final value ...
+some songs sing things a little brighter some songs flatter etc and i dont
+want to loose the ability to have these differences". Proposed: a note mode
+that is only a way of entering the pitch (note + continuous cents, Hz mode
+untouched, switching converts without a jump), key_cv in semitones, and the
+song's tuning per oscillator in cents for now (a patch-wide A4 reference if
+he finds himself repeating it). "Please Claude i accept your suggestions".
+
+**What changed.**
+
+* `core/pitch.py` (new): `note_to_midi` / `midi_to_note` / `note_to_hz` /
+  `hz_to_note`, equal temperament, A4 = 440. Sharps and flats parse;
+  `hz_to_note` returns the nearest note in C0..B8 and the exact remainder in
+  cents, so a frequency -> note + cents -> frequency round trip is the same
+  frequency to float rounding. `ui/readouts.py` now takes NOTE_NAMES from it.
+* oscillator: `tune` (`hz` | `note`), `note` (C0..B8), `cents` (+/-100,
+  continuous). The renderer reads note + cents only in note mode
+  (`_osc_note_freq`; a name that does not parse falls back to `freq`); hz
+  mode is the code it was. `freq_cv` rides on top in both.
+* The node: a `tune` combo, a 108-entry `note` combo and a `+%.1f c` cents
+  drag. `_on_osc_tune_changed` converts: into note mode, nearest note + the
+  exact remainder (cents clamped, with a status line, only when `freq` is
+  outside C0..B8); back to hz, `freq` = the note's Hz. In note mode note /
+  cents edits also write `freq`, so its field shows the pitch being played.
+  Whichever is not in charge is greyed (`_sync_osc_tune_widgets`). Two small
+  helpers: `_param_widget(id, name)` (reverse lookup of `_param_widgets`)
+  and `_mirror_param` (write through the one door, then show it).
+* key_cv: `units` (`cv` | `semitones`). In semitones idle / active are
+  divided by 12 in the renderer (divided, so 7 is exactly the double nearest
+  7/12); `in` stays CV. Switching in the node converts both values (x12 /
+  /12) and swaps the drags' range and format (+/-10 "%.3f" <-> +/-120
+  "%.2f st").
+* `key_cv_transpose.json` is now in semitones (+12, +7, -12, +24): the
+  readout reads A2 -> A3 -> E4, each +0c.
+
+**Verified.**
+
+| Check | Result |
+|---|---|
+| `tests/test_osc_note_mode.py` | 34 passed: names incl. flats and bad names, Hz, A = 442 as +7.85 c, round trips within 1e-12, the C0..B8 choices; hz mode ignores note / cents (identical wave); note mode plays the note (FFT and readout); cents continuous and clamped; bad note falls back; freq_cv on top; note mode == hz mode sample for sample at the same pitch; the widgets; greying; both switch directions keep the pitch; note / cents write freq only in note mode; out-of-range clamps and says so |
+| `tests/test_key_cv.py` | 36 passed (13 new): units default, divide by 12 exactly (incl. 7.02, 3.86), four stacked whole tones = 8/12, idle in semitones with `in` as CV, switching keeps the output, drags follow, the combo |
+| The example through the real loader | rest A2 +0c, key 1 A3 +0c, keys 1 + 2 E4 +0c |
+| Full suite | 6,097 passed, 6 skipped |
+| Render audit vs main (5ae4683) | 168 examples, moved 0 |
+| ruff (CI's command) | All checks passed |
+
+**Wants a human:** the checklist entry "Oscillator note mode + key_cv
+semitones".
+
+---
+
 ## 2026-11-19 — the oscillator shows the frequency it is putting out
 
 Matthew, after testing key_cv into an oscillator: "on the oscillator can we

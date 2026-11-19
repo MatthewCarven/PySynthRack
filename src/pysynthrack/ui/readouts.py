@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 
-NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+from ..core.pitch import NOTE_NAMES
 
 # Name the note only where a pitch is a note: below 16 Hz an oscillator is
 # a slow LFO, above 20 kHz nobody is singing along.

@@ -467,6 +467,9 @@ class IORenderers:
         size; ``glide`` 0 snaps. The value is ``idle * (1 - x) + active * x``,
         which is exactly ``idle`` at rest and exactly ``active`` when there.
 
+        ``units`` = ``semitones`` reads ``idle`` / ``active`` as semitones
+        (divided by 12 here; ``in`` is CV either way).
+
         ``chain`` combines the ``in`` jack: ``add`` -> ``in + value``;
         ``override`` -> ``(1 - x) * (in + idle) + x * active`` (this key takes
         over while it is down). Unpatched ``in`` is 0, so both read the same.
@@ -493,6 +496,11 @@ class IORenderers:
 
         idle = _num("idle", 0.0)
         active = _num("active", 1.0)
+        if module.params.get("units", "cv") == "semitones":
+            # Semitones on a 1 V/oct scale: divided (not multiplied by a
+            # rounded 1/12), so 7 is exactly the double nearest 7/12.
+            idle = idle / 12.0
+            active = active / 12.0
         glide = float(np.clip(_num("glide", 0.0), 0.0, self._KEY_CV_MAX_GLIDE))
 
         target = 1.0 if on else 0.0

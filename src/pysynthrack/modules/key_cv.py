@@ -29,6 +29,12 @@ Parameters:
     key: Bound key name (``""`` = unbound: sits at ``idle``). Set by Learn.
     mode: ``gate`` -- active while the key is held; ``latch`` -- each press
         toggles between idle and active.
+    units: ``cv`` (default) -- idle and active are CV as written;
+        ``semitones`` -- they are semitones and the module divides by 12,
+        exactly, so 7 is a fifth on a 1 V/oct pitch input and any decimal
+        holds (7.02 is a pure fifth, 3.86 a pure major third). Switching
+        in the node converts the two values, so the output does not move.
+        ``in`` is always CV.
     idle: The value with the key up (default 0).
     active: The value with the key down (default 1).
     glide: Seconds for a full move from idle to active (or back); 0 =
@@ -50,6 +56,7 @@ from .key_trigger import KeyTrigger
 
 KEY_CV_MODES = ("gate", "latch")
 KEY_CV_CHAINS = ("add", "override")
+KEY_CV_UNITS = ("cv", "semitones")
 
 
 @register_module_type
@@ -68,6 +75,7 @@ class KeyCV(KeyTrigger):
     DEFAULT_PARAMS = {
         "key": "",          # unbound until Learn assigns a key name
         "mode": "gate",     # one of KEY_CV_MODES
+        "units": "cv",      # one of KEY_CV_UNITS: how idle/active read
         "idle": 0.0,        # value with the key up
         "active": 1.0,      # value with the key down
         "glide": 0.0,       # seconds for a full idle <-> active move
