@@ -46,6 +46,40 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-19 — planning: pull scheduling, C#, and a stereo drift that is neither
+
+Matthew opened a planning session: pull-based scheduling (the output asks
+its nearest module for N buffers, which asks upstream, and so on) and
+possibly a C# rewrite for performance, prompted by a patch that falls in
+and out of stereo sync a few times per song (screenshot: file_player ->
+parametric_eq x2 -> pitch_shifter x2 -> tape x2 -> meter and buffered
+sink; a key_trigger on both tapes' `stop`; one cv_offset, its `in`
+unpatched, on both `pitch_cv`).
+
+**How it works today.** Not per-sample ticks: `render_block_multi` walks
+a Kahn topological order once per block (512 by default), each module
+renders the whole block in numpy, outputs land in a port-keyed buffer
+dict, and fan-out reads the same buffer. A memoised pull from the sinks
+is the same computation found lazily, so it would not change the sound
+or the timing. Cycles still need the late-edge seed this engine already
+has.
+
+**The drift.** Not the buffered sink: its pair fix is on main (16c5ba8)
+and the 11-18 exe has it. It is the two pitch_shifters. Each engine
+decides from its own side's audio when to regrain on deep bass, which
+changes its delay, and where to splice once the pitch is off 0. Measured
+offline on a clone of d27cf1a: up to 46 ms either way at 0 st, back to 0
+when both return to the base grain. Regrain off, or the same signal both
+sides: exactly 0. Numbers and the fix are in TODO.md (Audio I/O). The
+probe scripts are kept in the session, not in the repo.
+
+**Loose ends.** Could not push from the session (the repository was not
+attached for writing); TODO.md and WORKLOG.md were written to the folder
+for Matthew to commit. The TODO note on the buffered-sink drift now says
+the fix is built and on main.
+
+---
+
 ## 2026-11-12 — `--render`: a patch to a WAV file, offline
 
 **Why.** Matthew wants sound effects for the roguelike on his website made

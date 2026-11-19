@@ -491,6 +491,34 @@ likeliest to sound different come first.
       listening pair (sent from that session) and three calls (louder side
       leads the score; correct the latency docstring; leave the governor's
       law alone), answered in that session.
+      *Update:* **BUILT AND ON MAIN 2026-11-11** (16c5ba8; the 11-18 exe
+      has it): both sides now cut every grain at the same spot. Still open:
+      his ears and the desktop check under load.
+- [ ] **Two pitch_shifters, one per side, drift left against right**
+      (found 2026-11-19 in a planning session, on Matthew's patch:
+      file_player -> parametric_eq x2 -> pitch_shifter x2 -> tape x2 ->
+      buffered sink, "falls in and out of stereo sync a few times per
+      song"). Each pitch_shifter's WSOLA engine makes two choices from its
+      own side's audio only: (1) the deep-bass regrain (`_ps_shift`: a new
+      grain length, and with it a new delay, when the period detector hears
+      below ~42 Hz), and (2) the splice search, at any pitch other than
+      exactly 0 st (the buffered sink's bug class, fixed there 2026-11-11).
+      Measured offline on a clone of d27cf1a (60 s, bass mostly left, mid
+      mostly right, both EQs +24 dB at 20 Hz as in his patch): at 0 st the
+      two engines' delays differed by up to 46 ms either way, by over 1 ms
+      in 77% of blocks, and went back to 0 when both returned to the base
+      grain. Controls gave exactly 0: regrain switched off, or the same
+      signal both sides. At `grain_size` 150 (never regrains) 0 st holds,
+      but -2 st or -0.3 st puts the two sides' grains up to ~3000 samples
+      apart, with a median offset of 3 to 7 ms by the end. A pull-based
+      engine or a C# port of the same algorithm drifts the same way.
+      **Fix:** a stereo pitch_shifter (an `in_r` jack) on the existing
+      `_GrainShifterPair`, with ONE regrain decision for both sides (S-M,
+      one session; `out_l`/`out_r` already belong to the harmony spread,
+      so the port names need a call). **Workaround today:** `grain_size`
+      150 on both keeps the sides together while the pitch stays at
+      exactly 0. Related: `tape` seeds its wow/flutter/drift generators per
+      module id, so two tapes with those above 0 wobble independently.
 - [ ] **Found during that scope, not reproduced by the supervisor:**
       (a) 3 of 12 device names in the sink's dropdown won't open on the
       laptop ("Multiple output devices found"); (b) `disk_writer` drops
@@ -579,6 +607,16 @@ session before anything is built. Don't build ahead.
       *2026-10-12:* one suspect found and fixed on the way -- the
       scope's repaint held the GIL ~100 ms per trace per frame on a
       slow sweep (20e123a). See the hands-on check.
+      *2026-11-19 planning session:* Matthew proposed pull scheduling (the
+      output asks its upstream for N buffers, recursively) and possibly a
+      C# rewrite, prompted by stereo drift in one of his patches. Findings:
+      the engine is already block-based (one topologically sorted walk per
+      block, numpy per module, no per-sample tick); a memoised pull from
+      the sinks runs the same modules in an equivalent order, so it changes
+      neither the sound nor the timing. The drift in that patch is the
+      pitch_shifter pair (Audio I/O, Open defects). The part of the idea
+      that does help, the output collecting buffers rendered ahead of time,
+      is this item's render-ahead ring. Direction is Matthew's call.
 - [ ] **Subpatch containers** (L) — group modules into a reusable
       macro-module with exposed ports. Off the module menu 2026-10-10;
       Matthew: "can take or leave this, again a planning scope and plan
