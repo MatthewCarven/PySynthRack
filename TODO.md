@@ -519,6 +519,14 @@ likeliest to sound different come first.
       150 on both keeps the sides together while the pitch stays at
       exactly 0. Related: `tape` seeds its wow/flutter/drift generators per
       module id, so two tapes with those above 0 wobble independently.
+      *Matthew, same day:* with `grain_size` 150 on both, no desync heard
+      through most of a song (Pyramid Song; DSP 13%, xrun 0, api MME). In
+      his experience load raises the chance of a split. Nothing in this
+      chain reads the clock and the file had finished decoding, so load
+      cannot change what the engines decide; a load-only split was the
+      buffered sink's signature, and that sink sat idle in this patch.
+      If a split still follows load once the stereo pitch_shifter is in,
+      look for a second cause.
 - [ ] **Found during that scope, not reproduced by the supervisor:**
       (a) 3 of 12 device names in the sink's dropdown won't open on the
       laptop ("Multiple output devices found"); (b) `disk_writer` drops
