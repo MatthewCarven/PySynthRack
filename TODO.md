@@ -341,7 +341,7 @@ likeliest to sound different come first.
       (`sampler_mellotron` and `sampler_scrub` heard 2026-10-05.)
 
 *Hands-on checks outside the examples:*
-- [x] **EARS: the stereo pitch_shifter on the song patch** (new
+- [ ] **EARS (headphones): the stereo pitch_shifter on the song patch** (new
       2026-11-19) — in the patch with two pitch_shifters, delete
       pitch_shifter #7 and rewire #6: `in` <- parametric_eq #4 `out`,
       `in_r` <- parametric_eq #5 `out`, `out_l` -> tape #9 `in`, `out_r`
@@ -352,9 +352,10 @@ likeliest to sound different come first.
       together throughout; the shifted sound is otherwise the same.
       Report any splice that is louder on one side than the other (one
       shared splice is a compromise when the sides differ a lot).
-      **Done 2026-11-19** -- Matthew: "Sounds good on the stereo pitch
-      shifter".
-- [ ] **EARS: the stereo tape and EQ on the song patch** (new
+      *Reopened the same evening:* the "Sounds good" was on the laptop's
+      speakers, which do stereo no justice; Matthew will judge left
+      against right on headphones (planned for 2026-11-19 night).
+- [ ] **EARS (headphones): the stereo tape and EQ on the song patch** (new
       2026-11-19) -- collapse the song patch to one node per stage: one
       parametric_eq (`in` / `in_r` -> `out` / `out_r`, then one set of
       knobs), the stereo pitch_shifter, one tape (`out_l`/`out_r` ->
