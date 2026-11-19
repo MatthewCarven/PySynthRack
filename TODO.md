@@ -252,6 +252,10 @@ still stand.)
 - [ ] `stereo_hard_pan.json`
 - [ ] `filter_resonance_sweep.json`
 - [ ] `key_trigger_latch_brake.json`
+- [ ] `key_cv_transpose.json` (new 2026-11-19) -- hold 1 (octave up), 2 (fifth up),
+      3 (drifts an octave down over 2 s); they add. Tap 4 to latch two octaves
+      up over the lot (override), tap again to let go. Also try Learn on a
+      fresh key_cv node, and `latch` mode.
 - [ ] `schmitt_lfo_clock.json`
 - [ ] `resampler_tape_wobble.json`
 - [ ] `crossover_sweep.json`
@@ -681,15 +685,23 @@ session before anything is built. Don't build ahead.
 ## Follow-ons and small items
 
 *From the 2026-11-19 stereo work:*
-- [ ] **Which other modules wander apart when doubled, one per side?**
-      The pitch_shifter (splices and regrains from its own audio) and the
-      tape (flutter/drift from its own random stream) did; an LTI module
-      (EQ, filter) cannot. Candidates to check: anything that decides
-      from its own audio or draws its own random numbers -- granular,
-      freeze, the chorus/flanger/phaser LFOs (phase from when the state
-      began), drift, vinyl, shift_random. Offered to Matthew, not asked
-      for yet. Also open: `in_r` on motion_eq / sweep_eq / tilt_eq for
-      the same convenience as parametric_eq.
+- [ ] **Stereo: which other modules pull left and right apart** --
+      SCOPED 2026-11-19, `docs/stereo-scope.md` (Matthew asked). Four
+      causes: deciding timing from its own audio, its own random stream,
+      its own clock, or level from its own audio (dynamics). Recommended
+      order: (1) **disk_writer `in_r`** -> one stereo WAV through one
+      queue, so a dropped block drops both sides (two mono writers can part
+      by a block under load and never rejoin; he records L/R pairs); (2)
+      **linked dynamics** -- limiter, transient_shaper, compressor,
+      noise_gate with `in_r` and one detector for both sides (one
+      session); (3) chorus / flanger / phaser true-stereo input sharing one
+      LFO, then octaver, bitcrusher (jitter), freq_shifter / ring_mod
+      (carrier). Mono-in effects (reverb, convolver, delay, freeze,
+      granular, resampler) don't drift but sum a stereo source; take them
+      as patches ask. Filters/EQs/curves/VCA: convenience jacks only
+      (motion_eq / sweep_eq / tilt_eq as before). Leave rotary mono. Also
+      found: the tape's three seeds overlap across module ids (#4's drift
+      = #3's flutter stream). Waits on Matthew's pick.
 
 *From the seventh batch (2026-10-12):*
 - [ ] **Sink open ladder runs on every reconcile** while a device is

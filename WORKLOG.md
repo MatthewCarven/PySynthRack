@@ -46,6 +46,67 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-19 — key_cv (a key as a set CV, chainable), and the stereo scope
+
+Two asks in one message, then a third mid-build. "can you scope any other
+modules that might need a stereo upgrade for balancing the left and right
+tracks" -> `docs/stereo-scope.md`. "do we have a module that can be bound
+to a key and set when active to output 0, 1, 2, -1, -2 cv ... or a slow
+drift between ... initial value and activated value and just let the user
+specify" and "let one key driven cv feed into another key driven cv please"
+-> `key_cv`. Matthew approved the design mid-build ("SOunds good").
+
+**The stereo scope.** Read in the code, nothing built. A module doubled
+one per side drifts if it decides timing from its own audio, draws its own
+random stream, or keeps its own clock; it unbalances the image if it
+decides level from its own audio. Ranked: (1) disk_writer -- two mono
+writers drop blocks independently under load, so an L/R pair of files can
+part by a block for good; (2) the dynamics (limiter, transient_shaper,
+compressor, noise_gate) want a linked detector; (3) chorus / flanger /
+phaser (LFO anchored per module), octaver (flip-flop on its own zero
+crossings), bitcrusher jitter, freq_shifter / ring_mod carriers. The
+mono-in effects don't drift but sum a stereo source; filters/EQs are
+convenience only. Found on the way: the tape's three seeds overlap across
+module ids. TODO's follow-on now carries the ranked list.
+
+**key_cv.** A `KeyTrigger` subclass (the raw-key transport, Learn and the
+`ACCEPTS_RAW_KEYS` routing come for free) with `in` (cv), `out` (cv) and
+`gate` (gate). Params: `key`, `mode` (gate / latch), `idle`, `active`,
+`glide` (seconds for a full move, constant rate, 0 = snap, up to 60),
+`chain` (add / override). The renderer carries a position `x` in [0, 1]
+and walks it toward the target from the block's start as `x0 +- step*k`
+(one rounding per sample); the value is `idle*(1-x) + active*x`, exactly
+`idle` at rest and exactly `active` when there -- the plain `idle +
+(active-idle)*x` form misses `active` in the last place (0.1 -> 0.3 gives
+0.30000000000000004). `add`: `in + value`. `override`: `(1-x)*(in+idle) +
+x*active`, a crossfade from the input, so a held key takes over smoothly
+and the last held key in a chain wins. A non-finite `in` sample reads as
+0; a voice-aware `in` keeps its voices. UI: the Learn panel and the `key`
+skip now take `key_cv` too; the shared mode branch lists `KEY_CV_MODES`
+(test_mode_combos walks it); idle/active are soft +/-10 drags, glide a
+0-60 s drag, chain a combo. Dispatch table and the pyo stub list carry it.
+`key_trigger` itself is untouched.
+
+Example `key_cv_transpose.json`: keys 3 -> 2 -> 1 -> 4 chained into a saw's
+`freq_cv`: hold 1 (+1 oct), 2 (+7/12), 3 (-1 oct over 2 s), all adding;
+tap 4 to latch +2 oct over the lot (override). Loaded through the real
+loader: 110 Hz at rest, 220 with 1, 330 with 1 + 2.
+
+**Verified.**
+
+| Check | Result |
+|---|---|
+| tests/test_key_cv.py | 23 passed: shape and defaults, key_trigger untouched, idle/active exact (incl. 0.1 / 0.3), unbound, latch, glide length and linearity, half-way return, block size 256 vs 1024, add stacking over three keys, override takes over and crossfades, idle offsets the input in both modes, voices, non-finite input, +1 on an oscillator doubles the pitch (real render path), UI raw-key routing, Learn, the node's Learn button and its own combos and drags |
+| key_trigger, its UI tests, test_mode_combos, test_render_dispatch | pass |
+| Full suite | 6,017 passed, 6 skipped |
+| Render audit, main (cf9024d) vs this tree | 168 examples: 167 same, moved 0, 1 new (`key_cv_transpose`) |
+| ruff (CI's command) | All checks passed |
+
+**Wants a human:** the listening-checklist entry for
+`key_cv_transpose.json` (keys 1-4, Learn on a fresh node, latch mode).
+
+---
+
 ## 2026-11-19 — stereo jacks on tape and parametric_eq
 
 Matthew, after hearing the stereo pitch_shifter ("Sounds good"): "can we do
