@@ -135,6 +135,7 @@ def format_sink_buffer(
     entry: tuple[int, int, int, int] | None,
     stream: tuple[int, int | None, str] | None = None,
     sample_rate: float | None = None,
+    late: int | None = None,
 ) -> str:
     """Ring readout for the buffered sink's node.
 
@@ -166,6 +167,10 @@ def format_sink_buffer(
     device block running, in samples and ms (the device's callback period,
     ``auto`` when PortAudio picks): ``queued 83.6 of 185.8 ms  dev block
     512 = 11.6 ms``.
+
+    With ``late`` (2026-11-21) the first line ends ``late N``: callbacks
+    PortAudio flagged as an output underflow -- the DEVICE's own audio
+    layer ran short, which ``under`` (the ring running dry) cannot see.
     ASCII only: the node font has no wider glyph coverage.
     """
     if stream is not None and stream[1] is None:
@@ -178,6 +183,8 @@ def format_sink_buffer(
         f"buffer {pct:d}% ({queued}/{capacity})  "
         f"under {underruns}  drop {drops}"
     )
+    if late is not None:
+        line += f"  late {late}"
     if sample_rate:
         line += (
             f"\nqueued {_ms(queued, sample_rate):.1f} of "

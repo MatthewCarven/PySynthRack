@@ -509,7 +509,7 @@ class TestUI:
         # the time line (2026-11-20) shows the block that RUNS; the last
         # line says which one was refused
         assert text == (
-            "buffer 50% (32768/65536)  under 0  drop 0\n"
+            "buffer 50% (32768/65536)  under 0  drop 0  late 0\n"
             "queued 743.0 of 1486.1 ms  dev block 4096 = 92.9 ms\n"
             "device block 4096 - 8192 would not open"
         )

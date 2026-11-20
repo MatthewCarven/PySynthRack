@@ -229,6 +229,10 @@ class _DeviceOutput:
         # fill's sawtooth, which the governor averages over (a stream on
         # PortAudio's own block size only learns it from a callback).
         self.last_pull = dev_block
+        # Callbacks PortAudio flagged ``output_underflow``: the DEVICE layer
+        # ran short (a late callback -- an MME hiccup, GIL contention), which
+        # the ring's own ``_underruns`` cannot see. Shown as ``late N``.
+        self._late = 0
         self._lock = threading.Lock()
         self._stream: Any = None
 
@@ -349,6 +353,8 @@ class _DeviceOutput:
         cap = self._capacity
         if frames > 0:
             self.last_pull = int(frames)
+        if status and getattr(status, "output_underflow", False):
+            self._late += 1
         with self._lock:
             n = min(self._avail, frames)
             if n < frames:
@@ -423,6 +429,7 @@ class _DeviceOutput:
             self._underruns = 0
             self._drops = 0
             self._primed = False
+        self._late = 0
         return errors
 
 
@@ -3232,6 +3239,23 @@ class NumpyBackend(
             elapsed = min(int(st.get("pos", 0)), n) / sr
             out[mid] = (elapsed, n / sr)
         return out
+
+    def snapshot_sink_late(self) -> dict[int, int]:
+        """GUI hook: per routed sink, how many of its stream's callbacks
+        PortAudio flagged ``output_underflow`` -- glitches in the device's
+        own audio layer, which the ring's underrun count cannot see
+        (2026-11-21: Matthew's MME stutter with the ring never running dry).
+        Same keying as :meth:`snapshot_sink_buffers`; a plain int read."""
+        outs = self._device_outputs
+        if not outs or self._patch is None:
+            return {}
+        result: dict[int, int] = {}
+        for m in self._patch.modules.values():
+            key = self._stream_key(m)
+            dev_out = outs.get(key) if key is not None else None
+            if dev_out is not None:
+                result[m.id] = int(getattr(dev_out, "_late", 0))
+        return result
 
     def snapshot_sink_buffers(self) -> dict[int, tuple[int, int, int, int]]:
         """GUI hook: hand-off-ring telemetry for each device-routed speaker

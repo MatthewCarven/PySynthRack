@@ -7469,6 +7469,13 @@ class App:
             streams = {}
         if not isinstance(streams, dict):
             streams = {}
+        late_hook = getattr(self.backend, "snapshot_sink_late", None)
+        try:
+            lates = late_hook() if late_hook is not None else {}
+        except Exception:
+            lates = {}
+        if not isinstance(lates, dict):
+            lates = {}
         # The readout's time line wants a real rate (a stub backend has none).
         sink_sr = getattr(self.backend, "sample_rate", None)
         if isinstance(sink_sr, bool) or not isinstance(sink_sr, (int, float)):
@@ -7478,6 +7485,7 @@ class App:
         for mid, label in self._sink_buffer_labels.items():
             entry = entries.get(mid)
             stream = streams.get(mid)
+            late = lates.get(mid)
             if entry is None:
                 if stream is not None and stream[1] is None:
                     color = self._SINK_BUF_FAILED_RGBA
@@ -7486,10 +7494,10 @@ class App:
                 self._sink_buffer_last.pop(mid, None)
                 self._sink_buffer_flash.pop(mid, None)
             else:
-                counts = (entry[2], entry[3])
+                counts = (entry[2], entry[3], int(late or 0))
                 prev = self._sink_buffer_last.get(mid)
-                if prev is not None and (
-                    counts[0] > prev[0] or counts[1] > prev[1]
+                if prev is not None and any(
+                    c > q for c, q in zip(counts, prev)
                 ):
                     self._sink_buffer_flash[mid] = now + self._SINK_BUF_FLASH_S
                 self._sink_buffer_last[mid] = counts
@@ -7498,7 +7506,7 @@ class App:
                 else:
                     color = self._SINK_BUF_OK_RGBA
             try:
-                dpg.set_value(label, format_sink_buffer(entry, stream, sink_sr))
+                dpg.set_value(label, format_sink_buffer(entry, stream, sink_sr, late))
                 dpg.configure_item(label, color=color)
             except Exception:
                 stale.append(mid)

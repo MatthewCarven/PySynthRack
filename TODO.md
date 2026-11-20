@@ -806,11 +806,13 @@ session before anything is built. Don't build ahead.
       audibly. Fix offered: start a governed stream's ring half full of
       silence, at the setpoint, so the governor begins at 1.0 (Start then
       has the half-ring latency it would settle at anyway).
-- [ ] **The device stream's own underflows are invisible** (found
+- [x] **The device stream's own underflows are invisible** (found
       2026-11-20). `_DeviceOutput._callback` ignores PortAudio's status, so
       a late callback on the second device (an MME glitch, GIL contention)
       never shows: `under` counts only our ring running dry. Count
       `output_underflow` there and show it on the node as `late N`.
+      **Done 2026-11-21:** `late N` on the readout's first line, amber on a
+      tick. **HANDS:** on the stuttering MME entry -- does `late` climb?
 - [ ] **Stereo: which other modules pull left and right apart** --
       SCOPED 2026-11-19, `docs/stereo-scope.md` (Matthew asked). Four
       causes: deciding timing from its own audio, its own random stream,

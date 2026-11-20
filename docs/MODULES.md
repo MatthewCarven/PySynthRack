@@ -6508,6 +6508,14 @@ the most it can add (and how much stall it can ride out); `dev block` is
 the device's callback chunk actually running, in samples and ms — the
 period the device pulls at (`auto` when PortAudio picks).
 
+The first line also ends **`late N`** (2026-11-21): callbacks PortAudio
+flagged as an *output underflow* — the device's own audio layer ran short
+(a late callback: an MME hiccup, the CPU busy elsewhere). `under` only
+counts the ring running dry, so a stutter with `under` holding still and
+`late` climbing is below the synth, in the device's driver layer — try
+another host API for that device. A `late` tick flashes amber like the
+others.
+
 **`device_block`: the device's chunk apart from the cushion** (2026-11-20,
 decision #2). `buffer_size` does two jobs by default: it sizes the ring
 (8× it) *and* is the block the device is asked for. `device_block`
