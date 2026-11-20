@@ -723,6 +723,14 @@ Calls, not bugs: each waits on a yes, a no or a which.
 Matthew wants to scope and plan these with Claude in a planning
 session before anything is built. Don't build ahead.
 
+- [ ] **An `output_device` module: the ring as its own thing** (Matthew,
+      2026-11-20: "the buffer could in fact be a separate module from the
+      speaker out ... after it"). Design note:
+      [docs/output-device-scope.md](docs/output-device-scope.md). One
+      module per device owns `buffer_size`, `device_block`, the governor
+      and the readout; speakers keep gain, pan and width. Fixes the
+      last-wins governor and silent stream splits. Six decisions (D1-D6)
+      for the session, a lean on each.
 - [ ] **Off-thread audio rendering + host-API selection** (both below
       under Later / wishlist, with their 2026-07-20 scoping). Matthew,
       2026-10-10: "my desktop system has gui lockups that mean unless

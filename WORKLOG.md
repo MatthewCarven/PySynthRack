@@ -46,6 +46,20 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-20 — design note: an output device module
+
+Matthew, with the `device_block` work fresh: "am I right in believing that
+the buffer could in fact be a separate module from the speaker out ...
+after it". Yes for its face, no for the ring as an in-graph module (the
+graph is one clock; the ring is the boundary with the device's clock).
+"yes please Claude" to writing it up. **docs/output-device-scope.md**:
+how it works today, read in the code (the ring is per device stream
+already; the plain specific speaker has one too; the governor is per
+stream but configured per sink, last drained wins; settings copied per
+sink and silently splitting streams), the proposed module, six decisions
+with a lean each, a three-slice build sketch. TODO: under *Plan together
+first*. Nothing built.
+
 ## 2026-11-20 — the eleven small decisions, answered and built
 
 Matthew: "The 11 small questions please Claude". Presented with a
