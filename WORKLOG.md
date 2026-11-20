@@ -46,6 +46,72 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-20 — the eleven small decisions, answered and built
+
+Matthew: "The 11 small questions please Claude". Presented with a
+recommendation each; his answers, verbatim: 1 "Yeah leave it, its not to be
+used as a governor like anyways"; 2 "b add a separate device blocksize if
+you can easily also offer up as status the current buffer size and length
+in time so you can use it to do a little prediction"; 3 "accepted its not
+100% phase accurate to the output rate?" (answered: the phase is exact,
+the step is the naive shape's aliasing landing on a sample); 4 "yes
+please"; 5 "love the phosphor in my crts :-{D"; 6 "up to you like i have
+not heard or noticed the point in question yet so have no right to
+question it"; 7 "yes please"; 8 "accepted"; 9 "please"; 10 "please"; 11
+"yes please although if we could offer this dynamically and reinit the
+audio subsystem i'd like it more but like this might be a multi step
+process other wise make me pick via command line option or system
+variable". One patch series, nine commits on 027037f.
+
+**What changed, by decision.**
+
+* **#11 numpy first** (6a4aefb): `_PREFERENCE = ("numpy", "pyo")`; pyo only
+  by `--backend pyo` / `PYSYNTHRACK_BACKEND=pyo`, or as the fallback.
+  "Switch audio backend live, from the GUI" is on Later/wishlist as the
+  multi-step job he described -- scope it first.
+* **#10 LFO** (7060332): a `phase` knob move re-anchors and rolls but no
+  longer re-seeds a seeded random LFO; only a `reset` edge replays the
+  phrase. Mono and voice paths.
+* **#4 clock** (b0b0ad6): phase read at samples 0..n-1, so 120 BPM
+  quarters land at 0, 22050, 44100 (were 22049, 44099). Proven on every
+  clock in every example, old vs new tapped in separate processes: 98
+  clocks / 79 examples / 5160 edges, 5058 exactly +1 relative to the
+  restart before them, 100 on a restart (unchanged), two explained (a fall
+  cut by `run`, and one edge under a drifting bpm_cv). The free-running
+  hash pin is kept as proof -- today's render's samples 1..N hash to the
+  old one. Found on the way: on a tempo change the "is sample 0 a period
+  start" check needs the previous sample's frac under the OLD anchor, so
+  it is carried in state (`last_frac`). Synced delay span 11025 (was 11024).
+* **#9 freeze** (e7f562a): 32768 staged too, 2048 samples. Better than
+  offered: the capture block with `width` 5.1 ms (44%) -> 1.9 ms (16%).
+* **#5 scope** (fa4cb27): phosphor afterglow, a constant fraction per
+  repaint between the same ends (74% at 8 frames).
+* **#2 sink** (7e89a22): `device_block` (auto = buffer_size, as before, or
+  64..8192); the ring stays 8 x buffer_size, never under two device blocks
+  when set apart. The node's new line: `queued 83.6 of 185.8 ms  dev block
+  512 = 11.6 ms`. Auto keeps the old two-element stream key, so nothing
+  about existing sinks moved.
+* **#6 `_wt` per voice** (3e20846, Claude's call as asked): each voice
+  reads its own band. +43 us on a 16-voice chord block (0.4%), a single
+  row still mono bit for bit. No example uses `_wt`; a maj7 switched to
+  `saw_wt` moves -32 dB close, -28 dB spread -- subtle except in wide
+  voicings. An A/B pair rendered for his ears.
+* **#7 fgen** (cabfbc6): the parked loop-mode slots documented as designed.
+* **#1, #3, #8** (fe761ba): closed with his answers. *Deviation from the
+  "a commit per item" plan:* these three had no code, so they share one
+  commit rather than three one-line ones.
+
+**Verified.** Full suite 6106 passed after #4; the series' full run and
+the render audit are in the hand-off below (audit vs origin/main: 75
+clocked examples moved by #4, `freeze_drone_breathe` by #9, nothing by #2,
+#5, #6, #10, #11). Ruff clean.
+
+**Still Matthew's** (the hands-on checks): the headphone checks for the
+stereo pitch_shifter / tape / EQ; note mode + semitones; key_cv
+latch/override; disk_writer under load and the mic karaoke test -- and now
+the `device_block` readout on a real device, and a listen to the clock
+examples if he wants to hear "on the period".
+
 ## 2026-11-20 — note mode on the oscillator, semitones on key_cv
 
 Past 2 am, Matthew playing a four-key additive keyboard (key_cv x4 at 0.1
