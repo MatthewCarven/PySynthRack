@@ -790,13 +790,16 @@ session before anything is built. Don't build ahead.
       stream kept and retried at Stop; a rebuild on the same device closes
       the old stream before the new one opens.
       **HANDS + EARS:** the same live change again -- clean switch, no loop?
-- [ ] **A buffered sink's cushion is only one device block unless governed**
+- [x] **A buffered sink's cushion is only one device block unless governed**
       (found 2026-11-21 from Matthew's screenshot: buffer_size 8192,
       device_block 2048, auto_govern off -> `2048/65536`). The ring starts
       empty and the device starts pulling at once, so ungoverned it never
       holds more than one bite: buffer_size is a ceiling, not a cushion.
       Same root as the item below; one fix covers both (prime the ring).
-- [ ] **Governed sinks stretch hard for the first seconds after Start**
+      **Fixed 2026-11-21** with the item below: buffered streams open half
+      full of silence. **HANDS + EARS:** 8192 / 2048, governor off -- the
+      readout near 50%, no stutter from underruns?
+- [x] **Governed sinks stretch hard for the first seconds after Start**
       (found 2026-11-20 chasing the skip). The ring starts nearly empty, so
       the governor pushes the ratio to ~1.19 until it reaches half: at
       buffer 4096 / device_block 512 (a 32768 ring) the first ~8 s splice

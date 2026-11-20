@@ -113,7 +113,9 @@ class TestDeviceBlock:
             d.push(np.full((F, 2), 0.25, np.float32))
         out = np.zeros((8192, 2), np.float32)
         d._callback(out, 8192, None, None)
-        assert np.all(out == 0.25)                   # one whole device block served
+        assert np.all(out == 0.0)                    # the primed half: silence
+        d._callback(out, 8192, None, None)
+        assert np.all(out == 0.25)                   # then one whole device block
         assert d.telemetry()[2] == 0                 # and no underrun counted
 
     def test_the_fallback_ladder_starts_at_the_device_block(self, fake_sd):

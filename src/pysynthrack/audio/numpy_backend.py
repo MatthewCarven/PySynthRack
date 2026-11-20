@@ -175,8 +175,12 @@ class _DeviceOutput:
     def __init__(
         self, device: str, sample_rate: int, block_size: int,
         max_blocks: int = 8, device_block: int | None = None,
+        prime: bool = False,
     ) -> None:
         self.device = device
+        # Start with the ring HALF FULL of silence (2026-11-21, buffered sinks
+        # only): see _prime_half.
+        self.prime = bool(prime)
         self._sample_rate = sample_rate
         # The ring's block (the sink's buffer_size) and the device block
         # asked of PortAudio; the same unless device_block says otherwise.
@@ -260,6 +264,8 @@ class _DeviceOutput:
                     callback=self._callback,
                 )
                 self._block_size = bs  # before start(): callbacks may fire at once
+                if self.prime:
+                    self._prime_half()
                 stream.start()
             except ValueError:
                 _close_quietly(stream)
@@ -275,6 +281,25 @@ class _DeviceOutput:
         self._block_size = self.requested_block
         assert last is not None  # the ladder is never empty
         raise last
+
+    def _prime_half(self) -> None:
+        """Fill the ring to half with silence, armed (before start()).
+
+        Without it the ring started empty and the device started pulling at
+        once, so it never held more than about one device block: a big
+        ``buffer_size`` was a ceiling, not a cushion (Matthew's screenshot,
+        2026-11-21: ``2048/65536`` at buffer 8192 / device_block 2048), and a
+        governed sink spent its first seconds -- after Start or any live
+        change -- stretching hard to fill it (~8 s at 4096 / 512). Primed, the
+        cushion is real from the first callback and a governor starts at its
+        own setpoint, ratio 1. The cost is the latency the cushion IS: half
+        the ring of silence before the first sound. Not yet published, so
+        nothing else touches the ring."""
+        with self._lock:
+            self._ring[:] = 0.0
+            self._read = 0
+            self._avail = self._capacity // 2
+            self._primed = True
 
     def push(self, block: np.ndarray) -> None:
         """Enqueue one rendered ``(frames, 2)`` block (main audio thread).
@@ -2204,6 +2229,13 @@ class NumpyBackend(
             self._device_outputs = current
             for key, d in early.items():
                 self._close_device_output(key, d, log)
+        # Streams a buffered sink uses start half full (the cushion it asked
+        # for); the plain specific sink keeps its old, unprimed ring.
+        buffered_keys = {
+            self._stream_key(m) for m in (self._patch.modules.values()
+                                          if self._patch is not None else ())
+            if m.TYPE in self._BUFFERED_SPEAKERS
+        }
         new: dict[tuple[str, int], Any] = {}
         failures: dict[tuple[str, int], str] = {}
         for key in wanted:
@@ -2215,7 +2247,8 @@ class NumpyBackend(
             device_block = self._key_device_block(key)
             try:
                 dev_out = _DeviceOutput(
-                    dev, self.sample_rate, block_size, device_block=device_block
+                    dev, self.sample_rate, block_size, device_block=device_block,
+                    prime=key in buffered_keys,
                 )
                 dev_out.open()
             except Exception as e:

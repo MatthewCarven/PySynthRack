@@ -279,17 +279,20 @@ class TestBackendFallback:
         assert b._device_outputs[("Cans", 8192)].opened_block == 4096
         assert b._device_open_failures == {}
         assert b.snapshot_sink_streams() == {s.id: (8192, 4096, "")}
-        # ...and it is FED: one main callback lands a block in its ring.
+        # ...and it is FED: one main callback lands a block in its ring (on
+        # top of the half-ring of silence a buffered sink starts with).
         b._fill_output(np.zeros((F, 2), dtype=np.float32), F)
-        assert b.snapshot_sink_buffers() == {s.id: (F, 8 * 8192, 0, 0)}
+        assert b.snapshot_sink_buffers() == {s.id: (4 * 8192 + F, 8 * 8192, 0, 0)}
 
     def test_governor_reads_the_fallback_ring(self, fake_sd):
         fake_sd.refuse = lambda dev, bs: bs == 8192
         p, s = _sink_patch(buffer_size=8192)
         b = _running(p)
-        assert b._sink_fill(p.get(s.id)) == 0.0        # live (empty), not 0.5
+        # Primed half full (2026-11-21), so the live reading starts at 0.5;
+        # one push moves it off -- the live ring, not the neutral 0.5.
+        assert b._sink_fill(p.get(s.id)) == 0.5
         b._fill_output(np.zeros((F, 2), dtype=np.float32), F)
-        assert b._sink_fill(p.get(s.id)) == F / (8 * 8192)
+        assert b._sink_fill(p.get(s.id)) == (4 * 8192 + F) / (8 * 8192)
 
     def test_warping_sibling_falls_back_too(self, fake_sd):
         fake_sd.refuse = lambda dev, bs: bs > 1024
@@ -506,8 +509,8 @@ class TestUI:
         # the time line (2026-11-20) shows the block that RUNS; the last
         # line says which one was refused
         assert text == (
-            "buffer 0% (0/65536)  under 0  drop 0\n"
-            "queued 0.0 of 1486.1 ms  dev block 4096 = 92.9 ms\n"
+            "buffer 50% (32768/65536)  under 0  drop 0\n"
+            "queued 743.0 of 1486.1 ms  dev block 4096 = 92.9 ms\n"
             "device block 4096 - 8192 would not open"
         )
         assert color == app._SINK_BUF_OK_RGBA

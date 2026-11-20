@@ -6523,6 +6523,19 @@ on one device with different chunks never share a stream; a live change
 rebuilds only that stream. A device that refuses the chunk falls back
 down the ladder below from `device_block`, with the ring unchanged.
 
+**The ring starts half full** (2026-11-21). A buffered sink's stream opens
+with half its ring already queued — silence — so the cushion you set is
+there from the first callback. Before, the ring started empty and the
+device started pulling at once, so it never held more than about one
+device block (`2048/65536` at `buffer_size` 8192): `buffer_size` was only a
+ceiling, and a governed sink spent its first seconds after Start, or after
+any live change, stretching hard to fill it. The price is the cushion
+itself: half the ring of silence before the first sound, and that much
+latency after — 186 ms at `buffer_size` 2048, 743 ms at 8192 — and a live
+change of `buffer_size`, `device_block` or `device` now costs that gap
+instead of seconds of stretching. The plain specific speaker keeps its old,
+unprimed ring.
+
 **When the device refuses the buffer size.** `buffer_size` is a request.
 A device that won't open a stream at it (an HD Audio device refused 8192
 on 2026-07-16, and the sink used to sit at `buffer: idle` with nothing to
