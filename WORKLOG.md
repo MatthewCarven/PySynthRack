@@ -46,6 +46,20 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-20 — the output device module, decided
+
+Matthew answered D1-D6 at 21:40 (verbatim in the note's *Decided*). The
+one that grew: D1 wants every channel the device offers, "if you can be
+honest", else 2, and mono when there is no second output. Honest here
+means the count PortAudio reports for the exact host-API entry the stream
+opens, shown with its host API -- on Windows MME usually says 2 for any
+card, so more than two channels leans on the host-API selection item. D3
+("change my other answers if i violate this one") checked against each of
+the others; no conflict. D6 was Claude's: the master stays out (it is the
+clock, no ring). Build sketch now four slices: stereo module, channels,
+governor (the hold actuator generalised to N channels), legacy + docs.
+Nothing built.
+
 ## 2026-11-20 — design note: an output device module
 
 Matthew, with the `device_block` work fresh: "am I right in believing that

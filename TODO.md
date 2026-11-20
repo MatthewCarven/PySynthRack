@@ -729,8 +729,13 @@ session before anything is built. Don't build ahead.
       [docs/output-device-scope.md](docs/output-device-scope.md). One
       module per device owns `buffer_size`, `device_block`, the governor
       and the readout; speakers keep gain, pan and width. Fixes the
-      last-wins governor and silent stream splits. Six decisions (D1-D6)
-      for the session, a lean on each.
+      last-wins governor and silent stream splits.
+      **Decided 2026-11-20** (D1-D6, in the note): bind by name, with every
+      channel the device honestly reports (2 if it can't say, 1 folds to
+      mono); a second ring owner refused at design time; no device module
+      = exactly today, the rule the rest answer to; buffered sinks kept as
+      "legacy"; one module with a hold/bend actuator; the master stays out.
+      Four slices, ready to build when Matthew says go.
 - [ ] **Off-thread audio rendering + host-API selection** (both below
       under Later / wishlist, with their 2026-07-20 scoping). Matthew,
       2026-10-10: "my desktop system has gui lockups that mean unless
