@@ -622,9 +622,17 @@ moves — the organ's scheme, and the same numbers, so the organ's lone 8′ is
 bit-exact against this oscillator over any length. With `freq_cv` patched
 the phase is a sample-by-sample running sum carried unwrapped across blocks
 and wrapped only every 65 536 samples of absolute time. The `_wt` shapes
-also pick their mipmap band **per sample** now (still the highest voice's,
-the conservative pick): the old per-block pick played the tail of a lower
-note on a higher note's table whenever a block straddled the change.
+also pick their mipmap band **per sample** now: the old per-block pick
+played the tail of a lower note on a higher note's table whenever a block
+straddled the change. And **per voice** (2026-11-20): each voice of a
+chord reads the table band-limited for its own fundamental, where all of
+them used to read the highest voice's — a C2 under a C6 played the C6's
+three-harmonic table, and an idle voice holding a stale high pitch thinned
+every active one. Each voice's own band is just as alias-free, so a voice
+in a chord now sounds exactly as it does alone. In a close chord the
+difference is small (−28 to −32 dB on a maj7 with and without `spread`);
+it is wide voicings — a bass and a lead on one poly oscillator — that get
+their low end back. A single voice row is still bit-identical to mono.
 Patching or unpatching `freq_cv` hands the phase straight across, no skipped
 sample.
 

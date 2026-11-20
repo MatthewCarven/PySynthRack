@@ -50,8 +50,9 @@ class WaveshapeHelpers:
             window. ``dt`` may be a scalar (constant-frequency mono ramp)
             or an array broadcastable to ``phases`` (per-sample CV / FM).
           * ``"_wt"`` -> band-limited wavetable lookup. ``dt`` selects the
-            mipmap band (per block, from the largest dt -> highest freq,
-            the conservative choice).
+            mipmap band per sample -- and, in a voice block, per voice
+            (2026-11-20): each voice its own band, so a low voice in a
+            chord keeps its harmonics.
 
         ``dt is None`` (isolated callers / unit tests that drive the
         helper without a frequency) gracefully degrades any anti-aliased
@@ -218,11 +219,21 @@ class WaveshapeHelpers:
     def _waveshape_wt(self, base, phases, dt):
         """Band-limited wavetable lookup with linear interpolation.
 
-        ``dt`` selects the mipmap band from the top frequency AT EACH
-        SAMPLE (largest dt across the leading axes -- every voice of a
-        voice block -> highest fundamental -> fewest-harmonics table, the
-        conservative pick that never aliases). A scalar ``dt`` is one
+        ``dt`` selects the mipmap band AT EACH SAMPLE, and in a voice block
+        (``dt`` with leading axes) FOR EACH VOICE: every voice reads the
+        table band-limited for its own fundamental. A scalar ``dt`` is one
         band for the block.
+
+        Per voice since 2026-11-20 (decision #6 -- Matthew: "up to you").
+        It was the largest dt across the voices, the highest note's band
+        for every voice: never aliasing, but a C2 under a C6 played the
+        C6's table -- ~3 harmonics instead of ~150, a sine where a saw was
+        asked for -- and an idle voice holding a stale high pitch thinned
+        every active one. Each voice's own band is just as alias-free (it
+        is limited for that voice's frequency), so the low voices simply
+        get back what was taken. One voice row picks exactly what the
+        max did, so a single row stays bit-identical to mono; a unison
+        (every voice one band) takes the single-table gather as before.
 
         Per sample, not per block (2026-09-24): the block's max dt made
         the band a function of where the block boundaries fell -- a
@@ -259,16 +270,20 @@ class WaveshapeHelpers:
         if dt.ndim == 0:
             j = band(float(dt))
         else:
-            # Per-sample band: the max over every leading axis (voices).
-            dt_top = dt if dt.ndim == 1 else dt.reshape(-1, dt.shape[-1]).max(axis=0)
-            j = band(float(dt_top.max()))
-            if band(float(dt_top.min())) != j:
-                # The band changes inside this block: pick it per sample
-                # (the band is monotonic in dt, so equal ends mean one
-                # band throughout and the cheap gather below).
-                _m, e = np.frexp(np.maximum(dt_top * sr, base_f) / base_f)
-                jj = np.clip(e - 1, 0, top).astype(np.intp)
-                jb = np.broadcast_to(jj, phases.shape)
-                return tables[jb, i0] * (1.0 - frac) + tables[jb, i1] * frac
+            # Per-sample band -- and per voice: every element of ``dt``
+            # (``(F,)`` mono, ``(V, F)`` or ``(V, 1)`` voices) picks its own.
+            j = band(float(dt.max()))
+            if band(float(dt.min())) != j:
+                # More than one band in this block (a note change, or the
+                # voices of a chord): gather per element. The band is
+                # monotonic in dt, so equal ends mean one band throughout
+                # and the cheap single-table gather below.
+                _m, e = np.frexp(np.maximum(dt * sr, base_f) / base_f)
+                row = np.clip(e - 1, 0, top).astype(np.intp) * L
+                flat = tables.reshape(-1)
+                # (one flat take per corner; the same elements as
+                # tables[j, i], so the values are identical to a 2-D gather)
+                return (flat.take(row + i0) * (1.0 - frac)
+                        + flat.take(row + i1) * frac)
         tbl = tables[j]
         return tbl[i0] * (1.0 - frac) + tbl[i1] * frac

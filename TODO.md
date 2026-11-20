@@ -656,9 +656,16 @@ Calls, not bugs: each waits on a yes, a no or a which.
       silent example and the live-trace-counting `glow_frames` drew no
       objection, so they stay as they are.
 
-- [ ] **EARS DECISION: `_wt` band follows the HIGHEST voice**, so a low
+- [x] **EARS DECISION: `_wt` band follows the HIGHEST voice**, so a low
       voice in a chord loses harmonics. Per-voice bands are more correct
       but change how steady poly `_wt` patches sound.
+      **Decided 2026-11-20 -- per voice** (Matthew: "up to you"; Claude's
+      call). Clean and cheap: one gather per element instead of per sample,
+      +43 us on a 16-voice chord block (0.4% of the budget), unison and
+      single rows unchanged. A voice in a chord renders exactly as it does
+      alone; a single row is still mono bit for bit. No example uses `_wt`,
+      so no example moved; a maj7 switched to `saw_wt` moves -32 dB close,
+      -28 dB spread -- wide voicings are where it shows.
 - [ ] **Question, not a defect: loop-mode voice slots that were never
       triggered stay parked** (noticed 2026-09-14). The voice path's
       idle-skip runs before the kernel's "kick out of idle", so a poly

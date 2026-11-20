@@ -238,3 +238,75 @@ class TestMidiInputAntiAliasing:
             assert out.shape == (backend._MAX_VOICES, 512)
             assert np.all(np.isfinite(out))
             assert np.max(np.abs(out)) > 0.05, w
+
+
+class TestWavetablePerVoiceBand:
+    """Decision #6 (2026-11-20, Matthew: "up to you"): each voice of a
+    voice block reads the band-limited table for ITS OWN fundamental. It
+    was the highest voice's band for all of them -- a C2 under a C6 played
+    the C6's ~3-harmonic table, and an idle voice with a stale high pitch
+    thinned every active one."""
+
+    V, F = 6, 512
+
+    def _b(self):
+        return NumpyBackend(sample_rate=SR, block_size=512)
+
+    @pytest.mark.parametrize("base", ["saw", "square", "triangle"])
+    def test_a_voice_in_a_chord_renders_exactly_as_it_does_alone(self, base):
+        b = self._b()
+        rng = np.random.default_rng(3)
+        ph = rng.random((self.V, self.F))
+        freqs = np.array([65.4, 130.8, 261.6, 523.3, 1046.5, 2093.0])
+        for dt in (np.repeat(freqs[:, None] / SR, self.F, axis=1),   # (V, F)
+                   freqs[:, None] / SR):                              # (V, 1)
+            chord = b._waveshape_wt(base, ph, dt)
+            for v in range(self.V):
+                alone = b._waveshape_wt(base, ph[v:v + 1], dt[v:v + 1])
+                assert np.array_equal(chord[v:v + 1], alone), (base, v)
+
+    def test_the_low_voice_keeps_its_harmonics(self):
+        # C2 under C7: the old shared band gave C2 the C7 table -- 8
+        # harmonics (band 6 tops out at 2560 Hz, Nyquist / 2560 = 8). Its
+        # own band keeps it a saw: above its 8th harmonic the old render had
+        # nothing but window leakage, the new one the saw's whole 1/n tail.
+        b = self._b()
+        n = 1 << 14
+        t = np.arange(n)
+        f = np.array([65.4, 2093.0])
+        ph = (f[:, None] * t[None, :] / SR) % 1.0
+        dt = np.repeat(f[:, None] / SR, n, axis=1)
+        low = b._waveshape_wt("saw", ph, dt)[0]
+        thin = b._waveshape_wt("saw", ph[0:1], dt[1:2])[0]   # C2 read on C7's band
+        spec_low = np.abs(np.fft.rfft(low * np.hanning(n)))
+        spec_thin = np.abs(np.fft.rfft(thin * np.hanning(n)))
+        k9 = int(8.5 * f[0] * n / SR)
+        assert spec_low[k9:].sum() > 100 * spec_thin[k9:].sum()
+
+    def test_a_stale_idle_voice_no_longer_thins_the_active_one(self):
+        b = self._b()
+        ph = np.random.default_rng(4).random((2, self.F))
+        dt = np.array([[110.0], [8000.0]]) / SR      # voice 1 idle on a stale 8 kHz
+        both = b._waveshape_wt("saw", ph, dt)
+        assert np.array_equal(both[0:1], b._waveshape_wt("saw", ph[0:1], dt[0:1]))
+
+    def test_one_voice_row_is_still_mono_bit_for_bit(self):
+        b = self._b()
+        ph = np.random.default_rng(5).random(self.F)
+        dt = np.linspace(200.0, 900.0, self.F) / SR   # crosses a band edge mid-block
+        mono = b._waveshape_wt("saw", ph, dt)
+        row = b._waveshape_wt("saw", ph[None, :], dt[None, :])
+        assert np.array_equal(row[0], mono)
+
+    def test_a_unison_is_one_table(self):
+        b = self._b()
+        ph = np.random.default_rng(6).random((4, self.F))
+        dt = np.full((4, 1), 220.0 / SR)
+        out = b._waveshape_wt("saw", ph, dt)
+        j = 3                                            # 220 Hz: 20 * 2**3 = 160 .. 320
+        tbl = b._get_wavetable("saw")[j]
+        L = b.WT_LEN
+        pos = ph * L
+        i0 = np.floor(pos).astype(np.int64) % L
+        frac = pos - np.floor(pos)
+        assert np.array_equal(out, tbl[i0] * (1 - frac) + tbl[(i0 + 1) % L] * frac)
