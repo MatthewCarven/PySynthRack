@@ -237,10 +237,11 @@ python -m pysynthrack --render blip.wav --patch my_patch.json --seconds 0.3 --mo
 
 ### Forcing a backend
 
-The app selects `pyo` when it's installed, else `sounddevice + numpy` (the full-featured default). To override:
+The app selects `sounddevice + numpy` (the full-featured default, every module) whenever it's available, and falls back to `pyo` only if it isn't. To ask for one explicitly, pass `--backend numpy` / `--backend pyo` on the command line, or set the environment variable:
 
 ```powershell
-$env:PYSYNTHRACK_BACKEND = "numpy"   # or "pyo"
+python -m pysynthrack --backend pyo            # this run only
+$env:PYSYNTHRACK_BACKEND = "pyo"               # or for the whole session
 python -m pysynthrack --cli --seconds 2
 ```
 
@@ -268,4 +269,4 @@ on every push and pull request.
 
 - DSP code lives in `audio/` backends; UI code lives in `ui/`. Module classes in `modules/` declare ports and parameters but contain no audio rendering — they are descriptions, not implementations.
 - Cable connections are stored in `Patch`, not on the ports themselves. This keeps the model serializable.
-- The numpy backend is the reference implementation — every module targets it, and it's the default. The optional pyo backend covers a subset and is selected first only when installed. Both implement the same `AudioBackend` interface.
+- The numpy backend is the reference implementation — every module targets it, and it's the default. The optional pyo backend covers a subset (most modules are silent stubs there) and is used only when asked for (`--backend pyo` or `PYSYNTHRACK_BACKEND=pyo`) or when numpy's audio isn't available. Both implement the same `AudioBackend` interface.

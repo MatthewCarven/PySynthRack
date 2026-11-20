@@ -137,7 +137,7 @@ live-update notification on top of it, not the place the value lives.
 
 ## Backend selection
 
-`audio.pick_backend()` picks the first backend whose dependencies import cleanly. The default order is `pyo` then `numpy`. Force a specific backend with the `PYSYNTHRACK_BACKEND` environment variable — handy when debugging or when one backend is misbehaving.
+`audio.pick_backend()` picks the first backend whose dependencies import cleanly. The default order is `numpy` then `pyo` (numpy first since 2026-11-20: it is the reference backend and covers every module; pyo is parked, with most modules as silent stubs). Force a specific backend with `--backend numpy|pyo` on the command line or the `PYSYNTHRACK_BACKEND` environment variable — handy when debugging or when one backend is misbehaving.
 
 ## Threading model
 

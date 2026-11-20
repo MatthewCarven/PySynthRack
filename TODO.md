@@ -656,7 +656,7 @@ Calls, not bugs: each waits on a yes, a no or a which.
       re-seeds** a seeded `random` LFO — decide whether that is wanted.
       *Hoisted 2026-10-10 from the archived "`lfo` — `seed`" entry
       (2026-09-20).*
-- [ ] **Backend preference: pyo still wins when installed.**
+- [x] **Backend preference: pyo still wins when installed.**
       `audio/__init__.py` `_PREFERENCE = ("pyo", "numpy")`, so anyone who
       takes the README's optional "also try pyo" install step gets a GUI
       where most of the 101 modules are silent stubs. The README does say
@@ -664,6 +664,11 @@ Calls, not bugs: each waits on a yes, a no or a which.
       numpy the default and pyo is parked. Flip to numpy-first (pyo by
       `PYSYNTHRACK_BACKEND=pyo` only), or keep it as is? *Surfaced
       2026-10-10 by the MODULE_IDEAS realignment.*
+      **Decided 2026-11-20 -- flipped:** `_PREFERENCE = ("numpy", "pyo")`.
+      pyo by `--backend pyo` (already a command-line option) or
+      `PYSYNTHRACK_BACKEND=pyo`, or as the fallback when numpy's audio is
+      missing. README + architecture.md say so. Matthew would like a live
+      switch in the GUI too -- filed under Later / wishlist.
 
 ## Plan together first
 
@@ -825,6 +830,16 @@ session before anything is built. Don't build ahead.
       the doc's appendix. Pick items into this list as they're chosen.
 
 ## Later / wishlist
+
+- [ ] **Switch audio backend live, from the GUI** (Matthew, 2026-11-20:
+      "if we could offer this dynamically and reinit the audio subsystem
+      i'd like it more but like this might be a multi step process").
+      A menu entry listing the available backends; picking one stops the
+      transport, tears the old backend down, builds the new one, compiles
+      the current patch into it and restarts if it was running. Multi-step:
+      the App holds `self.backend` in many places (meters, readouts, device
+      pickers, the sink rings), and pyo's server is process-global. Scope
+      before building. Today: `--backend` / `PYSYNTHRACK_BACKEND`.
 
 - [ ] **Off-thread audio rendering (render thread + ring buffer)** — SCOPED
       2026-07-20, gated on the readout above. *2026-10-10: wanted, and

@@ -1,8 +1,10 @@
 """Audio backends.
 
-``pick_backend`` returns the first available backend in preference order.
-Set ``PYSYNTHRACK_BACKEND=pyo`` or ``=numpy`` to force a specific one;
-useful for debugging when both are installed.
+``pick_backend`` returns the first available backend in preference order:
+numpy first (the reference backend, every module), then pyo (parked; most
+modules are silent stubs there). Ask for one with ``--backend pyo`` /
+``--backend numpy`` on the command line, or ``PYSYNTHRACK_BACKEND=pyo`` /
+``=numpy`` in the environment.
 """
 from __future__ import annotations
 
@@ -17,8 +19,11 @@ _REGISTRY: dict[str, type[AudioBackend]] = {
     "numpy": NumpyBackend,
 }
 
-# Preference order — first match wins.
-_PREFERENCE = ("pyo", "numpy")
+# Preference order — first match wins. numpy first since 2026-11-20
+# (Matthew's call): with pyo first, anyone who took the README's optional
+# pyo step got a GUI where most modules were silent stubs. pyo is still one
+# --backend / PYSYNTHRACK_BACKEND away.
+_PREFERENCE = ("numpy", "pyo")
 
 
 def pick_backend(
