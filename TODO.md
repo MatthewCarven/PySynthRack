@@ -775,6 +775,24 @@ session before anything is built. Don't build ahead.
 ## Follow-ons and small items
 
 *From the 2026-11-19 stereo work:*
+- [x] **Buffered sink skipping with `auto_govern` on** (Matthew,
+      2026-11-20, buffer_size 2048 / device_block auto: "it seems to do
+      skip"; unticking it "made it more steady"). The governor chased the
+      fill's device-block sawtooth. Fixed the same night: `fill` and
+      `auto_govern` read the fill averaged over one device period.
+      **HANDS + EARS:** same patch, `auto_govern` back on -- steady now?
+- [ ] **Governed sinks stretch hard for the first seconds after Start**
+      (found 2026-11-20 chasing the skip). The ring starts nearly empty, so
+      the governor pushes the ratio to ~1.19 until it reaches half: at
+      buffer 4096 / device_block 512 (a 32768 ring) the first ~8 s splice
+      audibly. Fix offered: start a governed stream's ring half full of
+      silence, at the setpoint, so the governor begins at 1.0 (Start then
+      has the half-ring latency it would settle at anyway).
+- [ ] **The device stream's own underflows are invisible** (found
+      2026-11-20). `_DeviceOutput._callback` ignores PortAudio's status, so
+      a late callback on the second device (an MME glitch, GIL contention)
+      never shows: `under` counts only our ring running dry. Count
+      `output_underflow` there and show it on the node as `late N`.
 - [ ] **Stereo: which other modules pull left and right apart** --
       SCOPED 2026-11-19, `docs/stereo-scope.md` (Matthew asked). Four
       causes: deciding timing from its own audio, its own random stream,

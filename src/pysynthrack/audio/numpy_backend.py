@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -220,6 +221,10 @@ class _DeviceOutput:
         self._underruns = 0
         self._drops = 0
         self._primed = False
+        # Samples the device took in its last callback: the period of the
+        # fill's sawtooth, which the governor averages over (a stream on
+        # PortAudio's own block size only learns it from a callback).
+        self.last_pull = dev_block
         self._lock = threading.Lock()
         self._stream: Any = None
 
@@ -317,6 +322,8 @@ class _DeviceOutput:
 
     def _callback(self, outdata, frames, time_info, status) -> None:
         cap = self._capacity
+        if frames > 0:
+            self.last_pull = int(frames)
         with self._lock:
             n = min(self._avail, frames)
             if n < frames:
@@ -1520,6 +1527,11 @@ class NumpyBackend(
         # dropped when ratio_cv is uncabled, absent entirely on the
         # unpatched path.
         self._sink_stretch: dict[int, Any] = {}
+        # The ring fill as the CONTROL paths read it (the ``fill`` out and
+        # auto_govern): the mean of the last readings over one device
+        # period, per stream key (see _update_sink_fills). Audio thread only.
+        self._sink_fill_hist: dict[tuple, Any] = {}
+        self._sink_fill_avg: dict[tuple, float] = {}
         # GUI thread writes the patch reference; audio thread reads it.
         self._lock = threading.Lock()
         # Audio-callback crash protection. After the first uncaught
@@ -2078,6 +2090,8 @@ class NumpyBackend(
         # engines so the next Start begins at unity ratio with fresh grains.
         self._sink_ratio.clear()
         self._sink_stretch.clear()
+        self._sink_fill_hist.clear()
+        self._sink_fill_avg.clear()
         # Drop any captured input so a stale block can't leak into the
         # next start() (which may be output-only).
         self._input_block = None
@@ -2567,11 +2581,12 @@ class NumpyBackend(
         # live stream (transport stopped, device empty, failed open) the
         # seed is a neutral 0.5: zero error against the half-full setpoint,
         # so an idle governor patch commands no stretch.
+        self._update_sink_fills(frames)
         for module in modules.values():
             if module.TYPE not in self._BUFFERED_SPEAKERS:
                 continue
             buffers[(module.id, "fill")] = np.full(
-                frames, self._sink_fill(module), dtype=np.float32
+                frames, self._sink_fill_avg_for(module), dtype=np.float32
             )
         # Matrix feedback seed: every late-read source port publishes the
         # PREVIOUS block's buffer before anything renders — the matrix
@@ -2863,9 +2878,10 @@ class NumpyBackend(
         neutral 0.5 when it has no live stream (device empty, transport
         stopped, or a failed open). Read from the same telemetry the GUI
         readout uses, so it is effectively one block old — exactly the
-        delay the governor is built around. Shared by the ``fill`` cv-out
-        seeding and the built-in ``auto_govern`` controller so the two can
-        never disagree about how full the ring is."""
+        delay the governor is built around. The ``fill`` cv-out and the
+        built-in ``auto_govern`` controller read it averaged over one device
+        period (:meth:`_sink_fill_avg_for`, since 2026-11-20), so the two
+        still never disagree about how full the ring is."""
         key = self._stream_key(module)
         if key is not None:
             dev_out = self._device_outputs.get(key)
@@ -2874,6 +2890,50 @@ class NumpyBackend(
                 if capacity > 0:
                     return queued / capacity
         return 0.5
+
+    def _update_sink_fills(self, frames: int) -> None:
+        """Once per block, before anything reads it: each stream's fill
+        averaged over ONE DEVICE PERIOD, for the control paths.
+
+        The device pulls its block in one bite and the render pushes in
+        smaller ones, so the raw fill read once per render block is a
+        sawtooth: with a 2048 device block under 512 render blocks it climbs
+        512 at a time and drops 2048 at once -- 12.5% of a 16384 ring, about
+        21 times a second. A governor reading that chased it, flipping its
+        stretch ratio either side of 1 every 46 ms, and the time-stretch
+        splicing the whole time is what was heard as skipping (Matthew,
+        2026-11-20; reproduced: 46 of 320 square-wave edges lost or smeared,
+        0 with the governor off). The sawtooth repeats every device period,
+        so the mean over the last ``round(period / frames)`` readings is
+        flat. A device block no bigger than the render block gives a window
+        of ONE reading -- the raw fill, exactly as before. The node's
+        readout keeps showing the raw ring (``snapshot_sink_buffers``).
+        """
+        outs = self._device_outputs
+        for key in [k for k in self._sink_fill_hist if k not in outs]:
+            del self._sink_fill_hist[key]
+            self._sink_fill_avg.pop(key, None)
+        for key, dev_out in outs.items():
+            queued, capacity, _u, _d = dev_out.telemetry()
+            if capacity <= 0:
+                continue
+            period = int(dev_out.opened_block or getattr(dev_out, "last_pull", 0) or frames)
+            width = max(1, int(round(period / max(1, frames))))
+            hist = self._sink_fill_hist.get(key)
+            if hist is None or hist.maxlen != width:
+                hist = self._sink_fill_hist[key] = deque(maxlen=width)
+            hist.append(queued / capacity)
+            self._sink_fill_avg[key] = sum(hist) / len(hist)
+
+    def _sink_fill_avg_for(self, module) -> float:
+        """The fill the ``fill`` out and auto_govern read: this sink's
+        stream averaged over one device period (``_update_sink_fills``), or
+        the instantaneous :meth:`_sink_fill` (0.5 with no live stream) when
+        no average exists yet."""
+        key = self._stream_key(module)
+        if key is not None and key in self._sink_fill_avg:
+            return self._sink_fill_avg[key]
+        return self._sink_fill(module)
 
     def _governed_ratio(self, module, patch, buffers) -> float | None:
         """The smoothed varispeed ratio the ring governor commands, or
@@ -2910,7 +2970,7 @@ class NumpyBackend(
             # Low ring (fill < 0.5) -> positive error -> ratio > 1 -> push
             # MORE samples to refill; high ring drains it. Same sign the
             # patch recipe inverts to by hand.
-            target = 1.0 + self._AUTO_GOVERN_GAIN * (0.5 - self._sink_fill(module))
+            target = 1.0 + self._AUTO_GOVERN_GAIN * (0.5 - self._sink_fill_avg_for(module))
         else:
             self._sink_ratio.pop(module.id, None)
             self._sink_stretch.pop(module.id, None)

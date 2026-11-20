@@ -46,6 +46,37 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-20 — the skip: auto_govern was chasing the device-block sawtooth
+
+Matthew, testing the new build on a buffered sink (buffer_size 2048,
+device_block auto, auto_govern on, MME, "Speakers 2 (Realtek HD Audio)"):
+"it seems to do skip", then a GIF, then "unticking it made it more
+steady". The GIF's 70 frames: `under 1 drop 0` throughout, the fill
+swinging 41-61%. So the ring never ran dry; the fill is a sawtooth
+because the device takes 2048 at a time while the render pushes 512.
+
+**Reproduced** (two clocks simulated, the device 150 ppm fast, its
+callback driven by hand): a 10 Hz naive square through the governed sink
+lost or smeared 46 of 320 edges in what the device received; 0 with the
+governor off, 0 at buffer_size 512. The auto governor read the raw fill
+once per render block, so its ratio flipped 0.996..1.0034 every 46 ms and
+the WSOLA hold stretch spliced nonstop.
+
+**Fixed:** `_update_sink_fills` keeps, per stream, the last
+`round(device period / render block)` readings and the `fill` out and
+`auto_govern` read their mean, which is flat (the sawtooth repeats every
+period). Ratio now 1.0008 flat, 320/320 edges, each within a sample. A
+device block no bigger than the render block averages one reading -- the
+raw fill, as before. The node's percentage stays raw. The period comes
+from the opened block, or from the last callback's size when PortAudio
+picks. tests/test_sink_fill_average.py (7; five fail on the old code).
+
+**Found on the way, offered, not built:** governed sinks stretch hard for
+the first seconds after Start (the ring starts near empty: at 4096 / 512
+the first ~8 s splice) -- prime a governed ring half full at open; and
+the second device's own PortAudio underflows are never counted -- show
+them as `late N`. Both on TODO's follow-ons.
+
 ## 2026-11-20 — the output device module, decided
 
 Matthew answered D1-D6 at 21:40 (verbatim in the note's *Decided*). The

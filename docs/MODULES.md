@@ -6419,6 +6419,22 @@ overrides it. With `ratio_cv` unpatched and `auto_govern` off (both
 defaults) the push is bit-identical to before. Numpy
 backend only.
 
+**The governor reads the fill averaged over one device period**
+(2026-11-20). The device takes its block in one bite while the render
+pushes in smaller ones, so the raw fill read once per render block is a
+sawtooth: at `buffer_size` 2048 (device block 2048) under 512-sample
+render blocks it climbs 512 a block and drops 2048 at each pull — 12.5%
+of the ring, about 21 times a second. The governor used to chase that,
+flipping its stretch either side of 1 every 46 ms, and the time-stretch
+splicing nonstop was heard as **skipping** (Matthew's report; measured: 46
+of 320 square-wave edges lost or smeared, none with the governor off).
+Now `fill` and `auto_govern` read the mean over the last
+`device block ÷ render block` readings, which is flat because the sawtooth
+repeats every period: the ratio holds still and every edge arrives once,
+on time. A device block no bigger than the render block averages one
+reading — the raw fill, exactly as before. The node's percentage still
+shows the raw ring, sawtooth and all; that is what is really in it.
+
 Why a per-sink buffer: the main mix might run at a tight 128-frame
 buffer for a responsive keyboard while a flaky USB / Bluetooth monitor
 on this sink needs a roomy 1024 to stop crackling — or the reverse, a
