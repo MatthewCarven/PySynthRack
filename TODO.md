@@ -781,6 +781,10 @@ session before anything is built. Don't build ahead.
       fill's device-block sawtooth. Fixed the same night: `fill` and
       `auto_govern` read the fill averaged over one device period.
       **HANDS + EARS:** same patch, `auto_govern` back on -- steady now?
+- [x] **`buffers` slider on the buffered sinks** (Matthew, 2026-11-21:
+      "offer up the number of buffers as a slider"). 2..32, default 8 (the
+      old fixed count); cushion and latency = buffers / 2 x buffer_size.
+      **HANDS + EARS:** try 4 for tighter singing, 16 for a busy machine.
 - [x] **The speaker device list hid which host API each entry was**
       (Matthew's device tour, 2026-11-21: one name shared by MME,
       DirectSound and WASAPI could not open; WDM-KS entries failed; only

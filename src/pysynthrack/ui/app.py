@@ -4594,6 +4594,29 @@ class App:
             )
             return
 
+        if (
+            param_name == "buffers"
+            and module.TYPE in (
+                "buffered_specific_speaker_output",
+                "warping_buffered_speaker_output",
+            )
+        ):
+            # How many buffer_size blocks the ring holds (2026-11-21).
+            try:
+                n = int(current)
+            except (TypeError, ValueError):
+                n = 8
+            dpg.add_slider_int(
+                label=param_name,
+                default_value=max(2, min(32, n)),
+                min_value=2,
+                max_value=32,
+                width=140,
+                callback=self._on_sink_buffers_changed,
+                user_data=user_data,
+            )
+            return
+
         if isinstance(default, bool):
             dpg.add_checkbox(
                 label=param_name,
@@ -7428,6 +7451,20 @@ class App:
                 stale.append(mid)
         for mid in stale:
             self._disk_writer_labels.pop(mid, None)
+
+    def _on_sink_buffers_changed(self, sender, app_data, user_data) -> None:
+        """A buffered sink's ``buffers`` slider moved: store a clean int
+        (2 .. 32). Live while running -- only that sink's stream is rebuilt,
+        primed half full of the new ring -- and the readout baseline resets
+        for the new stream, as for buffer_size."""
+        module_id, param_name = user_data
+        try:
+            n = int(app_data)
+        except (TypeError, ValueError):
+            n = 8
+        self._set_module_param(module_id, param_name, max(2, min(32, n)))
+        self._sink_buffer_last.pop(module_id, None)
+        self._sink_buffer_flash.pop(module_id, None)
 
     def _on_device_block_changed(self, sender, app_data, user_data) -> None:
         """A buffered sink's ``device_block`` combo changed: store "auto" or

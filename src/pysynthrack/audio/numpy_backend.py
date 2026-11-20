@@ -2262,7 +2262,9 @@ class NumpyBackend(
             device_block = self._key_device_block(key)
             try:
                 dev_out = _DeviceOutput(
-                    dev, self.sample_rate, block_size, device_block=device_block,
+                    dev, self.sample_rate, block_size,
+                    max_blocks=self._key_buffers(key),
+                    device_block=device_block,
                     prime=key in buffered_keys,
                 )
                 dev_out.open()
@@ -2339,7 +2341,7 @@ class NumpyBackend(
         # other param (or module type) never touches the stream set.
         if (
             self._running
-            and name in ('device', 'buffer_size', 'device_block')
+            and name in ('device', 'buffer_size', 'device_block', 'buffers')
             and module.TYPE in self._ROUTED_SPEAKERS
         ):
             self._sync_device_outputs()
@@ -2631,6 +2633,29 @@ class NumpyBackend(
             return ring
         return max(_MIN_SINK_BLOCK, min(_MAX_SINK_BLOCK, val))
 
+    #: The ring's block count: ``buffers`` on a buffered sink (2026-11-21),
+    #: else the old fixed eight.
+    _DEFAULT_SINK_BUFFERS = 8
+    _MIN_SINK_BUFFERS = 2
+    _MAX_SINK_BUFFERS = 32
+
+    def _sink_buffers(self, module) -> int:
+        """How many ``buffer_size`` blocks this sink's ring holds: its
+        ``buffers`` param, clamped to 2 .. 32 (junk -> 8); other sinks 8."""
+        if module.TYPE not in self._BUFFERED_SPEAKERS:
+            return self._DEFAULT_SINK_BUFFERS
+        try:
+            n = int(float(module.params.get("buffers", self._DEFAULT_SINK_BUFFERS)))
+        except (TypeError, ValueError, OverflowError):
+            return self._DEFAULT_SINK_BUFFERS
+        return max(self._MIN_SINK_BUFFERS, min(self._MAX_SINK_BUFFERS, n))
+
+    @classmethod
+    def _key_buffers(cls, key: tuple) -> int:
+        """The ring's block count a stream key asks for: its fourth element
+        when ``buffers`` is not the default 8, else 8."""
+        return int(key[3]) if len(key) > 3 else cls._DEFAULT_SINK_BUFFERS
+
     @staticmethod
     def _key_device_block(key: tuple) -> int:
         """The device block a stream key asks for: its third element when the
@@ -2658,6 +2683,11 @@ class NumpyBackend(
             return None
         ring = self._sink_block_size(module)
         dev_block = self._sink_device_block(module)
+        nbuf = self._sink_buffers(module)
+        if nbuf != self._DEFAULT_SINK_BUFFERS:
+            # A ring of its own size keys its own stream (2026-11-21); the
+            # default eight keeps the older keys, so nothing else moved.
+            return (dev, ring, dev_block, nbuf)
         return (dev, ring) if dev_block == ring else (dev, ring, dev_block)
 
     def render_block(self, frames: int) -> np.ndarray | None:

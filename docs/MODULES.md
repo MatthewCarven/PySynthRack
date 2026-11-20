@@ -6554,7 +6554,8 @@ device block (`2048/65536` at `buffer_size` 8192): `buffer_size` was only a
 ceiling, and a governed sink spent its first seconds after Start, or after
 any live change, stretching hard to fill it. The price is the cushion
 itself: half the ring of silence before the first sound, and that much
-latency after — 186 ms at `buffer_size` 2048, 743 ms at 8192 — and a live
+latency after — at the default 8 `buffers`, 186 ms at `buffer_size` 2048
+and 743 ms at 8192; the `buffers` slider trades it either way — and a live
 change of `buffer_size`, `device_block` or `device` now costs that gap
 instead of seconds of stretching. The plain specific speaker keeps its old,
 unprimed ring.
@@ -6596,7 +6597,8 @@ reason; that sink is silent and the rest of the patch plays on.
 | `width` | `1.0` | 0 … 2 | Mid/side width; pairs only. |
 | `cv_depth` | `1.0` | 0 … 2 | Knob units per CV unit, shared by `pan_cv` and `width_cv`. |
 | `device` | `""` | `host API: device name` | Target output device; `""` = system default (drains to master). A named device routes the sink to its own OutputStream; changing it re-routes **live**. Since 2026-11-21 the list shows one entry per host API, e.g. `DirectSound: Speakers 2 (Realtek HD Audio output)`, and the sink opens exactly that entry (see *Choosing the host API* below). |
-| `buffer_size` | `512` | 64 … 8192 | Block size of this sink's own output stream, independent of the global buffer (whose slider tops out at 1024 — the 2048/4096/8192 stops are sink-only); the ring holds 8× it. Read at stream open; a live change rebuilds only this stream. A device that refuses it runs the stream on a smaller block with the ring unchanged, and says so (see *When the device refuses the buffer size*). Out-of-range values are clamped. |
+| `buffer_size` | `512` | 64 … 8192 | Block size of this sink's own output stream, independent of the global buffer (whose slider tops out at 1024 — the 2048/4096/8192 stops are sink-only); the ring holds `buffers` × it (8 by default). Read at stream open; a live change rebuilds only this stream. A device that refuses it runs the stream on a smaller block with the ring unchanged, and says so (see *When the device refuses the buffer size*). Out-of-range values are clamped. |
+| `buffers` | `8` | 2 … 32 | (2026-11-21) How many `buffer_size` blocks the ring holds — a slider. The ring starts half full, so the cushion and the latency are `buffers / 2 × buffer_size`: fewer for tight monitoring, more to ride out a busy machine. 8 is the old fixed count (and keeps the old stream key). Live; the stream is rebuilt, primed half full of the new ring. Out-of-range values are clamped; junk reads as 8. |
 | `device_block` | `auto` | auto · 64 … 8192 | (2026-11-20) The block asked of the device, apart from the ring: `auto` = `buffer_size` (as before), or a size of its own — e.g. `buffer_size` 4096 for the cushion with `device_block` 512 for the chunk. The ring never holds less than two device blocks. Live, like `buffer_size`; junk reads as `auto`, numbers are clamped. |
 
 ---
@@ -6633,7 +6635,7 @@ like the routing itself.
 (`in_l` / `in_r`, `pan_cv` / `width_cv`, `ratio_cv` → `fill`).
 
 **Parameters** — the buffered sink's set (`gain`, `pan`, `width`,
-`cv_depth`, `device`, `buffer_size`, `device_block`, `ratio_depth`) plus:
+`cv_depth`, `device`, `buffer_size`, `device_block`, `buffers`, `ratio_depth`) plus:
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|

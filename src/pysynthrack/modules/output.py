@@ -413,6 +413,11 @@ class BufferedSpecificSpeakerOutput(Module):
             ``device_block`` 512) keeps the latency headroom without the
             device buffering a huge block of its own. The ring never
             holds less than two device blocks.
+        buffers: How many ``buffer_size`` blocks the ring holds (2026-11-21,
+            Matthew: "offer up the number of buffers as a slider"): 2 .. 32,
+            default 8 (the old fixed count). It starts half full, so the
+            cushion -- and the latency -- is ``buffers / 2 x buffer_size``:
+            fewer for tighter monitoring, more to ride out a busy machine.
         ratio_depth: Stretch swing per ``ratio_cv`` unit (default 0.25:
             cv +-1 pushes 25% more/fewer samples). The engine clamps the
             resulting ratio to 0.5..2 whatever the depth.
@@ -433,6 +438,7 @@ class BufferedSpecificSpeakerOutput(Module):
         "device": AUTO_DEVICE,
         "buffer_size": 512,
         "device_block": "auto",
+        "buffers": 8,
         "ratio_depth": 0.25,
         "auto_govern": False,
     }

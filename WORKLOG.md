@@ -46,6 +46,17 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-21 — a `buffers` slider on the buffered sinks
+
+Matthew, 01:52: "Can we also offer up the number of buffers as a slider on
+the buffered speaker output please Claude?" The ring was a fixed 8 x
+buffer_size. `buffers` (2..32, default 8) sets it; with the ring primed half
+full, the cushion and the latency are buffers / 2 x buffer_size, so it is
+the latency knob for singing along as much as the safety one. 8 keeps the
+older stream keys, so existing patches are untouched; any other count keys
+its own stream, `(device, ring, device_block, buffers)`. Live like the other
+sink settings. tests/test_sink_buffers.py (19). Patch d18.
+
 ## 2026-11-21 — three fixes from the device tour: prime, late, host API list
 
 Matthew, 00:20: "if you could that would be excellent" -- all three
