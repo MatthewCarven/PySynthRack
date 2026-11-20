@@ -21,29 +21,118 @@ except Exception:  # pragma: no cover - environment-dependent
 AUTO_DEVICE = ""
 
 
-def available_output_devices() -> list[str]:
-    """List playback-capable device names; empty if sounddevice is absent.
+#: Short tags for PortAudio's host APIs, as the device list shows them
+#: ("DirectSound: Speakers ..."). Anything else shows its own full name.
+HOST_API_TAGS = {
+    "MME": "MME",
+    "Windows DirectSound": "DirectSound",
+    "Windows WASAPI": "WASAPI",
+    "Windows WDM-KS": "WDM-KS",
+    "ASIO": "ASIO",
+    "Core Audio": "CoreAudio",
+    "ALSA": "ALSA",
+    "JACK Audio Connection Kit": "JACK",
+}
+#: Host APIs left out of the speaker device list: WDM-KS bypasses the
+#: Windows mixer and wants the device to itself; on Matthew's Realtek every
+#: WDM-KS entry failed to open or to start (2026-11-21).
+HIDDEN_HOST_APIS = {"WDM-KS"}
+#: When an old patch names a device by its bare name and several host APIs
+#: offer it, the first of these that has it is opened. DirectSound first: it
+#: is what behaved on Matthew's machine (2026-11-21); WDM-KS last.
+HOST_API_PREFERENCE = ("DirectSound", "MME", "WASAPI", "CoreAudio", "ALSA",
+                       "JACK", "ASIO", "WDM-KS")
 
-    The output mirror of :func:`pysynthrack.modules.micinput.available_input_devices`.
-    Filters to devices reporting at least one *output* channel and de-dupes by
-    name (host APIs often expose the same device several times). Never raises —
-    a flaky audio stack yields an empty list, and the UI still offers the
+
+def _output_entries(sd_mod) -> list[tuple[int, str, str]]:
+    """``(index, name, host API tag)`` for every playback-capable device."""
+    apis = [HOST_API_TAGS.get(str(h.get("name", "")), str(h.get("name", "")))
+            for h in sd_mod.query_hostapis()]
+    out = []
+    for i, dev in enumerate(sd_mod.query_devices()):
+        if int(dev.get("max_output_channels", 0)) <= 0:
+            continue
+        name = str(dev.get("name", "")).strip()
+        h = int(dev.get("hostapi", -1))
+        tag = apis[h] if 0 <= h < len(apis) else "?"
+        if name:
+            out.append((i, name, tag))
+    return out
+
+
+def device_label(name: str, tag: str) -> str:
+    """How the device list shows (and a patch stores) one host-API entry."""
+    return f"{tag}: {name}"
+
+
+def _split_label(text: str, tags) -> tuple[str | None, str]:
+    """``("DirectSound", "Speakers")`` for ``"DirectSound: Speakers"``;
+    ``(None, text)`` for a bare name (an older patch)."""
+    head, sep, rest = text.partition(": ")
+    if sep and head in tags:
+        return head, rest
+    return None, text
+
+
+def available_output_devices(sd_mod=None) -> list[str]:
+    """The speaker device list: one entry per host API a device appears under.
+
+    Each entry reads ``"<host API>: <device name>"`` (2026-11-21) -- it used
+    to de-dupe by name, so the same card under MME, DirectSound and WASAPI
+    showed once, as whichever came first, and a name several of them shared
+    could not be opened at all ("Multiple output devices found"). WDM-KS
+    entries are left out (:data:`HIDDEN_HOST_APIS`). Never raises -- a flaky
+    audio stack yields an empty list, and the UI still offers the
     ``AUTO_DEVICE`` default.
     """
-    if not _HAS_SD:
+    sd_mod = _sd if sd_mod is None else sd_mod
+    if sd_mod is None:
         return []
     try:
-        names: list[str] = []
-        seen: set[str] = set()
-        for dev in _sd.query_devices():
-            if int(dev.get("max_output_channels", 0)) > 0:
-                name = str(dev.get("name", "")).strip()
-                if name and name not in seen:
-                    seen.add(name)
-                    names.append(name)
-        return names
+        labels: list[str] = []
+        for _i, name, tag in _output_entries(sd_mod):
+            if tag in HIDDEN_HOST_APIS:
+                continue
+            label = device_label(name, tag)
+            if label not in labels:
+                labels.append(label)
+        return labels
     except Exception:  # pragma: no cover - depends on host audio stack
         return []
+
+
+def resolve_output_device(text: str, sd_mod=None):
+    """What to hand ``sounddevice`` for a sink's ``device`` param.
+
+    A list entry (``"DirectSound: Speakers"``) resolves to that exact
+    host-API entry's index; if it is not present right now the text comes
+    back unchanged, and the open fails and says so. A bare name (an older
+    patch) resolves to its only entry, or -- when several host APIs offer
+    it -- to the first in :data:`HOST_API_PREFERENCE`. Anything else comes
+    back unchanged, for sounddevice's own matching, exactly as before. Never
+    raises; a backend without device queries gets the text back.
+    """
+    sd_mod = _sd if sd_mod is None else sd_mod
+    if not text or sd_mod is None or not hasattr(sd_mod, "query_devices"):
+        return text
+    try:
+        entries = _output_entries(sd_mod)
+    except Exception:
+        return text
+    tags = set(HOST_API_TAGS.values()) | {t for _i, _n, t in entries}
+    tag, name = _split_label(text, tags)
+    if tag is not None:
+        for i, n, t in entries:
+            if n == name and t == tag:
+                return i
+        return text
+    same = [(t, i) for i, n, t in entries if n == text]
+    if len(same) == 1:
+        return same[0][1]
+    if same:
+        rank = {t: k for k, t in enumerate(HOST_API_PREFERENCE)}
+        return min(same, key=lambda ti: rank.get(ti[0], len(rank)))[1]
+    return text
 
 
 @register_module_type

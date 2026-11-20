@@ -264,7 +264,7 @@ class _DeviceOutput:
                     channels=2,
                     blocksize=bs,
                     dtype="float32",
-                    device=self.device,
+                    device=self._resolved_device(),
                     callback=self._callback,
                 )
                 self._block_size = bs  # before start(): callbacks may fire at once
@@ -285,6 +285,14 @@ class _DeviceOutput:
         self._block_size = self.requested_block
         assert last is not None  # the ladder is never empty
         raise last
+
+    def _resolved_device(self):
+        """The ``device`` param as sounddevice should get it: a host-API list
+        entry ("DirectSound: Speakers") becomes that exact entry's index, a
+        bare name shared by several host APIs the preferred one's index
+        (see modules.output.resolve_output_device, 2026-11-21)."""
+        from ..modules.output import resolve_output_device
+        return resolve_output_device(self.device, sd_mod=sd)
 
     def _prime_half(self) -> None:
         """Fill the ring to half with silence, armed (before start()).

@@ -6374,7 +6374,7 @@ for; don't rely on it for phase-locked multi-device playback.
 | `pan` | `0.0` | −1 … 1 | Position (mono) or balance (pair). |
 | `width` | `1.0` | 0 … 2 | Mid/side width; pairs only. |
 | `cv_depth` | `1.0` | 0 … 2 | Knob units per CV unit, shared by `pan_cv` and `width_cv`. |
-| `device` | `""` | device name | Target output device; `""` = system default (drains to master). A named device routes the sink to its own OutputStream; changing it re-routes **live**. |
+| `device` | `""` | `host API: device name` | Target output device; `""` = system default (drains to master). A named device routes the sink to its own OutputStream; changing it re-routes **live**. Since 2026-11-21 the list shows one entry per host API, e.g. `DirectSound: Speakers 2 (Realtek HD Audio output)`, and the sink opens exactly that entry (see *Choosing the host API* below). |
 
 ---
 
@@ -6496,6 +6496,21 @@ moment whenever either counter ticks. Sinks sharing one
 `(device, buffer_size)` stream show identical numbers, by design.
 (numpy backend only, like the routing itself.)
 
+**Choosing the host API** (2026-11-21). Windows offers each output through
+several audio layers — MME, DirectSound, WASAPI, WDM-KS — and they behave
+differently with the same card. The `device` list now shows one entry per
+layer, the layer first (`MME: …`, `DirectSound: …`, `WASAPI: …`), and the
+sink opens exactly the entry you pick. WDM-KS entries are left out: it
+bypasses the Windows mixer and wants the device to itself, and on the
+Realtek this was tested on every WDM-KS entry failed to open or to start.
+A patch saved before this keeps its bare name: a name only one layer offers
+opens as before, and a name several offer (the case that used to fail with
+"Multiple output devices found") opens the DirectSound one, then MME, then
+WASAPI. If a device stutters with `under` still and `late` climbing, try it
+under another layer. WASAPI in shared mode only opens at the rate Windows
+has the device set to (Sound settings → the device → Advanced), so at
+44.1 kHz a device set to 48 kHz may refuse it.
+
 A second line (2026-11-20) puts the same ring in time, for prediction:
 
 ```
@@ -6580,7 +6595,7 @@ reason; that sink is silent and the rest of the patch plays on.
 | `pan` | `0.0` | −1 … 1 | Position (mono) or balance (pair). |
 | `width` | `1.0` | 0 … 2 | Mid/side width; pairs only. |
 | `cv_depth` | `1.0` | 0 … 2 | Knob units per CV unit, shared by `pan_cv` and `width_cv`. |
-| `device` | `""` | device name | Target output device; `""` = system default (drains to master). A named device routes the sink to its own OutputStream; changing it re-routes **live**. |
+| `device` | `""` | `host API: device name` | Target output device; `""` = system default (drains to master). A named device routes the sink to its own OutputStream; changing it re-routes **live**. Since 2026-11-21 the list shows one entry per host API, e.g. `DirectSound: Speakers 2 (Realtek HD Audio output)`, and the sink opens exactly that entry (see *Choosing the host API* below). |
 | `buffer_size` | `512` | 64 … 8192 | Block size of this sink's own output stream, independent of the global buffer (whose slider tops out at 1024 — the 2048/4096/8192 stops are sink-only); the ring holds 8× it. Read at stream open; a live change rebuilds only this stream. A device that refuses it runs the stream on a smaller block with the ring unchanged, and says so (see *When the device refuses the buffer size*). Out-of-range values are clamped. |
 | `device_block` | `auto` | auto · 64 … 8192 | (2026-11-20) The block asked of the device, apart from the ring: `auto` = `buffer_size` (as before), or a size of its own — e.g. `buffer_size` 4096 for the cushion with `device_block` 512 for the chunk. The ring never holds less than two device blocks. Live, like `buffer_size`; junk reads as `auto`, numbers are clamped. |
 

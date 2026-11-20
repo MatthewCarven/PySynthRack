@@ -781,6 +781,14 @@ session before anything is built. Don't build ahead.
       fill's device-block sawtooth. Fixed the same night: `fill` and
       `auto_govern` read the fill averaged over one device period.
       **HANDS + EARS:** same patch, `auto_govern` back on -- steady now?
+- [x] **The speaker device list hid which host API each entry was**
+      (Matthew's device tour, 2026-11-21: one name shared by MME,
+      DirectSound and WASAPI could not open; WDM-KS entries failed; only
+      DirectSound behaved, and he could not choose it for Speakers 2).
+      Fixed: one entry per host API, labelled `DirectSound: ...`, opened
+      exactly; WDM-KS left out; old bare names resolve (ambiguous ->
+      DirectSound first). **HANDS + EARS:** pick `DirectSound: Speakers 2
+      ...` -- does it play clean where MME stuttered?
 - [x] **A live device_block change left the old stream looping forever**
       (Matthew, 2026-11-21, 512 -> 1024 on an MME device: it "kept
       repeating the last buffer", and after Stop / Start the old stream

@@ -46,6 +46,31 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-21 — three fixes from the device tour: prime, late, host API list
+
+Matthew, 00:20: "if you could that would be excellent" -- all three
+tonight. His disk_writer test had already shown the patch renders clean
+(a recording off the same signal had no stutter), so everything left was
+the hand-off to the device.
+
+* **Prime** (e3d3bea): a buffered sink's stream opens half full of
+  silence. Unprimed, ungoverned rings never held more than ~one device
+  block (his `2048/65536`), and governed ones stretched hard for seconds
+  after Start or any live change. Price: half the ring of latency. The
+  square-edge repro is 320/320 on all four configurations now (4096 / 512
+  was 305).
+* **late N** (e292c91): callbacks PortAudio flags output_underflow, on the
+  readout's first line, amber on a tick -- the device layer's own glitches,
+  which `under` can't see.
+* **Host API list** (this commit): one entry per host API, `DirectSound:
+  Speakers 2 (...)`, opened by exact index; WDM-KS left out; an old bare
+  name shared by several APIs opens DirectSound (then MME, WASAPI) instead
+  of failing. The tag goes first because the node's combo is narrow.
+
+Full suite at the end of the three; patches d15-d17. Still his to try:
+DirectSound for Speakers 2, whether `late` climbs on MME, and whether the
+primed cushion holds at 8192 / 2048 with the governor off.
+
 ## 2026-11-21 — the endless loop: a failed stop() orphaned the old stream
 
 Matthew, past midnight, trying devices with buffer 4096 / device_block 512
