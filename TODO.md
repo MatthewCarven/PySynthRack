@@ -626,11 +626,20 @@ Calls, not bugs: each waits on a yes, a no or a which.
       land every 4410th sample exactly on the waveform's edge at
       440 Hz, so a plain (non-blep) saw or square flips a full step
       there. Same as the oscillator since 2026-09-24. Acceptable?
-- [ ] **Clock: the first period is one sample short.** The clock
+- [x] **Clock: the first period is one sample short.** The clock
       reads samples 1..n, so 120 BPM quarters land at 22049, 44099...
       Reading 0..n-1 puts every edge on the period exactly, but moves
       every edge in all 78 clock examples one sample LATER. Do it, or
       leave it?
+      **Decided 2026-11-20 -- done** (Matthew: "yes please"). Edges now
+      at 0, 22050, 44100. Verified on every clock in every example (98
+      clocks in 79 examples, 5160 edges, old vs new tapped): each edge
+      moved exactly +1 relative to the restart before it, a pulse ON a
+      restart did not move, a clock restarted by another clock moves +2
+      in all (its restart moved too). Two edges explained: a fall cut by
+      `run` (the run source moved), and one edge under a drifting
+      `bpm_cv` where a sub-sample tempo difference flips a rounding. A
+      synced `delay` now reads the true two-period span (11025, was 11024).
 - [ ] **Scope afterglow:** linear fade (now) or a phosphor-style
       exponential one? Is a silent example right, and does
       `glow_frames` counting the live trace read naturally (default 8,

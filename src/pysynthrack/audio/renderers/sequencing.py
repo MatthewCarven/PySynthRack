@@ -67,9 +67,14 @@ class SequencingRenderers:
         The gate is high for the first ``pulse_width`` fraction of each
         unit phase period. Returns a mono ``(frames,)`` gate buffer.
 
-        The phase is evaluated at samples 1..frames of each segment, so a
-        fresh clock at phase 0 emits a rising edge on its very first
-        sample (the downstream sequencer then plays step 1 immediately).
+        The phase is evaluated at samples 0..frames-1 of each segment (a
+        sample sits at the count of samples BEFORE it), so a fresh clock
+        at phase 0 emits a rising edge on its very first sample (the
+        downstream sequencer then plays step 1 immediately) and every
+        later edge lands exactly on the period: 120 BPM quarters at 0,
+        22050, 44100... (Until 2026-11-20 it read samples 1..n, which put
+        every edge after the first one sample early -- 22049, 44099 --
+        decision #4.)
 
         The transport (love pass, 2026-09-19) -- three optional inputs,
         read only when ``buffers``/``patch`` are given (unit tests still
@@ -78,7 +83,7 @@ class SequencingRenderers:
           * ``reset`` (gate): a rising edge restarts the period AT that
             sample. The block is rendered in segments between edges (the
             LFO's ``reset`` idiom): every segment after the first starts
-            from phase 0 evaluated at samples 1..n -- exactly what a
+            from phase 0 evaluated at samples 0..n-1 -- exactly what a
             brand-new clock does on its first block -- so a reset IS a
             fresh clock from that sample: the gate goes high on the reset
             sample itself and the following pulses count from it. A reset
@@ -276,12 +281,13 @@ class SequencingRenderers:
                 edges = np.union1d(edges, run_edges).astype(np.intp)
 
         # One vectorized ramp per segment. ``cnt`` is how many samples the
-        # phase has advanced at each sample of the segment, counting the
-        # sample itself: 1..n free-running, or the running count under a
-        # ``run`` gate (a held sample repeats the previous count, so the
-        # phase freezes). cumsum of a 0/1 mask is exact, so a run cable
-        # that never falls yields the very same ramp as no cable.
-        ramp = np.arange(1, frames + 1, dtype=np.float64)
+        # phase has advanced BEFORE each sample of the segment: 0..n-1
+        # free-running, or the running count before it under a ``run``
+        # gate (an exclusive cumsum: a held sample sits at the next running
+        # sample's count, and its gate is masked low anyway). cumsum of a
+        # 0/1 mask is exact, so a run cable that never falls yields the
+        # very same ramp as no cable.
+        ramp = np.arange(0, frames, dtype=np.float64)
         frac = np.empty(frames, dtype=np.float64)
         swung = swing > 0.0 or held0 > 0.0
         if swung:
@@ -302,8 +308,9 @@ class SequencingRenderers:
                 cnt = ramp[:n]
                 adv = n
             else:
-                cnt = np.cumsum(running[a:b], dtype=np.float64)
-                adv = int(cnt[-1]) if n else 0
+                inclusive = np.cumsum(running[a:b], dtype=np.float64)
+                cnt = inclusive - running[a:b]
+                adv = int(inclusive[-1]) if n else 0
             # Laps since the anchor and the remainder, from the exact
             # integer count (``count + cnt`` is integer-valued float64).
             lap, rem = np.divmod(num0 + (float(count) + cnt) * num, den)
@@ -317,11 +324,11 @@ class SequencingRenderers:
                 odd[a:b] = ((lap_i + par0) & 1).astype(bool)
                 # Last-of-period: the next sample's frac wraps below this
                 # one's. For the segment's final sample that next frac is
-                # what the following block computes first (sample
-                # ``count + adv + 1`` of this same anchor), evaluated
-                # here the same way. A held sample repeats its
-                # predecessor's frac, so it is never a wrap.
-                _nl, nrem = np.divmod(num0 + float(count + adv + 1) * num, den)
+                # what the following block computes first (count
+                # ``count + adv`` of this same anchor), evaluated here the
+                # same way. A held sample shares the next running sample's
+                # frac, so the wrap is read on the running sample before it.
+                _nl, nrem = np.divmod(num0 + float(count + adv) * num, den)
                 last[a:b - 1] = frac[a + 1:b] < frac[a:b - 1]
                 last[b - 1] = (nrem / den) < frac[b - 1]
                 # Period starts: a lap the previous sample had not yet
@@ -333,15 +340,21 @@ class SequencingRenderers:
                 if seg_i:
                     starts[0] = True
                 else:
-                    plap, _pr = np.divmod(num0 + float(count) * num, den)
-                    starts[0] = bool(lap_i[0] != int(plap))
+                    # A wrap from the previous block's last sample, whose
+                    # frac is carried in state (it may sit under an older
+                    # anchor -- a tempo change -- so it is not recomputed
+                    # here). A fresh clock has none: its phase-0 first
+                    # sample IS a period start.
+                    prev = st.get("last_frac")
+                    starts[0] = prev is None or bool(frac[a] < prev)
                 if n > 1:
                     starts[1:] = lap_i[1:] != lap_i[:-1]
                 even_start[a:b] = starts & ~odd[a:b]
             count += adv
         # Where the block ends: the remainder and parity at the last
-        # anchor's final count (the old carried ``phase``/``parity``,
-        # kept in state for readers; the anchor is the source of truth).
+        # anchor's final count -- the phase the NEXT sample starts from
+        # (the old carried ``phase``/``parity``, kept in state for readers;
+        # the anchor is the source of truth).
         end_lap, end_rem = np.divmod(num0 + float(count) * num, den)
         end_phase = float(end_rem) / den
         end_parity = (par0 + int(end_lap)) & 1
@@ -373,6 +386,8 @@ class SequencingRenderers:
         st["phase"] = float(end_phase)
         st["parity"] = int(end_parity)
         st["swing_held"] = float(held_end)
+        if frames:
+            st["last_frac"] = float(frac[-1])
         return gate.astype(np.float32)
 
     def _render_sequencer(self, module, frames: int, buffers, patch) -> dict:

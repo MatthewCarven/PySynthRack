@@ -470,11 +470,14 @@ class TestClock:
                   {"in": _impulse(n, 2 * SR), "clock": clk}, spy=True)
         y = rig.run(n)
         third = int(_edges(clk)[2])
-        assert rig.events == [(third, third)]          # span 11024 (5512 + 5512)
+        # span 11025 = two 5512.5-sample periods, edges 0 and 11025 (until
+        # the clock's 2026-11-20 phase fix, decision #4, its edges sat one
+        # sample early after the first and this span read 11024)
+        assert rig.events == [(third, third)]
         T = rig.st["ck_cur"]
-        assert T == round(11024 * 1.5 / 2) == 8268.0
-        assert int(np.argmax(np.abs(y))) == 2 * SR + 8268
-        assert float(y[2 * SR + 8268]) == 1.0           # whole samples: no smear
+        assert T == round(11025 * 1.5 / 2) == 8269.0
+        assert int(np.argmax(np.abs(y))) == 2 * SR + 8269
+        assert float(y[2 * SR + 8269]) == 1.0           # whole samples: no smear
 
     def test_time_is_inert_and_time_cv_live_while_locked(self):
         n = 3 * SR
@@ -536,12 +539,12 @@ class TestClock:
         clk = _clock_row(n)
         rig = Rig({"division": 2.0}, {"clock": clk})
         assert np.array_equal(rig.run(2 * SR), np.zeros(2 * SR, np.float32))
-        assert rig.st["ck_span"] == 11024
+        assert rig.st["ck_span"] == 11025               # two periods, exact
         rig.plug("in", _noise(1, n))
         rig.run(F)
         # the first block with audio already fades to the clocked time
-        assert rig.st["ck_to"] == 11024.0 and rig.st["ck_fn"] == -1
-        assert rig.st["ck_cur"] == 11024.0
+        assert rig.st["ck_to"] == 11025.0 and rig.st["ck_fn"] == -1
+        assert rig.st["ck_cur"] == 11025.0
 
 
 class TestBreaks:

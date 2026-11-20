@@ -219,9 +219,10 @@ def _all_block_sizes(rows, params, total=N, blocks=(64, 128, 512, 1000)):
 
 class TestReset:
     def test_reset_is_a_fresh_clock_from_that_sample(self):
-        # The free-running clock at 8 Hz: edges 0, 5512, 11024, 16537, ...
+        # The free-running clock at 8 Hz: edges 0, 5513, 11025, 16538, ...
+        # -- the first sample at or after each k x 5512.5 crossing.
         free = _free_edges()
-        assert free[:4].tolist() == [0, 5512, 11024, 16537]
+        assert free[:4].tolist() == [0, 5513, 11025, 16538]
         reset = np.zeros(N, np.float32)
         reset[3000:3100] = 1.0  # mid-block: 3000 = 5 * 512 + 440
         y, _b, _c = _transport({"reset": reset})
@@ -232,28 +233,28 @@ class TestReset:
         assert after.tolist() == expect.tolist()  # E + the fresh clock's edges
 
     def test_reset_while_high_extends_the_pulse_and_restarts_the_count(self):
-        # At 8 Hz / pw 0.5 the first pulse is high 0..2755 and the second
-        # rises at 5512 (high to 8267). A reset at 5600 lands inside it.
+        # At 8 Hz / pw 0.5 the first pulse is high 0..2756 and the second
+        # rises at 5513 (high to 8268). A reset at 5600 lands inside it.
         reset = np.zeros(N, np.float32)
         reset[5600:5700] = 1.0
         y, _b, _c = _transport({"reset": reset})
-        assert _rising(y)[:3].tolist() == [0, 5512, 5600 + 5512]  # no new rise at 5600
-        assert _falling(y)[:2].tolist() == [2756, 5600 + 2756]  # the pulse extends
+        assert _rising(y)[:3].tolist() == [0, 5513, 5600 + 5513]  # no new rise at 5600
+        assert _falling(y)[:2].tolist() == [2757, 5600 + 2757]  # the pulse extends
 
     def test_edge_straddling_a_block_boundary_counts_once(self):
         # Reset high from the last sample of block 0 through block 1: ONE
         # edge, at 511 (inside the first pulse, so it extends it), and the
         # count restarts from 511 -- a second edge at 512 would put the
-        # next pulse at 6024, not 6023.
+        # next pulse at 6025, not 6024.
         reset = np.zeros(N, np.float32)
         reset[511:900] = 1.0
         y, _b, _c = _transport({"reset": reset})
-        assert _rising(y)[:3].tolist() == [0, 511 + 5512, 511 + 11024]
-        assert _falling(y)[0] == 511 + 2756
+        assert _rising(y)[:3].tolist() == [0, 511 + 5513, 511 + 11025]
+        assert _falling(y)[0] == 511 + 2757
 
     def test_voice_gate_on_reset_collapses_any_voice_high(self):
         # A (V, F) gate (midi_input) on reset: only voice 3 rises, at
-        # sample 3000 of a 4096-frame block (the first pulse fell at 2756,
+        # sample 3000 of a 4096-frame block (the first pulse fell at 2757,
         # so 3000 is a real rising edge on the output).
         p = Patch()
         clk = p.add_module("clock")
@@ -277,7 +278,7 @@ class TestRun:
         assert not np.any(y[10000:20000] > 0.5)  # held: all low
         assert y[19999] == 0.0 and y[20000] == 1.0  # play starts on the rise
         edges = _rising(y)
-        assert edges[edges < 10000].tolist() == [0, 5512]
+        assert edges[edges < 10000].tolist() == [0, 5513]
         after = edges[edges >= 20000] - 20000
         assert after.tolist() == free[free < N - 20000].tolist()
 
@@ -304,7 +305,7 @@ class TestRun:
         reset[4000:4100] = 1.0
         y, _b, _c = _transport({"run": run, "reset": reset}, total=N // 2)
         assert not np.any(y[:9000] > 0.5)
-        assert _rising(y)[:3].tolist() == [9000, 9000 + 5512, 9000 + 11024]
+        assert _rising(y)[:3].tolist() == [9000, 9000 + 5513, 9000 + 11025]
 
     def test_run_never_falls_and_reset_never_rises_is_no_cables(self):
         # The recipe's pin, through the dispatcher: bit-exact.
@@ -329,14 +330,12 @@ class TestBpmCv:
                                params={"bpm_cv_depth": 2.0})
         assert set(np.diff(_rising(y)).tolist()) <= {1378, 1379}
         # -1 = 4 Hz, a whole 11025-sample period: every period is exactly
-        # that long, after the first, which is one short -- the phase is
-        # read at samples 1..n, so a fresh clock starts one sample in
-        # (edges at 0, P - 1, 2P - 1, ...). Measured, and the same at
-        # every block size now that the phase is an integer count.
+        # that long, the first included -- the phase is read at samples
+        # 0..n-1, so the edges sit ON 0, P, 2P, ... (Until 2026-11-20 the
+        # 1..n reading made the first period one short, decision #4.)
         y, _b, _c = _transport({"bpm_cv": -np.ones(N, np.float32)})
         spacing = np.diff(_rising(y))
-        assert spacing[0] == 11024
-        assert set(spacing[1:].tolist()) == {11025}
+        assert set(spacing.tolist()) == {11025}
 
     def test_absurd_cv_is_clipped_to_six_doublings_and_stays_finite(self):
         # 2 ** (1e6) would raise OverflowError; the clip pins x64 (86.1
@@ -349,7 +348,7 @@ class TestBpmCv:
         assert _rising(y).tolist() == [0]
         # A NaN mean reads as 0: the plain clock.
         y, _b, _c = _transport({"bpm_cv": np.full(N, np.nan, np.float32)})
-        assert _rising(y)[:3].tolist() == [0, 5512, 11024]
+        assert _rising(y)[:3].tolist() == [0, 5513, 11025]
 
     def test_voice_cv_is_averaged(self):
         # (V, F) on bpm_cv: voices 0 and 1 at +1 and -1 average to 0.
@@ -365,7 +364,7 @@ class TestBpmCv:
         out = np.concatenate([
             b._render_clock(clk, 4096, {(midi.id, "pitch_cv"): cv}, p) for _ in range(4)
         ])
-        assert _rising(out)[:3].tolist() == [0, 5512, 11024]
+        assert _rising(out)[:3].tolist() == [0, 5513, 11025]
 
     def test_depth_map_row_is_documented(self):
         md = (Path(__file__).resolve().parent.parent / "docs" / "MODULES.md").read_text(
@@ -389,14 +388,14 @@ class TestBlockSize:
     def test_edge_sequence_is_exact_across_block_sizes_at_the_default_tempo(self):
         # The 5512.5-sample period never crosses ON a sample, so 64 and
         # 512 agree to the sample -- measured, and pinned exact. Edges:
-        # 0; 5512; the reset at 7001 (+5512 = 12513, 18025); the run
-        # rise at 30011 (+5512 = 35523); the reset at 40003 (+5512).
+        # 0; 5513; the reset at 7001 (+5513 = 12514, 18026); the run
+        # rise at 30011 (+5513 = 35524); the reset at 40003 (+5513).
         ys = _all_block_sizes(self._rows(), {})
         for bs in (64, 128, 1000):
             assert np.array_equal(ys[bs], ys[512]), bs
         edges = _rising(ys[512])
         assert edges[:8].tolist() == [
-            0, 5512, 12513, 18025, 30011, 35523, 40003, 45515,
+            0, 5513, 12514, 18026, 30011, 35524, 40003, 45516,
         ]
 
     def test_integer_period_tempo_is_exact_across_block_sizes(self):
@@ -407,24 +406,24 @@ class TestBlockSize:
         # (84 x 2 = 15750). The phase is now an exact integer count over
         # ``60 * sr``, so every block size agrees to the sample and the
         # edges are where the period puts them. The pulse is high for
-        # samples 0..11023 of a fresh run (the phase is read at samples
-        # 1..n, so it starts one sample in); the reset at 7001 lands
-        # inside the first pulse and extends it to 7001 + 11024; the run
-        # rise at 30011 restarts; the reset at 40003 extends that pulse to
-        # 40003 + 11024 and the next ones rise 22049 and 44099 after it.
+        # samples 0..11024 of a fresh run (half of 22050); the reset at
+        # 7001 lands inside the first pulse and extends it to 7001 +
+        # 11025; the run rise at 30011 restarts; the reset at 40003
+        # extends that pulse to 40003 + 11025 and the next ones rise
+        # 22050 and 44100 after it -- ON the period (decision #4).
         ys = _all_block_sizes(self._rows(), {"division": 1.0})
         for bs in (64, 128, 1000):
             assert np.array_equal(ys[bs], ys[512]), bs
-        assert _rising(ys[512]).tolist() == [0, 30011, 40003 + 22049, 40003 + 44099]
+        assert _rising(ys[512]).tolist() == [0, 30011, 40003 + 22050, 40003 + 44100]
         assert _falling(ys[512]).tolist() == [
-            7001 + 11024, 40003 + 11024, 40003 + 22049 + 11025,
+            7001 + 11025, 40003 + 11025, 40003 + 22050 + 11025,
         ]
 
     def test_the_chorus_lush_tempo_is_exact_across_block_sizes_for_twelve_seconds(self):
         # 84 BPM x 2 = 2.8 Hz = 15750 samples, pw 0.5 = 7875: both edges
         # land ON samples. Twelve seconds = 33 periods -- long enough for
         # the old accumulator's drift to move edges at all four sizes.
-        # Exact: rises at 0 and 15750k - 1, falls at 15750k + 7874.
+        # Exact: rises at 15750k, falls at 15750k + 7875 -- ON the marks.
         p = {"bpm": 84.0, "division": 2.0}
         total = 12 * SR
         ys = {bs: _transport({}, params=p, block=bs, total=total, dispatch=True)[0][:total]
@@ -432,8 +431,8 @@ class TestBlockSize:
         for bs in (64, 128, 1000):
             assert np.array_equal(ys[bs], ys[512]), bs
         k = np.arange(34)
-        assert _rising(ys[512]).tolist() == [0, *(15750 * k[1:] - 1).tolist()]
-        assert _falling(ys[512]).tolist() == (15750 * k + 7874).tolist()
+        assert _rising(ys[512]).tolist() == (15750 * k).tolist()
+        assert _falling(ys[512]).tolist() == (15750 * k + 7875).tolist()
 
 
 # ----- swing ---------------------------------------------------------------------------
@@ -460,7 +459,7 @@ class TestSwing:
         assert np.all(late[0::2] == 0)
         assert set(late[1::2].tolist()) <= {1818, 1819, 1820}
         assert late[1::2].tolist().count(1819) == len(late[1::2])  # measured: exact
-        assert edges[:6].tolist() == [0, 7331, 11024, 18356, 22049, 29381]
+        assert edges[:6].tolist() == [0, 7332, 11025, 18357, 22050, 29382]
 
     def test_pulse_widths_are_the_straight_clocks(self):
         free, _b, _c = _transport({})
@@ -468,7 +467,7 @@ class TestSwing:
         ws, ww = _widths(free), _widths(y)
         assert len(ws) == len(ww)
         assert np.abs(np.array(ws) - np.array(ww)).max() <= 1
-        assert ww[:6] == ws[:6] == [2756, 2756, 2757, 2756, 2757, 2756]  # measured: equal
+        assert ww[:6] == ws[:6] == [2757, 2756, 2757, 2756, 2757, 2756]  # measured: equal
 
     def test_even_periods_are_bit_identical_and_the_phase_is_untouched(self):
         # The swing is a phase OFFSET on odd periods: the accumulator and
@@ -494,7 +493,7 @@ class TestSwing:
 
     def test_reset_restarts_the_parity_the_reset_pulse_is_even(self):
         # A reset at 6000 sits in period 1 (the odd one) BEFORE its late
-        # pulse would rise at 7331: the gate goes high on the reset sample
+        # pulse would rise at 7332: the gate goes high on the reset sample
         # (an even, straight pulse), the dropped odd pulse never comes,
         # and the count starts over -- 6000 + the swung clock's own edges.
         reset = np.zeros(N, np.float32)
@@ -502,7 +501,7 @@ class TestSwing:
         y, _b, _c = _transport({"reset": reset}, params={"swing": 0.33})
         assert y[5999] == 0.0 and y[6000] == 1.0
         assert _rising(y)[:6].tolist() == [
-            0, 6000, 6000 + 7331, 6000 + 11024, 6000 + 18356, 6000 + 22049,
+            0, 6000, 6000 + 7332, 6000 + 11025, 6000 + 18357, 6000 + 22050,
         ]
 
     def test_run_rise_restarts_the_parity_too(self):
@@ -510,30 +509,30 @@ class TestSwing:
         run[20005:30011] = 0.0
         y, _b, _c = _transport({"run": run}, params={"swing": 0.33})
         edges = _rising(y)
-        assert edges[:4].tolist() == [0, 7331, 11024, 18356]
+        assert edges[:4].tolist() == [0, 7332, 11025, 18357]
         assert not np.any(y[20005:30011] > 0.5)
         after = edges[edges >= 30011] - 30011
-        assert after[:4].tolist() == [0, 7331, 11024, 18356]
+        assert after[:4].tolist() == [0, 7332, 11025, 18357]
 
     def test_the_ceiling_cuts_the_odd_pulse_a_sample_before_the_downbeat(self):
         # swing 0.5 + pw 0.5 = 1: the odd pulse would run straight into
         # the even one and the downbeat would never RISE. It is cut one
         # sample short instead: every straight edge is still an edge, a
-        # low sample precedes every even edge, odd widths 2755 vs 2756/7.
+        # low sample precedes every even edge, odd widths 2755 vs 2757.
         free = _free_edges()
         y, _b, _c = _transport({}, params={"swing": 0.5})
         edges = _rising(y)
         assert len(edges) == len(free)
         assert np.array_equal(edges[0::2], free[0::2])
         assert all(y[k - 1] == 0.0 for k in edges[2::2])
-        assert _widths(y)[:8] == [2756, 2755, 2757, 2755, 2757, 2755, 2757, 2755]
+        assert _widths(y)[:8] == [2757, 2755, 2757, 2755, 2757, 2755, 2757, 2755]
         # Past the ceiling (pw 0.9) the odd pulse SHRINKS to the room it
         # has; the even one keeps its 0.9 and every downbeat still rises.
         y9, _b2, _c2 = _transport({}, params={"swing": 0.5, "pulse_width": 0.9})
         e9 = _rising(y9)
         assert len(e9) == len(free)
         assert np.array_equal(e9[0::2], free[0::2])
-        assert _widths(y9)[:4] == [4961, 2755, 4962, 2755]
+        assert _widths(y9)[:4] == [4962, 2755, 4962, 2755]
 
     def test_hand_edited_swing_clamps_at_the_dividers_ceiling_and_garbage_is_straight(self):
         from pysynthrack.modules.clockwork import DIVIDER_MAX_SWING
@@ -553,9 +552,17 @@ class TestSwing:
         # the swing shipped, when 18 reference renders (16 examples + 2
         # transport patches) captured BEFORE the edit compared bit-exact
         # AFTER it. A swing of 0 is the same code path, so this pins both.
-        free, _b, _c = _transport({}, dispatch=True)
-        assert hashlib.sha256(free.tobytes()).hexdigest() == (
+        # Re-pinned 2026-11-20 (decision #4, the 0..n-1 phase): today's
+        # render is that one ONE SAMPLE LATER -- its samples 1..N hash to
+        # the old pin exactly -- and its first sample is the downbeat.
+        free, _b, _c = _transport({}, dispatch=True, total=N + 512)
+        assert hashlib.sha256(free[1:N + 1].tobytes()).hexdigest() == (
             "40474ea156c99390d8b1dba80d61c55dba77dfb4980741af4e3e7d4a03a9a1fa"
+        )
+        assert free[0] == 1.0
+        free = free[:N]
+        assert hashlib.sha256(free.tobytes()).hexdigest() == (
+            "63a8a14921cd76071c6d56d0f5ac6bcaaeaff686849b15e87d42cfe22ca51274"
         )
         y, _b2, _c2 = _transport({}, params={"swing": 0.0}, dispatch=True)
         assert np.array_equal(y, free)
@@ -566,25 +573,25 @@ class TestSwing:
     def test_swung_edge_sequence_is_exact_across_block_sizes_at_the_default_tempo(self):
         # The transport rows (reset 7001, hold 20005..30011, reset 40003)
         # with swing 0.33: 64 and 512 agree to the sample. The reset at
-        # 40003 lands INSIDE the late odd pulse (37342..40098) and extends
+        # 40003 lands INSIDE the late odd pulse (37343..40099) and extends
         # it -- the standing rule -- so the count restarts without a rise.
         rows = TestBlockSize._rows()
         y512, _b, _c = _transport(rows, params={"swing": 0.33}, block=512)
         y64, _b2, _c2 = _transport(rows, params={"swing": 0.33}, block=64)
         assert np.array_equal(y512, y64)
         assert _rising(y512)[:10].tolist() == [
-            0, 7001, 14332, 18025, 30011, 37342, 47334, 51027, 58359, 62052,
+            0, 7001, 14333, 18026, 30011, 37343, 47335, 51028, 58360, 62053,
         ]
 
     def test_integer_period_tempo_swung_is_exact_across_block_sizes(self):
         # The straight clock is exact at a whole-sample period now (the
         # integer-count phase), so the swung one is too: 64/128/512/1000
         # agree to the sample. The odd pulse after 40003's restart rises
-        # round(0.33 * 22050) = 7277 late (measured: 62052 -> 69329).
+        # round(0.33 * 22050) = 7277 late (measured: 62053 -> 69330).
         ys = _all_block_sizes(TestBlockSize._rows(), {"swing": 0.33, "division": 1.0})
         for bs in (64, 128, 1000):
             assert np.array_equal(ys[bs], ys[512]), bs
-        assert _rising(ys[512]).tolist() == [0, 30011, 40003 + 22049 + 7277, 40003 + 44099]
+        assert _rising(ys[512]).tolist() == [0, 30011, 40003 + 22050 + 7277, 40003 + 44100]
 
 
 # ----- swing_cv (love pass, 2026-09-22) --------------------------------------------
@@ -667,22 +674,22 @@ class TestSwingCv:
 
     def test_the_latch_holds_the_value_for_the_period_in_flight(self):
         # The rule, measured. The CV steps 0 -> 0.4 at sample 7000, well
-        # inside the FIRST odd period (5512..11025) and after its pulse
+        # inside the FIRST odd period (5513..11024) and after its pulse
         # has already risen. That pulse must not move, split or vanish:
-        # it keeps the straight clock's 5512/8268 exactly. The change
+        # it keeps the straight clock's 5513/8269 exactly. The change
         # lands at the next even period start (11025), so the NEXT odd
-        # pulse (period 3, from 16537) is late by round(0.4 x 5512.5) =
-        # 2205 samples -> 18742. The even edges never move at all.
+        # pulse (period 3, from 16538) is late by round(0.4 x 5512.5) =
+        # 2205 samples -> 18743. The even edges never move at all.
         cv = np.zeros(N, np.float32)
         cv[7000:] = 0.4
         y = _transport({"swing_cv": cv}, params={"swing_cv_depth": 1.0})[0]
         straight = _transport({})[0]
         assert _rising(y)[:8].tolist() == [
-            0, 5512, 11024, 18742, 22049, 29767, 33074, 40792,
+            0, 5513, 11025, 18743, 22050, 29768, 33075, 40793,
         ]
         assert _falling(y)[:3].tolist() == _falling(straight)[:3].tolist()
         assert _rising(y)[:8][0::2].tolist() == _rising(straight)[:8][0::2].tolist()
-        assert 18742 - 16537 == round(0.4 * PERIOD)
+        assert 18743 - 16538 == round(0.4 * PERIOD)
 
     def test_even_edges_are_block_exact_and_the_odd_ones_are_a_mean_apart(self):
         # The honest block-size story for a MOVING block-rate CV: the
@@ -715,9 +722,9 @@ class TestSwingCv:
                        params={"swing_cv_depth": 1.0})[0]
         e = _rising(y)
         assert 9000 in e                       # the reset pulse: even, on time
-        # the odd period after the reset starts at 9000 + 5512 and its
+        # the odd period after the reset starts at 9000 + 5513 and its
         # pulse is round(0.4 x 5512.5) = 2205 late.
-        assert 9000 + 5512 + 2205 in e
+        assert 9000 + 5513 + 2205 in e
 
     def test_depth_map_row_is_documented(self):
         md = (Path(__file__).resolve().parent.parent / "docs" / "MODULES.md").read_text(
@@ -878,22 +885,22 @@ def test_the_transport_example_plays_two_bars_and_holds_one():
     sixteenths = _rising(np.concatenate(gates[clk.id]))
     downbeats = _rising(np.concatenate(gates[bar.id]))
     # PLAY is a whole-sample period (6 s = 264600) with pw 0.66 (3.96 s =
-    # 174636): exact now, at every block size, so its edges sit where the
-    # clock's 1..n phase puts them -- one sample before each mark.
+    # 174636): exact now, at every block size, and since 2026-11-20
+    # (decision #4) ON the marks -- it read one sample early before.
     play_g = np.concatenate(gates[play.id])
-    assert _rising(play_g).tolist() == [0, 6 * SR - 1]
-    assert _falling(play_g)[0] == 174636 - 1
+    assert _rising(play_g).tolist() == [0, 6 * SR]
+    assert _falling(play_g)[0] == 174636
     # No pulse while held (PLAY falls at 3.96 s, rises at 6 s) ...
-    assert not np.any((sixteenths > 174636) & (sixteenths < 6 * SR - 1))
+    assert not np.any((sixteenths > 174636) & (sixteenths < 6 * SR))
     # ... play resumes ON the sample PLAY rises ...
-    assert 6 * SR - 1 in sixteenths
+    assert 6 * SR in sixteenths
     # ... and despite the drift every downbeat pulse lands ON the bar
     # clock's own edge, with the sequencer back on step 1 (0 semitones).
     seq_cv = np.concatenate(cv)
     for d in downbeats:
         if d >= len(seq_cv) - 8:
             break
-        if int(3.96 * SR) < d < 6 * SR - 1:
+        if int(3.96 * SR) < d < 6 * SR:
             continue  # the held bar: reset by decree, no pulse
         assert d in sixteenths, d
         assert abs(seq_cv[d + 5]) < 1e-6, (d, seq_cv[d + 5])
@@ -1051,7 +1058,7 @@ def test_the_chorus_lush_example_is_block_size_exact():
              ("master", "out")]
     ref = _tapped_render(path, 512, 8.0)
     edges = _rising(ref["clock", "out"])
-    assert edges[:3].tolist() == [0, 15749, 31499]  # exact, the 1..n phase
+    assert edges[:3].tolist() == [0, 15750, 31500]  # exact, ON the period (#4)
     for bs in (64, 128, 1000):
         got = _tapped_render(path, bs, 8.0)
         for key in chain:
