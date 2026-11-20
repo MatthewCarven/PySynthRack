@@ -609,12 +609,15 @@ likeliest to sound different come first.
 Calls, not bugs: each waits on a yes, a no or a which.
 
 *From the seventh batch (2026-10-12):*
-- [ ] **`adsr`: exact stage TIMES?** Both paths end a stage when the
+- [x] **`adsr`: exact stage TIMES?** Both paths end a stage when the
       per-sample sum reaches its target, so a 20 ms attack can take
       883 samples, not 882 (exact and block-size-proof, just not an
       integer count). Counting stages by integer sample number (as
       `_gate_ramp_env` does) would make times exact but move EVERY
       ADSR example, mono included. A later pass, or leave it?
+      **Decided 2026-11-20 -- leave it** (Matthew: "its not to be used as
+      a governor like anyways"). A sample of attack is inaudible and the
+      envelope is block-size-proof as it stands.
 - [x] **Buffered sink, Phase 2:** should `buffer_size` 2048-8192
       always mean a big ring with a modest device chunk, even when the
       device accepts the big chunk? (a) cap the device block at 1024
@@ -628,10 +631,15 @@ Calls, not bugs: each waits on a yes, a no or a which.
       to do a little prediction"). `device_block` auto (= buffer_size, as
       before) or 64..8192; the node's second line reads `queued 83.6 of
       185.8 ms  dev block 512 = 11.6 ms`.
-- [ ] **The A440 edge flip:** keyboard / MIDI / cv_to_frequency now
+- [x] **The A440 edge flip:** keyboard / MIDI / cv_to_frequency now
       land every 4410th sample exactly on the waveform's edge at
       440 Hz, so a plain (non-blep) saw or square flips a full step
       there. Same as the oscillator since 2026-09-24. Acceptable?
+      **Decided 2026-11-20 -- accepted.** Matthew asked whether it means
+      the phase is not exact to the output rate: it is exact (440 x 4410
+      / 44100 is a whole 44 cycles, so the phase lands ON the edge); the
+      step is the naive shape's own aliasing showing up on a sample
+      boundary. The `_blep` / `_wt` shapes smooth it.
 - [x] **Clock: the first period is one sample short.** The clock
       reads samples 1..n, so 120 BPM quarters land at 22049, 44099...
       Reading 0..n-1 puts every edge on the period exactly, but moves
@@ -677,9 +685,11 @@ Calls, not bugs: each waits on a yes, a no or a which.
       **Decided 2026-11-20 -- documented as-is** (Matthew: "yes please").
       MODULES.md's function_generator "How it works", the renderer
       docstring, and a comment at the idle-skip itself.
-- [ ] **`rotary` `fast` switch lands on a block boundary** (block-majority
+- [x] **`rotary` `fast` switch lands on a block boundary** (block-majority
       read). A vote over fixed 64-sample windows would make it exact at
       ~1.3 ms latency. A call, not a bug.
+      **Decided 2026-11-20 -- accepted as is.** A Leslie's horns take
+      seconds to change speed; a block of switch latency is lost in it.
 - [x] **`freeze`: stage 32768 too** (a 2048-sample delay, worst block
       ~25% from 46%) — shifts `freeze_drone_breathe`'s timing. Offered.
       **Decided 2026-11-20 -- done** (Matthew: "please"). Measured better
