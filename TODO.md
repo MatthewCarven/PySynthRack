@@ -652,10 +652,14 @@ Calls, not bugs: each waits on a yes, a no or a which.
       ~1.3 ms latency. A call, not a bug.
 - [ ] **`freeze`: stage 32768 too** (a 2048-sample delay, worst block
       ~25% from 46%) — shifts `freeze_drone_breathe`'s timing. Offered.
-- [ ] **`lfo` `seed`: a `phase` knob move counts as a reset and so
+- [x] **`lfo` `seed`: a `phase` knob move counts as a reset and so
       re-seeds** a seeded `random` LFO — decide whether that is wanted.
       *Hoisted 2026-10-10 from the archived "`lfo` — `seed`" entry
       (2026-09-20).*
+      **Decided 2026-11-20 -- not wanted:** the knob still re-anchors the
+      phase and rolls a value (unseeded LFOs unchanged), but only an edge on
+      the `reset` input re-seeds; a seeded LFO's knob move takes the next
+      draw of its stream. Mono and voice paths; `TestPhaseKnobDoesNotReseed`.
 - [x] **Backend preference: pyo still wins when installed.**
       `audio/__init__.py` `_PREFERENCE = ("pyo", "numpy")`, so anyone who
       takes the README's optional "also try pyo" install step gets a GUI

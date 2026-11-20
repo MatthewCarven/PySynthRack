@@ -894,6 +894,68 @@ class TestLFOBlockSize:
         assert rig.state["count"] == 512 and rig.state["anchor"] == reached
 
 
+
+class TestPhaseKnobDoesNotReseed:
+    """Decision #10, 2026-11-20 (Matthew: "please"): a moved ``phase`` knob
+    re-anchors the phase and rolls a value, as before, but no longer
+    re-seeds a seeded random LFO -- turning a knob should not restart the
+    phrase. Only an edge on the ``reset`` input replays it."""
+
+    RATE = 97.0
+
+    def _held(self, rig, blocks):
+        return np.concatenate([rig.render(reset=np.zeros(512)) for _ in range(blocks)])
+
+    def test_mono_continues_the_stream(self):
+        moved = _Rig(waveform="random", rate=self.RATE, bipolar=True, seed=7)
+        self._held(moved, 3)
+        draws_so_far = _steps(self._held(_Rig(waveform="random", rate=self.RATE,
+                                              bipolar=True, seed=7), 3))[0].size
+        moved.lfo.params["phase"] = 0.25
+        after = moved.render(reset=np.zeros(512))
+        # The roll at the knob is the NEXT draw of the private stream ...
+        stream = np.random.default_rng(7)
+        draws = [np.float32(stream.uniform(-1.0, 1.0)) for _ in range(draws_so_far + 1)]
+        assert after[0] == draws[draws_so_far]
+        # ... not the phrase's first value again (a restart).
+        assert after[0] != draws[0]
+
+    def test_a_reset_edge_still_replays_the_phrase(self):
+        rig = _Rig(waveform="random", rate=self.RATE, bipolar=True, seed=7)
+        first = rig.render(reset=np.zeros(512))[0]
+        self._held(rig, 3)
+        out = rig.render(reset=_gate(512, 0))
+        assert out[0] == first
+
+    def test_unseeded_behaves_as_before(self):
+        # seed 0 has no private stream: the knob still rolls from the global
+        # rng exactly as it did (one draw at the knob).
+        np.random.seed(5)
+        rig = _Rig(waveform="random", rate=self.RATE, bipolar=True)
+        self._held(rig, 2)
+        rig.lfo.params["phase"] = 0.5
+        after = rig.render(reset=np.zeros(512))
+        np.random.seed(5)
+        rig2 = _Rig(waveform="random", rate=self.RATE, bipolar=True)
+        self._held(rig2, 2)
+        nxt = np.float32(np.random.uniform(-1.0, 1.0))
+        assert after[0] == nxt
+
+    def test_voice_path_continues_each_voices_stream(self):
+        cv = np.zeros((2, 512), np.float32)
+        moved = _Rig(voice=True, waveform="random", rate=self.RATE, bipolar=True, seed=9)
+        ref = _Rig(voice=True, waveform="random", rate=self.RATE, bipolar=True, seed=9)
+        start = moved.render(rate_cv=cv)[:, 0].copy()
+        ref.render(rate_cv=cv)
+        for _ in range(2):
+            moved.render(rate_cv=cv)
+            ref.render(rate_cv=cv)
+        moved.lfo.params["phase"] = 0.4
+        after = moved.render(rate_cv=cv)
+        for v in range(2):
+            assert after[v, 0] != start[v]      # not a restart of the phrase
+
+
 # ----- UI ---------------------------------------------------------------------
 
 

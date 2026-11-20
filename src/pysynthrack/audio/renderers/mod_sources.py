@@ -1504,6 +1504,10 @@ class ModSourceRenderers:
             edges, state["reset_prev"] = self._lfo_reset_edges(
                 reset, state["reset_prev"], frames
             )
+        # The reset INPUT's own edges, kept apart from the knob's: only these
+        # re-seed a seeded random LFO (decision #10, 2026-11-20 -- turning
+        # the knob re-anchors and rolls, but does not restart the phrase).
+        input_edges = edges
         # A moved ``phase`` knob is a reset by decree at sample 0, so
         # the slider is audible on a free-running LFO too.
         if state["phase_param"] != phase0 and frames > 0:
@@ -1546,6 +1550,8 @@ class ModSourceRenderers:
                 diffs = np.diff(np.concatenate([[prev], phases]))
                 is_reset = np.zeros(frames, dtype=bool)
                 is_reset[edges] = True
+                reseed = np.zeros(frames, dtype=bool)
+                reseed[input_edges] = True
                 wave = np.empty(frames, dtype=np.float64)
                 current = state["random_value"]
                 rng = state["rng"]
@@ -1554,7 +1560,7 @@ class ModSourceRenderers:
                     state["random_fresh"] = False
                 for i in range(frames):
                     if diffs[i] < 0.0 or is_reset[i]:
-                        if rng is not None and is_reset[i]:
+                        if rng is not None and reseed[i]:
                             # A reset edge re-seeds the private stream
                             # so the phrase replays from the top (the
                             # sequencer's precedent): a bar reset here
@@ -1718,6 +1724,8 @@ class ModSourceRenderers:
                 edges_per_voice[v], prev_arr[v] = self._lfo_reset_edges(
                     reset2d[v], prev_arr[v], frames
                 )
+        # The reset input's own edges per voice: only these re-seed (#10).
+        input_edges_per_voice = list(edges_per_voice)
         if state["phase_param"] != phase0 and frames > 0:
             # The moved knob: every voice re-anchors at sample 0.
             state["phase_param"] = phase0
@@ -1775,9 +1783,11 @@ class ModSourceRenderers:
                     diffs = np.diff(np.concatenate([[row_start], row_phases]))
                     is_reset = np.zeros(frames, dtype=bool)
                     is_reset[edges_per_voice[v]] = True
+                    reseed = np.zeros(frames, dtype=bool)
+                    reseed[input_edges_per_voice[v]] = True
                     for i in range(frames):
                         if diffs[i] < 0.0 or is_reset[i]:
-                            if rng is not None and is_reset[i]:
+                            if rng is not None and reseed[i]:
                                 # This voice's reset replays the phrase
                                 # on this voice alone.
                                 rng = rng_arr[v] = np.random.default_rng(seed)
