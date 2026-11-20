@@ -666,7 +666,7 @@ Calls, not bugs: each waits on a yes, a no or a which.
       alone; a single row is still mono bit for bit. No example uses `_wt`,
       so no example moved; a maj7 switched to `saw_wt` moves -32 dB close,
       -28 dB spread -- wide voicings are where it shows.
-- [ ] **Question, not a defect: loop-mode voice slots that were never
+- [x] **Question, not a defect: loop-mode voice slots that were never
       triggered stay parked** (noticed 2026-09-14). The voice path's
       idle-skip runs before the kernel's "kick out of idle", so a poly
       keyboard into a `loop`-mode fgen only loops the slots that have
@@ -674,6 +674,9 @@ Calls, not bugs: each waits on a yes, a no or a which.
       (sixteen free-running kernels cost the full ~35% whether or not
       anyone is playing). Decide whether that asymmetry should be
       documented as-is or changed; do not change it silently.
+      **Decided 2026-11-20 -- documented as-is** (Matthew: "yes please").
+      MODULES.md's function_generator "How it works", the renderer
+      docstring, and a comment at the idle-skip itself.
 - [ ] **`rotary` `fast` switch lands on a block boundary** (block-majority
       read). A vote over fixed 64-sample windows would make it exact at
       ~1.3 ms latency. A call, not a bug.

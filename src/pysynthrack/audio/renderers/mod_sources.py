@@ -976,7 +976,10 @@ class ModSourceRenderers:
         on all three jacks; a 2D ``(V, F)`` trigger runs V independent
         functions and emits ``(V, F)``. Both paths drive the SAME scalar
         kernel (:meth:`_fg_kernel`), so a voice row is bit-identical to
-        the mono result by construction.
+        the mono result by construction. One asymmetry, kept on purpose
+        (2026-11-20): in ``loop`` mode a voice slot never triggered stays
+        parked -- the idle-skip runs before the kernel's kick -- while the
+        mono path free-runs unpatched (see the skip below).
 
         Rates: ``rate_cv`` is always collapsed to mono -- "both" is one
         knob on the hardware, one tempo for the rack. ``rise_cv`` /
@@ -1264,7 +1267,14 @@ class ModSourceRenderers:
                 and st["eoc_left"] == 0
             ):
                 # Nothing to do: parked at 0 with no gate and no pulse in
-                # flight. The rows are already zeros.
+                # flight. The rows are already zeros. This runs BEFORE the
+                # kernel's loop-mode "kick out of idle", so in ``loop`` mode
+                # a voice slot that has never been triggered stays parked
+                # (only the slots that have been played cycle), while the
+                # mono path free-runs with nothing patched. Kept as-is on
+                # purpose (decision #7, 2026-11-20): sixteen free-running
+                # kernels would cost ~35% of a block whether or not anyone
+                # is playing.
                 st["prev_gate"] = False
                 st["level"] = 0.0
                 continue
