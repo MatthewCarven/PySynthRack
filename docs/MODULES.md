@@ -6102,7 +6102,10 @@ copies into a capture ring. Numpy backend only; silent stub under pyo.
 **Afterglow** (opt-in, off by default) is phosphor persistence: tick
 `afterglow` and the face keeps its last `glow_frames` repaints (2–16,
 default 8, the live one included), the newest at full brightness and
-each older one fainter. In `xy` with `trigger` **free**, every repaint
+each older one fainter — a **phosphor** fade (2026-11-20): each repaint
+keeps the same fraction of the one before (74% at 8 frames, 83% at 16),
+so the ghosts fall away fast behind the live trace and then linger in a
+long faint tail, down to 1/`glow_frames` of full for the oldest. In `xy` with `trigger` **free**, every repaint
 samples a slightly later window at a fresh phase, so the ghosts
 interleave rather than overlap — eight frames land about six times as
 many distinct points on a chaos butterfly as one frame does. In `mono`

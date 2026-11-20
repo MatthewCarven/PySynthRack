@@ -448,6 +448,21 @@ def test_glow_alpha_fades_from_full_to_faint(frames):
     assert alphas[-1] == round(255 / frames) > 0             # oldest still shows
 
 
+@pytest.mark.parametrize("frames", [3, 8, 16])
+def test_glow_alpha_is_a_phosphor_decay(frames):
+    """Decision #5 (2026-11-20): exponential, not linear. Every step keeps
+    the same fraction (to the rounding), so the middle ghosts sit BELOW the
+    straight line between the same two ends -- quick to drop, long tail."""
+    alphas = np.array([sm.glow_alpha(a, frames) for a in range(frames)], float)
+    keep = (1.0 / frames) ** (1.0 / (frames - 1))
+    exact = 255.0 * keep ** np.arange(frames)
+    assert np.all(np.abs(alphas - exact) <= 0.5)
+    linear = 255.0 * (frames - np.arange(frames)) / frames
+    assert np.all(alphas[1:-1] < linear[1:-1])
+    assert [sm.glow_alpha(a, 8) for a in range(8)] == [255, 189, 141, 105, 78, 58, 43, 32]
+    assert sm.glow_alpha(0, 1) == 255                         # degenerate: no fade
+
+
 def test_glow_ring_rotates_one_slot_per_repaint():
     ring = sm.GlowRing(4)
     assert [ring.age(s) for s in range(4)] == [None] * 4

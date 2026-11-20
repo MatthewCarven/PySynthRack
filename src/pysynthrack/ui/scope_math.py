@@ -264,13 +264,21 @@ def clamp_glow_frames(value) -> int:
 def glow_alpha(age: int, frames: int) -> int:
     """Alpha (0..255) of a trace ``age`` repaints old, ``frames`` kept.
 
-    Age 0 (the live trace) is 255; the fade is linear down to
-    255/frames for the oldest kept (age frames-1), so the last ghost is
-    faint but never invisible and a longer glow fades more gently.
+    A PHOSPHOR fade (2026-11-20, decision #5 -- Matthew: "love the
+    phosphor in my crts"): each repaint keeps the same fraction of the
+    one before, ``255 * (1/frames) ** (age / (frames - 1))``, so the
+    ghosts drop away quickly behind the live trace and then linger in a
+    long faint tail, as a CRT's phosphor does. The ends are the linear
+    fade's: age 0 (the live trace) is 255 and the oldest kept (age
+    frames-1) is 255/frames, faint but never invisible; a longer glow
+    keeps more per step (8 frames: 74%, 16: 83%), so it fades more
+    gently. (It was linear, 255 * (frames - age) / frames.)
     """
     frames = max(1, int(frames))
+    if frames == 1:
+        return 255
     age = min(max(0, int(age)), frames - 1)
-    return int(round(255.0 * (frames - age) / frames))
+    return int(round(255.0 * (1.0 / frames) ** (age / (frames - 1))))
 
 
 class GlowRing:

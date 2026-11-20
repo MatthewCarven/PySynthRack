@@ -640,10 +640,15 @@ Calls, not bugs: each waits on a yes, a no or a which.
       `run` (the run source moved), and one edge under a drifting
       `bpm_cv` where a sub-sample tempo difference flips a rounding. A
       synced `delay` now reads the true two-period span (11025, was 11024).
-- [ ] **Scope afterglow:** linear fade (now) or a phosphor-style
+- [x] **Scope afterglow:** linear fade (now) or a phosphor-style
       exponential one? Is a silent example right, and does
       `glow_frames` counting the live trace read naturally (default 8,
       the example uses 16)?
+      **Decided 2026-11-20 -- phosphor** (Matthew: "love the phosphor in
+      my crts"). Same ends (255 live, 255/frames oldest), a constant
+      fraction kept per repaint between them (74% at 8, 83% at 16). The
+      silent example and the live-trace-counting `glow_frames` drew no
+      objection, so they stay as they are.
 
 - [ ] **EARS DECISION: `_wt` band follows the HIGHEST voice**, so a low
       voice in a chord loses harmonics. Per-voice bands are more correct
