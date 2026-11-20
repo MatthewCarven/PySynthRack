@@ -46,6 +46,34 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-21 — the endless loop: a failed stop() orphaned the old stream
+
+Matthew, past midnight, trying devices with buffer 4096 / device_block 512
+and auto_govern on, then changing device_block 512 -> 1024 live on
+"Speakers 2 (Realtek HD Aud...)" (MME): "it seemed to lockup like kept
+repeating the last buffer", and after Stop / Start the new stream played
+"while ... it kept playing the old one indefinately at the same time".
+
+Stop closes every stream in `_device_outputs`, so the looping one had left
+the map without its PortAudio stream closing. `_DeviceOutput.close()` ran
+`stop()` and `close()` in one `try` with `except: pass`: a `stop()` that
+raised skipped `close()`. Fixed: stop, else `abort()`, then `close()`
+regardless; the failures are returned, logged and said once in the status
+bar; a stream whose close itself fails is kept (`_zombie_streams`, so it is
+not collected under a live callback) and retried at every reconcile and at
+Stop. And a rebuild on the SAME device (new buffer_size / device_block) now
+closes the old stream before opening the new one -- two streams on one
+device, even briefly, is the likeliest reason the old one died; moving to a
+different device keeps the old order. tests/test_sink_stream_close.py (7;
+six fail on the old code). Full suite 6171 passed.
+
+His five-device tour also showed the device list's limits: a name shared
+by MME, DirectSound and WASAPI cannot be opened ("Multiple output devices
+found"), WDM-KS entries fail to open or start, DirectSound's "Primary Sound
+Driver" just worked. And the stutter with auto_govern off: `2048/65536` --
+the ring never holds more than one device block when nothing fills it
+(TODO). Not built yet: priming the ring, the device list.
+
 ## 2026-11-20 — the skip: auto_govern was chasing the device-block sawtooth
 
 Matthew, testing the new build on a buffered sink (buffer_size 2048,

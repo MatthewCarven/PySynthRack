@@ -5324,6 +5324,12 @@ class App:
         once per state, for every routed sink -- the plain
         specific_stereo_speaker_output too, which has no readout of its own.
         """
+        # A stream that would not close cleanly (2026-11-20) is said once:
+        # the backend queues the text, this pops it (both on this thread).
+        close_errors = getattr(self.backend, "_device_close_errors", None)
+        if isinstance(close_errors, list) and close_errors:
+            self._set_status(" | ".join(close_errors))
+            close_errors.clear()
         getter = getattr(self.backend, "snapshot_sink_streams", None)
         if getter is None:
             return

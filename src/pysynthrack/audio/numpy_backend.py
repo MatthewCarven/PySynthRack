@@ -360,21 +360,45 @@ class _DeviceOutput:
         with self._lock:
             return (self._avail, self._capacity, self._underruns, self._drops)
 
-    def close(self) -> None:
-        try:
-            if self._stream is not None:
-                self._stream.stop()
-                self._stream.close()
-        except Exception:
-            pass
-        finally:
-            self._stream = None
-            with self._lock:
-                self._read = 0
-                self._avail = 0
-                self._underruns = 0
-                self._drops = 0
-                self._primed = False
+    def close(self) -> list[str]:
+        """Stop the stream and ALWAYS release it; return what went wrong.
+
+        ``stop()`` and ``close()`` used to share one ``try`` with the error
+        swallowed, so a ``stop()`` that raised skipped ``close()`` and left
+        the PortAudio stream open with nothing feeding it -- out of the
+        backend's map, so Stop could not reach it either, while the card
+        looped its last buffer until the program exited (Matthew,
+        2026-11-20: a live device_block change on an MME device). Now a
+        failed stop falls back to ``abort()``, ``close()`` runs regardless,
+        and the failures come back as text for the caller to report.
+        ``zombie`` keeps a stream whose ``close()`` itself failed, so it is
+        not garbage-collected under a running callback and can be retried.
+        """
+        stream = self._stream
+        self._stream = None
+        errors: list[str] = []
+        self.zombie = None
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception as e:
+                errors.append(f"stop failed ({e})")
+                try:
+                    stream.abort()
+                except Exception as e2:
+                    errors.append(f"abort failed ({e2})")
+            try:
+                stream.close()
+            except Exception as e:
+                errors.append(f"close failed ({e})")
+                self.zombie = stream
+        with self._lock:
+            self._read = 0
+            self._avail = 0
+            self._underruns = 0
+            self._drops = 0
+            self._primed = False
+        return errors
 
 
 # ---------------------------------------------------------------------------
@@ -1515,6 +1539,11 @@ class NumpyBackend(
         # say "could not open" instead of letting the sink pass for idle.
         # Rebuilt by every reconcile, cleared by stop().
         self._device_open_failures: dict[tuple[str, int], str] = {}
+        # Streams whose close went wrong (2026-11-20): what happened, for the
+        # status bar to say once (the GUI pops them), and the streams whose
+        # close() itself failed, retried at every reconcile and at stop().
+        self._device_close_errors: list[str] = []
+        self._zombie_streams: list[Any] = []
         # Per-sink smoothed governor ratio (see _governed_ratio). Keyed by
         # module id; an entry exists only while that sink's ratio_cv is
         # cabled, so the unpatched path carries no state at all.
@@ -2082,9 +2111,11 @@ class NumpyBackend(
             self._running = False
         # Close any secondary device-output streams opened for routed
         # specific_stereo_speaker_output sinks.
-        for _dev_out in list(self._device_outputs.values()):
-            _dev_out.close()
+        _outs = self._device_outputs
         self._device_outputs = {}
+        for _key, _dev_out in list(_outs.items()):
+            self._close_device_output(_key, _dev_out)
+        self._retry_zombies()
         self._device_open_failures = {}
         # Governor state is per-run: drop the smoothing memory and stretch
         # engines so the next Start begins at unity ratio with fresh grains.
@@ -2150,6 +2181,7 @@ class NumpyBackend(
         that opens at NO size is logged, remembered in
         ``_device_open_failures`` (its sink stays silent, and says so) and
         retried on the next change."""
+        self._retry_zombies()
         wanted = self._wanted_streams()
         current = self._device_outputs
         if wanted == set(current):
@@ -2158,6 +2190,20 @@ class NumpyBackend(
             return
         import logging
         log = logging.getLogger(__name__)
+        # A stream being REBUILT on the same device (a new buffer_size or
+        # device_block) is closed BEFORE its replacement opens (2026-11-20):
+        # two streams on one device, even for a moment, is where the old one
+        # died on Matthew's Realtek under MME and then looped. Swapped out of
+        # the map first, so the audio thread stops feeding it; a stream on a
+        # device nobody is reopening still closes after the swap, as before.
+        opening_devices = {k[0] for k in wanted if k not in current}
+        early = {k: d for k, d in current.items()
+                 if k not in wanted and k[0] in opening_devices}
+        if early:
+            current = {k: d for k, d in current.items() if k not in early}
+            self._device_outputs = current
+            for key, d in early.items():
+                self._close_device_output(key, d, log)
         new: dict[tuple[str, int], Any] = {}
         failures: dict[tuple[str, int], str] = {}
         for key in wanted:
@@ -2189,11 +2235,48 @@ class NumpyBackend(
                     dev, device_block,
                     dev_out.opened_block or "PortAudio's own block size",
                 )
-        to_close = [d for key, d in current.items() if key not in new]
+        to_close = [(key, d) for key, d in current.items() if key not in new]
         self._device_open_failures = failures
         self._device_outputs = new             # atomic swap for the audio thread
-        for d in to_close:
-            d.close()
+        for key, d in to_close:
+            self._close_device_output(key, d, log)
+
+    def _close_device_output(self, key, dev_out, log=None) -> None:
+        """Close one secondary stream; never raises. Anything that went wrong
+        is logged and queued for the status bar, and a stream that would not
+        even close is kept (``_zombie_streams``) and retried."""
+        try:
+            errors = dev_out.close() or []
+        except Exception as e:                  # a stub's close, say
+            errors = [f"close failed ({e})"]
+        zombie = getattr(dev_out, "zombie", None)
+        if zombie is not None:
+            self._zombie_streams.append(zombie)
+        if errors:
+            text = f"output device '{key[0]}': " + "; ".join(errors)
+            if zombie is None:
+                text += " - it was released anyway"
+            else:
+                text += " - it may still be playing; Stop audio retries it"
+            self._device_close_errors.append(text)
+            if log is None:
+                import logging
+                log = logging.getLogger(__name__)
+            log.warning("device-routed speaker: %s", text)
+
+    def _retry_zombies(self) -> None:
+        """Try again to close streams whose close() failed. Never raises."""
+        still = []
+        for stream in self._zombie_streams:
+            try:
+                stream.abort()
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                still.append(stream)
+        self._zombie_streams = still
 
     # ----- live params -----------------------------------------------------
 
