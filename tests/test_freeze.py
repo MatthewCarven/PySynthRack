@@ -1351,6 +1351,84 @@ def test_the_staged_birth_is_block_size_exact_with_every_feature_live():
     assert _rms(ya["out"][int(4.0 * SR):]) > 1.5 * dry
 
 
+# ----- 32768 staged too (decision #9, 2026-11-20) ------------------------------------
+
+_D32 = NumpyBackend._FREEZE_BIRTH_DELAY.get(32768, 0)
+
+
+def test_the_32768_window_is_born_a_staged_delay_after_the_edge():
+    """Matthew: "please". 32768 (743 ms) is staged like 65536: born 2048
+    samples (46 ms) after the edge, silent with dry 0 until then, and it
+    holds the same triad 16384 holds, partial for partial within 0.1 dB."""
+    assert _D32 == 2048
+    sig = _triad(6.0)
+    e = 2 * SR
+    g = np.zeros_like(sig)
+    g[e:] = 1.0
+    y, _, _ = _render({"dry": 0.0, "level": 1.0, "size": 32768}, sig, gate=g)
+    assert not y[:e + _D32].any()
+    assert y[e + _D32:e + _D32 + 64].any()
+    ref, _, _ = _render({"dry": 0.0, "level": 1.0, "size": 16384}, sig, gate=g)
+    lv, lr = _levels(y[4 * SR:6 * SR]), _levels(ref[4 * SR:6 * SR])
+    assert np.all(lv > 0.05)
+    assert np.all(np.abs(20 * np.log10(lv / lr)) < 0.1)
+
+
+def test_the_32768_staged_birth_continues_the_input_in_phase():
+    """The read starts at frozen time ``n + 2048``: a sine frozen with dry 1
+    DOUBLES. 441.43 Hz puts 20.5 of its cycles in the delay, so a read that
+    ignored the delay would cancel instead."""
+    f = 20.5 * SR / _D32
+    assert abs(_D32 * f / SR - 20.5) < 1e-9
+    sig = _sine(f, 5.0)
+    y, _, _ = _render({"dry": 1.0, "level": 1.0, "size": 32768}, sig, gate=_gate_from(2.0, 5.0))
+    assert 1.95 < _rms(y[3 * SR:5 * SR]) / _rms(sig[:SR]) < 2.05
+
+
+def test_the_32768_birth_spreads_seven_stages_over_four_blocks():
+    """Seven stages (two FFTs, the analysis, four frames) in 2048 samples:
+    at 512 no block runs more than two -- the edge's own block runs two, as
+    the delay is only four blocks long -- and all seven are done by the
+    birth."""
+    sig = _triad(3.0)
+    g = _gate_from(2.0, 3.0)
+    p = Patch()
+    fz = p.add_module("freeze")
+    fz.params.update({"dry": 0.0, "level": 1.0, "size": 32768, "width": 0.5})
+    b = NumpyBackend(sample_rate=SR, block_size=512)
+    b.compile(p)
+    per_block = []
+    orig = b._freeze_birth_step
+
+    def counting(*a, **k):
+        per_block[-1] += 1
+        return orig(*a, **k)
+
+    b._freeze_birth_step = counting
+    _render_blocks(fz, b, sig, gate=g, on_block=lambda k, m: per_block.append(0))
+    eb = (2 * SR) // 512
+    assert sum(per_block) == 7 and max(per_block) == 2
+    assert per_block[eb] == 2
+    assert sum(per_block[:(2 * SR + _D32) // 512 + 1]) == 7
+    assert not b._state[fz.id]["pending"] and len(b._state[fz.id]["layers"]) == 1
+
+
+def test_the_32768_staged_birth_is_block_size_exact_with_every_feature_live():
+    """64 = 512 = 1000 at 32768 with latch, width_cv, decay, smear and pitch
+    live and a second edge INSIDE the first one's 2048-sample delay."""
+    sig = _triad(5.0)
+    g = _pulses([2.0, 2.03, 3.6], 5.0)
+    prm = {"dry": 0.3, "level": 1.0, "size": 32768, "latch": True, "smear": 0.4,
+           "pitch": 7.0, "width": 0.3, "width_cv_depth": 1.0, "decay": 5.0, "fade": 90.0}
+    wcv = _const(0.4, 5.0)
+    ya, _, _ = _render(prm, sig, gate=g, wcv=wcv, block=64, ports=_LR)
+    for blk in (512, 1000):
+        yb, _, _ = _render(prm, sig, gate=g, wcv=wcv, block=blk, ports=_LR)
+        for k in _LR:
+            assert np.array_equal(ya[k], yb[k]), (blk, k)
+    assert not np.array_equal(ya["out_l"], ya["out_r"])
+
+
 # ----- UI ---------------------------------------------------------------------------
 
 

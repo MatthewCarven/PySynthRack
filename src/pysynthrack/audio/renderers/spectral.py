@@ -487,7 +487,10 @@ class SpectralRenderers:
     #: whole wet path is the undelayed one shifted by the delay; the read
     #: starts at frozen time ``n + delay`` so the hold is still the live
     #: input's continuation, in phase. 0 (every other size) = shipped.
-    _FREEZE_BIRTH_DELAY = {65536: 4096}
+    #: 32768 staged too since 2026-11-20 (decision #9): 2048 samples (46
+    #: ms), seven stages over four 512 blocks; its worst block with
+    #: ``width`` went from 5.1 ms (44% of the budget) to 1.9 ms (16%).
+    _FREEZE_BIRTH_DELAY = {32768: 2048, 65536: 4096}
     #: The capture's stages before the first frame: rfft, rfft, analysis.
     _FREEZE_CAPTURE_STAGES = 3
     _FREEZE_WINDOWS15: dict = {}
@@ -685,10 +688,11 @@ class SpectralRenderers:
         numerical-floor "peaks" -- which also means one ulp of input can
         no longer flip a floor peak and swap half the partials between L
         and R (it did: -13 dB of change on a 32768 organ hold's out_l).
-        At the sizes in ``_FREEZE_BIRTH_DELAY`` (65536) the birth is
-        STAGED: the capture is taken at the real edge, finished over the
-        next ``delay`` samples (``_freeze_birth_step``, one stage per 512
-        block), and every layer hears the gate ``delay`` samples late.
+        At the sizes in ``_FREEZE_BIRTH_DELAY`` (32768 since 2026-11-20,
+        65536) the birth is STAGED: the capture is taken at the real edge,
+        finished over the next ``delay`` samples (``_freeze_birth_step``,
+        spread evenly -- one stage per 512 block at 65536, two at most at
+        32768), and every layer hears the gate ``delay`` samples late.
 
         Pitch is a change of READ rate on that stationary stream (linear
         interpolation), never a resampled spectrum -- exact frequency,

@@ -659,8 +659,12 @@ Calls, not bugs: each waits on a yes, a no or a which.
 - [ ] **`rotary` `fast` switch lands on a block boundary** (block-majority
       read). A vote over fixed 64-sample windows would make it exact at
       ~1.3 ms latency. A call, not a bug.
-- [ ] **`freeze`: stage 32768 too** (a 2048-sample delay, worst block
+- [x] **`freeze`: stage 32768 too** (a 2048-sample delay, worst block
       ~25% from 46%) — shifts `freeze_drone_breathe`'s timing. Offered.
+      **Decided 2026-11-20 -- done** (Matthew: "please"). Measured better
+      than offered: the capture block with `width` 5.1 ms (44%) -> 1.9 ms
+      (16%), mono 3.5 -> 1.6 ms. `freeze_drone_breathe` is bit-identical
+      up to its freeze edge and its hold starts 46 ms later.
 - [x] **`lfo` `seed`: a `phase` knob move counts as a reset and so
       re-seeds** a seeded `random` LFO — decide whether that is wanted.
       *Hoisted 2026-10-10 from the archived "`lfo` — `seed`" entry

@@ -3967,6 +3967,14 @@ partial for partial within 0.1 dB of 32768 and is bit-exact at
 64 = 512 = 1000 with every feature live and a second edge landing
 inside the first one's delay.
 
+**32768 is staged too** (2026-11-20, decision #9): born **2048 samples
+(46 ms)** after the edge, its seven stages spread over four 512 blocks
+(two at most per block). Its capture block was the heaviest left on the
+knob — 3.5 / 5.1 ms, 44% of the budget with `width` — and is now
+1.6 / 1.9 ms. Same rules as 65536: the dry is never delayed, the hold is
+the input's continuation in phase, bit-exact at 64 = 512 = 1000. It
+moves `freeze_drone_breathe` (and any 32768 patch) 46 ms later.
+
 *What it costs* (measured at 44.1 kHz, one 512-frame block = 11.61 ms
 of budget; worst single block, mono / with `width`, each block the
 minimum of seven runs so other processes don't inflate it; 2026-09-24).
@@ -3974,7 +3982,7 @@ minimum of seven runs so other processes don't inflate it; 2026-09-24).
 | `size` | capture block, was | now | steady state, was | now |
 |--------|--------------------|-----|-------------------|-----|
 | 16384 | 5.3 / 10.4 ms | 1.6 / 2.6 ms | 0.8 / 1.8 ms | 0.2 / 0.4 ms |
-| 32768 | 10.4 / 20.5 ms (177%) | 3.4 / 5.3 ms (46%) | 1.5 / 3.6 ms | 0.4 / 0.9 ms |
+| 32768 | 10.4 / 20.5 ms (177%) | 3.4 / 5.3 ms (46%); **1.6 / 1.9 ms (16%)**, staged 2026-11-20 | 1.5 / 3.6 ms | 0.4 / 0.9 ms |
 | 65536 | 21.6 / 42.2 ms (364%) | **3.0 / 3.6 ms (31%)**, staged | 3.0 / 8.1 ms | 0.8 / 2.4 ms |
 
 The old bill was transcendentals, not FFTs: a frame at 65536 was an
@@ -4115,7 +4123,7 @@ mid-fall, the level holds where it is. 0 = forever, as shipped.
 
 | Parameter | Default | Range | Notes |
 |-----------|---------|-------|-------|
-| `size` | 4096 | 1024 · 2048 · 4096 · 8192 · 16384 · 32768 · 65536 | FFT window in samples — the resolution knob. 32768 is 743 ms, the drone end; 65536 (1.49 s) has the staged birth — the hold starts 93 ms after the edge (see above). |
+| `size` | 4096 | 1024 · 2048 · 4096 · 8192 · 16384 · 32768 · 65536 | FFT window in samples — the resolution knob. 32768 is 743 ms, the drone end; 65536 is 1.49 s. Both have a staged birth — the hold starts 46 ms (32768) or 93 ms (65536) after the edge (see above). |
 | `freeze` | off | tickbox | Hold from the panel — forces the hold on over the gate *and* the latch. |
 | `latch` | off | tickbox | The gate **toggles** the hold on each rising edge instead of holding it while high. |
 | `smear` | 0.0 | 0…1 | 0 = coherent hold, 1 = random-phase wash. |
