@@ -156,8 +156,10 @@ from ..settings import load_settings, save_settings
 from . import scope_math
 from .buffer import (
     BUFFER_SIZES,
+    DEVICE_BLOCK_CHOICES,
     SINK_BUFFER_SIZES,
     coerce_buffer_size,
+    coerce_device_block,
     coerce_sink_buffer_size,
     format_disk_writer_status,
     format_sink_buffer,
@@ -4573,6 +4575,25 @@ class App:
             )
             return
 
+        if (
+            param_name == "device_block"
+            and module.TYPE in (
+                "buffered_specific_speaker_output",
+                "warping_buffered_speaker_output",
+            )
+        ):
+            # The device's own PortAudio block, apart from the ring
+            # (2026-11-20): "auto" follows buffer_size, as before.
+            dpg.add_combo(
+                label=param_name,
+                items=list(DEVICE_BLOCK_CHOICES),
+                default_value=str(coerce_device_block(current)),
+                width=140,
+                callback=self._on_device_block_changed,
+                user_data=user_data,
+            )
+            return
+
         if isinstance(default, bool):
             dpg.add_checkbox(
                 label=param_name,
@@ -5326,9 +5347,16 @@ class App:
             module = self.patch.modules.get(mid)
             name = "speaker"
             device = ""
+            ring = asked
             if module is not None:
                 name = module.name or module.TYPE
                 device = str(module.params.get("device", ""))
+                # the ring is sized by buffer_size, which a device_block set
+                # apart (2026-11-20) no longer equals
+                try:
+                    ring = int(module.params.get("buffer_size", asked))
+                except (TypeError, ValueError):
+                    ring = asked
             if opened is None:
                 self._set_status(
                     f"{name}: could not open '{device}' at any buffer size "
@@ -5342,7 +5370,7 @@ class App:
                 self._set_status(
                     f"{name}: '{device}' would not open with {asked}-sample "
                     f"blocks - playing on {got} instead (the ring is still "
-                    f"sized for {asked})"
+                    f"sized for {ring})"
                 )
 
     def _advance_playlist(self, module_id: int, skipped_bad: bool = False) -> None:
@@ -7395,6 +7423,16 @@ class App:
         for mid in stale:
             self._disk_writer_labels.pop(mid, None)
 
+    def _on_device_block_changed(self, sender, app_data, user_data) -> None:
+        """A buffered sink's ``device_block`` combo changed: store "auto" or
+        a clean int (see coerce_device_block). Live while running, like
+        ``buffer_size`` -- only that sink's stream is rebuilt -- and the
+        ring-readout baseline resets for the new stream."""
+        module_id, param_name = user_data
+        self._set_module_param(module_id, param_name, coerce_device_block(app_data))
+        self._sink_buffer_last.pop(module_id, None)
+        self._sink_buffer_flash.pop(module_id, None)
+
     def _update_sink_buffers(self) -> None:
         """Push each buffered sink's secondary-stream ring telemetry into
         its node readout: fill %, queued/capacity, underrun / drop counts.
@@ -7425,6 +7463,10 @@ class App:
             streams = {}
         if not isinstance(streams, dict):
             streams = {}
+        # The readout's time line wants a real rate (a stub backend has none).
+        sink_sr = getattr(self.backend, "sample_rate", None)
+        if isinstance(sink_sr, bool) or not isinstance(sink_sr, (int, float)):
+            sink_sr = None
         now = time.monotonic()
         stale: list[int] = []
         for mid, label in self._sink_buffer_labels.items():
@@ -7450,7 +7492,7 @@ class App:
                 else:
                     color = self._SINK_BUF_OK_RGBA
             try:
-                dpg.set_value(label, format_sink_buffer(entry, stream))
+                dpg.set_value(label, format_sink_buffer(entry, stream, sink_sr))
                 dpg.configure_item(label, color=color)
             except Exception:
                 stale.append(mid)

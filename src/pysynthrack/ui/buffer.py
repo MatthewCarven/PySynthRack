@@ -106,9 +106,35 @@ def coerce_sink_buffer_size(raw: object, default: int = BUFFER_DEFAULT) -> int:
         return default
 
 
+#: The buffered sink's ``device_block`` combo: "auto" (= its buffer_size)
+#: or one of the sink sizes (2026-11-20, decision #2).
+DEVICE_BLOCK_AUTO = "auto"
+DEVICE_BLOCK_CHOICES: tuple[str, ...] = (DEVICE_BLOCK_AUTO,) + tuple(
+    str(s) for s in SINK_BUFFER_SIZES
+)
+
+
+def coerce_device_block(raw: object) -> str | int:
+    """``device_block`` -> ``"auto"`` or an int snapped onto the sink sizes.
+
+    "auto", empty, None or junk all mean auto (the backend reads them the
+    same way), so a hand-edited patch never reaches the combo off-list."""
+    if raw is None or str(raw).strip().lower() in ("", DEVICE_BLOCK_AUTO):
+        return DEVICE_BLOCK_AUTO
+    try:
+        return snap_sink_buffer(int(float(raw)))  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return DEVICE_BLOCK_AUTO
+
+
+def _ms(samples: int, sample_rate: float) -> float:
+    return 1000.0 * float(samples) / float(sample_rate)
+
+
 def format_sink_buffer(
     entry: tuple[int, int, int, int] | None,
     stream: tuple[int, int | None, str] | None = None,
+    sample_rate: float | None = None,
 ) -> str:
     """Ring readout for the buffered sink's node.
 
@@ -131,6 +157,15 @@ def format_sink_buffer(
     zero-pad) after the ring had first filled to one device block, and
     ``drop`` counts pushes that lost audio (overwrote unread samples, or
     exceeded the whole ring), both cumulative since the stream opened.
+
+    With ``sample_rate`` (2026-11-20, decision #2 -- Matthew: "offer up as
+    status the current buffer size and length in time so you can use it to
+    do a little prediction") a time line follows: how much audio is queued
+    and how much the ring can hold, in ms -- the queued figure is the
+    latency this sink adds right now, the ring the most it can -- and the
+    device block running, in samples and ms (the device's callback period,
+    ``auto`` when PortAudio picks): ``queued 83.6 of 185.8 ms  dev block
+    512 = 11.6 ms``.
     ASCII only: the node font has no wider glyph coverage.
     """
     if stream is not None and stream[1] is None:
@@ -143,6 +178,19 @@ def format_sink_buffer(
         f"buffer {pct:d}% ({queued}/{capacity})  "
         f"under {underruns}  drop {drops}"
     )
+    if sample_rate:
+        line += (
+            f"\nqueued {_ms(queued, sample_rate):.1f} of "
+            f"{_ms(capacity, sample_rate):.1f} ms"
+        )
+        if stream is not None and stream[1] is not None:
+            if stream[1] == 0:
+                line += "  dev block auto"
+            else:
+                line += (
+                    f"  dev block {stream[1]} = "
+                    f"{_ms(stream[1], sample_rate):.1f} ms"
+                )
     if stream is not None and stream[1] != stream[0]:
         got = "auto" if stream[1] == 0 else str(stream[1])
         line += f"\ndevice block {got} - {stream[0]} would not open"

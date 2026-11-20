@@ -6472,6 +6472,33 @@ moment whenever either counter ticks. Sinks sharing one
 `(device, buffer_size)` stream show identical numbers, by design.
 (numpy backend only, like the routing itself.)
 
+A second line (2026-11-20) puts the same ring in time, for prediction:
+
+```
+buffer 45% (3686/8192)  under 0  drop 0
+queued 83.6 of 185.8 ms  dev block 512 = 11.6 ms
+```
+
+`queued` is the latency this sink adds right now; the ring's length is
+the most it can add (and how much stall it can ride out); `dev block` is
+the device's callback chunk actually running, in samples and ms — the
+period the device pulls at (`auto` when PortAudio picks).
+
+**`device_block`: the device's chunk apart from the cushion** (2026-11-20,
+decision #2). `buffer_size` does two jobs by default: it sizes the ring
+(8× it) *and* is the block the device is asked for. `device_block`
+splits them: `auto` (the default) keeps them together, exactly as
+before; a size (64 … 8192) asks the device for that block while the ring
+stays 8× `buffer_size`. A big cushion with a modest chunk — `buffer_size`
+4096, `device_block` 512 — keeps 743 ms of headroom without the device
+(or its driver, which Bluetooth stacks may care about) buffering a 4096
+block of its own; the other way round, a ring never holds less than two
+device blocks, so a big chunk on a small cushion can still be served. It
+keys its own stream, `(device, buffer_size, device_block)`, so two sinks
+on one device with different chunks never share a stream; a live change
+rebuilds only that stream. A device that refuses the chunk falls back
+down the ladder below from `device_block`, with the ring unchanged.
+
 **When the device refuses the buffer size.** `buffer_size` is a request.
 A device that won't open a stream at it (an HD Audio device refused 8192
 on 2026-07-16, and the sink used to sit at `buffer: idle` with nothing to
@@ -6510,6 +6537,7 @@ reason; that sink is silent and the rest of the patch plays on.
 | `cv_depth` | `1.0` | 0 … 2 | Knob units per CV unit, shared by `pan_cv` and `width_cv`. |
 | `device` | `""` | device name | Target output device; `""` = system default (drains to master). A named device routes the sink to its own OutputStream; changing it re-routes **live**. |
 | `buffer_size` | `512` | 64 … 8192 | Block size of this sink's own output stream, independent of the global buffer (whose slider tops out at 1024 — the 2048/4096/8192 stops are sink-only); the ring holds 8× it. Read at stream open; a live change rebuilds only this stream. A device that refuses it runs the stream on a smaller block with the ring unchanged, and says so (see *When the device refuses the buffer size*). Out-of-range values are clamped. |
+| `device_block` | `auto` | auto · 64 … 8192 | (2026-11-20) The block asked of the device, apart from the ring: `auto` = `buffer_size` (as before), or a size of its own — e.g. `buffer_size` 4096 for the cushion with `device_block` 512 for the chunk. The ring never holds less than two device blocks. Live, like `buffer_size`; junk reads as `auto`, numbers are clamped. |
 
 ---
 
@@ -6545,7 +6573,7 @@ like the routing itself.
 (`in_l` / `in_r`, `pan_cv` / `width_cv`, `ratio_cv` → `fill`).
 
 **Parameters** — the buffered sink's set (`gain`, `pan`, `width`,
-`cv_depth`, `device`, `buffer_size`, `ratio_depth`) plus:
+`cv_depth`, `device`, `buffer_size`, `device_block`, `ratio_depth`) plus:
 
 | Param | Default | Range | Description |
 |-------|---------|-------|-------------|

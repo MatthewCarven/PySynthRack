@@ -314,7 +314,16 @@ class BufferedSpecificSpeakerOutput(Module):
         buffer_size: Frames per block for this sink's own output stream. One
             of the sink sizes (64 .. 8192 — the global stops plus the
             2048/4096/8192 extensions); defaults to 512. The backend clamps
-            any out-of-range value to a safe stop.
+            any out-of-range value to a safe stop. It sizes the ring (the
+            cushion: eight blocks of it) and, unless ``device_block`` says
+            otherwise, is also the block the device is asked for.
+        device_block: The PortAudio callback block asked of the device,
+            apart from the ring (2026-11-20): ``"auto"`` (default) = the
+            ``buffer_size``, as before; or one of 64 .. 8192. A big
+            cushion with a modest device chunk (``buffer_size`` 4096,
+            ``device_block`` 512) keeps the latency headroom without the
+            device buffering a huge block of its own. The ring never
+            holds less than two device blocks.
         ratio_depth: Stretch swing per ``ratio_cv`` unit (default 0.25:
             cv +-1 pushes 25% more/fewer samples). The engine clamps the
             resulting ratio to 0.5..2 whatever the depth.
@@ -334,6 +343,7 @@ class BufferedSpecificSpeakerOutput(Module):
         "cv_depth": 1.0,
         "device": AUTO_DEVICE,
         "buffer_size": 512,
+        "device_block": "auto",
         "ratio_depth": 0.25,
         "auto_govern": False,
     }

@@ -503,8 +503,11 @@ class TestUI:
         p, s = _sink_patch(buffer_size=8192)
         app, app_mod = _ui_app(monkeypatch, _running(p))
         text, color = self._readout(app, app_mod, s.id)
+        # the time line (2026-11-20) shows the block that RUNS; the last
+        # line says which one was refused
         assert text == (
             "buffer 0% (0/65536)  under 0  drop 0\n"
+            "queued 0.0 of 1486.1 ms  dev block 4096 = 92.9 ms\n"
             "device block 4096 - 8192 would not open"
         )
         assert color == app._SINK_BUF_OK_RGBA

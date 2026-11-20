@@ -615,13 +615,19 @@ Calls, not bugs: each waits on a yes, a no or a which.
       integer count). Counting stages by integer sample number (as
       `_gate_ramp_env` does) would make times exact but move EVERY
       ADSR example, mono included. A later pass, or leave it?
-- [ ] **Buffered sink, Phase 2:** should `buffer_size` 2048-8192
+- [x] **Buffered sink, Phase 2:** should `buffer_size` 2048-8192
       always mean a big ring with a modest device chunk, even when the
       device accepts the big chunk? (a) cap the device block at 1024
       (default untouched; less PortAudio-side buffering, which
       Bluetooth may want); (b) a separate `device_block` param (auto /
       64..8192, default = buffer_size); (c) leave Phase 1 as is. The
       agent leans (c) or (b).
+      **Decided 2026-11-20 -- (b), with a time readout** (Matthew: "b add
+      a separate device blocksize if you can easily also offer up as
+      status the current buffer size and length in time so you can use it
+      to do a little prediction"). `device_block` auto (= buffer_size, as
+      before) or 64..8192; the node's second line reads `queued 83.6 of
+      185.8 ms  dev block 512 = 11.6 ms`.
 - [ ] **The A440 edge flip:** keyboard / MIDI / cv_to_frequency now
       land every 4410th sample exactly on the waveform's edge at
       440 Hz, so a plain (non-blep) saw or square flips a full step
