@@ -61,6 +61,11 @@ without the fix). Matthew, 2026-11-21: "yes please Claude fix py synthrack".
 Done from a cloud checkout as a PR, since the laptop session's permission
 check wouldn't take a relayed go-ahead.
 
+CI has been red on main since ~2026-11-12 (181-188 failures): GitHub moved
+`ubuntu-latest` to 26.04, where `import sounddevice` fails despite
+libportaudio2, so every numpy-backend test errors. The last green run was on
+24.04, so ci.yml now pins `ubuntu-24.04` (same PR, separate commit).
+
 ## 2026-11-21 — a `buffers` slider on the buffered sinks
 
 Matthew, 01:52: "Can we also offer up the number of buffers as a slider on
