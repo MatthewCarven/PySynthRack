@@ -46,6 +46,26 @@ was counted at df7b46c for this snapshot, not copied from an entry.
 
 ---
 
+## 2026-11-21 — stale param-widget ids after a patch load
+
+Found while testing Exposure (the remote-inspection tool) against the
+running app: after a patch load, changing a param through `_mirror_param`
+moved the model and the audio but not the slider. `_clear_editor` deleted
+every widget but left their ids in `_param_widgets`, so a patch that reuses
+a module id (File > Open, the auto-loaded default) had `_param_widget` find
+the dead id first. `_clear_editor` now also clears `_param_widgets`, plus
+`_psel_cells` / `_psel_count_labels` (their `_pseq` twins were already
+cleared there; these weren't). Deleting a node also drops that module's
+`_param_widgets` entries. tests/test_param_widget_registry.py (3, all fail
+without the fix). Matthew, 2026-11-21: "yes please Claude fix py synthrack".
+Done from a cloud checkout as a PR, since the laptop session's permission
+check wouldn't take a relayed go-ahead.
+
+CI has been red on main since ~2026-11-12 (181-188 failures): GitHub moved
+`ubuntu-latest` to 26.04, where `import sounddevice` fails despite
+libportaudio2, so every numpy-backend test errors. The last green run was on
+24.04, so ci.yml now pins `ubuntu-24.04` (same PR, separate commit).
+
 ## 2026-11-21 — a `buffers` slider on the buffered sinks
 
 Matthew, 01:52: "Can we also offer up the number of buffers as a slider on

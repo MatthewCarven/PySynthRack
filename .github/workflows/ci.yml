@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,7 +23,10 @@ jobs:
       - run: ruff check src tests tools examples packaging
 
   test:
-    runs-on: ubuntu-latest
+    # Pinned: on ubuntu-26.04 (ubuntu-latest since ~2026-11-12) `import
+    # sounddevice` fails even with libportaudio2 installed, so every test
+    # that needs the numpy backend errors. 24.04 was the last green image.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
