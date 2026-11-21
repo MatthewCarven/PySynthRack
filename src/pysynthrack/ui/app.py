@@ -6514,6 +6514,11 @@ class App:
             self._pseq_count_labels.pop(module_id, None)
             self._psel_cells.pop(module_id, None)
             self._psel_count_labels.pop(module_id, None)
+            # Same for the generic param widgets: they die with the node,
+            # and a later module reusing this id must not find them first.
+            for _wid in [w for w, k in self._param_widgets.items()
+                         if k[0] == module_id]:
+                self._param_widgets.pop(_wid, None)
             # Drop meter bookkeeping too: the bar drawlist items are freed
             # with the node below, so a lingering entry would make the next
             # _update_cv_meters frame call set_value on a dead item — the
@@ -7077,6 +7082,15 @@ class App:
         self._sink_streams_reported.clear()
         self._pseq_cells.clear()
         self._pseq_count_labels.clear()
+        # possibility_selector's twins of the two maps above, and the
+        # generic param-widget registry: every id in them was a child of
+        # the editor and died with it. Left in place, a reloaded patch that
+        # reuses a module id (File > Open, the auto-loaded default) has
+        # ``_param_widget`` hand back the dead id first, so ``_mirror_param``
+        # writes the model and the audio but never moves the slider.
+        self._psel_cells.clear()
+        self._psel_count_labels.clear()
+        self._param_widgets.clear()
         # KeyTrigger UI state: stale text-input tags and any pending Learn
         # don't carry across a patch load.
         self._text_input_tags.clear()
